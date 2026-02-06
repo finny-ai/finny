@@ -11,7 +11,7 @@ const SIMULATOR_URL = process.env.FINNY_SIMULATOR_URL || "https://api.algoclash.
 // Local strategy directories to scan
 const STRATEGY_DIRS = [
   path.join(process.cwd(), "strategies"),
-  path.join(process.cwd(), "packages/finny/strategies"),
+  path.join(process.cwd(), "packages/opencode/strategies"),
 ]
 
 interface Strategy {
@@ -259,7 +259,7 @@ export function DialogDeploy() {
             Do you want to backtest first?
           </text>
           <text fg={theme.accent} marginTop={1}>
-            <text fg={theme.success}>Y</text> = Backtest first (recommended)  •  <text fg={theme.error}>N</text> = Deploy anyway
+            Y = Backtest first (recommended)  •  N = Deploy anyway
           </text>
         </box>
       </Show>

@@ -4,7 +4,7 @@ import fs from "fs"
 import path from "path"
 import { Instance } from "../project/instance"
 
-const STRATEGY_DIRS = ["strategies", "packages/finny/strategies"]
+const STRATEGY_DIRS = ["strategies", "packages/opencode/strategies"]
 
 async function findStrategyDirs(): Promise<string[]> {
   const dirs: string[] = []

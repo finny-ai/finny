@@ -5,7 +5,7 @@ import path from "path"
 import { Instance } from "../project/instance"
 
 const SIMULATOR_URL = process.env.FINNY_SIMULATOR_URL || "https://api.algoclash.live"
-const STRATEGY_DIRS = ["strategies", "packages/finny/strategies"]
+const STRATEGY_DIRS = ["strategies", "packages/opencode/strategies"]
 
 async function findStrategyFile(name: string): Promise<string | null> {
   for (const dir of STRATEGY_DIRS) {
