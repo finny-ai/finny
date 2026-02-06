@@ -191,15 +191,18 @@ export function DialogDeploy() {
   useKeyboard((evt) => {
     setMessage(null)
 
+    // Cast to access key property that exists at runtime but not in types
+    const key = (evt as any).key?.toLowerCase?.() || ""
+
     // Handle backtest warning dialog
     if (showBacktestWarning()) {
-      if (evt.key === "y" || evt.key === "Y") {
+      if (key === "y") {
         // User wants to backtest first - close deploy dialog
         // They'll need to use the backtest dialog separately
         setShowBacktestWarning(false)
         setPendingDeploy(null)
         setMessage("Use /backtest to test this strategy first")
-      } else if (evt.key === "n" || evt.key === "N") {
+      } else if (key === "n") {
         // User wants to deploy anyway
         const strat = pendingDeploy()
         setShowBacktestWarning(false)
@@ -219,9 +222,9 @@ export function DialogDeploy() {
 
     if (evt.name === "escape") {
       dialog.clear()
-    } else if (evt.name === "up" || evt.key === "k") {
+    } else if (evt.name === "up" || key === "k") {
       setSelected((s) => Math.max(0, s - 1))
-    } else if (evt.name === "down" || evt.key === "j") {
+    } else if (evt.name === "down" || key === "j") {
       setSelected((s) => Math.min(maxIdx, s + 1))
     } else if (evt.name === "return" && !loading()) {
       const strat = strats[selected()]
@@ -232,7 +235,7 @@ export function DialogDeploy() {
           deployStrategy(strat)
         }
       }
-    } else if (evt.key === "r") {
+    } else if (key === "r") {
       fetchStrategies()
     }
   })
@@ -264,64 +267,67 @@ export function DialogDeploy() {
         </box>
       </Show>
 
-      <Show when={error()}>
-        <text fg={theme.error}>{String(error() ?? "")}</text>
-      </Show>
+      {/* Only show loading/error/message when NOT in warning mode */}
+      <Show when={!showBacktestWarning()}>
+        <Show when={error()}>
+          <text fg={theme.error}>{String(error() ?? "")}</text>
+        </Show>
 
-      <Show when={message()}>
-        <text fg={theme.success}>{String(message() ?? "")}</text>
-      </Show>
+        <Show when={message()}>
+          <text fg={theme.success}>{String(message() ?? "")}</text>
+        </Show>
 
-      <Show when={loading()}>
-        <text fg={theme.textMuted}>Loading...</text>
-      </Show>
+        <Show when={loading()}>
+          <text fg={theme.textMuted}>Loading...</text>
+        </Show>
 
-      <Show when={!loading() && strategies().length === 0 && !error()}>
-        <text fg={theme.textMuted}>No strategies found</text>
-        <text fg={theme.textMuted}>Add .py files to strategies/ folder</text>
-      </Show>
+        <Show when={!loading() && strategies().length === 0 && !error()}>
+          <text fg={theme.textMuted}>No strategies found</text>
+          <text fg={theme.textMuted}>Add .py files to strategies/ folder</text>
+        </Show>
 
-      <Show when={strategies().length > 0}>
-        <For each={strategies()}>
-          {(strat, i) => (
-            <box
-              flexDirection="row"
-              justifyContent="space-between"
-              backgroundColor={selected() === i() ? theme.backgroundElement : undefined}
-              paddingLeft={1}
-              paddingRight={1}
-            >
-              <box flexDirection="row" gap={1}>
-                <text fg={strat.deployed ? theme.success : theme.textMuted}>
-                  {strat.deployed ? "●" : "○"}
-                </text>
-                <text fg={theme.text}>{strat.name}</text>
-                <Show when={strat.deployed}>
-                  <text fg={theme.accent}>[LIVE]</text>
-                  <text fg={theme.textMuted}>({strat.symbol ?? "BTC"})</text>
-                </Show>
-                <Show when={!strat.localPath}>
-                  <text fg={theme.warning}>[remote]</text>
+        <Show when={strategies().length > 0}>
+          <For each={strategies()}>
+            {(strat, i) => (
+              <box
+                flexDirection="row"
+                justifyContent="space-between"
+                backgroundColor={selected() === i() ? theme.backgroundElement : undefined}
+                paddingLeft={1}
+                paddingRight={1}
+              >
+                <box flexDirection="row" gap={1}>
+                  <text fg={strat.deployed ? theme.success : theme.textMuted}>
+                    {strat.deployed ? "●" : "○"}
+                  </text>
+                  <text fg={theme.text}>{strat.name}</text>
+                  <Show when={strat.deployed}>
+                    <text fg={theme.accent}>[LIVE]</text>
+                    <text fg={theme.textMuted}>({strat.symbol ?? "BTC"})</text>
+                  </Show>
+                  <Show when={!strat.localPath}>
+                    <text fg={theme.warning}>[remote]</text>
+                  </Show>
+                </box>
+                <Show when={strat.deployed && strat.roi !== undefined}>
+                  <box flexDirection="row" gap={1}>
+                    <text fg={(strat.roi ?? 0) >= 0 ? theme.success : theme.error}>
+                      {`${(strat.roi ?? 0) >= 0 ? "+" : ""}${Number(strat.roi ?? 0).toFixed(2)}%`}
+                    </text>
+                    <text fg={theme.textMuted}>{`$${Number(strat.equity ?? 0).toFixed(0)}`}</text>
+                  </box>
                 </Show>
               </box>
-              <Show when={strat.deployed && strat.roi !== undefined}>
-                <box flexDirection="row" gap={1}>
-                  <text fg={(strat.roi ?? 0) >= 0 ? theme.success : theme.error}>
-                    {`${(strat.roi ?? 0) >= 0 ? "+" : ""}${Number(strat.roi ?? 0).toFixed(2)}%`}
-                  </text>
-                  <text fg={theme.textMuted}>{`$${Number(strat.equity ?? 0).toFixed(0)}`}</text>
-                </box>
-              </Show>
-            </box>
-          )}
-        </For>
-      </Show>
+            )}
+          </For>
+        </Show>
 
-      <box marginTop={1}>
-        <text fg={theme.textMuted}>
-          {`↑/↓ navigate • Enter ${selectedStrategy()?.deployed ? "stop" : "deploy"} • r refresh`}
-        </text>
-      </box>
+        <box marginTop={1}>
+          <text fg={theme.textMuted}>
+            {`↑/↓ navigate • Enter ${selectedStrategy()?.deployed ? "stop" : "deploy"} • r refresh`}
+          </text>
+        </box>
+      </Show>
     </box>
   )
 }
