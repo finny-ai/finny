@@ -3,6 +3,7 @@ import { useKeyboard } from "@opentui/solid"
 import { useTheme } from "@tui/context/theme"
 import { createSignal, Show, For, onMount } from "solid-js"
 import { useDialog } from "@tui/ui/dialog"
+import { DialogBacktest } from "@tui/component/dialog-backtest"
 import fs from "fs"
 import path from "path"
 
@@ -197,11 +198,13 @@ export function DialogDeploy() {
     // Handle backtest warning dialog
     if (showBacktestWarning()) {
       if (key === "y") {
-        // User wants to backtest first - close deploy dialog
-        // They'll need to use the backtest dialog separately
+        // User wants to backtest first - open backtest dialog with this strategy
+        const stratName = pendingDeploy()?.name
         setShowBacktestWarning(false)
         setPendingDeploy(null)
-        setMessage("Use /backtest to test this strategy first")
+        if (stratName) {
+          dialog.replace(() => <DialogBacktest initialStrategy={stratName} />)
+        }
       } else if (key === "n") {
         // User wants to deploy anyway
         const strat = pendingDeploy()

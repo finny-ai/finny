@@ -53,11 +53,15 @@ const INTERVALS = [
   { label: "1 day", value: "1d" },
 ]
 
-export function DialogBacktest() {
+export interface DialogBacktestProps {
+  initialStrategy?: string
+}
+
+export function DialogBacktest(props: DialogBacktestProps = {}) {
   const { theme } = useTheme()
   const dialog = useDialog()
 
-  const [step, setStep] = createSignal<Step>("select")
+  const [step, setStep] = createSignal<Step>(props.initialStrategy ? "configure" : "select")
   const [strategies, setStrategies] = createSignal<StrategyInfo[]>([])
   const [selected, setSelected] = createSignal(0)
   const [loading, setLoading] = createSignal(false)
@@ -71,7 +75,10 @@ export function DialogBacktest() {
 
   // Results state
   const [result, setResult] = createSignal<BacktestResult | null>(null)
-  const [selectedStrategy, setSelectedStrategy] = createSignal<StrategyInfo | null>(null)
+  // Initialize selectedStrategy with initial strategy info if provided
+  const [selectedStrategy, setSelectedStrategy] = createSignal<StrategyInfo | null>(
+    props.initialStrategy ? { name: props.initialStrategy, symbol: "BTC", deployed: false } : null
+  )
 
   async function fetchStrategies() {
     setLoading(true)
