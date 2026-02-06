@@ -7,7 +7,7 @@ import { Rpc } from "@/util/rpc"
 import { upgrade } from "@/cli/upgrade"
 import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
-import { createFinnyClient, type Event } from "@finny-ai/sdk/v2"
+import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
 import type { BunWebSocketData } from "hono/bun"
 import { Flag } from "@/flag/flag"
 
@@ -56,7 +56,7 @@ const startEventStream = (directory: string) => {
     return Server.App().fetch(request)
   }) as typeof globalThis.fetch
 
-  const sdk = createFinnyClient({
+  const sdk = createOpencodeClient({
     baseUrl: "http://finny.internal",
     directory,
     fetch: fetchFn,

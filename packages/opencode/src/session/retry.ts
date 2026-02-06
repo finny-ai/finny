@@ -1,4 +1,4 @@
-import type { NamedError } from "@finny-ai/util/error"
+import type { NamedError } from "@opencode-ai/util/error"
 import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 
