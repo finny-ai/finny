@@ -130,8 +130,12 @@ export function DialogBacktest(props: DialogBacktestProps = {}) {
   }
 
   async function runBacktest() {
-    const strat = strategies()[selected()]
-    if (!strat) return
+    // Use selectedStrategy if already set (from initialStrategy prop), otherwise use list selection
+    const strat = selectedStrategy() || strategies()[selected()]
+    if (!strat) {
+      setError("No strategy selected")
+      return
+    }
 
     setSelectedStrategy(strat)
     setStep("running")
