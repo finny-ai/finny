@@ -265,7 +265,7 @@ export function DialogDeploy() {
         <box marginTop={1} marginBottom={1}>
           <text fg={theme.warning} attributes={TextAttributes.BOLD}>⚠ Strategy Not Backtested</text>
           <text fg={theme.text} marginTop={1}>
-            "{pendingDeploy()?.name}" hasn't been backtested yet.
+            "{String(pendingDeploy()?.name ?? "Unknown")}" hasn't been backtested yet.
           </text>
           <text fg={theme.textMuted}>
             Backtesting helps verify strategy profitability before risking capital.
