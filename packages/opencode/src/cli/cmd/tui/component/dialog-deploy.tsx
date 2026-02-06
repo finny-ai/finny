@@ -193,29 +193,38 @@ export function DialogDeploy() {
     setMessage(null)
 
     // Cast to access key property that exists at runtime but not in types
-    const key = (evt as any).key?.toLowerCase?.() || ""
+    const evtAny = evt as any
+    const key = evtAny.key?.toLowerCase?.() || evtAny.sequence?.toLowerCase?.() || ""
+
+    // Debug: Log what we're receiving
+    console.log("Keyboard event:", { name: evt.name, key: evtAny.key, sequence: evtAny.sequence, showWarning: showBacktestWarning() })
 
     // Handle backtest warning dialog
     if (showBacktestWarning()) {
       if (key === "y") {
         // User wants to backtest first - open backtest dialog with this strategy
         const stratName = pendingDeploy()?.name
+        console.log("Y pressed, opening backtest for:", stratName)
         setShowBacktestWarning(false)
         setPendingDeploy(null)
         if (stratName) {
           dialog.replace(() => <DialogBacktest initialStrategy={stratName} />)
         }
+        return
       } else if (key === "n") {
         // User wants to deploy anyway
         const strat = pendingDeploy()
+        console.log("N pressed, deploying:", strat?.name)
         setShowBacktestWarning(false)
         setPendingDeploy(null)
         if (strat) {
           deployStrategy(strat, true)
         }
+        return
       } else if (evt.name === "escape") {
         setShowBacktestWarning(false)
         setPendingDeploy(null)
+        return
       }
       return
     }
