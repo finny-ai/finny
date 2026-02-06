@@ -265,11 +265,11 @@ export function DialogDeploy() {
       </Show>
 
       <Show when={error()}>
-        <text fg={theme.error}>{error()}</text>
+        <text fg={theme.error}>{String(error() ?? "")}</text>
       </Show>
 
       <Show when={message()}>
-        <text fg={theme.success}>{message()}</text>
+        <text fg={theme.success}>{String(message() ?? "")}</text>
       </Show>
 
       <Show when={loading()}>
@@ -298,7 +298,7 @@ export function DialogDeploy() {
                 <text fg={theme.text}>{strat.name}</text>
                 <Show when={strat.deployed}>
                   <text fg={theme.accent}>[LIVE]</text>
-                  <text fg={theme.textMuted}>({strat.symbol})</text>
+                  <text fg={theme.textMuted}>({strat.symbol ?? "BTC"})</text>
                 </Show>
                 <Show when={!strat.localPath}>
                   <text fg={theme.warning}>[remote]</text>
