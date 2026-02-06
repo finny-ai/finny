@@ -57,7 +57,7 @@ const TIPS = [
   "Press {highlight}Ctrl+X E{/highlight} or {highlight}/editor{/highlight} to compose messages in your external editor",
   "Run {highlight}/init{/highlight} to auto-generate project rules based on your codebase",
   "Run {highlight}/models{/highlight} or {highlight}Ctrl+X M{/highlight} to see and switch between available AI models",
-  themeTip,
+  "Run {highlight}/themes{/highlight} to see and switch between available color themes",
   "Press {highlight}Ctrl+X N{/highlight} or {highlight}/new{/highlight} to start a fresh conversation session",
   "Use {highlight}/sessions{/highlight} or {highlight}Ctrl+X L{/highlight} to list and continue previous conversations",
   "Run {highlight}/compact{/highlight} to summarize long sessions near context limits",

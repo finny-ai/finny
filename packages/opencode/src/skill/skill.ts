@@ -123,7 +123,7 @@ export namespace Skill {
 
     // Scan .finny/skill/ directories
     for (const dir of await Config.directories()) {
-      for await (const match of FINNY_SKILL_GLOB.scan({
+      for await (const match of OPENCODE_SKILL_GLOB.scan({
         cwd: dir,
         absolute: true,
         onlyFiles: true,
