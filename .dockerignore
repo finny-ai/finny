@@ -1,0 +1,45 @@
+# Git
+.git
+.gitignore
+
+# Node (dependencies installed in Docker)
+node_modules
+frontend/node_modules
+frontend/.vite
+packages
+*.lock
+bun.lock
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+venv
+.venv
+*.egg-info
+
+# IDE
+.vscode
+.idea
+*.swp
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+claude_code/
+.claude/
+.finny/
+
+# Database (will be volume-mounted)
+*.db
+*.db-shm
+*.db-wal
+
+# Other
+.DS_Store
+*.log
+.turbo

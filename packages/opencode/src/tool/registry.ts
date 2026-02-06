@@ -16,7 +16,7 @@ import { Tool } from "./tool"
 import { Instance } from "../project/instance"
 import { Config } from "../config/config"
 import path from "path"
-import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
+import { type ToolContext as PluginToolContext, type ToolDefinition } from "@finny-ai/plugin"
 import z from "zod"
 import { Plugin } from "../plugin"
 import { WebSearchTool } from "./websearch"
@@ -25,8 +25,20 @@ import { Flag } from "@/flag/flag"
 import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
 import { Truncate } from "./truncation"
-import { PlanExitTool, PlanEnterTool } from "./plan"
 import { ApplyPatchTool } from "./apply_patch"
+import { QuantResearchCompleteTool } from "./quant-transition"
+import { MarketPriceTool, PriceHistoryTool } from "./market-data"
+import { CalculateIndicatorTool, CalculateCorrelationTool } from "./indicators"
+import { SaveResearchReportTool, ListResearchReportsTool } from "./research-report"
+import { ChatPortfolioTool } from "./chat-portfolio"
+import { ChatMarketTool } from "./chat-market"
+import { ChatNewsTool } from "./chat-news"
+import { SaveChatInsightTool, ListChatInsightsTool } from "./chat-insights"
+import { ListStrategiesBuildTool, GetStrategyCodeTool } from "./build-strategies"
+import { ValidateStrategyTool, CheckStrategySyntaxTool } from "./build-validation"
+import { DeployStrategyTool, StopStrategyTool } from "./build-deployment"
+import { ScaffoldStrategyTool } from "./build-scaffold"
+import { SaveBuildInsightTool, ListBuildInsightsTool } from "./build-insights"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
@@ -97,7 +109,7 @@ export namespace ToolRegistry {
 
     return [
       InvalidTool,
-      ...(["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) ? [QuestionTool] : []),
+      ...(["app", "cli", "desktop"].includes(Flag.FINNY_CLIENT) ? [QuestionTool] : []),
       BashTool,
       ReadTool,
       GlobTool,
@@ -112,9 +124,30 @@ export namespace ToolRegistry {
       CodeSearchTool,
       SkillTool,
       ApplyPatchTool,
-      ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
+      ...(Flag.FINNY_EXPERIMENTAL_LSP_TOOL ? [LspTool] : []),
       ...(config.experimental?.batch_tool === true ? [BatchTool] : []),
-      ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [PlanExitTool, PlanEnterTool] : []),
+      QuantResearchCompleteTool,
+      MarketPriceTool,
+      PriceHistoryTool,
+      CalculateIndicatorTool,
+      CalculateCorrelationTool,
+      SaveResearchReportTool,
+      ListResearchReportsTool,
+      ChatPortfolioTool,
+      ChatMarketTool,
+      ChatNewsTool,
+      SaveChatInsightTool,
+      ListChatInsightsTool,
+      // Build tools
+      ListStrategiesBuildTool,
+      GetStrategyCodeTool,
+      ValidateStrategyTool,
+      CheckStrategySyntaxTool,
+      DeployStrategyTool,
+      StopStrategyTool,
+      ScaffoldStrategyTool,
+      SaveBuildInsightTool,
+      ListBuildInsightsTool,
       ...custom,
     ]
   }
@@ -136,7 +169,7 @@ export namespace ToolRegistry {
         .filter((t) => {
           // Enable websearch/codesearch for zen users OR via enable flag
           if (t.id === "codesearch" || t.id === "websearch") {
-            return model.providerID === "opencode" || Flag.OPENCODE_ENABLE_EXA
+            return model.providerID === "finny" || Flag.FINNY_ENABLE_EXA
           }
 
           // use apply tool in same format as codex

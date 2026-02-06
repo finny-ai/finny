@@ -6,7 +6,7 @@ import { Session } from "@/session"
 import { MessageV2 } from "@/session/message-v2"
 import { Storage } from "@/storage/storage"
 import { Log } from "@/util/log"
-import type * as SDK from "@opencode-ai/sdk/v2"
+import type * as SDK from "@finny-ai/sdk/v2"
 
 export namespace ShareNext {
   const log = Log.create({ service: "share-next" })
@@ -15,7 +15,7 @@ export namespace ShareNext {
     return Config.get().then((x) => x.enterprise?.url ?? "https://opncd.ai")
   }
 
-  const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
+  const disabled = process.env["FINNY_DISABLE_SHARE"] === "true" || process.env["FINNY_DISABLE_SHARE"] === "1"
 
   export async function init() {
     if (disabled) return

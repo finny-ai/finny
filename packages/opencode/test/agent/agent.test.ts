@@ -44,7 +44,7 @@ test("build agent has correct default properties", async () => {
   })
 })
 
-test("plan agent denies edits except .opencode/plans/*", async () => {
+test("plan agent denies edits except .finny/plans/*", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
@@ -54,7 +54,7 @@ test("plan agent denies edits except .opencode/plans/*", async () => {
       // Wildcard is denied
       expect(evalPerm(plan, "edit")).toBe("deny")
       // But specific path is allowed
-      expect(PermissionNext.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+      expect(PermissionNext.evaluate("edit", ".finny/plans/foo.md", plan!.permission).action).toBe("allow")
     },
   })
 })

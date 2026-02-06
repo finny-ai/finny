@@ -3,7 +3,7 @@ import path from "path"
 import os from "os"
 import { Config } from "../config/config"
 import { Instance } from "../project/instance"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "@finny-ai/util/error"
 import { ConfigMarkdown } from "../config/markdown"
 import { Log } from "../util/log"
 import { Global } from "@/global"
@@ -121,9 +121,9 @@ export namespace Skill {
       }
     }
 
-    // Scan .opencode/skill/ directories
+    // Scan .finny/skill/ directories
     for (const dir of await Config.directories()) {
-      for await (const match of OPENCODE_SKILL_GLOB.scan({
+      for await (const match of FINNY_SKILL_GLOB.scan({
         cwd: dir,
         absolute: true,
         onlyFiles: true,

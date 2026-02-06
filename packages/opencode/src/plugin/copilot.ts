@@ -1,4 +1,4 @@
-import type { Hooks, PluginInput } from "@opencode-ai/plugin"
+import type { Hooks, PluginInput } from "@finny-ai/plugin"
 import { Installation } from "@/installation"
 import { iife } from "@/util/iife"
 
@@ -121,7 +121,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
             const headers: Record<string, string> = {
               "x-initiator": isAgent ? "agent" : "user",
               ...(init?.headers as Record<string, string>),
-              "User-Agent": `opencode/${Installation.VERSION}`,
+              "User-Agent": `finny/${Installation.VERSION}`,
               Authorization: `Bearer ${info.refresh}`,
               "Openai-Intent": "conversation-edits",
             }
@@ -199,7 +199,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
               headers: {
                 Accept: "application/json",
                 "Content-Type": "application/json",
-                "User-Agent": `opencode/${Installation.VERSION}`,
+                "User-Agent": `finny/${Installation.VERSION}`,
               },
               body: JSON.stringify({
                 client_id: CLIENT_ID,
@@ -229,7 +229,7 @@ export async function CopilotAuthPlugin(input: PluginInput): Promise<Hooks> {
                     headers: {
                       Accept: "application/json",
                       "Content-Type": "application/json",
-                      "User-Agent": `opencode/${Installation.VERSION}`,
+                      "User-Agent": `finny/${Installation.VERSION}`,
                     },
                     body: JSON.stringify({
                       client_id: CLIENT_ID,

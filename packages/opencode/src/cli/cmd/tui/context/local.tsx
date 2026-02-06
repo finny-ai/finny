@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, createSignal } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
@@ -12,6 +12,12 @@ import { Provider } from "@/provider/provider"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
 import { RGBA } from "@opentui/core"
+
+export interface PendingTransition {
+  from: string
+  to: string
+  reason: string
+}
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -399,10 +405,32 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
     })
 
+    // Transition management for automatic agent switching
+    const transition = iife(() => {
+      const [pending, setPending] = createSignal<PendingTransition | null>(null)
+
+      return {
+        pending,
+        setPending(value: PendingTransition | null) {
+          setPending(value)
+        },
+        confirm() {
+          const current = pending()
+          if (!current) return
+          agent.set(current.to)
+          setPending(null)
+        },
+        cancel() {
+          setPending(null)
+        },
+      }
+    })
+
     const result = {
       model,
       agent,
       mcp,
+      transition,
     }
     return result
   },

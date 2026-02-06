@@ -2,7 +2,7 @@ import path from "path"
 import { Global } from "../global"
 import z from "zod"
 
-export const OAUTH_DUMMY_KEY = "opencode-oauth-dummy-key"
+export const OAUTH_DUMMY_KEY = "finny-oauth-dummy-key"
 
 export namespace Auth {
   export const Oauth = z

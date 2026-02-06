@@ -11,7 +11,7 @@ export const ImportCommand = cmd({
   describe: "import session data from JSON file or URL",
   builder: (yargs: Argv) => {
     return yargs.positional("file", {
-      describe: "path to JSON file or opencode.ai share URL",
+      describe: "path to JSON file or finny.ai share URL",
       type: "string",
       demandOption: true,
     })

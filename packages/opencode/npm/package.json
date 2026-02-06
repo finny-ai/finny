@@ -1,0 +1,39 @@
+{
+  "name": "finny",
+  "version": "1.0.6",
+  "description": "AI-powered quantitative trading CLI with TUI interface",
+  "keywords": [
+    "trading",
+    "quant",
+    "cli",
+    "tui",
+    "ai",
+    "algorithmic-trading"
+  ],
+  "author": "Finny",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Jaiminp007/finny.git"
+  },
+  "homepage": "https://github.com/Jaiminp007/finny",
+  "bugs": {
+    "url": "https://github.com/Jaiminp007/finny/issues"
+  },
+  "bin": {
+    "finny": "bin/finny"
+  },
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js"
+  },
+  "optionalDependencies": {
+    "finny-darwin-arm64": "1.0.6",
+    "finny-darwin-x64": "1.0.6",
+    "finny-linux-arm64": "1.0.6",
+    "finny-linux-x64": "1.0.6",
+    "finny-windows-x64": "1.0.6"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

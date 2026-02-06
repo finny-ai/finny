@@ -59,10 +59,10 @@ test("loads JSONC config file", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.jsonc"),
+        path.join(dir, "finny.jsonc"),
         `{
         // This is a comment
-        "$schema": "https://opencode.ai/config.json",
+        "$schema": "https://finny.ai/config.json",
         "model": "test/model",
         "username": "testuser"
       }`,
@@ -145,7 +145,7 @@ test("preserves env variables when adding $schema to config", async () => {
       init: async (dir) => {
         // Config without $schema - should trigger auto-add
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "finny.json"),
           JSON.stringify({
             theme: "{env:PRESERVE_VAR}",
           }),
@@ -159,7 +159,7 @@ test("preserves env variables when adding $schema to config", async () => {
         expect(config.theme).toBe("secret_value")
 
         // Read the file to verify the env variable was preserved
-        const content = await Bun.file(path.join(tmp.path, "opencode.json")).text()
+        const content = await Bun.file(path.join(tmp.path, "finny.json")).text()
         expect(content).toContain("{env:PRESERVE_VAR}")
         expect(content).not.toContain("secret_value")
         expect(content).toContain("$schema")
@@ -233,7 +233,7 @@ test("validates config schema and throws on invalid fields", async () => {
 test("throws error for invalid JSON", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      await Bun.write(path.join(dir, "opencode.json"), "{ invalid json }")
+      await Bun.write(path.join(dir, "finny.json"), "{ invalid json }")
     },
   })
   await Instance.provide({
@@ -337,9 +337,9 @@ test("migrates autoshare to share field", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           autoshare: true,
         }),
       )
@@ -359,9 +359,9 @@ test("migrates mode field to agent field", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mode: {
             test_mode: {
               model: "test/model",
@@ -387,12 +387,12 @@ test("migrates mode field to agent field", async () => {
   })
 })
 
-test("loads config from .opencode directory", async () => {
+test("loads config from .finny directory", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
-      const agentDir = path.join(opencodeDir, "agent")
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
+      const agentDir = path.join(finnyDir, "agent")
       await fs.mkdir(agentDir, { recursive: true })
 
       await Bun.write(
@@ -419,13 +419,13 @@ Test agent prompt`,
   })
 })
 
-test("loads agents from .opencode/agents (plural)", async () => {
+test("loads agents from .finny/agents (plural)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
-      const agentsDir = path.join(opencodeDir, "agents")
+      const agentsDir = path.join(finnyDir, "agents")
       await fs.mkdir(path.join(agentsDir, "nested"), { recursive: true })
 
       await Bun.write(
@@ -470,13 +470,13 @@ Nested agent prompt`,
   })
 })
 
-test("loads commands from .opencode/command (singular)", async () => {
+test("loads commands from .finny/command (singular)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
-      const commandDir = path.join(opencodeDir, "command")
+      const commandDir = path.join(finnyDir, "command")
       await fs.mkdir(path.join(commandDir, "nested"), { recursive: true })
 
       await Bun.write(
@@ -515,13 +515,13 @@ Nested command template`,
   })
 })
 
-test("loads commands from .opencode/commands (plural)", async () => {
+test("loads commands from .finny/commands (plural)", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
-      const commandsDir = path.join(opencodeDir, "commands")
+      const commandsDir = path.join(finnyDir, "commands")
       await fs.mkdir(path.join(commandsDir, "nested"), { recursive: true })
 
       await Bun.write(
@@ -675,8 +675,8 @@ test("resolves scoped npm plugins in config", async () => {
       await Bun.write(path.join(pluginDir, "index.js"), "export default {}\n")
 
       await Bun.write(
-        path.join(dir, "opencode.json"),
-        JSON.stringify({ $schema: "https://opencode.ai/config.json", plugin: ["@scope/plugin"] }, null, 2),
+        path.join(dir, "finny.json"),
+        JSON.stringify({ $schema: "https://finny.ai/config.json", plugin: ["@scope/plugin"] }, null, 2),
       )
     },
   })
@@ -687,7 +687,7 @@ test("resolves scoped npm plugins in config", async () => {
       const config = await Config.get()
       const pluginEntries = config.plugin ?? []
 
-      const baseUrl = pathToFileURL(path.join(tmp.path, "opencode.json")).href
+      const baseUrl = pathToFileURL(path.join(tmp.path, "finny.json")).href
       const expected = import.meta.resolve("@scope/plugin", baseUrl)
 
       expect(pluginEntries.includes(expected)).toBe(true)
@@ -702,25 +702,25 @@ test("resolves scoped npm plugins in config", async () => {
 test("merges plugin arrays from global and local configs", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      // Create a nested project structure with local .opencode config
+      // Create a nested project structure with local .finny config
       const projectDir = path.join(dir, "project")
-      const opencodeDir = path.join(projectDir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(projectDir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
       // Global config with plugins
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           plugin: ["global-plugin-1", "global-plugin-2"],
         }),
       )
 
-      // Local .opencode config with different plugins
+      // Local .finny config with different plugins
       await Bun.write(
-        path.join(opencodeDir, "opencode.json"),
+        path.join(finnyDir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           plugin: ["local-plugin-1"],
         }),
       )
@@ -748,9 +748,9 @@ test("merges plugin arrays from global and local configs", async () => {
 test("does not error when only custom agent is a subagent", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
-      const agentDir = path.join(opencodeDir, "agent")
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
+      const agentDir = path.join(finnyDir, "agent")
       await fs.mkdir(agentDir, { recursive: true })
 
       await Bun.write(
@@ -781,21 +781,21 @@ test("merges instructions arrays from global and local configs", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       const projectDir = path.join(dir, "project")
-      const opencodeDir = path.join(projectDir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(projectDir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           instructions: ["global-instructions.md", "shared-rules.md"],
         }),
       )
 
       await Bun.write(
-        path.join(opencodeDir, "opencode.json"),
+        path.join(finnyDir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           instructions: ["local-instructions.md"],
         }),
       )
@@ -820,21 +820,21 @@ test("deduplicates duplicate instructions from global and local configs", async 
   await using tmp = await tmpdir({
     init: async (dir) => {
       const projectDir = path.join(dir, "project")
-      const opencodeDir = path.join(projectDir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(projectDir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           instructions: ["duplicate.md", "global-only.md"],
         }),
       )
 
       await Bun.write(
-        path.join(opencodeDir, "opencode.json"),
+        path.join(finnyDir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           instructions: ["duplicate.md", "local-only.md"],
         }),
       )
@@ -861,25 +861,25 @@ test("deduplicates duplicate instructions from global and local configs", async 
 test("deduplicates duplicate plugins from global and local configs", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
-      // Create a nested project structure with local .opencode config
+      // Create a nested project structure with local .finny config
       const projectDir = path.join(dir, "project")
-      const opencodeDir = path.join(projectDir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      const finnyDir = path.join(projectDir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
 
       // Global config with plugins
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           plugin: ["duplicate-plugin", "global-plugin-1"],
         }),
       )
 
-      // Local .opencode config with some overlapping plugins
+      // Local .finny config with some overlapping plugins
       await Bun.write(
-        path.join(opencodeDir, "opencode.json"),
+        path.join(finnyDir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           plugin: ["duplicate-plugin", "local-plugin-1"],
         }),
       )
@@ -916,9 +916,9 @@ test("migrates legacy tools config to permissions - allow", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -947,9 +947,9 @@ test("migrates legacy tools config to permissions - deny", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -978,9 +978,9 @@ test("migrates legacy write tool to edit permission", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -1087,9 +1087,9 @@ test("migrates legacy edit tool to edit permission", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -1116,9 +1116,9 @@ test("migrates legacy patch tool to edit permission", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -1145,9 +1145,9 @@ test("migrates legacy multiedit tool to edit permission", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -1174,9 +1174,9 @@ test("migrates mixed legacy tools config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               tools: {
@@ -1209,9 +1209,9 @@ test("merges legacy tools with existing permission config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           agent: {
             test: {
               permission: {
@@ -1242,9 +1242,9 @@ test("permission config preserves key order", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           permission: {
             "*": "deny",
             edit: "ask",
@@ -1290,9 +1290,9 @@ test("project config can override MCP server enabled status", async () => {
     init: async (dir) => {
       // Simulates a base config (like from remote .well-known) with disabled MCP
       await Bun.write(
-        path.join(dir, "opencode.jsonc"),
+        path.join(dir, "finny.jsonc"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             jira: {
               type: "remote",
@@ -1309,9 +1309,9 @@ test("project config can override MCP server enabled status", async () => {
       )
       // Project config enables just jira
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             jira: {
               type: "remote",
@@ -1348,9 +1348,9 @@ test("MCP config deep merges preserving base config properties", async () => {
     init: async (dir) => {
       // Base config with full MCP definition
       await Bun.write(
-        path.join(dir, "opencode.jsonc"),
+        path.join(dir, "finny.jsonc"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             myserver: {
               type: "remote",
@@ -1365,9 +1365,9 @@ test("MCP config deep merges preserving base config properties", async () => {
       )
       // Override just enables it, should preserve other properties
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             myserver: {
               type: "remote",
@@ -1395,14 +1395,14 @@ test("MCP config deep merges preserving base config properties", async () => {
   })
 })
 
-test("local .opencode config can override MCP from project config", async () => {
+test("local .finny config can override MCP from project config", async () => {
   await using tmp = await tmpdir({
     init: async (dir) => {
       // Project config with disabled MCP
       await Bun.write(
-        path.join(dir, "opencode.json"),
+        path.join(dir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             docs: {
               type: "remote",
@@ -1412,13 +1412,13 @@ test("local .opencode config can override MCP from project config", async () => 
           },
         }),
       )
-      // Local .opencode directory config enables it
-      const opencodeDir = path.join(dir, ".opencode")
-      await fs.mkdir(opencodeDir, { recursive: true })
+      // Local .finny directory config enables it
+      const finnyDir = path.join(dir, ".finny")
+      await fs.mkdir(finnyDir, { recursive: true })
       await Bun.write(
-        path.join(opencodeDir, "opencode.json"),
+        path.join(finnyDir, "finny.json"),
         JSON.stringify({
-          $schema: "https://opencode.ai/config.json",
+          $schema: "https://finny.ai/config.json",
           mcp: {
             docs: {
               type: "remote",
@@ -1444,7 +1444,7 @@ test("project config overrides remote well-known config", async () => {
   let fetchedUrl: string | undefined
   const mockFetch = mock((url: string | URL | Request) => {
     const urlStr = url.toString()
-    if (urlStr.includes(".well-known/opencode")) {
+    if (urlStr.includes(".well-known/finny")) {
       fetchedUrl = urlStr
       return Promise.resolve(
         new Response(
@@ -1484,9 +1484,9 @@ test("project config overrides remote well-known config", async () => {
       init: async (dir) => {
         // Project config enables jira (overriding remote default)
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "finny.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://finny.ai/config.json",
             mcp: {
               jira: {
                 type: "remote",
@@ -1503,7 +1503,7 @@ test("project config overrides remote well-known config", async () => {
       fn: async () => {
         const config = await Config.get()
         // Verify fetch was called for wellknown config
-        expect(fetchedUrl).toBe("https://example.com/.well-known/opencode")
+        expect(fetchedUrl).toBe("https://example.com/.well-known/finny")
         // Project config (enabled: true) should override remote (enabled: false)
         expect(config.mcp?.jira?.enabled).toBe(true)
       },
@@ -1522,14 +1522,14 @@ describe("getPluginName", () => {
   })
 
   test("extracts name from npm package with version", () => {
-    expect(Config.getPluginName("oh-my-opencode@2.4.3")).toBe("oh-my-opencode")
+    expect(Config.getPluginName("oh-my-finny@2.4.3")).toBe("oh-my-finny")
     expect(Config.getPluginName("some-plugin@1.0.0")).toBe("some-plugin")
     expect(Config.getPluginName("plugin@latest")).toBe("plugin")
   })
 
   test("extracts name from scoped npm package", () => {
     expect(Config.getPluginName("@scope/pkg@1.0.0")).toBe("@scope/pkg")
-    expect(Config.getPluginName("@opencode/plugin@2.0.0")).toBe("@opencode/plugin")
+    expect(Config.getPluginName("@finny/plugin@2.0.0")).toBe("@finny/plugin")
   })
 
   test("returns full string for package without version", () => {
@@ -1552,12 +1552,12 @@ describe("deduplicatePlugins", () => {
   })
 
   test("prefers local file over npm package with same name", () => {
-    const plugins = ["oh-my-opencode@2.4.3", "file:///project/.opencode/plugin/oh-my-opencode.js"]
+    const plugins = ["oh-my-finny@2.4.3", "file:///project/.finny/plugin/oh-my-finny.js"]
 
     const result = Config.deduplicatePlugins(plugins)
 
     expect(result.length).toBe(1)
-    expect(result[0]).toBe("file:///project/.opencode/plugin/oh-my-opencode.js")
+    expect(result[0]).toBe("file:///project/.finny/plugin/oh-my-finny.js")
   })
 
   test("preserves order of remaining plugins", () => {
@@ -1568,18 +1568,18 @@ describe("deduplicatePlugins", () => {
     expect(result).toEqual(["a-plugin@1.0.0", "b-plugin@1.0.0", "c-plugin@1.0.0"])
   })
 
-  test("local plugin directory overrides global opencode.json plugin", async () => {
+  test("local plugin directory overrides global finny.json plugin", async () => {
     await using tmp = await tmpdir({
       init: async (dir) => {
         const projectDir = path.join(dir, "project")
-        const opencodeDir = path.join(projectDir, ".opencode")
-        const pluginDir = path.join(opencodeDir, "plugin")
+        const finnyDir = path.join(projectDir, ".finny")
+        const pluginDir = path.join(finnyDir, "plugin")
         await fs.mkdir(pluginDir, { recursive: true })
 
         await Bun.write(
-          path.join(dir, "opencode.json"),
+          path.join(dir, "finny.json"),
           JSON.stringify({
-            $schema: "https://opencode.ai/config.json",
+            $schema: "https://finny.ai/config.json",
             plugin: ["my-plugin@1.0.0"],
           }),
         )
@@ -1602,19 +1602,19 @@ describe("deduplicatePlugins", () => {
   })
 })
 
-describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
+describe("FINNY_DISABLE_PROJECT_CONFIG", () => {
   test("skips project config files when flag is set", async () => {
-    const originalEnv = process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
-    process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+    const originalEnv = process.env["FINNY_DISABLE_PROJECT_CONFIG"]
+    process.env["FINNY_DISABLE_PROJECT_CONFIG"] = "true"
 
     try {
       await using tmp = await tmpdir({
         init: async (dir) => {
           // Create a project config that would normally be loaded
           await Bun.write(
-            path.join(dir, "opencode.json"),
+            path.join(dir, "finny.json"),
             JSON.stringify({
-              $schema: "https://opencode.ai/config.json",
+              $schema: "https://finny.ai/config.json",
               model: "project/model",
               username: "project-user",
             }),
@@ -1632,47 +1632,47 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
       })
     } finally {
       if (originalEnv === undefined) {
-        delete process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        delete process.env["FINNY_DISABLE_PROJECT_CONFIG"]
       } else {
-        process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = originalEnv
+        process.env["FINNY_DISABLE_PROJECT_CONFIG"] = originalEnv
       }
     }
   })
 
-  test("skips project .opencode/ directories when flag is set", async () => {
-    const originalEnv = process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
-    process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+  test("skips project .finny/ directories when flag is set", async () => {
+    const originalEnv = process.env["FINNY_DISABLE_PROJECT_CONFIG"]
+    process.env["FINNY_DISABLE_PROJECT_CONFIG"] = "true"
 
     try {
       await using tmp = await tmpdir({
         init: async (dir) => {
-          // Create a .opencode directory with a command
-          const opencodeDir = path.join(dir, ".opencode", "command")
-          await fs.mkdir(opencodeDir, { recursive: true })
-          await Bun.write(path.join(opencodeDir, "test-cmd.md"), "# Test Command\nThis is a test command.")
+          // Create a .finny directory with a command
+          const finnyDir = path.join(dir, ".finny", "command")
+          await fs.mkdir(finnyDir, { recursive: true })
+          await Bun.write(path.join(finnyDir, "test-cmd.md"), "# Test Command\nThis is a test command.")
         },
       })
       await Instance.provide({
         directory: tmp.path,
         fn: async () => {
           const directories = await Config.directories()
-          // Project .opencode should NOT be in directories list
-          const hasProjectOpencode = directories.some((d) => d.startsWith(tmp.path))
-          expect(hasProjectOpencode).toBe(false)
+          // Project .finny should NOT be in directories list
+          const hasProjectFinny = directories.some((d) => d.startsWith(tmp.path))
+          expect(hasProjectFinny).toBe(false)
         },
       })
     } finally {
       if (originalEnv === undefined) {
-        delete process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        delete process.env["FINNY_DISABLE_PROJECT_CONFIG"]
       } else {
-        process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = originalEnv
+        process.env["FINNY_DISABLE_PROJECT_CONFIG"] = originalEnv
       }
     }
   })
 
   test("still loads global config when flag is set", async () => {
-    const originalEnv = process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
-    process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+    const originalEnv = process.env["FINNY_DISABLE_PROJECT_CONFIG"]
+    process.env["FINNY_DISABLE_PROJECT_CONFIG"] = "true"
 
     try {
       await using tmp = await tmpdir()
@@ -1687,29 +1687,29 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
       })
     } finally {
       if (originalEnv === undefined) {
-        delete process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        delete process.env["FINNY_DISABLE_PROJECT_CONFIG"]
       } else {
-        process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = originalEnv
+        process.env["FINNY_DISABLE_PROJECT_CONFIG"] = originalEnv
       }
     }
   })
 
   test("skips relative instructions with warning when flag is set but no config dir", async () => {
-    const originalDisable = process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
-    const originalConfigDir = process.env["OPENCODE_CONFIG_DIR"]
+    const originalDisable = process.env["FINNY_DISABLE_PROJECT_CONFIG"]
+    const originalConfigDir = process.env["FINNY_CONFIG_DIR"]
 
     try {
       // Ensure no config dir is set
-      delete process.env["OPENCODE_CONFIG_DIR"]
-      process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
+      delete process.env["FINNY_CONFIG_DIR"]
+      process.env["FINNY_DISABLE_PROJECT_CONFIG"] = "true"
 
       await using tmp = await tmpdir({
         init: async (dir) => {
           // Create a config with relative instruction path
           await Bun.write(
-            path.join(dir, "opencode.json"),
+            path.join(dir, "finny.json"),
             JSON.stringify({
-              $schema: "https://opencode.ai/config.json",
+              $schema: "https://finny.ai/config.json",
               instructions: ["./CUSTOM.md"],
             }),
           )
@@ -1732,30 +1732,30 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
       })
     } finally {
       if (originalDisable === undefined) {
-        delete process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        delete process.env["FINNY_DISABLE_PROJECT_CONFIG"]
       } else {
-        process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = originalDisable
+        process.env["FINNY_DISABLE_PROJECT_CONFIG"] = originalDisable
       }
       if (originalConfigDir === undefined) {
-        delete process.env["OPENCODE_CONFIG_DIR"]
+        delete process.env["FINNY_CONFIG_DIR"]
       } else {
-        process.env["OPENCODE_CONFIG_DIR"] = originalConfigDir
+        process.env["FINNY_CONFIG_DIR"] = originalConfigDir
       }
     }
   })
 
-  test("OPENCODE_CONFIG_DIR still works when flag is set", async () => {
-    const originalDisable = process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
-    const originalConfigDir = process.env["OPENCODE_CONFIG_DIR"]
+  test("FINNY_CONFIG_DIR still works when flag is set", async () => {
+    const originalDisable = process.env["FINNY_DISABLE_PROJECT_CONFIG"]
+    const originalConfigDir = process.env["FINNY_CONFIG_DIR"]
 
     try {
       await using configDirTmp = await tmpdir({
         init: async (dir) => {
           // Create config in the custom config dir
           await Bun.write(
-            path.join(dir, "opencode.json"),
+            path.join(dir, "finny.json"),
             JSON.stringify({
-              $schema: "https://opencode.ai/config.json",
+              $schema: "https://finny.ai/config.json",
               model: "configdir/model",
             }),
           )
@@ -1766,36 +1766,36 @@ describe("OPENCODE_DISABLE_PROJECT_CONFIG", () => {
         init: async (dir) => {
           // Create config in project (should be ignored)
           await Bun.write(
-            path.join(dir, "opencode.json"),
+            path.join(dir, "finny.json"),
             JSON.stringify({
-              $schema: "https://opencode.ai/config.json",
+              $schema: "https://finny.ai/config.json",
               model: "project/model",
             }),
           )
         },
       })
 
-      process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "true"
-      process.env["OPENCODE_CONFIG_DIR"] = configDirTmp.path
+      process.env["FINNY_DISABLE_PROJECT_CONFIG"] = "true"
+      process.env["FINNY_CONFIG_DIR"] = configDirTmp.path
 
       await Instance.provide({
         directory: projectTmp.path,
         fn: async () => {
           const config = await Config.get()
-          // Should load from OPENCODE_CONFIG_DIR, not project
+          // Should load from FINNY_CONFIG_DIR, not project
           expect(config.model).toBe("configdir/model")
         },
       })
     } finally {
       if (originalDisable === undefined) {
-        delete process.env["OPENCODE_DISABLE_PROJECT_CONFIG"]
+        delete process.env["FINNY_DISABLE_PROJECT_CONFIG"]
       } else {
-        process.env["OPENCODE_DISABLE_PROJECT_CONFIG"] = originalDisable
+        process.env["FINNY_DISABLE_PROJECT_CONFIG"] = originalDisable
       }
       if (originalConfigDir === undefined) {
-        delete process.env["OPENCODE_CONFIG_DIR"]
+        delete process.env["FINNY_CONFIG_DIR"]
       } else {
-        process.env["OPENCODE_CONFIG_DIR"] = originalConfigDir
+        process.env["FINNY_CONFIG_DIR"] = originalConfigDir
       }
     }
   })

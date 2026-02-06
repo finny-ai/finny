@@ -22,11 +22,11 @@ This skill is loaded from the global home directory.
   )
 }
 
-test("discovers skills from .opencode/skill/ directory", async () => {
+test("discovers skills from .finny/skill/ directory", async () => {
   await using tmp = await tmpdir({
     git: true,
     init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "test-skill")
+      const skillDir = path.join(dir, ".finny", "skill", "test-skill")
       await Bun.write(
         path.join(skillDir, "SKILL.md"),
         `---
@@ -95,8 +95,8 @@ test("discovers multiple skills from .opencode/skill/ directory", async () => {
   await using tmp = await tmpdir({
     git: true,
     init: async (dir) => {
-      const skillDir1 = path.join(dir, ".opencode", "skill", "skill-one")
-      const skillDir2 = path.join(dir, ".opencode", "skill", "skill-two")
+      const skillDir1 = path.join(dir, ".finny", "skill", "skill-one")
+      const skillDir2 = path.join(dir, ".finny", "skill", "skill-two")
       await Bun.write(
         path.join(skillDir1, "SKILL.md"),
         `---
@@ -135,7 +135,7 @@ test("skips skills with missing frontmatter", async () => {
   await using tmp = await tmpdir({
     git: true,
     init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "no-frontmatter")
+      const skillDir = path.join(dir, ".finny", "skill", "no-frontmatter")
       await Bun.write(
         path.join(skillDir, "SKILL.md"),
         `# No Frontmatter
@@ -188,8 +188,8 @@ description: A skill in the .claude/skills directory.
 test("discovers global skills from ~/.claude/skills/ directory", async () => {
   await using tmp = await tmpdir({ git: true })
 
-  const originalHome = process.env.OPENCODE_TEST_HOME
-  process.env.OPENCODE_TEST_HOME = tmp.path
+  const originalHome = process.env.FINNY_TEST_HOME
+  process.env.FINNY_TEST_HOME = tmp.path
 
   try {
     await createGlobalSkill(tmp.path)
@@ -204,7 +204,7 @@ test("discovers global skills from ~/.claude/skills/ directory", async () => {
       },
     })
   } finally {
-    process.env.OPENCODE_TEST_HOME = originalHome
+    process.env.FINNY_TEST_HOME = originalHome
   }
 })
 

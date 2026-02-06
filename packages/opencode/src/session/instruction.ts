@@ -29,16 +29,16 @@ function globalFiles() {
 }
 
 async function resolveRelative(instruction: string): Promise<string[]> {
-  if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+  if (!Flag.FINNY_DISABLE_PROJECT_CONFIG) {
     return Filesystem.globUp(instruction, Instance.directory, Instance.worktree).catch(() => [])
   }
-  if (!Flag.OPENCODE_CONFIG_DIR) {
+  if (!Flag.FINNY_CONFIG_DIR) {
     log.warn(
-      `Skipping relative instruction "${instruction}" - no OPENCODE_CONFIG_DIR set while project config is disabled`,
+      `Skipping relative instruction "${instruction}" - no FINNY_CONFIG_DIR set while project config is disabled`,
     )
     return []
   }
-  return Filesystem.globUp(instruction, Flag.OPENCODE_CONFIG_DIR, Flag.OPENCODE_CONFIG_DIR).catch(() => [])
+  return Filesystem.globUp(instruction, Flag.FINNY_CONFIG_DIR, Flag.FINNY_CONFIG_DIR).catch(() => [])
 }
 
 export namespace InstructionPrompt {
@@ -72,7 +72,7 @@ export namespace InstructionPrompt {
     const config = await Config.get()
     const paths = new Set<string>()
 
-    if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+    if (!Flag.FINNY_DISABLE_PROJECT_CONFIG) {
       for (const file of FILES) {
         const matches = await Filesystem.findUp(file, Instance.directory, Instance.worktree)
         if (matches.length > 0) {

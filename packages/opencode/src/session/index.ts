@@ -1,4 +1,4 @@
-import { Slug } from "@opencode-ai/util/slug"
+import { Slug } from "@finny-ai/util/slug"
 import path from "path"
 import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
@@ -230,7 +230,7 @@ export namespace Session {
       info: result,
     })
     const cfg = await Config.get()
-    if (!result.parentID && (Flag.OPENCODE_AUTO_SHARE || cfg.share === "auto"))
+    if (!result.parentID && (Flag.FINNY_AUTO_SHARE || cfg.share === "auto"))
       share(result.id)
         .then((share) => {
           update(result.id, (draft) => {
@@ -248,7 +248,7 @@ export namespace Session {
 
   export function plan(input: { slug: string; time: { created: number } }) {
     const base = Instance.project.vcs
-      ? path.join(Instance.worktree, ".opencode", "plans")
+      ? path.join(Instance.worktree, ".finny", "plans")
       : path.join(Global.Path.data, "plans")
     return path.join(base, [input.time.created, input.slug].join("-") + ".md")
   }
@@ -509,7 +509,7 @@ export namespace Session {
         sessionID: input.sessionID,
         messageID: input.messageID,
         model: input.providerID + "/" + input.modelID,
-        command: Command.Default.INIT,
+        command: "init",
         arguments: "",
       })
     },

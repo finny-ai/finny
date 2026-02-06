@@ -28,7 +28,7 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@finny-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
 import type { Tool } from "@/tool/tool"
@@ -60,6 +60,8 @@ import { DialogTimeline } from "./dialog-timeline"
 import { DialogForkFromTimeline } from "./dialog-fork-from-timeline"
 import { DialogSessionRename } from "../../component/dialog-session-rename"
 import { Sidebar } from "./sidebar"
+import { QuantSidebar } from "../../component/quant-sidebar"
+import { TransitionPrompt } from "../../component/transition-prompt"
 import { Flag } from "@/flag/flag"
 import { LANGUAGE_EXTENSIONS } from "@/lsp/language"
 import parsers from "../../../../../../parsers-config.ts"
@@ -208,11 +210,13 @@ export function Session() {
     if (part.state.status !== "completed") return
     if (part.id === lastSwitch) return
 
-    if (part.tool === "plan_exit") {
-      local.agent.set("build")
-      lastSwitch = part.id
-    } else if (part.tool === "plan_enter") {
-      local.agent.set("plan")
+    // Trading mode transition tools
+    if (part.tool === "quant_research_complete") {
+      local.transition.setPending({
+        from: "research",
+        to: "build",
+        reason: "Research complete. Ready to implement findings.",
+      })
       lastSwitch = part.id
     }
   })
@@ -297,6 +301,12 @@ export function Session() {
   }
 
   const local = useLocal()
+
+  // Detect if we're in trading mode (any of the trading agents)
+  const isQuantMode = createMemo(() => {
+    const agentName = local.agent.current()?.name
+    return ["build", "research", "chat"].includes(agentName)
+  })
 
   function moveChild(direction: number) {
     if (children().length === 1) return
@@ -1082,6 +1092,7 @@ export function Session() {
               <Show when={permissions().length === 0 && questions().length > 0}>
                 <QuestionPrompt request={questions()[0]} />
               </Show>
+              <TransitionPrompt />
               <Prompt
                 visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
                 ref={(r) => {
@@ -1105,7 +1116,9 @@ export function Session() {
         <Show when={sidebarVisible()}>
           <Switch>
             <Match when={wide()}>
-              <Sidebar sessionID={route.sessionID} />
+              <Show when={isQuantMode()} fallback={<Sidebar sessionID={route.sessionID} />}>
+                <QuantSidebar sessionID={route.sessionID} />
+              </Show>
             </Match>
             <Match when={!wide()}>
               <box
@@ -1117,7 +1130,9 @@ export function Session() {
                 alignItems="flex-end"
                 backgroundColor={RGBA.fromInts(0, 0, 0, 70)}
               >
-                <Sidebar sessionID={route.sessionID} />
+                <Show when={isQuantMode()} fallback={<Sidebar sessionID={route.sessionID} />}>
+                  <QuantSidebar sessionID={route.sessionID} overlay />
+                </Show>
               </box>
             </Match>
           </Switch>
@@ -1358,7 +1373,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
     <Show when={props.part.text.trim()}>
       <box id={"text-" + props.part.id} paddingLeft={3} marginTop={1} flexShrink={0}>
         <Switch>
-          <Match when={Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={Flag.FINNY_EXPERIMENTAL_MARKDOWN}>
             <markdown
               syntaxStyle={syntax()}
               streaming={true}
@@ -1366,7 +1381,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
               conceal={ctx.conceal()}
             />
           </Match>
-          <Match when={!Flag.OPENCODE_EXPERIMENTAL_MARKDOWN}>
+          <Match when={!Flag.FINNY_EXPERIMENTAL_MARKDOWN}>
             <code
               filetype="markdown"
               drawUnstyledText={false}

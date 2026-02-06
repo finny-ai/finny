@@ -12,9 +12,20 @@ import { SyncProvider, useSync } from "@tui/context/sync"
 import { LocalProvider, useLocal } from "@tui/context/local"
 import { DialogModel, useConnected } from "@tui/component/dialog-model"
 import { DialogMcp } from "@tui/component/dialog-mcp"
-import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
+import { DialogDeploy } from "@tui/component/dialog-deploy"
+import { DialogValidate } from "@tui/component/dialog-validate"
+import { DialogPrice } from "@tui/component/dialog-price"
+import { DialogStrategyStatus } from "@tui/component/dialog-strategy-status"
+import { DialogCode } from "@tui/component/dialog-code"
+import { DialogBacktest } from "@tui/component/dialog-backtest"
+import { DialogResearchTemplates, ResearchTemplates } from "@tui/component/dialog-research-templates"
+import { DialogResearchReports } from "@tui/component/dialog-research-reports"
+import { DialogChatTemplates, ChatTemplates } from "@tui/component/dialog-chat-templates"
+import { DialogChatInsights } from "@tui/component/dialog-chat-insights"
+import { DialogBuildTemplates, BuildTemplates } from "@tui/component/dialog-build-templates"
+import { DialogBuildInsights } from "@tui/component/dialog-build-insights"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
@@ -216,23 +227,23 @@ function App() {
 
   // Update terminal window title based on current route and session
   createEffect(() => {
-    if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
+    if (!terminalTitleEnabled() || Flag.FINNY_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
-      renderer.setTerminalTitle("OpenCode")
+      renderer.setTerminalTitle("Finny")
       return
     }
 
     if (route.data.type === "session") {
       const session = sync.session.get(route.data.sessionID)
       if (!session || SessionApi.isDefaultTitle(session.title)) {
-        renderer.setTerminalTitle("OpenCode")
+        renderer.setTerminalTitle("Finny")
         return
       }
 
       // Truncate title to 40 chars max
       const title = session.title.length > 40 ? session.title.slice(0, 37) + "..." : session.title
-      renderer.setTerminalTitle(`OC | ${title}`)
+      renderer.setTerminalTitle(`Finny | ${title}`)
     }
   })
 
@@ -439,18 +450,6 @@ function App() {
       category: "Provider",
     },
     {
-      title: "View status",
-      keybind: "status_view",
-      value: "opencode.status",
-      slash: {
-        name: "status",
-      },
-      onSelect: () => {
-        dialog.replace(() => <DialogStatus />)
-      },
-      category: "System",
-    },
-    {
       title: "Switch theme",
       value: "theme.switch",
       keybind: "theme_list",
@@ -486,7 +485,7 @@ function App() {
       title: "Open docs",
       value: "docs.open",
       onSelect: () => {
-        open("https://opencode.ai/docs").catch(() => {})
+        open("https://finny.ai/docs").catch(() => {})
         dialog.clear()
       },
       category: "System",
@@ -583,6 +582,311 @@ function App() {
         dialog.clear()
       },
     },
+    // Trading Commands
+    {
+      title: "Deploy strategy",
+      value: "quant.deploy",
+      category: "Trading",
+      suggested: true,
+      slash: {
+        name: "deploy",
+        aliases: ["d"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogDeploy />)
+      },
+    },
+    {
+      title: "Validate strategy",
+      value: "quant.validate",
+      category: "Trading",
+      slash: {
+        name: "validate",
+        aliases: ["v"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogValidate />)
+      },
+    },
+    {
+      title: "View strategy code",
+      value: "quant.code",
+      category: "Trading",
+      slash: {
+        name: "code",
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogCode />)
+      },
+    },
+    {
+      title: "Live prices",
+      value: "quant.price",
+      category: "Trading",
+      slash: {
+        name: "price",
+        aliases: ["prices"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogPrice />)
+      },
+    },
+    {
+      title: "Strategy status",
+      value: "quant.strategy_status",
+      category: "Trading",
+      slash: {
+        name: "strategy-status",
+        aliases: ["ss", "performance"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogStrategyStatus />)
+      },
+    },
+    {
+      title: "Backtest strategy",
+      value: "quant.backtest",
+      category: "Trading",
+      slash: {
+        name: "backtest",
+        aliases: ["bt"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogBacktest />)
+      },
+    },
+    // Research Commands
+    {
+      title: "Research templates",
+      value: "research.templates",
+      category: "Research",
+      hidden: true,
+      slash: {
+        name: "research-templates",
+        aliases: ["rt"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogResearchTemplates />)
+      },
+    },
+    {
+      title: "Research momentum strategy",
+      value: "research.momentum",
+      category: "Research",
+      hidden: true,
+      slash: {
+        name: "research-momentum",
+        aliases: ["rm"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ResearchTemplates.momentum.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Research mean reversion strategy",
+      value: "research.mean-reversion",
+      category: "Research",
+      hidden: true,
+      slash: {
+        name: "research-mean-reversion",
+        aliases: ["rmr"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ResearchTemplates.meanReversion.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Research earnings strategy",
+      value: "research.earnings",
+      category: "Research",
+      hidden: true,
+      slash: {
+        name: "research-earnings",
+        aliases: ["re"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ResearchTemplates.earnings.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "View research reports",
+      value: "research.reports",
+      category: "Research",
+      hidden: true,
+      slash: {
+        name: "reports",
+        aliases: ["research-reports"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogResearchReports />)
+      },
+    },
+    // Chat Commands
+    {
+      title: "Chat templates",
+      value: "chat.templates",
+      category: "Chat",
+      slash: {
+        name: "chat-templates",
+        aliases: ["ct"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogChatTemplates />)
+      },
+    },
+    {
+      title: "Portfolio analysis chat",
+      value: "chat.portfolio",
+      category: "Chat",
+      hidden: true,
+      slash: {
+        name: "chat-portfolio",
+        aliases: ["cp"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ChatTemplates.portfolioAnalysis.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Market conditions chat",
+      value: "chat.market",
+      category: "Chat",
+      hidden: true,
+      slash: {
+        name: "chat-market",
+        aliases: ["cm"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ChatTemplates.marketConditions.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Strategy ideation chat",
+      value: "chat.strategy",
+      category: "Chat",
+      slash: {
+        name: "chat-strategy",
+        aliases: ["cs"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(ChatTemplates.strategyIdeation.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "View chat insights",
+      value: "chat.insights",
+      category: "Chat",
+      hidden: true,
+      slash: {
+        name: "insights",
+        aliases: ["chat-insights"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogChatInsights />)
+      },
+    },
+    // Build Commands
+    {
+      title: "Build templates",
+      value: "build.templates",
+      category: "Build",
+      hidden: true,
+      slash: {
+        name: "build-templates",
+        aliases: ["bt"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogBuildTemplates />)
+      },
+    },
+    {
+      title: "Build momentum strategy",
+      value: "build.momentum",
+      category: "Build",
+      hidden: true,
+      slash: {
+        name: "build-momentum",
+        aliases: ["bm"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(BuildTemplates.momentum.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Build mean reversion strategy",
+      value: "build.mean-reversion",
+      category: "Build",
+      hidden: true,
+      slash: {
+        name: "build-mean-reversion",
+        aliases: ["bmr"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(BuildTemplates.meanReversion.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "Build scaffold",
+      value: "build.scaffold",
+      category: "Build",
+      hidden: true,
+      slash: {
+        name: "build-scaffold",
+        aliases: ["bs"],
+      },
+      onSelect: () => {
+        const current = promptRef.current
+        if (current) {
+          current.setInput(BuildTemplates.custom.prompt)
+        }
+        dialog.clear()
+      },
+    },
+    {
+      title: "View build insights",
+      value: "build.insights",
+      category: "Build",
+      hidden: true,
+      slash: {
+        name: "build-insights",
+        aliases: ["bi"],
+      },
+      onSelect: () => {
+        dialog.replace(() => <DialogBuildInsights />)
+      },
+    },
   ])
 
   createEffect(() => {
@@ -593,7 +897,7 @@ function App() {
         DialogAlert.show(
           dialog,
           "Warning",
-          "While openrouter is a convenient way to access LLMs your request will often be routed to subpar providers that do not work well in our testing.\n\nFor reliable access to models check out OpenCode Zen\nhttps://opencode.ai/zen",
+          "While openrouter is a convenient way to access LLMs your request will often be routed to subpar providers that do not work well in our testing.\n\nFor reliable access to models check out Finny Zen\nhttps://finny.ai/zen",
         ).then(() => kv.set("openrouter_warning", true))
       })
     }
@@ -655,7 +959,7 @@ function App() {
     toast.show({
       variant: "info",
       title: "Update Available",
-      message: `OpenCode v${evt.properties.version} is available. Run 'opencode upgrade' to update manually.`,
+      message: `Finny v${evt.properties.version} is available. Run 'finny upgrade' to update manually.`,
       duration: 10000,
     })
   })
@@ -666,7 +970,7 @@ function App() {
       height={dimensions().height}
       backgroundColor={theme.background}
       onMouseUp={async () => {
-        if (Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) {
+        if (Flag.FINNY_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) {
           renderer.clearSelection()
           return
         }
@@ -713,7 +1017,7 @@ function ErrorComponent(props: {
   })
   const [copied, setCopied] = createSignal(false)
 
-  const issueURL = new URL("https://github.com/anomalyco/opencode/issues/new?template=bug-report.yml")
+  const issueURL = new URL("https://github.com/anomalyco/finny/issues/new?template=bug-report.yml")
 
   // Choose safe fallback colors per mode since theme context may not be available
   const isLight = props.mode === "light"
@@ -735,7 +1039,7 @@ function ErrorComponent(props: {
     )
   }
 
-  issueURL.searchParams.set("opencode-version", Installation.VERSION)
+  issueURL.searchParams.set("finny-version", Installation.VERSION)
 
   const copyIssueURL = () => {
     Clipboard.copy(issueURL.toString()).then(() => {

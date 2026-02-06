@@ -23,7 +23,7 @@ interface RemovalTargets {
 
 export const UninstallCommand = {
   command: "uninstall",
-  describe: "uninstall opencode and remove all related files",
+  describe: "uninstall finny and remove all related files",
   builder: (yargs: Argv) =>
     yargs
       .option("keep-config", {
@@ -54,7 +54,7 @@ export const UninstallCommand = {
     UI.empty()
     UI.println(UI.logo("  "))
     UI.empty()
-    prompts.intro("Uninstall OpenCode")
+    prompts.intro("Uninstall Finny")
 
     const method = await Installation.method()
     prompts.log.info(`Installation method: ${method}`)
@@ -128,13 +128,13 @@ async function showRemovalSummary(targets: RemovalTargets, method: Installation.
 
   if (method !== "curl" && method !== "unknown") {
     const cmds: Record<string, string> = {
-      npm: "npm uninstall -g opencode-ai",
-      pnpm: "pnpm uninstall -g opencode-ai",
-      bun: "bun remove -g opencode-ai",
-      yarn: "yarn global remove opencode-ai",
-      brew: "brew uninstall opencode",
-      choco: "choco uninstall opencode",
-      scoop: "scoop uninstall opencode",
+      npm: "npm uninstall -g finny-ai",
+      pnpm: "pnpm uninstall -g finny-ai",
+      bun: "bun remove -g finny-ai",
+      yarn: "yarn global remove finny-ai",
+      brew: "brew uninstall finny",
+      choco: "choco uninstall finny",
+      scoop: "scoop uninstall finny",
     }
     prompts.log.info(`  ✓ Package: ${cmds[method] || method}`)
   }
@@ -179,13 +179,13 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
 
   if (method !== "curl" && method !== "unknown") {
     const cmds: Record<string, string[]> = {
-      npm: ["npm", "uninstall", "-g", "opencode-ai"],
-      pnpm: ["pnpm", "uninstall", "-g", "opencode-ai"],
-      bun: ["bun", "remove", "-g", "opencode-ai"],
-      yarn: ["yarn", "global", "remove", "opencode-ai"],
-      brew: ["brew", "uninstall", "opencode"],
-      choco: ["choco", "uninstall", "opencode"],
-      scoop: ["scoop", "uninstall", "opencode"],
+      npm: ["npm", "uninstall", "-g", "finny-ai"],
+      pnpm: ["pnpm", "uninstall", "-g", "finny-ai"],
+      bun: ["bun", "remove", "-g", "finny-ai"],
+      yarn: ["yarn", "global", "remove", "finny-ai"],
+      brew: ["brew", "uninstall", "finny"],
+      choco: ["choco", "uninstall", "finny"],
+      scoop: ["scoop", "uninstall", "finny"],
     }
 
     const cmd = cmds[method]
@@ -193,7 +193,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
       spinner.start(`Running ${cmd.join(" ")}...`)
       const result =
         method === "choco"
-          ? await $`echo Y | choco uninstall opencode -y -r`.quiet().nothrow()
+          ? await $`echo Y | choco uninstall finny -y -r`.quiet().nothrow()
           : await $`${cmd}`.quiet().nothrow()
       if (result.exitCode !== 0) {
         spinner.stop(`Package manager uninstall failed: exit code ${result.exitCode}`, 1)
@@ -217,7 +217,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
     prompts.log.info(`  rm "${targets.binary}"`)
 
     const binDir = path.dirname(targets.binary)
-    if (binDir.includes(".opencode")) {
+    if (binDir.includes(".finny")) {
       prompts.log.info(`  rmdir "${binDir}" 2>/dev/null`)
     }
   }
@@ -231,7 +231,7 @@ async function executeUninstall(method: Installation.Method, targets: RemovalTar
   }
 
   UI.empty()
-  prompts.log.success("Thank you for using OpenCode!")
+  prompts.log.success("Thank you for using Finny!")
 }
 
 async function getShellConfigFile(): Promise<string | null> {
@@ -270,7 +270,7 @@ async function getShellConfigFile(): Promise<string | null> {
     const content = await Bun.file(file)
       .text()
       .catch(() => "")
-    if (content.includes("# opencode") || content.includes(".opencode/bin")) {
+    if (content.includes("# finny") || content.includes(".finny/bin")) {
       return file
     }
   }
@@ -288,21 +288,21 @@ async function cleanShellConfig(file: string) {
   for (const line of lines) {
     const trimmed = line.trim()
 
-    if (trimmed === "# opencode") {
+    if (trimmed === "# finny") {
       skip = true
       continue
     }
 
     if (skip) {
       skip = false
-      if (trimmed.includes(".opencode/bin") || trimmed.includes("fish_add_path")) {
+      if (trimmed.includes(".finny/bin") || trimmed.includes("fish_add_path")) {
         continue
       }
     }
 
     if (
-      (trimmed.startsWith("export PATH=") && trimmed.includes(".opencode/bin")) ||
-      (trimmed.startsWith("fish_add_path") && trimmed.includes(".opencode"))
+      (trimmed.startsWith("export PATH=") && trimmed.includes(".finny/bin")) ||
+      (trimmed.startsWith("fish_add_path") && trimmed.includes(".finny"))
     ) {
       continue
     }

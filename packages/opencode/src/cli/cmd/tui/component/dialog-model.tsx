@@ -11,7 +11,7 @@ import * as fuzzysort from "fuzzysort"
 export function useConnected() {
   const sync = useSync()
   return createMemo(() =>
-    sync.data.provider.some((x) => x.id !== "opencode" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
+    sync.data.provider.some((x) => x.id !== "finny" || Object.values(x.models).some((y) => y.cost?.input !== 0)),
   )
 }
 
@@ -61,8 +61,8 @@ export function DialogModel(props: { providerID?: string }) {
               title: model.name ?? item.modelID,
               description: provider.name,
               category: "Favorites",
-              disabled: provider.id === "opencode" && model.id.includes("-nano"),
-              footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
+              disabled: provider.id === "finny" && model.id.includes("-nano"),
+              footer: model.cost?.input === 0 && provider.id === "finny" ? "Free" : undefined,
               onSelect: () => {
                 dialog.clear()
                 local.model.set(
@@ -94,8 +94,8 @@ export function DialogModel(props: { providerID?: string }) {
               title: model.name ?? item.modelID,
               description: provider.name,
               category: "Recent",
-              disabled: provider.id === "opencode" && model.id.includes("-nano"),
-              footer: model.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
+              disabled: provider.id === "finny" && model.id.includes("-nano"),
+              footer: model.cost?.input === 0 && provider.id === "finny" ? "Free" : undefined,
               onSelect: () => {
                 dialog.clear()
                 local.model.set(
@@ -114,7 +114,7 @@ export function DialogModel(props: { providerID?: string }) {
     const providerOptions = pipe(
       sync.data.provider,
       sortBy(
-        (provider) => provider.id !== "opencode",
+        (provider) => provider.id !== "finny",
         (provider) => provider.name,
       ),
       flatMap((provider) =>
@@ -137,8 +137,8 @@ export function DialogModel(props: { providerID?: string }) {
                 ? "(Favorite)"
                 : undefined,
               category: connected() ? provider.name : undefined,
-              disabled: provider.id === "opencode" && model.includes("-nano"),
-              footer: info.cost?.input === 0 && provider.id === "opencode" ? "Free" : undefined,
+              disabled: provider.id === "finny" && model.includes("-nano"),
+              footer: info.cost?.input === 0 && provider.id === "finny" ? "Free" : undefined,
               onSelect() {
                 dialog.clear()
                 local.model.set(

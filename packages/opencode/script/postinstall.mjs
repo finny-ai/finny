@@ -49,8 +49,8 @@ function detectPlatformAndArch() {
 
 function findBinary() {
   const { platform, arch } = detectPlatformAndArch()
-  const packageName = `opencode-${platform}-${arch}`
-  const binaryName = platform === "windows" ? "opencode.exe" : "opencode"
+  const packageName = `finny-${platform}-${arch}`
+  const binaryName = platform === "windows" ? "finny.exe" : "finny"
 
   try {
     // Use require.resolve to find the package
@@ -89,7 +89,7 @@ function symlinkBinary(sourcePath, binaryName) {
   const { targetPath } = prepareBinDirectory(binaryName)
 
   fs.symlinkSync(sourcePath, targetPath)
-  console.log(`opencode binary symlinked: ${targetPath} -> ${sourcePath}`)
+  console.log(`finny binary symlinked: ${targetPath} -> ${sourcePath}`)
 
   // Verify the file exists after operation
   if (!fs.existsSync(targetPath)) {
@@ -106,13 +106,20 @@ async function main() {
       return
     }
 
-    // On non-Windows platforms, just verify the binary package exists
-    // Don't replace the wrapper script - it handles binary execution
+    // On non-Windows platforms, verify the binary package exists and ensure it's executable
     const { binaryPath } = findBinary()
+
+    // Ensure the binary has execute permissions (npm may strip them)
+    try {
+      fs.chmodSync(binaryPath, 0o755)
+    } catch (e) {
+      // Ignore permission errors (e.g. if we don't own the file)
+    }
+
     console.log(`Platform binary verified at: ${binaryPath}`)
     console.log("Wrapper script will handle binary execution")
   } catch (error) {
-    console.error("Failed to setup opencode binary:", error.message)
+    console.error("Failed to setup finny binary:", error.message)
     process.exit(1)
   }
 }

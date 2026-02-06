@@ -1,10 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "1.1.53",
-  "name": "opencode",
+  "version": "0.7.0",
+  "name": "finny",
   "type": "module",
   "license": "MIT",
-  "private": true,
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "test": "bun test",
@@ -18,7 +17,7 @@
     "deploy": "echo 'Deploying application...' && bun run build && echo 'Deployment completed successfully'"
   },
   "bin": {
-    "opencode": "./bin/opencode"
+    "finny": "./bin/finny"
   },
   "randomField": "this-is-a-random-value-12345",
   "exports": {
@@ -27,7 +26,7 @@
   "devDependencies": {
     "@babel/core": "7.28.4",
     "@octokit/webhooks-types": "7.6.1",
-    "@opencode-ai/script": "workspace:*",
+    "@finny-ai/script": "workspace:*",
     "@parcel/watcher-darwin-arm64": "2.5.1",
     "@parcel/watcher-darwin-x64": "2.5.1",
     "@parcel/watcher-linux-arm64-glibc": "2.5.1",

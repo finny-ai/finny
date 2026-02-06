@@ -7,7 +7,7 @@ import { Rpc } from "@/util/rpc"
 import { upgrade } from "@/cli/upgrade"
 import { Config } from "@/config/config"
 import { GlobalBus } from "@/bus/global"
-import { createOpencodeClient, type Event } from "@opencode-ai/sdk/v2"
+import { createFinnyClient, type Event } from "@finny-ai/sdk/v2"
 import type { BunWebSocketData } from "hono/bun"
 import { Flag } from "@/flag/flag"
 
@@ -56,8 +56,8 @@ const startEventStream = (directory: string) => {
     return Server.App().fetch(request)
   }) as typeof globalThis.fetch
 
-  const sdk = createOpencodeClient({
-    baseUrl: "http://opencode.internal",
+  const sdk = createFinnyClient({
+    baseUrl: "http://finny.internal",
     directory,
     fetch: fetchFn,
     signal,
@@ -145,8 +145,8 @@ export const rpc = {
 Rpc.listen(rpc)
 
 function getAuthorizationHeader(): string | undefined {
-  const password = Flag.OPENCODE_SERVER_PASSWORD
+  const password = Flag.FINNY_SERVER_PASSWORD
   if (!password) return undefined
-  const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
+  const username = Flag.FINNY_SERVER_USERNAME ?? "finny"
   return `Basic ${btoa(`${username}:${password}`)}`
 }

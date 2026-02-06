@@ -9,7 +9,7 @@ import { proxy } from "hono/proxy"
 import { basicAuth } from "hono/basic-auth"
 import z from "zod"
 import { Provider } from "../provider/provider"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "@finny-ai/util/error"
 import { LSP } from "../lsp"
 import { Format } from "../format"
 import { TuiRoutes } from "./routes/tui"
@@ -40,6 +40,10 @@ import { QuestionRoutes } from "./routes/question"
 import { PermissionRoutes } from "./routes/permission"
 import { GlobalRoutes } from "./routes/global"
 import { MDNS } from "./mdns"
+import { RateLimiter, RateLimit } from "./middleware/rate-limit"
+import { RequestQueue, Queue } from "./middleware/request-queue"
+import { ProviderHealth } from "../provider/health"
+import { CostBudget } from "../session/cost-budget"
 
 // @ts-ignore This global is needed to prevent ai-sdk from logging warnings to stdout https://github.com/vercel/ai/blob/2dc67e0ef538307f21368db32d5a12345d98831b/packages/ai/src/logger/log-warnings.ts#L85
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -78,9 +82,9 @@ export namespace Server {
           })
         })
         .use((c, next) => {
-          const password = Flag.OPENCODE_SERVER_PASSWORD
+          const password = Flag.FINNY_SERVER_PASSWORD
           if (!password) return next()
-          const username = Flag.OPENCODE_SERVER_USERNAME ?? "opencode"
+          const username = Flag.FINNY_SERVER_USERNAME ?? "finny"
           return basicAuth({ username, password })(c, next)
         })
         .use(async (c, next) => {
@@ -109,8 +113,8 @@ export namespace Server {
               if (input.startsWith("http://127.0.0.1:")) return input
               if (input === "tauri://localhost" || input === "http://tauri.localhost") return input
 
-              // *.opencode.ai (https only, adjust if needed)
-              if (/^https:\/\/([a-z0-9-]+\.)*opencode\.ai$/.test(input)) {
+              // *.finny.ai (https only, adjust if needed)
+              if (/^https:\/\/([a-z0-9-]+\.)*finny\.ai$/.test(input)) {
                 return input
               }
               if (_corsWhitelist.includes(input)) {
@@ -207,9 +211,9 @@ export namespace Server {
           openAPIRouteHandler(app, {
             documentation: {
               info: {
-                title: "opencode",
+                title: "finny",
                 version: "0.0.3",
-                description: "opencode api",
+                description: "finny api",
               },
               openapi: "3.1.1",
             },
@@ -231,7 +235,7 @@ export namespace Server {
           "/instance/dispose",
           describeRoute({
             summary: "Dispose instance",
-            description: "Clean up and dispose the current OpenCode instance, releasing all resources.",
+            description: "Clean up and dispose the current Finny instance, releasing all resources.",
             operationId: "instance.dispose",
             responses: {
               200: {
@@ -254,7 +258,7 @@ export namespace Server {
           describeRoute({
             summary: "Get paths",
             description:
-              "Retrieve the current working directory and related path information for the OpenCode instance.",
+              "Retrieve the current working directory and related path information for the Finny instance.",
             operationId: "path.get",
             responses: {
               200: {
@@ -315,10 +319,111 @@ export namespace Server {
           },
         )
         .get(
+          "/health",
+          describeRoute({
+            summary: "Health check",
+            description:
+              "Get the health status of the Finny server including provider health, rate limit stats, and cost budget info.",
+            operationId: "health.get",
+            responses: {
+              200: {
+                description: "Health status",
+                content: {
+                  "application/json": {
+                    schema: resolver(
+                      z.object({
+                        status: z.enum(["healthy", "degraded", "unhealthy"]),
+                        timestamp: z.string(),
+                        uptime: z.number(),
+                        providers: z.object({
+                          total: z.number(),
+                          healthy: z.number(),
+                          unhealthy: z.number(),
+                          details: z.array(
+                            z.object({
+                              providerID: z.string(),
+                              isHealthy: z.boolean(),
+                              consecutiveFailures: z.number(),
+                              successRate: z.number(),
+                              averageLatencyMs: z.number(),
+                            })
+                          ),
+                        }),
+                        rateLimit: z.object({
+                          activeKeys: z.number(),
+                          totalRequests: z.number(),
+                          windowMs: z.number(),
+                          maxRequests: z.number(),
+                        }),
+                        requestQueue: z.object({
+                          activeCount: z.number(),
+                          queueLength: z.number(),
+                          maxConcurrent: z.number(),
+                          totalProcessed: z.number(),
+                        }),
+                        costBudget: z.object({
+                          dailyCurrent: z.number(),
+                          dailyLimit: z.number(),
+                          dailyPercentage: z.number(),
+                          enforceLimit: z.boolean(),
+                        }),
+                      })
+                    ),
+                  },
+                },
+              },
+            },
+          }),
+          async (c) => {
+            const providerStats = ProviderHealth.getStats()
+            const rateLimitStats = RateLimit.chatApi.getStats()
+            const queueStats = Queue.chatQueue.getStats()
+            const costStats = CostBudget.getStats()
+
+            // Determine overall status
+            let status: "healthy" | "degraded" | "unhealthy" = "healthy"
+            if (providerStats.unhealthyCount > 0 && providerStats.healthyCount > 0) {
+              status = "degraded"
+            } else if (providerStats.unhealthyCount > 0 && providerStats.healthyCount === 0) {
+              status = "unhealthy"
+            }
+
+            // Check if rate limited or queue backed up
+            if (queueStats.queueLength > queueStats.maxConcurrent) {
+              status = status === "healthy" ? "degraded" : status
+            }
+
+            return c.json({
+              status,
+              timestamp: new Date().toISOString(),
+              uptime: process.uptime(),
+              providers: {
+                total: providerStats.totalProviders,
+                healthy: providerStats.healthyCount,
+                unhealthy: providerStats.unhealthyCount,
+                details: providerStats.providers,
+              },
+              rateLimit: rateLimitStats,
+              requestQueue: {
+                activeCount: queueStats.activeCount,
+                queueLength: queueStats.queueLength,
+                maxConcurrent: queueStats.maxConcurrent,
+                totalProcessed: queueStats.totalProcessed,
+              },
+              costBudget: {
+                dailyCurrent: costStats.dailyBudget.current,
+                dailyLimit: costStats.dailyBudget.limit,
+                dailyPercentage: costStats.dailyBudget.percentage,
+                enforceLimit: costStats.enforceLimit,
+              },
+            })
+          },
+        )
+        .get(
           "/command",
           describeRoute({
             summary: "List commands",
-            description: "Get a list of all available commands in the OpenCode system.",
+            description: "Get a list of all available commands in the Finny system.",
             operationId: "command.list",
             responses: {
               200: {
@@ -392,7 +497,7 @@ export namespace Server {
           "/agent",
           describeRoute({
             summary: "List agents",
-            description: "Get a list of all available AI agents in the OpenCode system.",
+            description: "Get a list of all available AI agents in the Finny system.",
             operationId: "app.agents",
             responses: {
               200: {
@@ -414,7 +519,7 @@ export namespace Server {
           "/skill",
           describeRoute({
             summary: "List skills",
-            description: "Get a list of all available skills in the OpenCode system.",
+            description: "Get a list of all available skills in the Finny system.",
             operationId: "app.skills",
             responses: {
               200: {
@@ -533,11 +638,11 @@ export namespace Server {
         .all("/*", async (c) => {
           const path = c.req.path
 
-          const response = await proxy(`https://app.opencode.ai${path}`, {
+          const response = await proxy(`https://app.finny.ai${path}`, {
             ...c.req,
             headers: {
               ...c.req.raw.headers,
-              host: "app.opencode.ai",
+              host: "app.finny.ai",
             },
           })
           response.headers.set(
@@ -553,9 +658,9 @@ export namespace Server {
     const result = await generateSpecs(App() as Hono, {
       documentation: {
         info: {
-          title: "opencode",
+          title: "finny",
           version: "1.0.0",
-          description: "opencode api",
+          description: "finny api",
         },
         openapi: "3.1.1",
       },

@@ -26,7 +26,7 @@ import { Auth } from "@/auth"
 export namespace LLM {
   const log = Log.create({ service: "llm" })
 
-  export const OUTPUT_TOKEN_MAX = Flag.OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
+  export const OUTPUT_TOKEN_MAX = Flag.FINNY_EXPERIMENTAL_OUTPUT_TOKEN_MAX || 32_000
 
   export type StreamInput = {
     user: MessageV2.User
@@ -216,16 +216,16 @@ export namespace LLM {
       maxOutputTokens,
       abortSignal: input.abort,
       headers: {
-        ...(input.model.providerID.startsWith("opencode")
+        ...(input.model.providerID.startsWith("finny")
           ? {
-              "x-opencode-project": Instance.project.id,
-              "x-opencode-session": input.sessionID,
-              "x-opencode-request": input.user.id,
-              "x-opencode-client": Flag.OPENCODE_CLIENT,
+              "x-finny-project": Instance.project.id,
+              "x-finny-session": input.sessionID,
+              "x-finny-request": input.user.id,
+              "x-finny-client": Flag.FINNY_CLIENT,
             }
           : input.model.providerID !== "anthropic"
             ? {
-                "User-Agent": `opencode/${Installation.VERSION}`,
+                "User-Agent": `finny/${Installation.VERSION}`,
               }
             : undefined),
         ...input.model.headers,

@@ -1,0 +1,72 @@
+#!/usr/bin/env node
+
+const { execFileSync } = require("child_process");
+const path = require("path");
+const fs = require("fs");
+
+const PLATFORMS = {
+  "darwin-arm64": "finny-darwin-arm64",
+  "darwin-x64": "finny-darwin-x64",
+  "linux-arm64": "finny-linux-arm64",
+  "linux-x64": "finny-linux-x64",
+  "win32-x64": "finny-windows-x64",
+};
+
+function getBinaryPath() {
+  const platform = `${process.platform}-${process.arch}`;
+  const packageName = PLATFORMS[platform];
+
+  if (!packageName) {
+    console.error(`Unsupported platform: ${platform}`);
+    console.error(`Supported platforms: ${Object.keys(PLATFORMS).join(", ")}`);
+    process.exit(1);
+  }
+
+  // Try to find the binary in node_modules
+  const possiblePaths = [
+    // Installed as dependency
+    path.join(__dirname, "..", "node_modules", packageName, "bin", "finny"),
+    // Installed globally or via npx
+    path.join(__dirname, "..", "..", packageName, "bin", "finny"),
+    // Direct sibling (monorepo)
+    path.join(__dirname, "..", "..", "..", packageName, "bin", "finny"),
+  ];
+
+  // Add .exe for Windows
+  if (process.platform === "win32") {
+    possiblePaths.push(...possiblePaths.map(p => p + ".exe"));
+  }
+
+  for (const binaryPath of possiblePaths) {
+    if (fs.existsSync(binaryPath)) {
+      // Ensure binary has execute permissions (npm may strip them)
+      try {
+        fs.chmodSync(binaryPath, 0o755);
+      } catch (_) {}
+      return binaryPath;
+    }
+  }
+
+  console.error(`Could not find finny binary for platform: ${platform}`);
+  console.error(`Expected package: ${packageName}`);
+  console.error(`Searched paths:`);
+  possiblePaths.forEach(p => console.error(`  - ${p}`));
+  console.error(`\nTry reinstalling: npm install -g finny`);
+  process.exit(1);
+}
+
+try {
+  const binaryPath = getBinaryPath();
+  const args = process.argv.slice(2);
+
+  execFileSync(binaryPath, args, {
+    stdio: "inherit",
+    env: process.env,
+  });
+} catch (error) {
+  if (error.status !== undefined) {
+    process.exit(error.status);
+  }
+  console.error(error.message);
+  process.exit(1);
+}

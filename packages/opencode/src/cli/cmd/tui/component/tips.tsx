@@ -1,8 +1,5 @@
 import { createMemo, createSignal, For } from "solid-js"
-import { DEFAULT_THEMES, useTheme } from "@tui/context/theme"
-
-const themeCount = Object.keys(DEFAULT_THEMES).length
-const themeTip = `Use {highlight}/theme{/highlight} or {highlight}Ctrl+X T{/highlight} to switch between ${themeCount} built-in themes`
+import { useTheme } from "@tui/context/theme"
 
 type TipPart = { text: string; highlight: boolean }
 

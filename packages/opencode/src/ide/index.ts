@@ -2,7 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { spawn } from "bun"
 import z from "zod"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "@finny-ai/util/error"
 import { Log } from "../util/log"
 
 const SUPPORTED_IDES = [
@@ -45,14 +45,14 @@ export namespace Ide {
   }
 
   export function alreadyInstalled() {
-    return process.env["OPENCODE_CALLER"] === "vscode" || process.env["OPENCODE_CALLER"] === "vscode-insiders"
+    return process.env["FINNY_CALLER"] === "vscode" || process.env["FINNY_CALLER"] === "vscode-insiders"
   }
 
   export async function install(ide: (typeof SUPPORTED_IDES)[number]["name"]) {
     const cmd = SUPPORTED_IDES.find((i) => i.name === ide)?.cmd
     if (!cmd) throw new Error(`Unknown IDE: ${ide}`)
 
-    const p = spawn([cmd, "--install-extension", "sst-dev.opencode"], {
+    const p = spawn([cmd, "--install-extension", "sst-dev.finny"], {
       stdout: "pipe",
       stderr: "pipe",
     })

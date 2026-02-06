@@ -28,7 +28,7 @@ export async function InstanceBootstrap() {
   Truncate.init()
 
   Bus.subscribe(Command.Event.Executed, async (payload) => {
-    if (payload.properties.name === Command.Default.INIT) {
+    if (payload.properties.name === "init") {
       await Project.setInitialized(Instance.project.id)
     }
   })

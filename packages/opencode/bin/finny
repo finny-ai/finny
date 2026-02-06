@@ -1,0 +1,16 @@
+#!/usr/bin/env bun
+
+import { fileURLToPath } from "url"
+import { dirname, join } from "path"
+import { spawnSync } from "child_process"
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+const srcPath = join(__dirname, "..", "src", "index.ts")
+
+const result = spawnSync("bun", ["run", "--conditions=browser", srcPath, ...process.argv.slice(2)], {
+  stdio: "inherit",
+  cwd: join(__dirname, ".."),
+})
+
+process.exit(result.status ?? 0)

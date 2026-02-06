@@ -13,6 +13,9 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_QUANT_BUILD from "./prompt/quant-build.txt"
+import PROMPT_QUANT_RESEARCH from "./prompt/quant-research.txt"
+import PROMPT_QUANT_CHAT from "./prompt/quant-chat.txt"
 import { PermissionNext } from "@/permission/next"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -61,8 +64,6 @@ export namespace Agent {
         ...Object.fromEntries(skillDirs.map((dir) => [path.join(dir, "*"), "allow"])),
       },
       question: "deny",
-      plan_enter: "deny",
-      plan_exit: "deny",
       // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
       read: {
         "*": "allow",
@@ -74,37 +75,37 @@ export namespace Agent {
     const user = PermissionNext.fromConfig(cfg.permission ?? {})
 
     const result: Record<string, Info> = {
+      // Trading Agents - Primary modes for algorithmic trading
+      // Order: Build, Research, Chat
       build: {
         name: "build",
-        description: "The default agent. Executes tools based on configured permissions.",
+        description: "Build and debug trading strategies. Write Python strategy code.",
         options: {},
+        color: "#10B981",
+        prompt: PROMPT_QUANT_BUILD,
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
             question: "allow",
-            plan_enter: "allow",
           }),
           user,
         ),
         mode: "primary",
         native: true,
       },
-      plan: {
-        name: "plan",
-        description: "Plan mode. Disallows all edit tools.",
+      research: {
+        name: "research",
+        description: "Research market data, analyze patterns and indicators.",
         options: {},
+        color: "#8B5CF6",
+        prompt: PROMPT_QUANT_RESEARCH,
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
             question: "allow",
-            plan_exit: "allow",
-            external_directory: {
-              [path.join(Global.Path.data, "plans", "*")]: "allow",
-            },
+            quant_research_complete: "allow",
             edit: {
               "*": "deny",
-              [path.join(".opencode", "plans", "*.md")]: "allow",
-              [path.relative(Instance.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]: "allow",
             },
           }),
           user,
@@ -112,19 +113,20 @@ export namespace Agent {
         mode: "primary",
         native: true,
       },
-      general: {
-        name: "general",
-        description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
+      chat: {
+        name: "chat",
+        description: "General conversation about quantitative trading.",
+        options: {},
+        color: "#6B7280",
+        prompt: PROMPT_QUANT_CHAT,
         permission: PermissionNext.merge(
           defaults,
           PermissionNext.fromConfig({
-            todoread: "deny",
-            todowrite: "deny",
+            question: "allow",
           }),
           user,
         ),
-        options: {},
-        mode: "subagent",
+        mode: "primary",
         native: true,
       },
       explore: {
@@ -149,10 +151,28 @@ export namespace Agent {
         ),
         description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
         prompt: PROMPT_EXPLORE,
+        permission: PermissionNext.merge(defaults, user),
         options: {},
+      },
+      "general-purpose": {
+        name: "general-purpose",
+        description: "General purpose subagent for complex tasks",
         mode: "subagent",
         native: true,
+        hidden: true,
+        permission: PermissionNext.merge(defaults, user),
+        options: {},
       },
+      Bash: {
+        name: "Bash",
+        description: "Execute bash commands",
+        mode: "subagent",
+        native: true,
+        hidden: true,
+        permission: PermissionNext.merge(defaults, user),
+        options: {},
+      },
+      // Internal agents (hidden)
       compaction: {
         name: "compaction",
         mode: "primary",

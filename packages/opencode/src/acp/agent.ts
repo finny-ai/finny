@@ -129,7 +129,7 @@ export namespace ACP {
   export class Agent implements ACPAgent {
     private connection: AgentSideConnection
     private config: ACPConfig
-    private sdk: OpencodeClient
+    private sdk: FinnyClient
     private sessionManager: ACPSessionManager
     private eventAbort = new AbortController()
     private eventStarted = false
@@ -484,18 +484,18 @@ export namespace ACP {
       log.info("initialize", { protocolVersion: params.protocolVersion })
 
       const authMethod: AuthMethod = {
-        description: "Run `opencode auth login` in the terminal",
-        name: "Login with opencode",
-        id: "opencode-login",
+        description: "Run `finny auth login` in the terminal",
+        name: "Login with finny",
+        id: "finny-login",
       }
 
       // If client supports terminal-auth capability, use that instead.
       if (params.clientCapabilities?._meta?.["terminal-auth"] === true) {
         authMethod._meta = {
           "terminal-auth": {
-            command: "opencode",
+            command: "finny",
             args: ["auth", "login"],
-            label: "OpenCode Login",
+            label: "Finny Login",
           },
         }
       }
@@ -520,7 +520,7 @@ export namespace ACP {
         },
         authMethods: [authMethod],
         agentInfo: {
-          name: "OpenCode",
+          name: "Finny",
           version: Installation.VERSION,
         },
       }
@@ -943,7 +943,7 @@ export namespace ACP {
           }
         } else if (part.type === "file") {
           // Replay file attachments as appropriate ACP content blocks.
-          // OpenCode stores files internally as { type: "file", url, filename, mime }.
+          // Finny stores files internally as { type: "file", url, filename, mime }.
           // We convert these back to ACP blocks based on the URL scheme and MIME type:
           // - file:// URLs → resource_link
           // - data: URLs with image/* → image block
@@ -1495,12 +1495,12 @@ export namespace ACP {
 
     if (specified && !providers.length) return specified
 
-    const opencodeProvider = providers.find((p) => p.id === "opencode")
-    if (opencodeProvider) {
-      if (opencodeProvider.models["big-pickle"]) {
-        return { providerID: "opencode", modelID: "big-pickle" }
+    const finnyProvider = providers.find((p) => p.id === "finny")
+    if (finnyProvider) {
+      if (finnyProvider.models["big-pickle"]) {
+        return { providerID: "finny", modelID: "big-pickle" }
       }
-      const [best] = Provider.sort(Object.values(opencodeProvider.models))
+      const [best] = Provider.sort(Object.values(finnyProvider.models))
       if (best) {
         return {
           providerID: best.providerID,
@@ -1520,7 +1520,7 @@ export namespace ACP {
 
     if (specified) return specified
 
-    return { providerID: "opencode", modelID: "big-pickle" }
+    return { providerID: "finny", modelID: "big-pickle" }
   }
 
   function parseUri(

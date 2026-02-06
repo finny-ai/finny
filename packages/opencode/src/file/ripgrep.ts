@@ -3,7 +3,7 @@ import path from "path"
 import { Global } from "../global"
 import fs from "fs/promises"
 import z from "zod"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "@finny-ai/util/error"
 import { lazy } from "../util/lazy"
 import { $ } from "bun"
 
@@ -289,7 +289,7 @@ export namespace Ripgrep {
 
     const root: Node = { name: "", children: new Map() }
     for (const file of files) {
-      if (file.includes(".opencode")) continue
+      if (file.includes(".finny")) continue
       const parts = file.split(path.sep)
       if (parts.length < 2) continue
       let node = root

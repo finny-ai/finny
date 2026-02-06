@@ -606,7 +606,7 @@ export namespace ProviderTransform {
 
     if (
       input.model.providerID === "baseten" ||
-      (input.model.providerID === "opencode" && ["kimi-k2-thinking", "glm-4.6"].includes(input.model.api.id))
+      (input.model.providerID === "finny" && ["kimi-k2-thinking", "glm-4.6"].includes(input.model.api.id))
     ) {
       result["chat_template_args"] = { enable_thinking: true }
     }
@@ -659,7 +659,7 @@ export namespace ProviderTransform {
         result["textVerbosity"] = "low"
       }
 
-      if (input.model.providerID.startsWith("opencode")) {
+      if (input.model.providerID.startsWith("finny")) {
         result["promptCacheKey"] = input.sessionID
         result["include"] = ["reasoning.encrypted_content"]
         result["reasoningSummary"] = "auto"
@@ -813,7 +813,7 @@ export namespace ProviderTransform {
   export function error(providerID: string, error: APICallError) {
     let message = error.message
     if (providerID.includes("github-copilot") && error.statusCode === 403) {
-      return "Please reauthenticate with the copilot provider to ensure your credentials work properly with OpenCode."
+      return "Please reauthenticate with the copilot provider to ensure your credentials work properly with Finny."
     }
     if (providerID.includes("github-copilot") && message.includes("The requested model is not supported")) {
       return (

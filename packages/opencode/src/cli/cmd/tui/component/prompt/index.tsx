@@ -16,10 +16,9 @@ import { DialogStash } from "../dialog-stash"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useCommandDialog } from "../dialog-command"
 import { useRenderer } from "@opentui/solid"
-import { Editor } from "@tui/util/editor"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
-import type { FilePart } from "@opencode-ai/sdk/v2"
+import type { FilePart } from "@finny-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
 import { Locale } from "@/util/locale"
@@ -53,7 +52,7 @@ export type PromptRef = {
   submit(): void
 }
 
-const PLACEHOLDERS = ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"]
+const PLACEHOLDERS = ["Build a momentum strategy for BTC", "Backtest a mean reversion strategy", "Create a golden cross trading bot"]
 
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
@@ -792,6 +791,7 @@ export function Prompt(props: PromptProps) {
             paddingLeft={2}
             paddingRight={2}
             paddingTop={1}
+            paddingBottom={1}
             flexShrink={0}
             backgroundColor={theme.backgroundElement}
             flexGrow={1}
@@ -993,32 +993,6 @@ export function Prompt(props: PromptProps) {
               </Show>
             </box>
           </box>
-        </box>
-        <box
-          height={1}
-          border={["left"]}
-          borderColor={highlight()}
-          customBorderChars={{
-            ...EmptyBorder,
-            vertical: theme.backgroundElement.a !== 0 ? "╹" : " ",
-          }}
-        >
-          <box
-            height={1}
-            border={["bottom"]}
-            borderColor={theme.backgroundElement}
-            customBorderChars={
-              theme.backgroundElement.a !== 0
-                ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
-                : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
-            }
-          />
         </box>
         <box flexDirection="row" justifyContent="space-between">
           <Show when={status().type !== "idle"} fallback={<text />}>

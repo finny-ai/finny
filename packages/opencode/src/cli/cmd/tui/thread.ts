@@ -7,11 +7,11 @@ import { UI } from "@/cli/ui"
 import { iife } from "@/util/iife"
 import { Log } from "@/util/log"
 import { withNetworkOptions, resolveNetworkOptions } from "@/cli/network"
-import type { Event } from "@opencode-ai/sdk/v2"
+import type { Event } from "@finny-ai/sdk/v2"
 import type { EventSource } from "./context/sdk"
 
 declare global {
-  const OPENCODE_WORKER_PATH: string
+  const FINNY_WORKER_PATH: string
 }
 
 type RpcClient = ReturnType<typeof Rpc.client<typeof rpc>>
@@ -42,12 +42,12 @@ function createEventSource(client: RpcClient): EventSource {
 
 export const TuiThreadCommand = cmd({
   command: "$0 [project]",
-  describe: "start opencode tui",
+  describe: "start finny tui",
   builder: (yargs) =>
     withNetworkOptions(yargs)
       .positional("project", {
         type: "string",
-        describe: "path to start opencode in",
+        describe: "path to start finny in",
       })
       .option("model", {
         type: "string",
@@ -79,7 +79,7 @@ export const TuiThreadCommand = cmd({
     const localWorker = new URL("./worker.ts", import.meta.url)
     const distWorker = new URL("./cli/cmd/tui/worker.js", import.meta.url)
     const workerPath = await iife(async () => {
-      if (typeof OPENCODE_WORKER_PATH !== "undefined") return OPENCODE_WORKER_PATH
+      if (typeof FINNY_WORKER_PATH !== "undefined") return FINNY_WORKER_PATH
       if (await Bun.file(distWorker).exists()) return distWorker
       return localWorker
     })
@@ -135,7 +135,7 @@ export const TuiThreadCommand = cmd({
       url = server.url
     } else {
       // Use direct RPC communication (no HTTP)
-      url = "http://opencode.internal"
+      url = "http://finny.internal"
       customFetch = createWorkerFetch(client)
       events = createEventSource(client)
     }

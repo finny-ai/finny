@@ -31,10 +31,10 @@ function getNetworkIPs() {
 export const WebCommand = cmd({
   command: "web",
   builder: (yargs) => withNetworkOptions(yargs),
-  describe: "start opencode server and open web interface",
+  describe: "start finny server and open web interface",
   handler: async (args) => {
-    if (!Flag.OPENCODE_SERVER_PASSWORD) {
-      UI.println(UI.Style.TEXT_WARNING_BOLD + "!  " + "OPENCODE_SERVER_PASSWORD is not set; server is unsecured.")
+    if (!Flag.FINNY_SERVER_PASSWORD) {
+      UI.println(UI.Style.TEXT_WARNING_BOLD + "!  " + "FINNY_SERVER_PASSWORD is not set; server is unsecured.")
     }
     const opts = await resolveNetworkOptions(args)
     const server = Server.listen(opts)

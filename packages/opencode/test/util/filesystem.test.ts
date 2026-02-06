@@ -6,7 +6,7 @@ import { Filesystem } from "../../src/util/filesystem"
 
 describe("util.filesystem", () => {
   test("exists() is true for files and directories", async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), "opencode-filesystem-"))
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "finny-filesystem-"))
     const dir = path.join(tmp, "dir")
     const file = path.join(tmp, "file.txt")
     const missing = path.join(tmp, "missing")
@@ -22,7 +22,7 @@ describe("util.filesystem", () => {
   })
 
   test("isDir() is true only for directories", async () => {
-    const tmp = await mkdtemp(path.join(os.tmpdir(), "opencode-filesystem-"))
+    const tmp = await mkdtemp(path.join(os.tmpdir(), "finny-filesystem-"))
     const dir = path.join(tmp, "dir")
     const file = path.join(tmp, "file.txt")
     const missing = path.join(tmp, "missing")
