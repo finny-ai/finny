@@ -3,7 +3,6 @@ import { useKeyboard } from "@opentui/solid"
 import { useTheme } from "@tui/context/theme"
 import { createSignal, Show, For, onMount } from "solid-js"
 import { useDialog } from "@tui/ui/dialog"
-import { DialogBacktest } from "@tui/component/dialog-backtest"
 import fs from "fs"
 import path from "path"
 
@@ -24,13 +23,20 @@ interface Strategy {
   roi?: number
 }
 
-// Helper to get backtested strategies from localStorage
-function getBacktestedStrategies(): Set<string> {
+// Helper to get saved username
+function getSavedUsername(): string {
   try {
-    const backtested = JSON.parse(localStorage.getItem('finny_backtested_strategies') || '[]')
-    return new Set(backtested)
+    return localStorage.getItem('finny_username') || ''
   } catch {
-    return new Set()
+    return ''
+  }
+}
+
+function saveUsername(username: string) {
+  try {
+    localStorage.setItem('finny_username', username)
+  } catch {
+    // Ignore storage errors
   }
 }
 
@@ -43,8 +49,9 @@ export function DialogDeploy() {
   const [loading, setLoading] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [message, setMessage] = createSignal<string | null>(null)
-  const [showBacktestWarning, setShowBacktestWarning] = createSignal(false)
+  const [showUsernamePrompt, setShowUsernamePrompt] = createSignal(false)
   const [pendingDeploy, setPendingDeploy] = createSignal<Strategy | null>(null)
+  const [username, setUsername] = createSignal(getSavedUsername())
 
   // Scan local strategy files
   function scanLocalStrategies(): Map<string, string> {
@@ -123,16 +130,16 @@ export function DialogDeploy() {
     setLoading(false)
   }
 
-  async function deployStrategy(strat: Strategy, skipBacktestCheck: boolean = false) {
+  async function deployStrategy(strat: Strategy, confirmedUsername?: string) {
     if (!strat.localPath) {
       setError("No local file for this strategy")
       return
     }
 
-    // Check if strategy has been backtested
-    if (!skipBacktestCheck && !getBacktestedStrategies().has(strat.name)) {
+    // If no username provided, prompt for it
+    if (!confirmedUsername) {
       setPendingDeploy(strat)
-      setShowBacktestWarning(true)
+      setShowUsernamePrompt(true)
       return
     }
 
@@ -153,6 +160,7 @@ export function DialogDeploy() {
           code: code,
           symbol: "BTC",
           initial_equity: 10000,
+          username: confirmedUsername,
         }),
       })
 
@@ -197,33 +205,35 @@ export function DialogDeploy() {
     const key = evtAny.key?.toLowerCase?.() || evtAny.sequence?.toLowerCase?.() || ""
 
     // Debug: Log what we're receiving
-    console.log("Keyboard event:", { name: evt.name, key: evtAny.key, sequence: evtAny.sequence, showWarning: showBacktestWarning() })
+    console.log("Keyboard event:", { name: evt.name, key: evtAny.key, sequence: evtAny.sequence, showUsername: showUsernamePrompt() })
 
-    // Handle backtest warning dialog
-    if (showBacktestWarning()) {
-      if (key === "y") {
-        // User wants to backtest first - open backtest dialog with this strategy
-        const stratName = pendingDeploy()?.name
-        console.log("Y pressed, opening backtest for:", stratName)
-        setShowBacktestWarning(false)
+    // Handle username prompt - manual keyboard input
+    if (showUsernamePrompt()) {
+      if (evt.name === "escape") {
+        setShowUsernamePrompt(false)
         setPendingDeploy(null)
-        if (stratName) {
-          dialog.replace(() => <DialogBacktest initialStrategy={stratName} />)
-        }
         return
-      } else if (key === "n") {
-        // User wants to deploy anyway
+      } else if (evt.name === "return") {
+        // Submit username and deploy
         const strat = pendingDeploy()
-        console.log("N pressed, deploying:", strat?.name)
-        setShowBacktestWarning(false)
+        const user = username().trim() || "anonymous"
+        saveUsername(user)
+        setShowUsernamePrompt(false)
         setPendingDeploy(null)
         if (strat) {
-          deployStrategy(strat, true)
+          deployStrategy(strat, user)
         }
         return
-      } else if (evt.name === "escape") {
-        setShowBacktestWarning(false)
-        setPendingDeploy(null)
+      } else if (evt.name === "backspace") {
+        // Remove last character
+        setUsername(username().slice(0, -1))
+        return
+      } else if (evtAny.sequence && evtAny.sequence.length === 1) {
+        // Add typed character (single printable chars only)
+        const char = evtAny.sequence
+        if (/^[a-zA-Z0-9_\-]$/.test(char)) {
+          setUsername(username() + char)
+        }
         return
       }
       return
@@ -260,27 +270,32 @@ export function DialogDeploy() {
         <text fg={theme.textMuted}>esc</text>
       </box>
 
-      {/* Backtest Warning Dialog */}
-      <Show when={showBacktestWarning()}>
+      {/* Username Prompt Dialog */}
+      <Show when={showUsernamePrompt()}>
         <box marginTop={1} marginBottom={1}>
-          <text fg={theme.warning} attributes={TextAttributes.BOLD}>⚠ Strategy Not Backtested</text>
+          <text fg={theme.accent} attributes={TextAttributes.BOLD}>Deploy Strategy</text>
           <text fg={theme.text} marginTop={1}>
-            "{String(pendingDeploy()?.name ?? "Unknown")}" hasn't been backtested yet.
+            Deploying: {String(pendingDeploy()?.name ?? "Unknown")}
           </text>
-          <text fg={theme.textMuted}>
-            Backtesting helps verify strategy profitability before risking capital.
+          <text fg={theme.textMuted} marginTop={1}>
+            Enter your username (shown on algoclash.live leaderboard):
           </text>
-          <text fg={theme.text} marginTop={1}>
-            Do you want to backtest first?
+          <box flexDirection="row" marginTop={1}>
+            <text fg={theme.text}>Username: </text>
+            <text fg={theme.accent}>{username() || "anonymous"}</text>
+          </box>
+          <text fg={theme.textMuted} marginTop={1}>
+            Type username then press Enter • ESC to cancel
           </text>
-          <text fg={theme.accent} marginTop={1}>
-            Y = Backtest first (recommended)  •  N = Deploy anyway
-          </text>
+          <box flexDirection="row" marginTop={1}>
+            <text fg={theme.text}>{"> "}</text>
+            <text fg={theme.accent}>{username() || "_"}</text>
+          </box>
         </box>
       </Show>
 
-      {/* Only show loading/error/message when NOT in warning mode */}
-      <Show when={!showBacktestWarning()}>
+      {/* Only show loading/error/message when NOT in username prompt mode */}
+      <Show when={!showUsernamePrompt()}>
         <Show when={error()}>
           <text fg={theme.error}>{String(error() ?? "")}</text>
         </Show>
