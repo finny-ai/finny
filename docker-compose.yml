@@ -8,7 +8,7 @@ services:
       - "8000:8000"
     volumes:
       # Persist database and strategies across container restarts
-      - algoclash-data:/app/simulator
+      - algoclash-data:/app/data
       - algoclash-strategies:/app/strategies
     environment:
       - PORT=8000
