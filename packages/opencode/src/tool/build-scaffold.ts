@@ -554,7 +554,7 @@ export const ScaffoldStrategyTool = Tool.define("scaffold_strategy", async () =>
         .default("BTC")
         .describe("Primary trading symbol for comments (default: BTC)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         // Sanitize name
         const sanitizedName = params.name

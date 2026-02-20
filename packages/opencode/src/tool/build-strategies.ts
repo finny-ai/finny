@@ -79,7 +79,7 @@ export const ListStrategiesBuildTool = Tool.define("list_strategies", async () =
         .default(false)
         .describe("Only show strategies with a valid Strategy class"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         let strategies = await findAllStrategies()
 
@@ -188,7 +188,7 @@ export const GetStrategyCodeTool = Tool.define("get_strategy_code", async () => 
         .string()
         .describe("Name of the strategy (without .py extension, e.g., 'momentum' or 'buy_the_dip')"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         const strategies = await findAllStrategies()
         const strategy = strategies.find(

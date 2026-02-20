@@ -98,7 +98,7 @@ export const ChatNewsTool = Tool.define("get_news_guidance", async () => {
         .optional()
         .describe("Specific symbol to get news suggestions for (e.g., BTC, AAPL)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const lines: string[] = []
       lines.push("# News Search Guidance")
       lines.push("")

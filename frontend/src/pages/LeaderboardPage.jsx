@@ -28,6 +28,15 @@ const LeaderboardPage = () => {
                 console.log('User leaderboard fetch error:', err);
             });
 
+        // Fetch agent leaderboard
+        api.get('/leaderboard')
+            .then(res => {
+                setAgents(res.data.leaderboard || []);
+            })
+            .catch(err => {
+                console.log('Agent leaderboard fetch error:', err);
+            });
+
         const handleUpdate = (data) => {
             setAgents(data);
         };

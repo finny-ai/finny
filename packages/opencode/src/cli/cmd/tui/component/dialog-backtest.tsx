@@ -233,21 +233,21 @@ export function DialogBacktest(props: DialogBacktestProps = {}) {
           setSelectedStrategy(strat)
           setStep("configure")
         }
-      } else if (evt.name === "up" || evt.key === "k") {
+      } else if (evt.name === "up" || evt.name === "k") {
         setSelected((s) => Math.max(0, s - 1))
-      } else if (evt.name === "down" || evt.key === "j") {
+      } else if (evt.name === "down" || evt.name === "j") {
         setSelected((s) => Math.min(strategies().length - 1, s + 1))
-      } else if (evt.key === "r") {
+      } else if (evt.name === "r") {
         fetchStrategies()
       }
     } else if (step() === "configure") {
       if (evt.name === "return") {
         runBacktest()
-      } else if (evt.name === "up" || evt.key === "k") {
+      } else if (evt.name === "up" || evt.name === "k") {
         setConfigIndex((i) => Math.max(0, i - 1))
-      } else if (evt.name === "down" || evt.key === "j") {
+      } else if (evt.name === "down" || evt.name === "j") {
         setConfigIndex((i) => Math.min(2, i + 1))
-      } else if (evt.name === "left" || evt.key === "h") {
+      } else if (evt.name === "left" || evt.name === "h") {
         if (configIndex() === 0) {
           setPeriodIndex((i) => Math.max(0, i - 1))
         } else if (configIndex() === 1) {
@@ -255,7 +255,7 @@ export function DialogBacktest(props: DialogBacktestProps = {}) {
         } else if (configIndex() === 2) {
           setCapital((c) => Math.max(1000, c - 1000))
         }
-      } else if (evt.name === "right" || evt.key === "l") {
+      } else if (evt.name === "right" || evt.name === "l") {
         if (configIndex() === 0) {
           setPeriodIndex((i) => Math.min(PERIODS.length - 1, i + 1))
         } else if (configIndex() === 1) {

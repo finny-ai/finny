@@ -63,9 +63,9 @@ export function DialogCode() {
         dialog.clear()
       }
     } else if (!code()) {
-      if (evt.name === "up" || evt.key === "k") {
+      if (evt.name === "up" || evt.name === "k") {
         setSelected((s) => Math.max(0, s - 1))
-      } else if (evt.name === "down" || evt.key === "j") {
+      } else if (evt.name === "down" || evt.name === "j") {
         setSelected((s) => Math.min(strategies().length - 1, s + 1))
       } else if (evt.name === "return") {
         const strat = strategies()[selected()]

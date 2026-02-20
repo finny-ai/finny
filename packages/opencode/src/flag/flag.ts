@@ -62,9 +62,9 @@ export namespace Flag {
 // Dynamic getter for FINNY_DISABLE_PROJECT_CONFIG
 // This must be evaluated at access time, not module load time,
 // because external tooling may set this env var at runtime
-Object.defineProperty(Flag, "FINNY_DISABLE_PROJECT_CONFIG", {
+Object.defineProperty(Flag, "OPENCODE_DISABLE_PROJECT_CONFIG", {
   get() {
-    return truthy("FINNY_DISABLE_PROJECT_CONFIG")
+    return truthy("FINNY_DISABLE_PROJECT_CONFIG") || truthy("OPENCODE_DISABLE_PROJECT_CONFIG")
   },
   enumerable: true,
   configurable: false,
@@ -73,9 +73,9 @@ Object.defineProperty(Flag, "FINNY_DISABLE_PROJECT_CONFIG", {
 // Dynamic getter for FINNY_CONFIG_DIR
 // This must be evaluated at access time, not module load time,
 // because external tooling may set this env var at runtime
-Object.defineProperty(Flag, "FINNY_CONFIG_DIR", {
+Object.defineProperty(Flag, "OPENCODE_CONFIG_DIR", {
   get() {
-    return process.env["FINNY_CONFIG_DIR"]
+    return process.env["FINNY_CONFIG_DIR"] ?? process.env["OPENCODE_CONFIG_DIR"]
   },
   enumerable: true,
   configurable: false,

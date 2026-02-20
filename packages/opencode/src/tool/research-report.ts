@@ -25,7 +25,7 @@ export const SaveResearchReportTool = Tool.define("save_research_report", async 
       risk_parameters: z.string().optional().describe("Risk management parameters and considerations"),
       additional_notes: z.string().optional().describe("Any additional notes or observations"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const timestamp = new Date().toISOString()
       const dateStr = timestamp.split("T")[0]
       const timeStr = timestamp.split("T")[1].split(".")[0].replace(/:/g, "")
@@ -94,7 +94,7 @@ export const ListResearchReportsTool = Tool.define("list_research_reports", asyn
       symbol: z.string().optional().describe("Filter reports by symbol (optional)"),
       limit: z.number().optional().default(20).describe("Maximum number of reports to list (default 20)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const researchDir = path.join(Instance.directory, RESEARCH_DIR)
 
       try {

@@ -20,8 +20,8 @@ function pagerCmd(): string[] {
     if (Bun.file(lessOnPath).size) return [lessOnPath, ...lessOptions]
   }
 
-  if (Flag.FINNY_GIT_BASH_PATH) {
-    const less = path.join(Flag.FINNY_GIT_BASH_PATH, "..", "..", "usr", "bin", "less.exe")
+  if (Flag.OPENCODE_GIT_BASH_PATH) {
+    const less = path.join(Flag.OPENCODE_GIT_BASH_PATH, "..", "..", "usr", "bin", "less.exe")
     if (Bun.file(less).size) return [less, ...lessOptions]
   }
 

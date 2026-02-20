@@ -179,7 +179,7 @@ export function DialogBuildTemplates() {
     const template = BUILD_TEMPLATES[selected()]
     if (template && promptRef.current) {
       // Set the prompt text and close dialog
-      promptRef.current.setInput(template.prompt)
+      promptRef.current.set({ input: template.prompt, parts: [] })
       dialog.clear()
     }
   }
@@ -195,9 +195,9 @@ export function DialogBuildTemplates() {
       return
     }
 
-    if (evt.name === "up" || evt.key === "k") {
+    if (evt.name === "up" || evt.name === "k") {
       setSelected((s) => Math.max(0, s - 1))
-    } else if (evt.name === "down" || evt.key === "j") {
+    } else if (evt.name === "down" || evt.name === "j") {
       setSelected((s) => Math.min(BUILD_TEMPLATES.length - 1, s + 1))
     }
   })

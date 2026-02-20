@@ -120,7 +120,7 @@ export namespace Config {
     const directories = [
       Global.Path.config,
       // Only scan project .finny/ directories when project discovery is enabled
-      ...(!Flag.FINNY_DISABLE_PROJECT_CONFIG
+      ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
         ? await Array.fromAsync(
             Filesystem.up({
               targets: [".finny"],
@@ -148,7 +148,7 @@ export namespace Config {
     const deps = []
 
     for (const dir of unique(directories)) {
-      if (dir.endsWith(".finny") || dir === Flag.FINNY_CONFIG_DIR) {
+      if (dir.endsWith(".finny") || dir === Flag.OPENCODE_CONFIG_DIR) {
         for (const file of ["finny.jsonc", "finny.json"]) {
           log.debug(`loading config from ${path.join(dir, file)}`)
           result = mergeConfigConcatArrays(result, await loadFile(path.join(dir, file)))
@@ -198,8 +198,8 @@ export namespace Config {
       })
     }
 
-    if (Flag.FINNY_PERMISSION) {
-      result.permission = mergeDeep(result.permission ?? {}, JSON.parse(Flag.FINNY_PERMISSION))
+    if (Flag.OPENCODE_PERMISSION) {
+      result.permission = mergeDeep(result.permission ?? {}, JSON.parse(Flag.OPENCODE_PERMISSION))
     }
 
     // Backwards compatibility: legacy top-level `tools` config
@@ -226,10 +226,10 @@ export namespace Config {
     if (!result.keybinds) result.keybinds = Info.shape.keybinds.parse({})
 
     // Apply flag overrides for compaction settings
-    if (Flag.FINNY_DISABLE_AUTOCOMPACT) {
+    if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {
       result.compaction = { ...result.compaction, auto: false }
     }
-    if (Flag.FINNY_DISABLE_PRUNE) {
+    if (Flag.OPENCODE_DISABLE_PRUNE) {
       result.compaction = { ...result.compaction, prune: false }
     }
 
@@ -1070,7 +1070,6 @@ export namespace Config {
           build: Agent.optional(),
           // subagent
           general: Agent.optional(),
-          explore: Agent.optional(),
           // specialized
           title: Agent.optional(),
           summary: Agent.optional(),

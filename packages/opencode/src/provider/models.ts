@@ -81,7 +81,7 @@ export namespace ModelsDev {
   export type Provider = z.infer<typeof Provider>
 
   function url() {
-    return Flag.FINNY_MODELS_URL || "https://models.dev"
+    return Flag.OPENCODE_MODELS_URL || "https://models.dev"
   }
 
   export const Data = lazy(async () => {
@@ -93,7 +93,7 @@ export namespace ModelsDev {
       .then((m) => m.snapshot as Record<string, unknown>)
       .catch(() => undefined)
     if (snapshot) return snapshot
-    if (Flag.FINNY_DISABLE_MODELS_FETCH) return {}
+    if (Flag.OPENCODE_DISABLE_MODELS_FETCH) return {}
     const json = await fetch(`${url()}/api.json`).then((x) => x.text())
     return JSON.parse(json)
   })
@@ -122,7 +122,7 @@ export namespace ModelsDev {
   }
 }
 
-if (!Flag.FINNY_DISABLE_MODELS_FETCH) {
+if (!Flag.OPENCODE_DISABLE_MODELS_FETCH) {
   ModelsDev.refresh()
   setInterval(
     async () => {
