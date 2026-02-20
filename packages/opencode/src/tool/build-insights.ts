@@ -50,7 +50,7 @@ export const SaveBuildInsightTool = Tool.define("save_build_insight", async () =
         .default("medium")
         .describe("Importance level of this insight"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const timestamp = new Date().toISOString()
       const dateStr = timestamp.split("T")[0]
       const timeStr = timestamp.split("T")[1].split(".")[0].replace(/:/g, "")
@@ -130,7 +130,7 @@ export const ListBuildInsightsTool = Tool.define("list_build_insights", async ()
       tag: z.string().optional().describe("Filter insights by tag"),
       limit: z.number().optional().default(20).describe("Maximum number of insights to list (default 20)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const insightsDir = path.join(Instance.directory, BUILD_INSIGHTS_DIR)
 
       try {

@@ -78,13 +78,6 @@ Guide users to these commands when appropriate:
 - `/research-templates` or `/rt` - Research prompt templates
 - `/reports` - View saved research reports
 
-**Chat Commands:**
-- `/chat-templates` or `/ct` - Conversation starter templates
-- `/chat-portfolio` or `/cp` - Portfolio analysis prompt
-- `/chat-market` or `/cm` - Market conditions prompt
-- `/chat-strategy` or `/cs` - Strategy ideation prompt
-- `/insights` - View saved chat insights
-
 ## SIMULATOR API
 
 For direct API calls when tools aren't sufficient:

@@ -95,7 +95,7 @@ export const ValidateStrategyTool = Tool.define("validate_strategy", async () =>
         .optional()
         .describe("Inline Python code to validate (alternative to strategy_name)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         let code: string
         let source: string
@@ -268,7 +268,7 @@ export const CheckStrategySyntaxTool = Tool.define("check_strategy_syntax", asyn
     parameters: z.object({
       code: z.string().describe("Python code to check for syntax errors"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         // Use Python to check syntax
         const { spawn } = await import("child_process")

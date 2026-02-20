@@ -52,27 +52,7 @@ export namespace Command {
   const state = Instance.state(async () => {
     const cfg = await Config.get()
 
-    const result: Record<string, Info> = {
-      [Default.INIT]: {
-        name: Default.INIT,
-        description: "create/update AGENTS.md",
-        source: "command",
-        get template() {
-          return PROMPT_INITIALIZE.replace("${path}", Instance.worktree)
-        },
-        hints: hints(PROMPT_INITIALIZE),
-      },
-      [Default.REVIEW]: {
-        name: Default.REVIEW,
-        description: "review changes [commit|branch|pr], defaults to uncommitted",
-        source: "command",
-        get template() {
-          return PROMPT_REVIEW.replace("${path}", Instance.worktree)
-        },
-        subtask: true,
-        hints: hints(PROMPT_REVIEW),
-      },
-    }
+    const result: Record<string, Info> = {}
 
     for (const [name, command] of Object.entries(cfg.command ?? {})) {
       result[name] = {

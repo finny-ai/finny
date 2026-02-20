@@ -16,7 +16,7 @@ export const MarketPriceTool = Tool.define("get_market_price", async () => {
           "Specific symbol to get price for (e.g., 'BTC', 'ETH', 'AAPL'). If not provided, returns prices for all symbols."
         ),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         const response = await fetch(`${SIMULATOR_URL}/prices`, {
           signal: ctx.abort,
@@ -97,7 +97,7 @@ export const PriceHistoryTool = Tool.define("get_price_history", async () => {
         .default(50)
         .describe("Number of historical bars to return (default 50, max 500)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const symbol = params.symbol.toUpperCase()
       const limit = Math.min(params.limit || 50, 500)
 

@@ -97,11 +97,11 @@ export function DialogValidate() {
       if (strat) {
         validateStrategy(strat.name).catch(() => {})
       }
-    } else if (evt.name === "up" || evt.key === "k") {
+    } else if (evt.name === "up" || evt.name === "k") {
       if (!result()) setSelected((s) => Math.max(0, s - 1))
-    } else if (evt.name === "down" || evt.key === "j") {
+    } else if (evt.name === "down" || evt.name === "j") {
       if (!result()) setSelected((s) => Math.min(strategies().length - 1, s + 1))
-    } else if (evt.key === "r") {
+    } else if (evt.name === "r") {
       fetchStrategies()
     }
   })

@@ -142,13 +142,13 @@ export function DialogResearchReports() {
     if (step() === "list") {
       if (evt.name === "return" || evt.name === "enter") {
         viewSelectedReport()
-      } else if (evt.name === "up" || evt.key === "k") {
+      } else if (evt.name === "up" || evt.name === "k") {
         setSelected((s) => Math.max(0, s - 1))
-      } else if (evt.name === "down" || evt.key === "j") {
+      } else if (evt.name === "down" || evt.name === "j") {
         setSelected((s) => Math.min(reports().length - 1, s + 1))
-      } else if (evt.key === "d") {
+      } else if (evt.name === "d") {
         deleteSelectedReport()
-      } else if (evt.key === "r") {
+      } else if (evt.name === "r") {
         loadReports()
       }
     } else if (step() === "view") {
@@ -156,9 +156,9 @@ export function DialogResearchReports() {
       const lines = viewContent().split("\n")
       const maxScroll = Math.max(0, lines.length - 20)
 
-      if (evt.name === "up" || evt.key === "k") {
+      if (evt.name === "up" || evt.name === "k") {
         setScrollOffset((s) => Math.max(0, s - 1))
-      } else if (evt.name === "down" || evt.key === "j") {
+      } else if (evt.name === "down" || evt.name === "j") {
         setScrollOffset((s) => Math.min(maxScroll, s + 1))
       } else if (evt.name === "pageup") {
         setScrollOffset((s) => Math.max(0, s - 10))
@@ -243,7 +243,7 @@ export function DialogResearchReports() {
           </box>
 
           <box height={20} overflow="hidden">
-            <text fg={theme.text} wrap="wrap">
+            <text fg={theme.text}>
               {visibleContent()}
             </text>
           </box>

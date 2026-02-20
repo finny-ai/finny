@@ -231,6 +231,16 @@ const Dashboard = () => {
             setIsSimRunning(res.data.running);
         });
 
+        // Fetch agent leaderboard via HTTP (don't rely solely on socket events)
+        api.get('/leaderboard')
+            .then(res => setAgents(res.data.leaderboard || []))
+            .catch(err => console.log('Agent leaderboard fetch error:', err));
+
+        // Fetch user leaderboard via HTTP
+        api.get('/users/leaderboard')
+            .then(res => setUsers(res.data.leaderboard || []))
+            .catch(err => console.log('User leaderboard fetch error:', err));
+
         return () => {
             socket.off('connect');
             socket.off('disconnect');

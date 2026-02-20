@@ -181,7 +181,7 @@ export namespace Installation {
 
   export const VERSION = typeof FINNY_VERSION === "string" ? FINNY_VERSION : "0.6.7"
   export const CHANNEL = typeof FINNY_CHANNEL === "string" ? FINNY_CHANNEL : "local"
-  export const USER_AGENT = `finny/${CHANNEL}/${VERSION}/${Flag.FINNY_CLIENT}`
+  export const USER_AGENT = `finny/${CHANNEL}/${VERSION}/${Flag.OPENCODE_CLIENT}`
 
   export async function latest(installMethod?: Method) {
     const detectedMethod = installMethod || (await method())

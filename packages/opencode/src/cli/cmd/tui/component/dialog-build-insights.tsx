@@ -137,7 +137,7 @@ export function DialogBuildInsights() {
   useKeyboard((evt) => {
     // If viewing content, any key closes the view
     if (viewContent() !== null) {
-      if (evt.name === "escape" || evt.name === "return" || evt.key === "q") {
+      if (evt.name === "escape" || evt.name === "return" || evt.name === "q") {
         setViewContent(null)
       }
       return
@@ -153,20 +153,20 @@ export function DialogBuildInsights() {
       return
     }
 
-    if (evt.key === "d" || evt.name === "delete") {
+    if (evt.name === "d" || evt.name === "delete") {
       deleteInsight()
       return
     }
 
-    if (evt.name === "up" || evt.key === "k") {
+    if (evt.name === "up" || evt.name === "k") {
       setSelected((s) => Math.max(0, s - 1))
-    } else if (evt.name === "down" || evt.key === "j") {
+    } else if (evt.name === "down" || evt.name === "j") {
       setSelected((s) => Math.min(filteredInsights().length - 1, s + 1))
-    } else if (evt.name === "left" || evt.key === "h") {
+    } else if (evt.name === "left" || evt.name === "h") {
       cycleCategory(-1)
-    } else if (evt.name === "right" || evt.key === "l") {
+    } else if (evt.name === "right" || evt.name === "l") {
       cycleCategory(1)
-    } else if (evt.key === "r") {
+    } else if (evt.name === "r") {
       loadInsights()
     }
   })

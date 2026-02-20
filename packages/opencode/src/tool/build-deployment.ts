@@ -48,7 +48,7 @@ export const DeployStrategyTool = Tool.define("deploy_strategy", async () => {
         .optional()
         .describe("Username to associate with this strategy"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         let code: string
         let source: string
@@ -190,7 +190,7 @@ export const StopStrategyTool = Tool.define("stop_strategy", async () => {
         .string()
         .describe("Name of the strategy to stop"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       try {
         // First get the current stats
         let finalStats: any = null

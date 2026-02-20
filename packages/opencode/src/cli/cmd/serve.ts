@@ -8,7 +8,7 @@ export const ServeCommand = cmd({
   builder: (yargs) => withNetworkOptions(yargs),
   describe: "starts a headless finny server",
   handler: async (args) => {
-    if (!Flag.FINNY_SERVER_PASSWORD) {
+    if (!Flag.OPENCODE_SERVER_PASSWORD) {
       console.log("Warning: FINNY_SERVER_PASSWORD is not set; server is unsecured.")
     }
     const opts = await resolveNetworkOptions(args)

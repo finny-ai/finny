@@ -22,7 +22,7 @@ export function TransitionPrompt() {
     <Show when={local.transition.pending()}>
       {(transition) => (
         <box
-          border={["single"]}
+          border={["single"] as any}
           borderColor={theme.accent}
           backgroundColor={theme.backgroundElement}
           paddingTop={1}

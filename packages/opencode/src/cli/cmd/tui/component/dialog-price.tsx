@@ -90,12 +90,12 @@ export function DialogPrice() {
       if (data.pe) text += ` | P/E: ${data.pe.toFixed(2)}`
     }
 
-    sdk.event.emit(TuiEvent.PromptAppend, { text })
+    ;(sdk.event as any).emit(TuiEvent.PromptAppend.type, { text })
     dialog.clear()
   }
 
   useKeyboard((evt) => {
-    const isEnter = evt.name === "return" || evt.name === "enter" || evt.key === "\r"
+    const isEnter = evt.name === "return" || evt.name === "enter"
 
     // Detail view controls
     if (detailView()) {
@@ -122,7 +122,7 @@ export function DialogPrice() {
         const [symbol, data] = list[selected()]
         setDetailView({ ...data, symbol })
       }
-    } else if (evt.key === "r") {
+    } else if (evt.name === "r") {
       fetchPrices(true)
     }
   })

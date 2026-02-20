@@ -18,6 +18,7 @@ import { useCommandDialog } from "../dialog-command"
 import { useRenderer } from "@opentui/solid"
 import { useExit } from "../../context/exit"
 import { Clipboard } from "../../util/clipboard"
+import { Editor } from "../../util/editor"
 import type { FilePart } from "@opencode-ai/sdk/v2"
 import { TuiEvent } from "../../event"
 import { iife } from "@/util/iife"
@@ -52,7 +53,7 @@ export type PromptRef = {
   submit(): void
 }
 
-const PLACEHOLDERS = ["Build a momentum strategy for BTC", "Backtest a mean reversion strategy", "Create a golden cross trading bot"]
+const PLACEHOLDERS = ["Build a trading strategy", "Backtest a strategy", "Research a ticker"]
 
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable

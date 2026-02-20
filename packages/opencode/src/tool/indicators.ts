@@ -26,7 +26,7 @@ export const CalculateIndicatorTool = Tool.define("calculate_indicator", async (
       // Bollinger-specific parameters
       std: z.number().optional().describe("Bollinger Bands standard deviation multiplier (default 2.0)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const symbol = params.symbol.toUpperCase()
       const indicator = params.indicator
 
@@ -138,7 +138,7 @@ export const CalculateCorrelationTool = Tool.define("calculate_correlation", asy
       symbol_b: z.string().describe("Second trading symbol (e.g., 'ETH')"),
       period: z.number().optional().describe("Lookback period (optional, uses all available data if not specified)"),
     }),
-    async execute(params, ctx) {
+    async execute(params, ctx): Promise<{title: string; output: string; metadata: Record<string, any>}> {
       const symbolA = params.symbol_a.toUpperCase()
       const symbolB = params.symbol_b.toUpperCase()
 

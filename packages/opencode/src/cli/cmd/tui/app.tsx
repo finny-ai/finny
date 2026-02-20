@@ -22,8 +22,6 @@ import { DialogCode } from "@tui/component/dialog-code"
 import { DialogBacktest } from "@tui/component/dialog-backtest"
 import { DialogResearchTemplates, ResearchTemplates } from "@tui/component/dialog-research-templates"
 import { DialogResearchReports } from "@tui/component/dialog-research-reports"
-import { DialogChatTemplates, ChatTemplates } from "@tui/component/dialog-chat-templates"
-import { DialogChatInsights } from "@tui/component/dialog-chat-insights"
 import { DialogBuildTemplates, BuildTemplates } from "@tui/component/dialog-build-templates"
 import { DialogBuildInsights } from "@tui/component/dialog-build-insights"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
@@ -45,7 +43,6 @@ import { KVProvider, useKV } from "./context/kv"
 import { Provider } from "@/provider/provider"
 import { ArgsProvider, useArgs, type Args } from "./context/args"
 import open from "open"
-import { writeHeapSnapshot } from "v8"
 import { PromptRefProvider, usePromptRef } from "./context/prompt"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
@@ -227,7 +224,7 @@ function App() {
 
   // Update terminal window title based on current route and session
   createEffect(() => {
-    if (!terminalTitleEnabled() || Flag.FINNY_DISABLE_TERMINAL_TITLE) return
+    if (!terminalTitleEnabled() || Flag.OPENCODE_DISABLE_TERMINAL_TITLE) return
 
     if (route.data.type === "home") {
       renderer.setTerminalTitle("Finny")
@@ -501,38 +498,6 @@ function App() {
       category: "System",
     },
     {
-      title: "Toggle debug panel",
-      category: "System",
-      value: "app.debug",
-      onSelect: (dialog) => {
-        renderer.toggleDebugOverlay()
-        dialog.clear()
-      },
-    },
-    {
-      title: "Toggle console",
-      category: "System",
-      value: "app.console",
-      onSelect: (dialog) => {
-        renderer.console.toggle()
-        dialog.clear()
-      },
-    },
-    {
-      title: "Write heap snapshot",
-      category: "System",
-      value: "app.heap_snapshot",
-      onSelect: (dialog) => {
-        const path = writeHeapSnapshot()
-        toast.show({
-          variant: "info",
-          message: `Heap snapshot written to ${path}`,
-          duration: 5000,
-        })
-        dialog.clear()
-      },
-    },
-    {
       title: "Suspend terminal",
       value: "terminal.suspend",
       keybind: "terminal_suspend",
@@ -546,40 +511,6 @@ function App() {
         renderer.suspend()
         // pid=0 means send the signal to all processes in the process group
         process.kill(0, "SIGTSTP")
-      },
-    },
-    {
-      title: terminalTitleEnabled() ? "Disable terminal title" : "Enable terminal title",
-      value: "terminal.title.toggle",
-      keybind: "terminal_title_toggle",
-      category: "System",
-      onSelect: (dialog) => {
-        setTerminalTitleEnabled((prev) => {
-          const next = !prev
-          kv.set("terminal_title_enabled", next)
-          if (!next) renderer.setTerminalTitle("")
-          return next
-        })
-        dialog.clear()
-      },
-    },
-    {
-      title: kv.get("animations_enabled", true) ? "Disable animations" : "Enable animations",
-      value: "app.toggle.animations",
-      category: "System",
-      onSelect: (dialog) => {
-        kv.set("animations_enabled", !kv.get("animations_enabled", true))
-        dialog.clear()
-      },
-    },
-    {
-      title: kv.get("diff_wrap_mode", "word") === "word" ? "Disable diff wrapping" : "Enable diff wrapping",
-      value: "app.toggle.diffwrap",
-      category: "System",
-      onSelect: (dialog) => {
-        const current = kv.get("diff_wrap_mode", "word")
-        kv.set("diff_wrap_mode", current === "word" ? "none" : "word")
-        dialog.clear()
       },
     },
     // Trading Commands
@@ -681,7 +612,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(ResearchTemplates.momentum.prompt)
+          current.set({ input: ResearchTemplates.momentum.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -698,7 +629,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(ResearchTemplates.meanReversion.prompt)
+          current.set({ input: ResearchTemplates.meanReversion.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -715,7 +646,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(ResearchTemplates.earnings.prompt)
+          current.set({ input: ResearchTemplates.earnings.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -731,82 +662,6 @@ function App() {
       },
       onSelect: () => {
         dialog.replace(() => <DialogResearchReports />)
-      },
-    },
-    // Chat Commands
-    {
-      title: "Chat templates",
-      value: "chat.templates",
-      category: "Chat",
-      slash: {
-        name: "chat-templates",
-        aliases: ["ct"],
-      },
-      onSelect: () => {
-        dialog.replace(() => <DialogChatTemplates />)
-      },
-    },
-    {
-      title: "Portfolio analysis chat",
-      value: "chat.portfolio",
-      category: "Chat",
-      hidden: true,
-      slash: {
-        name: "chat-portfolio",
-        aliases: ["cp"],
-      },
-      onSelect: () => {
-        const current = promptRef.current
-        if (current) {
-          current.setInput(ChatTemplates.portfolioAnalysis.prompt)
-        }
-        dialog.clear()
-      },
-    },
-    {
-      title: "Market conditions chat",
-      value: "chat.market",
-      category: "Chat",
-      hidden: true,
-      slash: {
-        name: "chat-market",
-        aliases: ["cm"],
-      },
-      onSelect: () => {
-        const current = promptRef.current
-        if (current) {
-          current.setInput(ChatTemplates.marketConditions.prompt)
-        }
-        dialog.clear()
-      },
-    },
-    {
-      title: "Strategy ideation chat",
-      value: "chat.strategy",
-      category: "Chat",
-      slash: {
-        name: "chat-strategy",
-        aliases: ["cs"],
-      },
-      onSelect: () => {
-        const current = promptRef.current
-        if (current) {
-          current.setInput(ChatTemplates.strategyIdeation.prompt)
-        }
-        dialog.clear()
-      },
-    },
-    {
-      title: "View chat insights",
-      value: "chat.insights",
-      category: "Chat",
-      hidden: true,
-      slash: {
-        name: "insights",
-        aliases: ["chat-insights"],
-      },
-      onSelect: () => {
-        dialog.replace(() => <DialogChatInsights />)
       },
     },
     // Build Commands
@@ -835,7 +690,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(BuildTemplates.momentum.prompt)
+          current.set({ input: BuildTemplates.momentum.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -852,7 +707,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(BuildTemplates.meanReversion.prompt)
+          current.set({ input: BuildTemplates.meanReversion.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -869,7 +724,7 @@ function App() {
       onSelect: () => {
         const current = promptRef.current
         if (current) {
-          current.setInput(BuildTemplates.custom.prompt)
+          current.set({ input: BuildTemplates.custom.prompt, parts: [] })
         }
         dialog.clear()
       },
@@ -970,7 +825,7 @@ function App() {
       height={dimensions().height}
       backgroundColor={theme.background}
       onMouseUp={async () => {
-        if (Flag.FINNY_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) {
+        if (Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT) {
           renderer.clearSelection()
           return
         }
