@@ -63,7 +63,7 @@ export namespace Command {
     const result: Record<string, Info> = {
       [Default.INIT]: {
         name: Default.INIT,
-        description: "create/update AGENTS.md",
+        description: "initialize project rules for Finny strategy generation",
         source: "command",
         get template() {
           return PROMPT_INITIALIZE.replace("${path}", Instance.worktree)
@@ -72,7 +72,7 @@ export namespace Command {
       },
       [Default.REVIEW]: {
         name: Default.REVIEW,
-        description: "review changes [commit|branch|pr], defaults to uncommitted",
+        description: "review strategy changes [commit|branch|pr], defaults to uncommitted",
         source: "command",
         get template() {
           return PROMPT_REVIEW.replace("${path}", Instance.worktree)

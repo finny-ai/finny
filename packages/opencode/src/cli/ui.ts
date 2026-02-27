@@ -43,48 +43,22 @@ export namespace UI {
   export function logo(pad?: string) {
     const result: string[] = []
     const reset = "\x1b[0m"
-    const left = {
-      fg: "\x1b[90m",
-      shadow: "\x1b[38;5;235m",
-      bg: "\x1b[48;5;235m",
-    }
-    const right = {
-      fg: reset,
-      shadow: "\x1b[38;5;238m",
-      bg: "\x1b[48;5;238m",
-    }
-    const gap = " "
-    const draw = (line: string, fg: string, shadow: string, bg: string) => {
-      const parts: string[] = []
-      for (const char of line) {
-        if (char === "_") {
-          parts.push(bg, " ", reset)
-          continue
-        }
-        if (char === "^") {
-          parts.push(fg, bg, "▀", reset)
-          continue
-        }
-        if (char === "~") {
-          parts.push(shadow, "▀", reset)
-          continue
-        }
-        if (char === " ") {
-          parts.push(" ")
-          continue
-        }
-        parts.push(fg, char, reset)
-      }
-      return parts.join("")
-    }
-    glyphs.left.forEach((row, index) => {
+    const fg = reset
+    const teal = "\x1b[38;5;43m" // teal color for Y
+
+    glyphs.lines.forEach((line) => {
       if (pad) result.push(pad)
-      result.push(draw(row, left.fg, left.shadow, left.bg))
-      result.push(gap)
-      const other = glyphs.right[index] ?? ""
-      result.push(draw(other, right.fg, right.shadow, right.bg))
+      const before = line.slice(0, glyphs.yStart)
+      const yPart = line.slice(glyphs.yStart)
+      result.push(fg, before, reset, teal, yPart, reset)
       result.push(EOL)
     })
+    // Add tagline and version
+    if (pad) result.push(pad)
+    result.push(Style.TEXT_DIM, glyphs.tagline, reset, EOL)
+    if (pad) result.push(pad)
+    result.push(Style.TEXT_DIM, glyphs.version, reset)
+
     return result.join("").trimEnd()
   }
 

@@ -9,20 +9,28 @@ import PROMPT_GEMINI from "./prompt/gemini.txt"
 
 import PROMPT_CODEX from "./prompt/codex.txt"
 import PROMPT_TRINITY from "./prompt/trinity.txt"
+
+import PROMPT_FINNY_ANTHROPIC from "./prompt/finny-anthropic.txt"
+import PROMPT_FINNY_CODEX from "./prompt/finny-codex.txt"
 import type { Provider } from "@/provider/provider"
 import type { Agent } from "@/agent/agent"
 import { Permission } from "@/permission"
 import { Skill } from "@/skill"
 
 export namespace SystemPrompt {
+  export function instructions() {
+    return PROMPT_FINNY_CODEX.trim()
+  }
+
   export function provider(model: Provider.Model) {
-    if (model.api.id.includes("gpt-4") || model.api.id.includes("o1") || model.api.id.includes("o3"))
+    if (model.api.id.includes("gpt-5")) return [PROMPT_FINNY_CODEX]
+    if (model.api.id.includes("gpt-") || model.api.id.includes("o1") || model.api.id.includes("o3"))
       return [PROMPT_BEAST]
     if (model.api.id.includes("gpt")) return [PROMPT_CODEX]
     if (model.api.id.includes("gemini-")) return [PROMPT_GEMINI]
-    if (model.api.id.includes("claude")) return [PROMPT_ANTHROPIC]
+    if (model.api.id.includes("claude")) return [PROMPT_FINNY_ANTHROPIC]
     if (model.api.id.toLowerCase().includes("trinity")) return [PROMPT_TRINITY]
-    return [PROMPT_DEFAULT]
+    return [PROMPT_FINNY_ANTHROPIC]
   }
 
   export async function environment(model: Provider.Model) {
