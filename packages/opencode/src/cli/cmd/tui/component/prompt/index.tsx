@@ -74,6 +74,15 @@ function randomIndex(count: number) {
   return Math.floor(Math.random() * count)
 }
 
+const PLACEHOLDERS = [
+  "Describe your trading strategy...",
+  "What algorithm should I build?",
+  "Build a mean reversion strategy for SPY",
+  "Backtest my momentum strategy on AAPL",
+  "Optimize my portfolio allocation",
+]
+const SHELL_PLACEHOLDERS = ["ls -la", "git status", "pwd"]
+
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
@@ -843,8 +852,7 @@ export function Prompt(props: PromptProps) {
       const example = shell()[store.placeholder % shell().length]
       return `Run a command... "${example}"`
     }
-    if (!list().length) return undefined
-    return `Ask anything... "${list()[store.placeholder % list().length]}"`
+    return `Describe a strategy... "${PLACEHOLDERS[store.placeholder % PLACEHOLDERS.length]}"`
   })
 
   const spinnerDef = createMemo(() => {

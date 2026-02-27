@@ -64,7 +64,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName("finny")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
@@ -103,13 +103,14 @@ const cli = yargs(args)
     process.env.AGENT = "1"
     process.env.OPENCODE = "1"
     process.env.OPENCODE_PID = String(process.pid)
+    process.env.FINNY = "1"
 
-    Log.Default.info("opencode", {
+    Log.Default.info("finny", {
       version: Installation.VERSION,
       args: process.argv.slice(2),
     })
 
-    const marker = path.join(Global.Path.data, "opencode.db")
+    const marker = path.join(Global.Path.data, "finny.db")
     if (!(await Filesystem.exists(marker))) {
       const tty = process.stderr.isTTY
       process.stderr.write("Performing one time database migration, may take a few minutes..." + EOL)
