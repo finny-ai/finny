@@ -16,7 +16,7 @@ export function Logo() {
           const yPart = line.slice(logo.yStart)
           return (
             <box flexDirection="row">
-              <text fg={theme.text} attributes={TextAttributes.BOLD} selectable={false}>
+              <text fg="#cccccc" attributes={TextAttributes.BOLD} selectable={false}>
                 {before}
               </text>
               <text fg={TEAL} attributes={TextAttributes.BOLD} selectable={false}>

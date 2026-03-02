@@ -17,7 +17,7 @@
     "format": "echo 'Formatting code...' && bun run --prettier --write src/**/*.ts",
     "docs": "echo 'Generating documentation...' && find src -name '*.ts' -exec echo 'Processing: {}' \\;",
     "deploy": "echo 'Deploying application...' && bun run build && echo 'Deployment completed successfully'",
-    "db": "bun drizzle-kit"
+    "convex": "npx convex"
   },
   "bin": {
     "finny": "./bin/opencode"
@@ -115,6 +115,7 @@
     "bun-pty": "0.4.8",
     "chokidar": "4.0.3",
     "clipboardy": "4.0.0",
+    "convex": "^1.21.0",
     "cross-spawn": "^7.0.6",
     "decimal.js": "10.5.0",
     "diff": "catalog:",

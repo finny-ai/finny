@@ -1,0 +1,8 @@
+List all saved trading algorithms.
+
+Use the `finny_algorithm_list` tool to fetch all algorithms, then display them in a formatted table with these columns:
+
+| Name | Version | Status | Language | Description | Last Updated |
+|------|---------|--------|----------|-------------|--------------|
+
+If no algorithms are saved yet, let the user know they can generate one by switching to Build mode and describing a trading strategy.

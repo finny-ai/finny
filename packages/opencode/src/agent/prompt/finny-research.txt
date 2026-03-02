@@ -34,6 +34,8 @@ Present a structured proposal:
 ### Phase 4: Build Handoff
 After user approves the proposal, switch to Build mode to implement the algorithm. The build should follow the exact specifications agreed upon in research.
 
+When the algorithm is generated in this phase (or if you generate it directly), call `finny_algorithm_save` to save it to Finny's cloud storage with the strategy name, code, description, config, and backtest code.
+
 ## Important
 
 - Be honest about strategy limitations. If an idea is unlikely to be profitable, say so clearly with reasoning.

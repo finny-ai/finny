@@ -8,6 +8,9 @@ import { BatchTool } from "./batch"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TodoWriteTool, TodoReadTool } from "./todo"
+import { AlgorithmSaveTool } from "./algorithm-save"
+import { AlgorithmListTool } from "./algorithm-list"
+import { AlgorithmGetTool } from "./algorithm-get"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -114,6 +117,9 @@ export namespace ToolRegistry {
       WebFetchTool,
       TodoWriteTool,
       // TodoReadTool,
+      AlgorithmSaveTool,
+      AlgorithmListTool,
+      AlgorithmGetTool,
       WebSearchTool,
       CodeSearchTool,
       SkillTool,

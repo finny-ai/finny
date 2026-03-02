@@ -41,7 +41,7 @@ export const TodoReadTool = Tool.define("todoread", {
       metadata: {},
     })
 
-    const todos = await Todo.get(ctx.sessionID)
+    const todos: Array<{ content: string; status: string; priority: string }> = await Todo.get(ctx.sessionID)
     return {
       title: `${todos.filter((x) => x.status !== "completed").length} todos`,
       metadata: {

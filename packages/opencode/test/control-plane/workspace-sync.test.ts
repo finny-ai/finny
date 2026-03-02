@@ -3,8 +3,7 @@ import { WorkspaceID } from "../../src/control-plane/schema"
 import { Log } from "../../src/util/log"
 import { tmpdir } from "../fixture/fixture"
 import { Project } from "../../src/project/project"
-import { Database } from "../../src/storage/db"
-import { WorkspaceTable } from "../../src/control-plane/workspace.sql"
+import { ConvexWorkspaces } from "../../src/storage/convex/workspaces"
 import { GlobalBus } from "../../src/bus/global"
 import { resetDatabase } from "../fixture/db"
 import * as adaptors from "../../src/control-plane/adaptors"
@@ -17,7 +16,8 @@ afterEach(async () => {
 
 Log.init({ print: false })
 
-const remote = { type: "testing", name: "remote-a" } as unknown as typeof WorkspaceTable.$inferInsert
+const seen: string[] = []
+const remote = { type: "testing", name: "remote-a" } as any
 
 const TestAdaptor: Adaptor = {
   configure(config) {
@@ -55,28 +55,18 @@ describe("control-plane/workspace.startSyncing", () => {
     const id1 = WorkspaceID.ascending()
     const id2 = WorkspaceID.ascending()
 
-    Database.use((db) =>
-      db
-        .insert(WorkspaceTable)
-        .values([
-          {
-            id: id1,
-            branch: "main",
-            project_id: project.id,
-            type: remote.type,
-            name: remote.name,
-          },
-          {
-            id: id2,
-            branch: "main",
-            project_id: project.id,
-            type: "worktree",
-            directory: tmp.path,
-            name: "local",
-          },
-        ])
-        .run(),
-    )
+    await ConvexWorkspaces.create({
+      id: id1,
+      branch: "main",
+      project_id: project.id,
+      config: remote,
+    })
+    await ConvexWorkspaces.create({
+      id: id2,
+      branch: "main",
+      project_id: project.id,
+      config: { type: "worktree", directory: tmp.path },
+    })
 
     const done = new Promise<void>((resolve) => {
       const listener = (event: { directory?: string; payload: { type: string } }) => {
@@ -88,7 +78,7 @@ describe("control-plane/workspace.startSyncing", () => {
       GlobalBus.on("event", listener)
     })
 
-    const sync = Workspace.startSyncing(project)
+    const sync = await Workspace.startSyncing(project)
     await Promise.race([
       done,
       new Promise((_, reject) => setTimeout(() => reject(new Error("timed out waiting for sync event")), 2000)),

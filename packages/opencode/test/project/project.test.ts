@@ -259,7 +259,7 @@ describe("Project.discover", () => {
 
     await p.discover(project)
 
-    const updated = Project.get(project.id)
+    const updated = await Project.get(project.id)
     expect(updated).toBeDefined()
     expect(updated!.icon).toBeDefined()
     expect(updated!.icon?.url).toStartWith("data:")
@@ -276,7 +276,7 @@ describe("Project.discover", () => {
 
     await p.discover(project)
 
-    const updated = Project.get(project.id)
+    const updated = await Project.get(project.id)
     expect(updated).toBeDefined()
     expect(updated!.icon).toBeUndefined()
   })
@@ -294,7 +294,7 @@ describe("Project.update", () => {
 
     expect(updated.name).toBe("New Project Name")
 
-    const fromDb = Project.get(project.id)
+    const fromDb = await Project.get(project.id)
     expect(fromDb?.name).toBe("New Project Name")
   })
 
@@ -309,7 +309,7 @@ describe("Project.update", () => {
 
     expect(updated.icon?.url).toBe("https://example.com/icon.png")
 
-    const fromDb = Project.get(project.id)
+    const fromDb = await Project.get(project.id)
     expect(fromDb?.icon?.url).toBe("https://example.com/icon.png")
   })
 
@@ -324,7 +324,7 @@ describe("Project.update", () => {
 
     expect(updated.icon?.color).toBe("#ff0000")
 
-    const fromDb = Project.get(project.id)
+    const fromDb = await Project.get(project.id)
     expect(fromDb?.icon?.color).toBe("#ff0000")
   })
 
@@ -339,7 +339,7 @@ describe("Project.update", () => {
 
     expect(updated.commands?.start).toBe("npm run dev")
 
-    const fromDb = Project.get(project.id)
+    const fromDb = await Project.get(project.id)
     expect(fromDb?.commands?.start).toBe("npm run dev")
   })
 

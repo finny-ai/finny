@@ -1,0 +1,90 @@
+{
+  "strategy_name": "btc_liq_funding_news_v1",
+  "mode": "paper",
+  "symbol": "BTCUSDT-PERP",
+  "timeframe": "1m",
+  "timezone": "UTC",
+
+  "execution": {
+    "max_concurrent_positions": 1,
+    "use_post_only_limits": true,
+    "limit_order_ttl_minutes": 20,
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 7.0,
+    "slippage_bps": 1.0
+  },
+
+  "risk": {
+    "starting_equity_usd": 100.0,
+    "max_drawdown_pct": 0.2,
+    "risk_per_trade_pct": 0.01,
+    "max_position_pct_of_equity": 0.35,
+    "max_leverage": 5,
+    "daily_loss_limit_pct": 0.03,
+    "cooldown_minutes_after_stop": 30
+  },
+
+  "liquidation_arbitrage": {
+    "enabled": true,
+    "atr_period": 14,
+    "atr_timeframe": "1m",
+    "wick_ratio_threshold": 0.55,
+    "volume_zscore_threshold": 2.0,
+    "vwap_lookback": 60,
+    "dislocation_atr_threshold": 1.2,
+    "ladder": {
+      "levels": [1.5, 2.5, 3.5],
+      "weights": [0.5, 0.3, 0.2]
+    },
+    "stop": {
+      "type": "atr",
+      "atr_mult": 1.2,
+      "max_stop_pct": 0.03
+    },
+    "take_profit": {
+      "activate_after_atr": 0.8,
+      "trail_atr": 0.6,
+      "time_stop_minutes": 240
+    }
+  },
+
+  "funding_exploitation": {
+    "enabled": true,
+    "note": "True delta-neutral funding capture requires spot+perp hedging. In perp-only mode, this module acts as a funding-biased long filter.",
+    "funding_negative_threshold": -0.0005,
+    "funding_recover_threshold": -0.0001,
+    "max_hold_minutes": 360,
+    "position_size_multiplier": 0.5
+  },
+
+  "sentiment_guard": {
+    "enabled": true,
+    "news_provider": "gdelt",
+    "lookback_minutes": 30,
+    "keywords": [
+      "war",
+      "missile",
+      "nuclear",
+      "sanction",
+      "tariff",
+      "invasion",
+      "iran",
+      "israel",
+      "russia",
+      "china",
+      "taiwan",
+      "emergency",
+      "martial law",
+      "evacuation",
+      "terror",
+      "ceasefire",
+      "fed",
+      "cpi",
+      "jobs report",
+      "powell"
+    ],
+    "risk_score_threshold": 2.0,
+    "size_multiplier_on_risk": 0.25,
+    "entry_depth_multiplier_on_risk": 1.5
+  }
+}

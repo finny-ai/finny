@@ -6,8 +6,7 @@ import { ProviderID, ModelID } from "@/provider/schema"
 import { Session } from "@/session"
 import type { SessionID } from "@/session/schema"
 import { MessageV2 } from "@/session/message-v2"
-import { Database, eq } from "@/storage/db"
-import { SessionShareTable } from "./share.sql"
+import { ConvexSessionShares } from "@/storage/convex/session-shares"
 import { Log } from "@/util/log"
 import type * as SDK from "@opencode-ai/sdk/v2"
 
@@ -120,34 +119,22 @@ export namespace ShareNext {
       headers: { ...req.headers, "Content-Type": "application/json" },
       body: JSON.stringify({ sessionID: sessionID }),
     })
-
-    if (!response.ok) {
-      const message = await response.text().catch(() => response.statusText)
-      throw new Error(`Failed to create share (${response.status}): ${message || response.statusText}`)
-    }
-
-    const result = (await response.json()) as { id: string; url: string; secret: string }
-
-    Database.use((db) =>
-      db
-        .insert(SessionShareTable)
-        .values({ session_id: sessionID, id: result.id, secret: result.secret, url: result.url })
-        .onConflictDoUpdate({
-          target: SessionShareTable.session_id,
-          set: { id: result.id, secret: result.secret, url: result.url },
-        })
-        .run(),
-    )
+      .then((x) => x.json())
+      .then((x) => x as { id: string; url: string; secret: string })
+    await ConvexSessionShares.upsert({
+      session_id: sessionID,
+      share_id: result.id,
+      secret: result.secret,
+      url: result.url,
+    })
     fullSync(sessionID)
     return result
   }
 
-  function get(sessionID: SessionID) {
-    const row = Database.use((db) =>
-      db.select().from(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).get(),
-    )
+  async function get(sessionID: string) {
+    const row = await ConvexSessionShares.getBySession(sessionID)
     if (!row) return
-    return { id: row.id, secret: row.secret, url: row.url }
+    return { id: row.share_id, secret: row.secret, url: row.url }
   }
 
   type Data =
@@ -207,7 +194,7 @@ export namespace ShareNext {
       const queued = queue.get(sessionID)
       if (!queued) return
       queue.delete(sessionID)
-      const share = get(sessionID)
+      const share = await get(sessionID)
       if (!share) return
 
       const req = await request()
@@ -230,7 +217,7 @@ export namespace ShareNext {
   export async function remove(sessionID: SessionID) {
     if (disabled) return
     log.info("removing share", { sessionID })
-    const share = get(sessionID)
+    const share = await get(sessionID)
     if (!share) return
 
     const req = await request()
@@ -241,13 +228,7 @@ export namespace ShareNext {
         secret: share.secret,
       }),
     })
-
-    if (!response.ok) {
-      const message = await response.text().catch(() => response.statusText)
-      throw new Error(`Failed to remove share (${response.status}): ${message || response.statusText}`)
-    }
-
-    Database.use((db) => db.delete(SessionShareTable).where(eq(SessionShareTable.session_id, sessionID)).run())
+    await ConvexSessionShares.remove(sessionID)
   }
 
   async function fullSync(sessionID: SessionID) {

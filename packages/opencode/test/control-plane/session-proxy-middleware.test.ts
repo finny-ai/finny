@@ -3,10 +3,8 @@ import { WorkspaceID } from "../../src/control-plane/schema"
 import { Hono } from "hono"
 import { tmpdir } from "../fixture/fixture"
 import { Project } from "../../src/project/project"
-import { WorkspaceTable } from "../../src/control-plane/workspace.sql"
 import { Instance } from "../../src/project/instance"
-import { WorkspaceContext } from "../../src/control-plane/workspace-context"
-import { Database } from "../../src/storage/db"
+import { ConvexWorkspaces } from "../../src/storage/convex/workspaces"
 import { resetDatabase } from "../fixture/db"
 import * as adaptors from "../../src/control-plane/adaptors"
 import type { Adaptor } from "../../src/control-plane/types"
@@ -31,7 +29,7 @@ type State = {
   calls: Array<{ method: string; url: string; body?: string }>
 }
 
-const remote = { type: "testing", name: "remote-a" } as unknown as typeof WorkspaceTable.$inferInsert
+const remote = { type: "testing", name: "remote-a" } as any
 
 async function setup(state: State) {
   const TestAdaptor: Adaptor = {
@@ -67,28 +65,18 @@ async function setup(state: State) {
   const id1 = WorkspaceID.ascending()
   const id2 = WorkspaceID.ascending()
 
-  Database.use((db) =>
-    db
-      .insert(WorkspaceTable)
-      .values([
-        {
-          id: id1,
-          branch: "main",
-          project_id: project.id,
-          type: remote.type,
-          name: remote.name,
-        },
-        {
-          id: id2,
-          branch: "main",
-          project_id: project.id,
-          type: "worktree",
-          directory: tmp.path,
-          name: "local",
-        },
-      ])
-      .run(),
-  )
+  await ConvexWorkspaces.create({
+    id: id1,
+    branch: "main",
+    project_id: project.id,
+    config: remote,
+  })
+  await ConvexWorkspaces.create({
+    id: id2,
+    branch: "main",
+    project_id: project.id,
+    config: { type: "worktree", directory: tmp.path },
+  })
 
   const { WorkspaceRouterMiddleware } = await import("../../src/control-plane/workspace-router-middleware")
   const app = new Hono().use(WorkspaceRouterMiddleware)

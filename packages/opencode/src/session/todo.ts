@@ -2,8 +2,7 @@ import { BusEvent } from "@/bus/bus-event"
 import { Bus } from "@/bus"
 import { SessionID } from "./schema"
 import z from "zod"
-import { Database, eq, asc } from "../storage/db"
-import { TodoTable } from "./session.sql"
+import { ConvexTodos } from "../storage/convex/todos"
 
 export namespace Todo {
   export const Info = z
@@ -25,30 +24,14 @@ export namespace Todo {
     ),
   }
 
-  export function update(input: { sessionID: SessionID; todos: Info[] }) {
-    Database.transaction((db) => {
-      db.delete(TodoTable).where(eq(TodoTable.session_id, input.sessionID)).run()
-      if (input.todos.length === 0) return
-      db.insert(TodoTable)
-        .values(
-          input.todos.map((todo, position) => ({
-            session_id: input.sessionID,
-            content: todo.content,
-            status: todo.status,
-            priority: todo.priority,
-            position,
-          })),
-        )
-        .run()
-    })
+  export async function update(input: { sessionID: string; todos: Info[] }) {
+    await ConvexTodos.replaceForSession(input.sessionID, input.todos)
     Bus.publish(Event.Updated, input)
   }
 
-  export function get(sessionID: SessionID) {
-    const rows = Database.use((db) =>
-      db.select().from(TodoTable).where(eq(TodoTable.session_id, sessionID)).orderBy(asc(TodoTable.position)).all(),
-    )
-    return rows.map((row) => ({
+  export async function get(sessionID: string) {
+    const rows = await ConvexTodos.getBySession(sessionID)
+    return rows.map((row: any) => ({
       content: row.content,
       status: row.status,
       priority: row.priority,

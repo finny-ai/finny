@@ -716,6 +716,15 @@ export type EventTodoUpdated = {
   }
 }
 
+export type EventAlgorithmSaved = {
+  type: "algorithm.saved"
+  properties: {
+    algorithmId: string
+    name: string
+    version: number
+  }
+}
+
 export type EventTuiPromptAppend = {
   type: "tui.prompt.append"
   properties: {
@@ -812,6 +821,7 @@ export type Session = {
   workspaceID?: string
   directory: string
   parentID?: string
+  userID?: string
   summary?: {
     additions: number
     deletions: number
@@ -982,6 +992,7 @@ export type Event =
   | EventSessionCompacted
   | EventFileWatcherUpdated
   | EventTodoUpdated
+  | EventAlgorithmSaved
   | EventTuiPromptAppend
   | EventTuiCommandExecute
   | EventTuiToastShow
@@ -1681,6 +1692,7 @@ export type GlobalSession = {
   workspaceID?: string
   directory: string
   parentID?: string
+  userID?: string
   summary?: {
     additions: number
     deletions: number

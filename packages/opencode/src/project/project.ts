@@ -1,11 +1,10 @@
 import z from "zod"
 import { Filesystem } from "../util/filesystem"
 import path from "path"
-import { and, Database, eq } from "../storage/db"
-import { ProjectTable } from "./project.sql"
-import { SessionTable } from "../session/session.sql"
+import { ConvexProjects } from "../storage/convex/projects"
 import { Log } from "../util/log"
 import { Flag } from "@/flag/flag"
+import { work } from "../util/queue"
 import { fn } from "@opencode-ai/util/fn"
 import { BusEvent } from "@/bus/bus-event"
 import { iife } from "@/util/iife"
@@ -14,7 +13,6 @@ import { existsSync } from "fs"
 import { git } from "../util/git"
 import { Glob } from "../util/glob"
 import { which } from "../util/which"
-import { ProjectID } from "./schema"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
@@ -33,7 +31,7 @@ export namespace Project {
 
   export const Info = z
     .object({
-      id: ProjectID.zod,
+      id: z.string(),
       worktree: z.string(),
       vcs: z.literal("git").optional(),
       name: z.string().optional(),
@@ -65,15 +63,25 @@ export namespace Project {
     Updated: BusEvent.define("project.updated", Info),
   }
 
-  type Row = typeof ProjectTable.$inferSelect
-
-  export function fromRow(row: Row): Info {
+  export function fromRow(row: {
+    id: string
+    worktree: string
+    vcs?: string | null
+    name?: string | null
+    icon_url?: string | null
+    icon_color?: string | null
+    time_created: number
+    time_updated: number
+    time_initialized?: number | null
+    sandboxes: string[]
+    commands?: { start?: string } | null
+  }): Info {
     const icon =
       row.icon_url || row.icon_color
         ? { url: row.icon_url ?? undefined, color: row.icon_color ?? undefined }
         : undefined
     return {
-      id: ProjectID.make(row.id),
+      id: row.id,
       worktree: row.worktree,
       vcs: row.vcs ? Info.shape.vcs.parse(row.vcs) : undefined,
       name: row.name ?? undefined,
@@ -91,7 +99,6 @@ export namespace Project {
   function readCachedId(dir: string) {
     return Filesystem.readText(path.join(dir, "opencode"))
       .then((x) => x.trim())
-      .then(ProjectID.make)
       .catch(() => undefined)
   }
 
@@ -112,7 +119,7 @@ export namespace Project {
 
         if (!gitBinary) {
           return {
-            id: id ?? ProjectID.global,
+            id: id ?? "global",
             worktree: sandbox,
             sandbox,
             vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
@@ -131,7 +138,7 @@ export namespace Project {
 
         if (!worktree) {
           return {
-            id: id ?? ProjectID.global,
+            id: id ?? "global",
             worktree: sandbox,
             sandbox,
             vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
@@ -147,7 +154,7 @@ export namespace Project {
 
         // generate id from root commit
         if (!id) {
-          const roots = await git(["rev-list", "--max-parents=0", "HEAD"], {
+          const roots = await git(["rev-list", "--max-parents=0", "--all"], {
             cwd: sandbox,
           })
             .then(async (result) =>
@@ -161,23 +168,22 @@ export namespace Project {
 
           if (!roots) {
             return {
-              id: ProjectID.global,
+              id: "global",
               worktree: sandbox,
               sandbox,
               vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
             }
           }
 
-          id = roots[0] ? ProjectID.make(roots[0]) : undefined
+          id = roots[0]
           if (id) {
-            // Write to common dir so the cache is shared across worktrees.
-            await Filesystem.write(path.join(worktree, ".git", "opencode"), id).catch(() => undefined)
+            await Filesystem.write(path.join(dotgit, "opencode"), id).catch(() => undefined)
           }
         }
 
         if (!id) {
           return {
-            id: ProjectID.global,
+            id: "global",
             worktree: sandbox,
             sandbox,
             vcs: "git",
@@ -210,26 +216,31 @@ export namespace Project {
       }
 
       return {
-        id: ProjectID.global,
+        id: "global",
         worktree: "/",
         sandbox: "/",
         vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
       }
     })
 
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, data.id)).get())
-    const existing = row
-      ? fromRow(row)
-      : {
-          id: data.id,
-          worktree: data.worktree,
-          vcs: data.vcs as Info["vcs"],
-          sandboxes: [] as string[],
-          time: {
-            created: Date.now(),
-            updated: Date.now(),
-          },
-        }
+    const row = await ConvexProjects.getById(data.id)
+    const existing = await iife(async () => {
+      if (row) return fromRow(row)
+      const fresh: Info = {
+        id: data.id,
+        worktree: data.worktree,
+        vcs: data.vcs as Info["vcs"],
+        sandboxes: [],
+        time: {
+          created: Date.now(),
+          updated: Date.now(),
+        },
+      }
+      if (data.id !== "global") {
+        await ConvexProjects.migrateFromGlobal(data.id, data.worktree)
+      }
+      return fresh
+    })
 
     if (Flag.OPENCODE_EXPERIMENTAL_ICON_DISCOVERY) discover(existing)
 
@@ -245,10 +256,11 @@ export namespace Project {
     if (data.sandbox !== result.worktree && !result.sandboxes.includes(data.sandbox))
       result.sandboxes.push(data.sandbox)
     result.sandboxes = result.sandboxes.filter((x) => existsSync(x))
-    const insert = {
+
+    await ConvexProjects.upsert({
       id: result.id,
       worktree: result.worktree,
-      vcs: result.vcs ?? null,
+      vcs: result.vcs ?? undefined,
       name: result.name,
       icon_url: result.icon?.url,
       icon_color: result.icon?.color,
@@ -257,33 +269,8 @@ export namespace Project {
       time_initialized: result.time.initialized,
       sandboxes: result.sandboxes,
       commands: result.commands,
-    }
-    const updateSet = {
-      worktree: result.worktree,
-      vcs: result.vcs ?? null,
-      name: result.name,
-      icon_url: result.icon?.url,
-      icon_color: result.icon?.color,
-      time_updated: result.time.updated,
-      time_initialized: result.time.initialized,
-      sandboxes: result.sandboxes,
-      commands: result.commands,
-    }
-    Database.use((db) =>
-      db.insert(ProjectTable).values(insert).onConflictDoUpdate({ target: ProjectTable.id, set: updateSet }).run(),
-    )
-    // Runs after upsert so the target project row exists (FK constraint).
-    // Runs on every startup because sessions created before git init
-    // accumulate under "global" and need migrating whenever they appear.
-    if (data.id !== ProjectID.global) {
-      Database.use((db) =>
-        db
-          .update(SessionTable)
-          .set({ project_id: data.id })
-          .where(and(eq(SessionTable.project_id, ProjectID.global), eq(SessionTable.directory, data.worktree)))
-          .run(),
-      )
-    }
+    })
+
     GlobalBus.emit("event", {
       payload: {
         type: Event.Updated.type,
@@ -317,30 +304,17 @@ export namespace Project {
     return
   }
 
-  export function setInitialized(id: ProjectID) {
-    Database.use((db) =>
-      db
-        .update(ProjectTable)
-        .set({
-          time_initialized: Date.now(),
-        })
-        .where(eq(ProjectTable.id, id))
-        .run(),
-    )
+  export async function setInitialized(id: string) {
+    await ConvexProjects.setInitialized(id)
   }
 
-  export function list() {
-    return Database.use((db) =>
-      db
-        .select()
-        .from(ProjectTable)
-        .all()
-        .map((row) => fromRow(row)),
-    )
+  export async function list() {
+    const rows = await ConvexProjects.list()
+    return rows.map((row: any) => fromRow(row))
   }
 
-  export function get(id: ProjectID): Info | undefined {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+  export async function get(id: string): Promise<Info | undefined> {
+    const row = await ConvexProjects.getById(id)
     if (!row) return undefined
     return fromRow(row)
   }
@@ -362,27 +336,20 @@ export namespace Project {
 
   export const update = fn(
     z.object({
-      projectID: ProjectID.zod,
+      projectID: z.string(),
       name: z.string().optional(),
       icon: Info.shape.icon.optional(),
       commands: Info.shape.commands.optional(),
     }),
     async (input) => {
-      const id = ProjectID.make(input.projectID)
-      const result = Database.use((db) =>
-        db
-          .update(ProjectTable)
-          .set({
-            name: input.name,
-            icon_url: input.icon?.url,
-            icon_color: input.icon?.color,
-            commands: input.commands,
-            time_updated: Date.now(),
-          })
-          .where(eq(ProjectTable.id, id))
-          .returning()
-          .get(),
-      )
+      const result = await ConvexProjects.update({
+        id: input.projectID,
+        name: input.name,
+        icon_url: input.icon?.url,
+        icon_color: input.icon?.color,
+        commands: input.commands,
+        time_updated: Date.now(),
+      })
       if (!result) throw new Error(`Project not found: ${input.projectID}`)
       const data = fromRow(result)
       GlobalBus.emit("event", {
@@ -395,8 +362,8 @@ export namespace Project {
     },
   )
 
-  export async function sandboxes(id: ProjectID) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+  export async function sandboxes(id: string) {
+    const row = await ConvexProjects.getById(id)
     if (!row) return []
     const data = fromRow(row)
     const valid: string[] = []
@@ -407,19 +374,12 @@ export namespace Project {
     return valid
   }
 
-  export async function addSandbox(id: ProjectID, directory: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+  export async function addSandbox(id: string, directory: string) {
+    const row = await ConvexProjects.getById(id)
     if (!row) throw new Error(`Project not found: ${id}`)
     const sandboxes = [...row.sandboxes]
     if (!sandboxes.includes(directory)) sandboxes.push(directory)
-    const result = Database.use((db) =>
-      db
-        .update(ProjectTable)
-        .set({ sandboxes, time_updated: Date.now() })
-        .where(eq(ProjectTable.id, id))
-        .returning()
-        .get(),
-    )
+    const result = await ConvexProjects.updateSandboxes(id, sandboxes)
     if (!result) throw new Error(`Project not found: ${id}`)
     const data = fromRow(result)
     GlobalBus.emit("event", {
@@ -431,18 +391,11 @@ export namespace Project {
     return data
   }
 
-  export async function removeSandbox(id: ProjectID, directory: string) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
+  export async function removeSandbox(id: string, directory: string) {
+    const row = await ConvexProjects.getById(id)
     if (!row) throw new Error(`Project not found: ${id}`)
-    const sandboxes = row.sandboxes.filter((s) => s !== directory)
-    const result = Database.use((db) =>
-      db
-        .update(ProjectTable)
-        .set({ sandboxes, time_updated: Date.now() })
-        .where(eq(ProjectTable.id, id))
-        .returning()
-        .get(),
-    )
+    const sandboxes = row.sandboxes.filter((s: string) => s !== directory)
+    const result = await ConvexProjects.updateSandboxes(id, sandboxes)
     if (!result) throw new Error(`Project not found: ${id}`)
     const data = fromRow(result)
     GlobalBus.emit("event", {

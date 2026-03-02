@@ -6,9 +6,7 @@ import { Global } from "../global"
 import { Instance } from "../project/instance"
 import { InstanceBootstrap } from "../project/bootstrap"
 import { Project } from "../project/project"
-import { Database, eq } from "../storage/db"
-import { ProjectTable } from "../project/project.sql"
-import type { ProjectID } from "../project/schema"
+import { ConvexProjects } from "../storage/convex/projects"
 import { fn } from "../util/fn"
 import { Log } from "../util/log"
 import { Process } from "../util/process"
@@ -311,8 +309,8 @@ export namespace Worktree {
     return false
   }
 
-  async function runStartScripts(directory: string, input: { projectID: ProjectID; extra?: string }) {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, input.projectID)).get())
+  async function runStartScripts(directory: string, input: { projectID: string; extra?: string }) {
+    const row = await ConvexProjects.getById(input.projectID)
     const project = row ? Project.fromRow(row) : undefined
     const startup = project?.commands?.start?.trim() ?? ""
     const ok = await runStartScript(directory, startup, "project")
@@ -323,7 +321,7 @@ export namespace Worktree {
     return true
   }
 
-  function queueStartScripts(directory: string, input: { projectID: ProjectID; extra?: string }) {
+  function queueStartScripts(directory: string, input: { projectID: string; extra?: string }) {
     setTimeout(() => {
       const start = async () => {
         await runStartScripts(directory, input)

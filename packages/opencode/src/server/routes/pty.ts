@@ -4,7 +4,7 @@ import { upgradeWebSocket } from "hono/bun"
 import z from "zod"
 import { Pty } from "@/pty"
 import { PtyID } from "@/pty/schema"
-import { NotFoundError } from "../../storage/db"
+import { NotFoundError } from "../../storage/convex-client"
 import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 

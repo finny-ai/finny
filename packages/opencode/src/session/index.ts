@@ -7,12 +7,14 @@ import z from "zod"
 import { type ProviderMetadata } from "ai"
 import { Config } from "../config/config"
 import { Flag } from "../flag/flag"
+import { Identifier } from "../id/id"
 import { Installation } from "../installation"
 
-import { Database, NotFoundError, eq, and, or, gte, isNull, desc, like, inArray, lt } from "../storage/db"
-import type { SQL } from "../storage/db"
-import { SessionTable, MessageTable, PartTable } from "./session.sql"
-import { ProjectTable } from "../project/project.sql"
+import { NotFoundError } from "../storage/convex-client"
+import { ConvexSessions } from "../storage/convex/sessions"
+import { ConvexMessages } from "../storage/convex/messages"
+import { ConvexParts } from "../storage/convex/parts"
+import { ConvexProjects } from "../storage/convex/projects"
 import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
 import { MessageV2 } from "./message-v2"
@@ -22,14 +24,12 @@ import { fn } from "@/util/fn"
 import { Command } from "../command"
 import { Snapshot } from "@/snapshot"
 import { WorkspaceContext } from "../control-plane/workspace-context"
-import { ProjectID } from "../project/schema"
-import { WorkspaceID } from "../control-plane/schema"
-import { SessionID, MessageID, PartID } from "./schema"
 
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
 import { Permission } from "@/permission"
 import { Global } from "@/global"
+import { DeviceProfile } from "@/device"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { iife } from "@/util/iife"
 
@@ -49,9 +49,28 @@ export namespace Session {
     ).test(title)
   }
 
-  type SessionRow = typeof SessionTable.$inferSelect
-
-  export function fromRow(row: SessionRow): Info {
+  export function fromRow(row: {
+    id: string
+    project_id: string
+    workspace_id?: string | null
+    parent_id?: string | null
+    user_id?: string | null
+    slug: string
+    directory: string
+    title: string
+    version: string
+    share_url?: string | null
+    summary_additions?: number | null
+    summary_deletions?: number | null
+    summary_files?: number | null
+    summary_diffs?: any
+    revert?: any
+    permission?: any
+    time_created: number
+    time_updated: number
+    time_compacting?: number | null
+    time_archived?: number | null
+  }): Info {
     const summary =
       row.summary_additions !== null || row.summary_deletions !== null || row.summary_files !== null
         ? {
@@ -70,6 +89,7 @@ export namespace Session {
       workspaceID: row.workspace_id ?? undefined,
       directory: row.directory,
       parentID: row.parent_id ?? undefined,
+      userID: row.user_id ?? undefined,
       title: row.title,
       version: row.version,
       summary,
@@ -91,6 +111,7 @@ export namespace Session {
       project_id: info.projectID,
       workspace_id: info.workspaceID,
       parent_id: info.parentID,
+      user_id: info.userID,
       slug: info.slug,
       directory: info.directory,
       title: info.title,
@@ -121,12 +142,13 @@ export namespace Session {
 
   export const Info = z
     .object({
-      id: SessionID.zod,
+      id: Identifier.schema("session"),
       slug: z.string(),
-      projectID: ProjectID.zod,
-      workspaceID: WorkspaceID.zod.optional(),
+      projectID: z.string(),
+      workspaceID: z.string().optional(),
       directory: z.string(),
-      parentID: SessionID.zod.optional(),
+      parentID: Identifier.schema("session").optional(),
+      userID: z.string().optional(),
       summary: z
         .object({
           additions: z.number(),
@@ -151,8 +173,8 @@ export namespace Session {
       permission: Permission.Ruleset.optional(),
       revert: z
         .object({
-          messageID: MessageID.zod,
-          partID: PartID.zod.optional(),
+          messageID: z.string(),
+          partID: z.string().optional(),
           snapshot: z.string().optional(),
           diff: z.string().optional(),
         })
@@ -165,7 +187,7 @@ export namespace Session {
 
   export const ProjectInfo = z
     .object({
-      id: ProjectID.zod,
+      id: z.string(),
       name: z.string().optional(),
       worktree: z.string(),
     })
@@ -203,14 +225,14 @@ export namespace Session {
     Diff: BusEvent.define(
       "session.diff",
       z.object({
-        sessionID: SessionID.zod,
+        sessionID: z.string(),
         diff: Snapshot.FileDiff.array(),
       }),
     ),
     Error: BusEvent.define(
       "session.error",
       z.object({
-        sessionID: SessionID.zod.optional(),
+        sessionID: z.string().optional(),
         error: MessageV2.Assistant.shape.error,
       }),
     ),
@@ -219,10 +241,10 @@ export namespace Session {
   export const create = fn(
     z
       .object({
-        parentID: SessionID.zod.optional(),
+        parentID: Identifier.schema("session").optional(),
         title: z.string().optional(),
         permission: Info.shape.permission,
-        workspaceID: WorkspaceID.zod.optional(),
+        workspaceID: Identifier.schema("workspace").optional(),
       })
       .optional(),
     async (input) => {
@@ -238,8 +260,8 @@ export namespace Session {
 
   export const fork = fn(
     z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod.optional(),
+      sessionID: Identifier.schema("session"),
+      messageID: Identifier.schema("message").optional(),
     }),
     async (input) => {
       const original = await get(input.sessionID)
@@ -251,11 +273,11 @@ export namespace Session {
         title,
       })
       const msgs = await messages({ sessionID: input.sessionID })
-      const idMap = new Map<string, MessageID>()
+      const idMap = new Map<string, string>()
 
       for (const msg of msgs) {
         if (input.messageID && msg.info.id >= input.messageID) break
-        const newID = MessageID.ascending()
+        const newID = Identifier.ascending("message")
         idMap.set(msg.info.id, newID)
 
         const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
@@ -269,7 +291,7 @@ export namespace Session {
         for (const part of msg.parts) {
           await updatePart({
             ...part,
-            id: PartID.ascending(),
+            id: Identifier.ascending("part"),
             messageID: cloned.id,
             sessionID: session.id,
           })
@@ -279,37 +301,36 @@ export namespace Session {
     },
   )
 
-  export const touch = fn(SessionID.zod, async (sessionID) => {
-    const now = Date.now()
-    Database.use((db) => {
-      const row = db
-        .update(SessionTable)
-        .set({ time_updated: now })
-        .where(eq(SessionTable.id, sessionID))
-        .returning()
-        .get()
-      if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
-      const info = fromRow(row)
-      Database.effect(() => Bus.publish(Event.Updated, { info }))
-    })
+  export const touch = fn(Identifier.schema("session"), async (sessionID) => {
+    const row = await ConvexSessions.touch(sessionID)
+    if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
+    const info = fromRow(row)
+    Bus.publish(Event.Updated, { info })
   })
 
   export async function createNext(input: {
-    id?: SessionID
+    id?: string
     title?: string
-    parentID?: SessionID
-    workspaceID?: WorkspaceID
+    parentID?: string
+    workspaceID?: string
     directory: string
     permission?: Permission.Ruleset
   }) {
+    let userID: string | undefined
+    try {
+      userID = await DeviceProfile.userId()
+    } catch {
+      // Device profile not available — not critical
+    }
     const result: Info = {
-      id: SessionID.descending(input.id),
+      id: Identifier.descending("session", input.id),
       slug: Slug.create(),
       version: Installation.VERSION,
       projectID: Instance.project.id,
       directory: input.directory,
       workspaceID: input.workspaceID,
       parentID: input.parentID,
+      userID,
       title: input.title ?? createDefaultTitle(!!input.parentID),
       permission: input.permission,
       time: {
@@ -318,14 +339,8 @@ export namespace Session {
       },
     }
     log.info("created", result)
-    Database.use((db) => {
-      db.insert(SessionTable).values(toRow(result)).run()
-      Database.effect(() =>
-        Bus.publish(Event.Created, {
-          info: result,
-        }),
-      )
-    })
+    await ConvexSessions.create(toRow(result))
+    Bus.publish(Event.Created, { info: result })
     const cfg = await Config.get()
     if (!result.parentID && (Flag.OPENCODE_AUTO_SHARE || cfg.share === "auto"))
       share(result.id).catch(() => {
@@ -344,176 +359,132 @@ export namespace Session {
     return path.join(base, [input.time.created, input.slug].join("-") + ".md")
   }
 
-  export const get = fn(SessionID.zod, async (id) => {
-    const row = Database.use((db) => db.select().from(SessionTable).where(eq(SessionTable.id, id)).get())
+  export const get = fn(Identifier.schema("session"), async (id) => {
+    const row = await ConvexSessions.getById(id)
     if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
     return fromRow(row)
   })
 
-  export const share = fn(SessionID.zod, async (id) => {
+  export const share = fn(Identifier.schema("session"), async (id) => {
     const cfg = await Config.get()
     if (cfg.share === "disabled") {
       throw new Error("Sharing is disabled in configuration")
     }
     const { ShareNext } = await import("@/share/share-next")
-    const share = await ShareNext.create(id)
-    Database.use((db) => {
-      const row = db.update(SessionTable).set({ share_url: share.url }).where(eq(SessionTable.id, id)).returning().get()
-      if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
-      const info = fromRow(row)
-      Database.effect(() => Bus.publish(Event.Updated, { info }))
-    })
-    return share
+    const shareResult = await ShareNext.create(id)
+    const row = await ConvexSessions.update(id, { share_url: shareResult.url })
+    if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
+    const info = fromRow(row)
+    Bus.publish(Event.Updated, { info })
+    return shareResult
   })
 
-  export const unshare = fn(SessionID.zod, async (id) => {
-    // Use ShareNext to remove the share (same as share function uses ShareNext to create)
+  export const unshare = fn(Identifier.schema("session"), async (id) => {
     const { ShareNext } = await import("@/share/share-next")
     await ShareNext.remove(id)
-    Database.use((db) => {
-      const row = db.update(SessionTable).set({ share_url: null }).where(eq(SessionTable.id, id)).returning().get()
-      if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
-      const info = fromRow(row)
-      Database.effect(() => Bus.publish(Event.Updated, { info }))
-    })
+    const row = await ConvexSessions.update(id, { share_url: undefined })
+    if (!row) throw new NotFoundError({ message: `Session not found: ${id}` })
+    const info = fromRow(row)
+    Bus.publish(Event.Updated, { info })
   })
 
   export const setTitle = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       title: z.string(),
     }),
     async (input) => {
-      return Database.use((db) => {
-        const row = db
-          .update(SessionTable)
-          .set({ title: input.title })
-          .where(eq(SessionTable.id, input.sessionID))
-          .returning()
-          .get()
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        const info = fromRow(row)
-        Database.effect(() => Bus.publish(Event.Updated, { info }))
-        return info
-      })
+      const row = await ConvexSessions.update(input.sessionID, { title: input.title })
+      if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+      const info = fromRow(row)
+      Bus.publish(Event.Updated, { info })
+      return info
     },
   )
 
   export const setArchived = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       time: z.number().optional(),
     }),
     async (input) => {
-      return Database.use((db) => {
-        const row = db
-          .update(SessionTable)
-          .set({ time_archived: input.time })
-          .where(eq(SessionTable.id, input.sessionID))
-          .returning()
-          .get()
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        const info = fromRow(row)
-        Database.effect(() => Bus.publish(Event.Updated, { info }))
-        return info
-      })
+      const row = await ConvexSessions.update(input.sessionID, { time_archived: input.time })
+      if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+      const info = fromRow(row)
+      Bus.publish(Event.Updated, { info })
+      return info
     },
   )
 
   export const setPermission = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       permission: Permission.Ruleset,
     }),
     async (input) => {
-      return Database.use((db) => {
-        const row = db
-          .update(SessionTable)
-          .set({ permission: input.permission, time_updated: Date.now() })
-          .where(eq(SessionTable.id, input.sessionID))
-          .returning()
-          .get()
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        const info = fromRow(row)
-        Database.effect(() => Bus.publish(Event.Updated, { info }))
-        return info
+      const row = await ConvexSessions.update(input.sessionID, {
+        permission: input.permission,
+        time_updated: Date.now(),
       })
+      if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+      const info = fromRow(row)
+      Bus.publish(Event.Updated, { info })
+      return info
     },
   )
 
   export const setRevert = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       revert: Info.shape.revert,
       summary: Info.shape.summary,
     }),
     async (input) => {
-      return Database.use((db) => {
-        const row = db
-          .update(SessionTable)
-          .set({
-            revert: input.revert ?? null,
-            summary_additions: input.summary?.additions,
-            summary_deletions: input.summary?.deletions,
-            summary_files: input.summary?.files,
-            time_updated: Date.now(),
-          })
-          .where(eq(SessionTable.id, input.sessionID))
-          .returning()
-          .get()
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        const info = fromRow(row)
-        Database.effect(() => Bus.publish(Event.Updated, { info }))
-        return info
+      const row = await ConvexSessions.update(input.sessionID, {
+        revert: input.revert ?? null,
+        summary_additions: input.summary?.additions,
+        summary_deletions: input.summary?.deletions,
+        summary_files: input.summary?.files,
+        time_updated: Date.now(),
       })
+      if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+      const info = fromRow(row)
+      Bus.publish(Event.Updated, { info })
+      return info
     },
   )
 
-  export const clearRevert = fn(SessionID.zod, async (sessionID) => {
-    return Database.use((db) => {
-      const row = db
-        .update(SessionTable)
-        .set({
-          revert: null,
-          time_updated: Date.now(),
-        })
-        .where(eq(SessionTable.id, sessionID))
-        .returning()
-        .get()
-      if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
-      const info = fromRow(row)
-      Database.effect(() => Bus.publish(Event.Updated, { info }))
-      return info
+  export const clearRevert = fn(Identifier.schema("session"), async (sessionID) => {
+    const row = await ConvexSessions.update(sessionID, {
+      revert: null,
+      time_updated: Date.now(),
     })
+    if (!row) throw new NotFoundError({ message: `Session not found: ${sessionID}` })
+    const info = fromRow(row)
+    Bus.publish(Event.Updated, { info })
+    return info
   })
 
   export const setSummary = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       summary: Info.shape.summary,
     }),
     async (input) => {
-      return Database.use((db) => {
-        const row = db
-          .update(SessionTable)
-          .set({
-            summary_additions: input.summary?.additions,
-            summary_deletions: input.summary?.deletions,
-            summary_files: input.summary?.files,
-            time_updated: Date.now(),
-          })
-          .where(eq(SessionTable.id, input.sessionID))
-          .returning()
-          .get()
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        const info = fromRow(row)
-        Database.effect(() => Bus.publish(Event.Updated, { info }))
-        return info
+      const row = await ConvexSessions.update(input.sessionID, {
+        summary_additions: input.summary?.additions,
+        summary_deletions: input.summary?.deletions,
+        summary_files: input.summary?.files,
+        time_updated: Date.now(),
       })
+      if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
+      const info = fromRow(row)
+      Bus.publish(Event.Updated, { info })
+      return info
     },
   )
 
-  export const diff = fn(SessionID.zod, async (sessionID) => {
+  export const diff = fn(Identifier.schema("session"), async (sessionID) => {
     try {
       return await Storage.read<Snapshot.FileDiff[]>(["session_diff", sessionID])
     } catch {
@@ -523,7 +494,7 @@ export namespace Session {
 
   export const messages = fn(
     z.object({
-      sessionID: SessionID.zod,
+      sessionID: Identifier.schema("session"),
       limit: z.number().optional(),
     }),
     async (input) => {
@@ -537,50 +508,29 @@ export namespace Session {
     },
   )
 
-  export function* list(input?: {
+  export async function* list(input?: {
     directory?: string
-    workspaceID?: WorkspaceID
+    workspaceID?: string
     roots?: boolean
     start?: number
     search?: string
     limit?: number
   }) {
     const project = Instance.project
-    const conditions = [eq(SessionTable.project_id, project.id)]
-
-    if (WorkspaceContext.workspaceID) {
-      conditions.push(eq(SessionTable.workspace_id, WorkspaceContext.workspaceID))
-    }
-    if (input?.directory) {
-      conditions.push(eq(SessionTable.directory, input.directory))
-    }
-    if (input?.roots) {
-      conditions.push(isNull(SessionTable.parent_id))
-    }
-    if (input?.start) {
-      conditions.push(gte(SessionTable.time_updated, input.start))
-    }
-    if (input?.search) {
-      conditions.push(like(SessionTable.title, `%${input.search}%`))
-    }
-
-    const limit = input?.limit ?? 100
-
-    const rows = Database.use((db) =>
-      db
-        .select()
-        .from(SessionTable)
-        .where(and(...conditions))
-        .orderBy(desc(SessionTable.time_updated))
-        .limit(limit)
-        .all(),
-    )
+    const rows = await ConvexSessions.listByProject({
+      project_id: project.id,
+      directory: input?.directory,
+      roots: input?.roots,
+      start: input?.start,
+      search: input?.search,
+      limit: input?.limit ?? 100,
+    })
     for (const row of rows) {
       yield fromRow(row)
     }
   }
 
-  export function* listGlobal(input?: {
+  export async function* listGlobal(input?: {
     directory?: string
     roots?: boolean
     start?: number
@@ -589,57 +539,21 @@ export namespace Session {
     limit?: number
     archived?: boolean
   }) {
-    const conditions: SQL[] = []
+    const rows = await ConvexSessions.listGlobal(input)
 
-    if (input?.directory) {
-      conditions.push(eq(SessionTable.directory, input.directory))
-    }
-    if (input?.roots) {
-      conditions.push(isNull(SessionTable.parent_id))
-    }
-    if (input?.start) {
-      conditions.push(gte(SessionTable.time_updated, input.start))
-    }
-    if (input?.cursor) {
-      conditions.push(lt(SessionTable.time_updated, input.cursor))
-    }
-    if (input?.search) {
-      conditions.push(like(SessionTable.title, `%${input.search}%`))
-    }
-    if (!input?.archived) {
-      conditions.push(isNull(SessionTable.time_archived))
-    }
-
-    const limit = input?.limit ?? 100
-
-    const rows = Database.use((db) => {
-      const query =
-        conditions.length > 0
-          ? db
-              .select()
-              .from(SessionTable)
-              .where(and(...conditions))
-          : db.select().from(SessionTable)
-      return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all()
-    })
-
-    const ids = [...new Set(rows.map((row) => row.project_id))]
+    const ids = [...new Set<string>(rows.map((row: any) => row.project_id))]
     const projects = new Map<string, ProjectInfo>()
 
     if (ids.length > 0) {
-      const items = Database.use((db) =>
-        db
-          .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
-          .from(ProjectTable)
-          .where(inArray(ProjectTable.id, ids))
-          .all(),
-      )
-      for (const item of items) {
-        projects.set(item.id, {
-          id: item.id,
-          name: item.name ?? undefined,
-          worktree: item.worktree,
-        })
+      for (const id of ids) {
+        const proj = await ConvexProjects.getById(id)
+        if (proj) {
+          projects.set(id, {
+            id: proj.id,
+            name: proj.name ?? undefined,
+            worktree: proj.worktree,
+          })
+        }
       }
     }
 
@@ -649,35 +563,22 @@ export namespace Session {
     }
   }
 
-  export const children = fn(SessionID.zod, async (parentID) => {
+  export const children = fn(Identifier.schema("session"), async (parentID) => {
     const project = Instance.project
-    const rows = Database.use((db) =>
-      db
-        .select()
-        .from(SessionTable)
-        .where(and(eq(SessionTable.project_id, project.id), eq(SessionTable.parent_id, parentID)))
-        .all(),
-    )
+    const rows = await ConvexSessions.listChildren(project.id, parentID)
     return rows.map(fromRow)
   })
 
-  export const remove = fn(SessionID.zod, async (sessionID) => {
-    const project = Instance.project
+  export const remove = fn(Identifier.schema("session"), async (sessionID) => {
     try {
       const session = await get(sessionID)
       for (const child of await children(sessionID)) {
         await remove(child.id)
       }
       await unshare(sessionID).catch(() => {})
-      // CASCADE delete handles messages and parts automatically
-      Database.use((db) => {
-        db.delete(SessionTable).where(eq(SessionTable.id, sessionID)).run()
-        Database.effect(() =>
-          Bus.publish(Event.Deleted, {
-            info: session,
-          }),
-        )
-      })
+      // Cascade delete handled by Convex mutation
+      await ConvexSessions.remove(sessionID)
+      Bus.publish(Event.Deleted, { info: session })
     } catch (e) {
       log.error(e)
     }
@@ -686,42 +587,27 @@ export namespace Session {
   export const updateMessage = fn(MessageV2.Info, async (msg) => {
     const time_created = msg.time.created
     const { id, sessionID, ...data } = msg
-    Database.use((db) => {
-      db.insert(MessageTable)
-        .values({
-          id,
-          session_id: sessionID,
-          time_created,
-          data,
-        })
-        .onConflictDoUpdate({ target: MessageTable.id, set: { data } })
-        .run()
-      Database.effect(() =>
-        Bus.publish(MessageV2.Event.Updated, {
-          info: msg,
-        }),
-      )
+    await ConvexMessages.upsert({
+      id,
+      session_id: sessionID,
+      time_created,
+      data,
     })
+    Bus.publish(MessageV2.Event.Updated, { info: msg })
     return msg
   })
 
   export const removeMessage = fn(
     z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
+      sessionID: Identifier.schema("session"),
+      messageID: Identifier.schema("message"),
     }),
     async (input) => {
-      // CASCADE delete handles parts automatically
-      Database.use((db) => {
-        db.delete(MessageTable)
-          .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
-          .run()
-        Database.effect(() =>
-          Bus.publish(MessageV2.Event.Removed, {
-            sessionID: input.sessionID,
-            messageID: input.messageID,
-          }),
-        )
+      // Cascade delete handled by Convex mutation
+      await ConvexMessages.remove(input.messageID)
+      Bus.publish(MessageV2.Event.Removed, {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
       })
       return input.messageID
     },
@@ -729,22 +615,16 @@ export namespace Session {
 
   export const removePart = fn(
     z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
-      partID: PartID.zod,
+      sessionID: Identifier.schema("session"),
+      messageID: Identifier.schema("message"),
+      partID: Identifier.schema("part"),
     }),
     async (input) => {
-      Database.use((db) => {
-        db.delete(PartTable)
-          .where(and(eq(PartTable.id, input.partID), eq(PartTable.session_id, input.sessionID)))
-          .run()
-        Database.effect(() =>
-          Bus.publish(MessageV2.Event.PartRemoved, {
-            sessionID: input.sessionID,
-            messageID: input.messageID,
-            partID: input.partID,
-          }),
-        )
+      await ConvexParts.remove(input.partID)
+      Bus.publish(MessageV2.Event.PartRemoved, {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        partID: input.partID,
       })
       return input.partID
     },
@@ -755,31 +635,22 @@ export namespace Session {
   export const updatePart = fn(UpdatePartInput, async (part) => {
     const { id, messageID, sessionID, ...data } = part
     const time = Date.now()
-    Database.use((db) => {
-      db.insert(PartTable)
-        .values({
-          id,
-          message_id: messageID,
-          session_id: sessionID,
-          time_created: time,
-          data,
-        })
-        .onConflictDoUpdate({ target: PartTable.id, set: { data } })
-        .run()
-      Database.effect(() =>
-        Bus.publish(MessageV2.Event.PartUpdated, {
-          part: structuredClone(part),
-        }),
-      )
+    await ConvexParts.upsert({
+      id,
+      message_id: messageID,
+      session_id: sessionID,
+      time_created: time,
+      data,
     })
+    Bus.publish(MessageV2.Event.PartUpdated, { part })
     return part
   })
 
   export const updatePartDelta = fn(
     z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
-      partID: PartID.zod,
+      sessionID: z.string(),
+      messageID: z.string(),
+      partID: z.string(),
       field: z.string(),
       delta: z.string(),
     }),
@@ -813,18 +684,12 @@ export namespace Session {
           0) as number,
       )
 
-      // OpenRouter provides inputTokens as the total count of input tokens (including cached).
-      // AFAIK other providers (OpenRouter/OpenAI/Gemini etc.) do it the same way e.g. vercel/ai#8794 (comment)
-      // Anthropic does it differently though - inputTokens doesn't include cached tokens.
-      // It looks like OpenCode's cost calculation assumes all providers return inputTokens the same way Anthropic does (I'm guessing getUsage logic was originally implemented with anthropic), so it's causing incorrect cost calculation for OpenRouter and others.
       const excludesCachedTokens = !!(input.metadata?.["anthropic"] || input.metadata?.["bedrock"])
       const adjustedInputTokens = safe(
         excludesCachedTokens ? inputTokens : inputTokens - cacheReadInputTokens - cacheWriteInputTokens,
       )
 
       const total = iife(() => {
-        // Anthropic doesn't provide total_tokens, also ai sdk will vastly undercount if we
-        // don't compute from components
         if (
           input.model.api.npm === "@ai-sdk/anthropic" ||
           input.model.api.npm === "@ai-sdk/amazon-bedrock" ||
@@ -857,8 +722,6 @@ export namespace Session {
             .add(new Decimal(tokens.output).mul(costInfo?.output ?? 0).div(1_000_000))
             .add(new Decimal(tokens.cache.read).mul(costInfo?.cache?.read ?? 0).div(1_000_000))
             .add(new Decimal(tokens.cache.write).mul(costInfo?.cache?.write ?? 0).div(1_000_000))
-            // TODO: update models.dev to have better pricing model, for now:
-            // charge reasoning tokens at the same rate as output tokens
             .add(new Decimal(tokens.reasoning).mul(costInfo?.output ?? 0).div(1_000_000))
             .toNumber(),
         ),
@@ -875,10 +738,10 @@ export namespace Session {
 
   export const initialize = fn(
     z.object({
-      sessionID: SessionID.zod,
-      modelID: ModelID.zod,
-      providerID: ProviderID.zod,
-      messageID: MessageID.zod,
+      sessionID: Identifier.schema("session"),
+      modelID: z.string(),
+      providerID: z.string(),
+      messageID: Identifier.schema("message"),
     }),
     async (input) => {
       await SessionPrompt.command({

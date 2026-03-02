@@ -1,16 +1,15 @@
 import z from "zod"
 import { setTimeout as sleep } from "node:timers/promises"
+import { Identifier } from "@/id/id"
 import { fn } from "@/util/fn"
-import { Database, eq } from "@/storage/db"
+import { ConvexWorkspaces } from "@/storage/convex/workspaces"
 import { Project } from "@/project/project"
 import { BusEvent } from "@/bus/bus-event"
 import { GlobalBus } from "@/bus/global"
 import { Log } from "@/util/log"
-import { ProjectID } from "@/project/schema"
-import { WorkspaceTable } from "./workspace.sql"
+import { Config } from "./config"
 import { getAdaptor } from "./adaptors"
 import { WorkspaceInfo } from "./types"
-import { WorkspaceID } from "./schema"
 import { parseSSE } from "./sse"
 
 export namespace Workspace {
@@ -34,28 +33,29 @@ export namespace Workspace {
   })
   export type Info = z.infer<typeof Info>
 
-  function fromRow(row: typeof WorkspaceTable.$inferSelect): Info {
+  function fromRow(row: {
+    id: string
+    branch?: string | null
+    project_id: string
+    config: any
+  }): Info {
     return {
       id: row.id,
-      type: row.type,
-      branch: row.branch,
-      name: row.name,
-      directory: row.directory,
-      extra: row.extra,
+      branch: row.branch ?? null,
       projectID: row.project_id,
     }
   }
 
   const CreateInput = z.object({
-    id: WorkspaceID.zod.optional(),
+    id: Identifier.schema("workspace").optional(),
     type: Info.shape.type,
     branch: Info.shape.branch,
-    projectID: ProjectID.zod,
+    projectID: Info.shape.projectID,
     extra: Info.shape.extra,
   })
 
   export const create = fn(CreateInput, async (input) => {
-    const id = WorkspaceID.ascending(input.id)
+    const id = Identifier.ascending("workspace", input.id)
     const adaptor = await getAdaptor(input.type)
 
     const config = await adaptor.configure({ ...input, id, name: null, directory: null })
@@ -70,16 +70,11 @@ export namespace Workspace {
       projectID: input.projectID,
     }
 
-    Database.use((db) => {
-      db.insert(WorkspaceTable)
-        .values({
+        await ConvexWorkspaces.create({
           id: info.id,
-          type: info.type,
-          branch: info.branch,
-          name: info.name,
-          directory: info.directory,
-          extra: info.extra,
+          branch: info.branch ?? undefined,
           project_id: info.projectID,
+          config: info.config,
         })
         .run()
     })
@@ -88,26 +83,23 @@ export namespace Workspace {
     return info
   })
 
-  export function list(project: Project.Info) {
-    const rows = Database.use((db) =>
-      db.select().from(WorkspaceTable).where(eq(WorkspaceTable.project_id, project.id)).all(),
-    )
-    return rows.map(fromRow).sort((a, b) => a.id.localeCompare(b.id))
+  export async function list(project: Project.Info) {
+    const rows = await ConvexWorkspaces.listByProject(project.id)
+    return rows.map((row: any) => fromRow(row)).sort((a: Info, b: Info) => a.id.localeCompare(b.id))
   }
 
-  export const get = fn(WorkspaceID.zod, async (id) => {
-    const row = Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+  export const get = fn(Identifier.schema("workspace"), async (id) => {
+    const row = await ConvexWorkspaces.getById(id)
     if (!row) return
     return fromRow(row)
   })
 
-  export const remove = fn(WorkspaceID.zod, async (id) => {
-    const row = Database.use((db) => db.select().from(WorkspaceTable).where(eq(WorkspaceTable.id, id)).get())
+  export const remove = fn(Identifier.schema("workspace"), async (id) => {
+    const row = await ConvexWorkspaces.getById(id)
     if (row) {
       const info = fromRow(row)
-      const adaptor = await getAdaptor(row.type)
-      adaptor.remove(info)
-      Database.use((db) => db.delete(WorkspaceTable).where(eq(WorkspaceTable.id, id)).run())
+      await getAdaptor(info.config).remove(info.config)
+      await ConvexWorkspaces.remove(id)
       return info
     }
   })
@@ -132,11 +124,11 @@ export namespace Workspace {
     }
   }
 
-  export function startSyncing(project: Project.Info) {
+  export async function startSyncing(project: Project.Info) {
     const stop = new AbortController()
-    const spaces = list(project).filter((space) => space.type !== "worktree")
+    const spaces = (await list(project)).filter((space: Info) => space.config.type !== "worktree")
 
-    spaces.forEach((space) => {
+    spaces.forEach((space: Info) => {
       void workspaceEventLoop(space, stop.signal).catch((error) => {
         log.warn("workspace sync listener failed", {
           workspaceID: space.id,

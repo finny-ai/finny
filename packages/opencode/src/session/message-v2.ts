@@ -1,13 +1,13 @@
 import { BusEvent } from "@/bus/bus-event"
-import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
+import { Identifier } from "../id/id"
 import { LSP } from "../lsp"
 import { Snapshot } from "@/snapshot"
 import { fn } from "@/util/fn"
-import { Database, NotFoundError, and, desc, eq, inArray, lt, or } from "@/storage/db"
-import { MessageTable, PartTable, SessionTable } from "./session.sql"
+import { ConvexMessages } from "@/storage/convex/messages"
+import { ConvexParts } from "@/storage/convex/parts"
 import { ProviderTransform } from "@/provider/transform"
 import { STATUS_CODES } from "http"
 import { Storage } from "@/storage/storage"
@@ -15,7 +15,6 @@ import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
-import { ModelID, ProviderID } from "@/provider/schema"
 
 export namespace MessageV2 {
   export function isMedia(mime: string) {
@@ -79,9 +78,9 @@ export namespace MessageV2 {
   export type OutputFormat = z.infer<typeof Format>
 
   const PartBase = z.object({
-    id: PartID.zod,
-    sessionID: SessionID.zod,
-    messageID: MessageID.zod,
+    id: z.string(),
+    sessionID: z.string(),
+    messageID: z.string(),
   })
 
   export const SnapshotPart = PartBase.extend({
@@ -214,8 +213,8 @@ export namespace MessageV2 {
     agent: z.string(),
     model: z
       .object({
-        providerID: ProviderID.zod,
-        modelID: ModelID.zod,
+        providerID: z.string(),
+        modelID: z.string(),
       })
       .optional(),
     command: z.string().optional(),
@@ -344,8 +343,8 @@ export namespace MessageV2 {
   export type ToolPart = z.infer<typeof ToolPart>
 
   const Base = z.object({
-    id: MessageID.zod,
-    sessionID: SessionID.zod,
+    id: z.string(),
+    sessionID: z.string(),
   })
 
   export const User = Base.extend({
@@ -363,8 +362,8 @@ export namespace MessageV2 {
       .optional(),
     agent: z.string(),
     model: z.object({
-      providerID: ProviderID.zod,
-      modelID: ModelID.zod,
+      providerID: z.string(),
+      modelID: z.string(),
     }),
     system: z.string().optional(),
     tools: z.record(z.string(), z.boolean()).optional(),
@@ -411,9 +410,9 @@ export namespace MessageV2 {
         APIError.Schema,
       ])
       .optional(),
-    parentID: MessageID.zod,
-    modelID: ModelID.zod,
-    providerID: ProviderID.zod,
+    parentID: z.string(),
+    modelID: z.string(),
+    providerID: z.string(),
     /**
      * @deprecated
      */
@@ -458,8 +457,8 @@ export namespace MessageV2 {
     Removed: BusEvent.define(
       "message.removed",
       z.object({
-        sessionID: SessionID.zod,
-        messageID: MessageID.zod,
+        sessionID: z.string(),
+        messageID: z.string(),
       }),
     ),
     PartUpdated: BusEvent.define(
@@ -471,9 +470,9 @@ export namespace MessageV2 {
     PartDelta: BusEvent.define(
       "message.part.delta",
       z.object({
-        sessionID: SessionID.zod,
-        messageID: MessageID.zod,
-        partID: PartID.zod,
+        sessionID: z.string(),
+        messageID: z.string(),
+        partID: z.string(),
         field: z.string(),
         delta: z.string(),
       }),
@@ -481,9 +480,9 @@ export namespace MessageV2 {
     PartRemoved: BusEvent.define(
       "message.part.removed",
       z.object({
-        sessionID: SessionID.zod,
-        messageID: MessageID.zod,
-        partID: PartID.zod,
+        sessionID: z.string(),
+        messageID: z.string(),
+        partID: z.string(),
       }),
     ),
   }
@@ -493,68 +492,6 @@ export namespace MessageV2 {
     parts: z.array(Part),
   })
   export type WithParts = z.infer<typeof WithParts>
-
-  const Cursor = z.object({
-    id: MessageID.zod,
-    time: z.number(),
-  })
-  type Cursor = z.infer<typeof Cursor>
-
-  export const cursor = {
-    encode(input: Cursor) {
-      return Buffer.from(JSON.stringify(input)).toString("base64url")
-    },
-    decode(input: string) {
-      return Cursor.parse(JSON.parse(Buffer.from(input, "base64url").toString("utf8")))
-    },
-  }
-
-  const info = (row: typeof MessageTable.$inferSelect) =>
-    ({
-      ...row.data,
-      id: row.id,
-      sessionID: row.session_id,
-    }) as MessageV2.Info
-
-  const part = (row: typeof PartTable.$inferSelect) =>
-    ({
-      ...row.data,
-      id: row.id,
-      sessionID: row.session_id,
-      messageID: row.message_id,
-    }) as MessageV2.Part
-
-  const older = (row: Cursor) =>
-    or(
-      lt(MessageTable.time_created, row.time),
-      and(eq(MessageTable.time_created, row.time), lt(MessageTable.id, row.id)),
-    )
-
-  async function hydrate(rows: (typeof MessageTable.$inferSelect)[]) {
-    const ids = rows.map((row) => row.id)
-    const partByMessage = new Map<string, MessageV2.Part[]>()
-    if (ids.length > 0) {
-      const partRows = Database.use((db) =>
-        db
-          .select()
-          .from(PartTable)
-          .where(inArray(PartTable.message_id, ids))
-          .orderBy(PartTable.message_id, PartTable.id)
-          .all(),
-      )
-      for (const row of partRows) {
-        const next = part(row)
-        const list = partByMessage.get(row.message_id)
-        if (list) list.push(next)
-        else partByMessage.set(row.message_id, [next])
-      }
-    }
-
-    return rows.map((row) => ({
-      info: info(row),
-      parts: partByMessage.get(row.id) ?? [],
-    }))
-  }
 
   export function toModelMessages(
     input: WithParts[],
@@ -761,7 +698,7 @@ export namespace MessageV2 {
           // media (images, PDFs) in tool results
           if (media.length > 0) {
             result.push({
-              id: MessageID.ascending(),
+              id: Identifier.ascending("message"),
               role: "user",
               parts: [
                 {
@@ -791,89 +728,62 @@ export namespace MessageV2 {
     )
   }
 
-  export const page = fn(
-    z.object({
-      sessionID: SessionID.zod,
-      limit: z.number().int().positive(),
-      before: z.string().optional(),
-    }),
-    async (input) => {
-      const before = input.before ? cursor.decode(input.before) : undefined
-      const where = before
-        ? and(eq(MessageTable.session_id, input.sessionID), older(before))
-        : eq(MessageTable.session_id, input.sessionID)
-      const rows = Database.use((db) =>
-        db
-          .select()
-          .from(MessageTable)
-          .where(where)
-          .orderBy(desc(MessageTable.time_created), desc(MessageTable.id))
-          .limit(input.limit + 1)
-          .all(),
-      )
-      if (rows.length === 0) {
-        const row = Database.use((db) =>
-          db.select({ id: SessionTable.id }).from(SessionTable).where(eq(SessionTable.id, input.sessionID)).get(),
-        )
-        if (!row) throw new NotFoundError({ message: `Session not found: ${input.sessionID}` })
-        return {
-          items: [] as MessageV2.WithParts[],
-          more: false,
+  export const stream = fn(Identifier.schema("session"), async function* (sessionID) {
+    const size = 50
+    let offset = 0
+    while (true) {
+      const rows = await ConvexMessages.stream(sessionID, size, offset)
+      if (rows.length === 0) break
+
+      const ids = rows.map((row: any) => row.id as string)
+      const partsByMessage = new Map<string, MessageV2.Part[]>()
+      if (ids.length > 0) {
+        const batchResult = await ConvexParts.listByMessages(ids)
+        for (const [messageId, partRows] of Object.entries(batchResult)) {
+          const mapped = (partRows as any[]).map(
+            (row) =>
+              ({
+                ...row.data,
+                id: row.id,
+                sessionID: row.session_id,
+                messageID: row.message_id,
+              }) as MessageV2.Part,
+          )
+          partsByMessage.set(messageId, mapped)
         }
       }
 
-      const more = rows.length > input.limit
-      const page = more ? rows.slice(0, input.limit) : rows
-      const items = await hydrate(page)
-      items.reverse()
-      const tail = page.at(-1)
-      return {
-        items,
-        more,
-        cursor: more && tail ? cursor.encode({ id: tail.id, time: tail.time_created }) : undefined,
+      for (const row of rows) {
+        const info = { ...row.data, id: row.id, sessionID: row.session_id } as MessageV2.Info
+        yield {
+          info,
+          parts: partsByMessage.get(row.id) ?? [],
+        }
       }
-    },
-  )
 
-  export const stream = fn(SessionID.zod, async function* (sessionID) {
-    const size = 50
-    let before: string | undefined
-    while (true) {
-      const next = await page({ sessionID, limit: size, before })
-      if (next.items.length === 0) break
-      for (let i = next.items.length - 1; i >= 0; i--) {
-        yield next.items[i]
-      }
-      if (!next.more || !next.cursor) break
-      before = next.cursor
+      offset += rows.length
+      if (rows.length < size) break
     }
   })
 
-  export const parts = fn(MessageID.zod, async (message_id) => {
-    const rows = Database.use((db) =>
-      db.select().from(PartTable).where(eq(PartTable.message_id, message_id)).orderBy(PartTable.id).all(),
-    )
+  export const parts = fn(Identifier.schema("message"), async (message_id) => {
+    const rows = await ConvexParts.listByMessage(message_id)
     return rows.map(
-      (row) => ({ ...row.data, id: row.id, sessionID: row.session_id, messageID: row.message_id }) as MessageV2.Part,
+      (row: any) => ({ ...row.data, id: row.id, sessionID: row.session_id, messageID: row.message_id }) as MessageV2.Part,
     )
   })
 
   export const get = fn(
     z.object({
-      sessionID: SessionID.zod,
-      messageID: MessageID.zod,
+      sessionID: Identifier.schema("session"),
+      messageID: Identifier.schema("message"),
     }),
     async (input): Promise<WithParts> => {
-      const row = Database.use((db) =>
-        db
-          .select()
-          .from(MessageTable)
-          .where(and(eq(MessageTable.id, input.messageID), eq(MessageTable.session_id, input.sessionID)))
-          .get(),
-      )
-      if (!row) throw new NotFoundError({ message: `Message not found: ${input.messageID}` })
+      const row = await ConvexMessages.getById(input.messageID)
+      if (!row) throw new Error(`Message not found: ${input.messageID}`)
+      const info = { ...row.data, id: row.id, sessionID: row.session_id } as MessageV2.Info
       return {
-        info: info(row),
+        info,
         parts: await parts(input.messageID),
       }
     },
@@ -897,7 +807,7 @@ export namespace MessageV2 {
     return result
   }
 
-  export function fromError(e: unknown, ctx: { providerID: ProviderID }): NonNullable<Assistant["error"]> {
+  export function fromError(e: unknown, ctx: { providerID: string }) {
     switch (true) {
       case e instanceof DOMException && e.name === "AbortError":
         return new MessageV2.AbortedError(

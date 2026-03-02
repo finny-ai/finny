@@ -6,6 +6,9 @@ import { Instance } from "../project/instance"
 import { Identifier } from "../id/id"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
+import PROMPT_ALGOS from "./template/algos.txt"
+import PROMPT_CODE from "./template/code.txt"
+import PROMPT_BACKTEST from "./template/backtest.txt"
 import { MCP } from "../mcp"
 import { Skill } from "../skill"
 
@@ -79,6 +82,33 @@ export namespace Command {
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      },
+      algos: {
+        name: "algos",
+        description: "list all saved trading algorithms",
+        source: "command",
+        get template() {
+          return PROMPT_ALGOS
+        },
+        hints: hints(PROMPT_ALGOS),
+      },
+      code: {
+        name: "code",
+        description: "show source code for a saved algorithm [name]",
+        source: "command",
+        get template() {
+          return PROMPT_CODE
+        },
+        hints: hints(PROMPT_CODE),
+      },
+      backtest: {
+        name: "backtest",
+        description: "run a backtest on a saved algorithm [name]",
+        source: "command",
+        get template() {
+          return PROMPT_BACKTEST
+        },
+        hints: hints(PROMPT_BACKTEST),
       },
     }
 
