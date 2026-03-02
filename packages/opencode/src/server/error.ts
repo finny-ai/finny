@@ -1,6 +1,6 @@
 import { resolver } from "hono-openapi"
 import z from "zod"
-import { NotFoundError } from "../storage/db"
+import { NotFoundError } from "../storage/convex-client"
 
 export const ERRORS = {
   400: {

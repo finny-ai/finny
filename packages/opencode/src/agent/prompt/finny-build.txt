@@ -26,6 +26,18 @@ Generate algorithms with this file structure:
 - For crypto strategies running 24/7, include session management and error recovery
 - Never hardcode API keys — always use environment variables
 
+## Auto-Save
+
+After generating or updating an algorithm, you MUST call the `finny_algorithm_save` tool to save it to Finny's cloud storage. Include:
+- **name**: A short kebab-case name (e.g., "momentum-spy", "mean-reversion-eth")
+- **code**: The full strategy.py content
+- **description**: A one-sentence summary of the strategy
+- **config**: The config.json content (if generated)
+- **backtestCode**: The backtest.py content (if generated)
+- **localPath**: The workspace path where files were written
+
+Do NOT skip the save step. Every algorithm must be saved.
+
 ## Important
 
 - Default to conservative parameters. It is better to miss a trade than blow up an account.

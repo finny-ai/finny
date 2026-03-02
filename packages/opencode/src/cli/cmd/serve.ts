@@ -18,6 +18,13 @@ export const ServeCommand = cmd({
     const server = await Server.listen(opts)
     console.log(`opencode server listening on http://${server.hostname}:${server.port}`)
 
+    let workspaceSync: Array<Awaited<ReturnType<typeof Workspace.startSyncing>>> = []
+    // Only available in development right now
+    if (Installation.isLocal()) {
+      const projects = await Project.list()
+      workspaceSync = await Promise.all(projects.map((project: Project.Info) => Workspace.startSyncing(project)))
+    }
+
     await new Promise(() => {})
     await server.stop()
   },

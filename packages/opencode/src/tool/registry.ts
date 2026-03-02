@@ -8,6 +8,9 @@ import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TodoWriteTool } from "./todo"
+import { AlgorithmSaveTool } from "./algorithm-save"
+import { AlgorithmListTool } from "./algorithm-list"
+import { AlgorithmGetTool } from "./algorithm-get"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -122,6 +125,9 @@ export namespace ToolRegistry {
       const greptool = yield* GrepTool
       const patchtool = yield* ApplyPatchTool
       const skilltool = yield* SkillTool
+      const algosave = yield* AlgorithmSaveTool
+      const algolist = yield* AlgorithmListTool
+      const algoget = yield* AlgorithmGetTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -199,6 +205,9 @@ export namespace ToolRegistry {
             question: Tool.init(question),
             lsp: Tool.init(lsptool),
             plan: Tool.init(plan),
+            algosave: Tool.init(algosave),
+            algolist: Tool.init(algolist),
+            algoget: Tool.init(algoget),
           })
 
           return {
@@ -219,6 +228,9 @@ export namespace ToolRegistry {
               tool.code,
               tool.skill,
               tool.patch,
+              tool.algosave,
+              tool.algolist,
+              tool.algoget,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

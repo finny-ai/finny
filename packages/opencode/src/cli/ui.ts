@@ -60,7 +60,7 @@ export namespace UI {
 
     const result: string[] = []
     const reset = "\x1b[0m"
-    const fg = reset
+    const fg = "\x1b[38;5;250m" // grey color
     const teal = "\x1b[38;5;43m" // teal color for Y
 
     glyphs.lines.forEach((line) => {

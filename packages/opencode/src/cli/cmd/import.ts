@@ -4,8 +4,9 @@ import { Session } from "../../session"
 import { MessageV2 } from "../../session/message-v2"
 import { cmd } from "./cmd"
 import { bootstrap } from "../bootstrap"
-import { Database } from "../../storage/db"
-import { SessionTable, MessageTable, PartTable } from "../../session/session.sql"
+import { ConvexSessions } from "../../storage/convex/sessions"
+import { ConvexMessages } from "../../storage/convex/messages"
+import { ConvexParts } from "../../storage/convex/parts"
 import { Instance } from "../../project/instance"
 import { ShareNext } from "../../share/share-next"
 import { EOL } from "os"
@@ -154,51 +155,27 @@ export const ImportCommand = cmd({
         return
       }
 
-      const info = Session.Info.parse({
-        ...exportData.info,
-        projectID: Instance.project.id,
-      })
-      const row = Session.toRow(info)
-      Database.use((db) =>
-        db
-          .insert(SessionTable)
-          .values(row)
-          .onConflictDoUpdate({ target: SessionTable.id, set: { project_id: row.project_id } })
-          .run(),
+      await ConvexSessions.create(Session.toRow(exportData.info))
+
+      const messageBatch = exportData.messages.map((msg) => ({
+        id: msg.info.id,
+        session_id: exportData!.info.id,
+        time_created: msg.info.time?.created ?? Date.now(),
+        data: msg.info,
+      }))
+      await ConvexMessages.insertBatch(messageBatch)
+
+      const partBatch = exportData.messages.flatMap((msg) =>
+        msg.parts.map((part) => ({
+          id: part.id,
+          message_id: msg.info.id,
+          session_id: exportData!.info.id,
+          time_created: Date.now(),
+          data: part,
+        })),
       )
-
-      for (const msg of exportData.messages) {
-        const msgInfo = MessageV2.Info.parse(msg.info)
-        const { id, sessionID: _, ...msgData } = msgInfo
-        Database.use((db) =>
-          db
-            .insert(MessageTable)
-            .values({
-              id,
-              session_id: row.id,
-              time_created: msgInfo.time?.created ?? Date.now(),
-              data: msgData,
-            })
-            .onConflictDoNothing()
-            .run(),
-        )
-
-        for (const part of msg.parts) {
-          const partInfo = MessageV2.Part.parse(part)
-          const { id: partId, sessionID: _s, messageID, ...partData } = partInfo
-          Database.use((db) =>
-            db
-              .insert(PartTable)
-              .values({
-                id: partId,
-                message_id: messageID,
-                session_id: row.id,
-                data: partData,
-              })
-              .onConflictDoNothing()
-              .run(),
-          )
-        }
+      if (partBatch.length > 0) {
+        await ConvexParts.insertBatch(partBatch)
       }
 
       process.stdout.write(`Imported session: ${exportData.info.id}`)

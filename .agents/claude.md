@@ -49,10 +49,11 @@ You are working in a **Bun + Turbo** monorepo forked from OpenCode. The TUI is b
 4. **Backend Implementation (Cloudflare/SST/Hono)**:
    - API endpoints are primarily handled as Cloudflare workers (often routed via Hono). Do not write Node.js specific code that depends on `fs` or `path` in Worker contexts unless using Node compat layers where permitted.
 
-5. **Database Changes**:
-   - Schema modifications MUST be done in `*.sql.ts` files inside `packages/opencode/src/`.
-   - Table names and columns are `snake_case`.
-   - After updating the schema, generate migrations via `bun run db generate --name <descriptive_name>`.
+5. **Database Changes (Convex)**:
+   - Schema modifications MUST be done in `convex/schema.ts`. We have migrated off Drizzle. Do NOT use Drizzle or write `*.sql.ts` files.
+   - Core tables include `projects`, `sessions`, `messages`, `workspaces`, and `controlAccounts`. Domain-specific tables include `algoclashUsers`, `algoclashAlgorithms`, `algoclashTrades`, `algoclashPortfolios`, and `algoclashLeaderboard`.
+   - Table names and fields generally use `camelCase` or plural lowercase.
+   - Changes are synced directly via `bunx convex dev` instead of generating migrations.
 
 6. **Safety & Stability**:
    - Do not restart development servers independently.

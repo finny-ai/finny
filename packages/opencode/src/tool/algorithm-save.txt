@@ -1,0 +1,25 @@
+Use this tool to save a trading algorithm to Finny's cloud storage. Call this tool every time you generate or update a trading algorithm for the user.
+
+## When to Use
+- After generating a new trading algorithm (strategy.py, config.json, backtest.py)
+- After modifying an existing algorithm
+- When the user asks to save their current algorithm
+
+## Parameters
+- **name** (required): A short, descriptive name for the algorithm (e.g., "momentum-spy", "mean-reversion-eth", "breakout-qqq"). Use kebab-case.
+- **code** (required): The full strategy.py source code
+- **language**: Programming language, defaults to "python"
+- **description**: A brief human-readable summary of what the strategy does
+- **config**: The config.json content as a string
+- **backtestCode**: The backtest.py source code
+- **localPath**: The local filesystem path where the algorithm files were written
+
+## Behavior
+- If an algorithm with the same name already exists, it will be updated and the version number will auto-increment.
+- New algorithms start with status "draft".
+- The algorithm is stored in Finny's cloud and synced across devices.
+
+## Important
+- ALWAYS save after generating an algorithm. Do not skip this step.
+- Use clear, descriptive names that indicate the strategy type and target asset.
+- Include the description so users can identify their algorithms later.
