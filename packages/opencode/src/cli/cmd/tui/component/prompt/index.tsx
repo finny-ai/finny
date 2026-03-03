@@ -35,6 +35,12 @@ import { useToast } from "../../ui/toast"
 import { useKV } from "../../context/kv"
 import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
+import { DialogAlgorithmList } from "../dialog-algorithm-list"
+import { DialogAlgorithmCode } from "../dialog-algorithm-code"
+import { DialogBacktestParams } from "../dialog-backtest-params"
+import { DialogBacktestRunning } from "../dialog-backtest-running"
+import { DialogBacktestResults } from "../dialog-backtest-results"
+import { BacktestRunner } from "@/backtest/runner"
 
 export type PromptProps = {
   sessionID?: string
@@ -542,6 +548,47 @@ export function Prompt(props: PromptProps) {
       exit()
       return
     }
+
+    // /code and /backtest don't need an AI model — handle before the model guard
+    if (trimmed === "/code") {
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      const algo = await DialogAlgorithmList.show(dialog, "View Algorithm Code")
+      if (algo) {
+        dialog.clear()
+        DialogAlgorithmCode.show(dialog, algo)
+      }
+      return
+    }
+    if (trimmed === "/backtest") {
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
+      const algo = await DialogAlgorithmList.show(dialog, "Backtest Algorithm")
+      if (!algo) return
+      const params = await DialogBacktestParams.show(dialog, algo.name)
+      if (!params) {
+        dialog.clear()
+        return
+      }
+      DialogBacktestRunning.show(dialog, algo.name)
+      const result = await BacktestRunner.run({
+        algorithm: algo,
+        duration: params.duration,
+        interval: params.interval,
+        capital: params.capital,
+      })
+      if (result.ok) {
+        DialogBacktestResults.show(dialog, algo.name, params, result.results)
+      } else {
+        await DialogAlert.show(dialog, "Backtest Failed", result.error)
+      }
+      return
+    }
+
     const selectedModel = local.model.current()
     if (!selectedModel) {
       promptModelWarning()
@@ -834,6 +881,7 @@ export function Prompt(props: PromptProps) {
             paddingLeft={2}
             paddingRight={2}
             paddingTop={1}
+            paddingBottom={1}
             flexShrink={0}
             backgroundColor={theme.backgroundElement}
             flexGrow={1}
@@ -1037,33 +1085,7 @@ export function Prompt(props: PromptProps) {
             </box>
           </box>
         </box>
-        <box
-          height={1}
-          border={["left"]}
-          borderColor={highlight()}
-          customBorderChars={{
-            ...EmptyBorder,
-            vertical: theme.backgroundElement.a !== 0 ? "╹" : " ",
-          }}
-        >
-          <box
-            height={1}
-            border={["bottom"]}
-            borderColor={theme.backgroundElement}
-            customBorderChars={
-              theme.backgroundElement.a !== 0
-                ? {
-                    ...EmptyBorder,
-                    horizontal: "▀",
-                  }
-                : {
-                    ...EmptyBorder,
-                    horizontal: " ",
-                  }
-            }
-          />
-        </box>
-        <box flexDirection="row" justifyContent="space-between">
+        <box flexDirection="row" justifyContent="space-between" marginLeft={1}>
           <Show when={status().type !== "idle"} fallback={<text />}>
             <box
               flexDirection="row"

@@ -1,0 +1,18 @@
+Generate a complete, validated trading strategy from a template. Returns production-ready Python code that passes all validation checks.
+
+## When to Use
+- When starting a new strategy from scratch
+- When the user asks for a specific strategy type
+- As a starting point to customize
+
+## Template Types
+- **momentum** — RSI-based: buys oversold (<30), sells overbought (>70)
+- **mean-reversion** — Bollinger Bands: buys at lower band, sells at upper band
+- **breakout** — Donchian channel: buys at new highs, sells at new lows
+- **dca** — Dollar-cost averaging: buys at intervals, sells at profit target
+- **golden-cross** — SMA 50/200 crossover: buys golden cross, sells death cross
+- **scalping** — EMA with tight stops: quick entries and exits
+- **custom** — Minimal skeleton: implement your own logic
+
+## Output
+Returns the template source code along with validation results confirming the code is valid.

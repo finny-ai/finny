@@ -11,6 +11,8 @@ import { TodoWriteTool, TodoReadTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
 import { AlgorithmGetTool } from "./algorithm-get"
+import { AlgorithmValidateTool } from "./algorithm-validate"
+import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -120,6 +122,8 @@ export namespace ToolRegistry {
       AlgorithmSaveTool,
       AlgorithmListTool,
       AlgorithmGetTool,
+      AlgorithmValidateTool,
+      AlgorithmScaffoldTool,
       WebSearchTool,
       CodeSearchTool,
       SkillTool,

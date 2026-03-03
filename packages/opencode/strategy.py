@@ -1,33 +1,39 @@
-"""btc_liq_funding_news_v1
+"""eth_trend_breakout_v1
 
-Implements:
-1) Liquidation Arbitrage ("catching knives") via wick/volume/liquidation-spike detection and laddered deep limit buys.
-2) Funding-rate exploitation:
-   - WARNING: True delta-neutral funding capture requires hedging (spot+perp). If you only trade a perp, this becomes a funding-biased
-     mean-reversion long filter, not risk-free carry.
-3) Sentiment-triggered spreads/risk-off: keyword-based news risk score widens entries and reduces size.
+ETH spot crypto strategy intended as a conservative, production-ready baseline.
 
-Crypto runs 24/7: production deployments should include robust reconnect/backoff, clock drift checks, and idempotent order handling.
-Never hardcode API keys: use environment variables.
+Core idea (15m default):
+  - Trade long-only in the direction of the higher-timeframe trend (EMA fast > EMA slow).
+  - Enter on either:
+      (A) Donchian breakout with volume confirmation, OR
+      (B) Mean-reversion pullback in an uptrend (RSI oversold + price below EMA).
+  - Exits use a hard stop (default 2%), ATR-based trailing stop, take-profit, and time-stop.
+
+Risk controls (enabled by default):
+  - Stop-loss per trade (default 2%)
+  - Position sizing by risk-per-trade (default 1% of equity)
+  - Max drawdown kill-switch (default 10%)
+  - Daily loss limit (default 3%)
+  - Max concurrent positions (default 3)
+
+Important:
+  - No strategy "prints money". This is a starting point you should backtest and paper trade.
+  - Crypto runs 24/7: production deployments should include robust reconnect/backoff,
+    clock drift checks, and idempotent order handling.
+  - Never hardcode API keys — use environment variables.
 """
 
 from __future__ import annotations
 
 import json
 import math
-import os
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import numpy as np
 import pandas as pd
-
-try:
-    import requests  # type: ignore
-except Exception:  # pragma: no cover
-    requests = None
 
 
 # -------------------------
@@ -40,7 +46,19 @@ def utc_now() -> datetime:
 
 
 def ema(series: pd.Series, span: int) -> pd.Series:
-    return series.ewm(span=span, adjust=False).mean()
+    return cast(pd.Series, series.ewm(span=span, adjust=False).mean())
+
+
+def rsi(series: pd.Series, period: int = 14) -> pd.Series:
+    """Wilder RSI."""
+    s = cast(pd.Series, series)
+    delta = s.astype(float).diff()
+    up = delta.clip(lower=0.0)
+    down = (-delta).clip(lower=0.0)
+    roll_up = up.ewm(alpha=1 / period, adjust=False).mean()
+    roll_down = down.ewm(alpha=1 / period, adjust=False).mean()
+    rs = roll_up / (roll_down + 1e-12)
+    return cast(pd.Series, 100.0 - (100.0 / (1.0 + rs)))
 
 
 def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
@@ -57,7 +75,7 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
         ],
         axis=1,
     ).max(axis=1)
-    return tr.rolling(period, min_periods=period).mean()
+    return cast(pd.Series, tr.rolling(period, min_periods=period).mean())
 
 
 def vwap(df: pd.DataFrame, lookback: int) -> float:
@@ -149,54 +167,6 @@ class MarketData:
     def candles(self, symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
         raise NotImplementedError
 
-    def funding_rate(self, symbol: str) -> Optional[float]:
-        return None
-
-    def liquidation_notional_1m(self, symbol: str) -> Optional[float]:
-        return None
-
-    def recent_headlines(self, lookback_minutes: int) -> List[str]:
-        return []
-
-
-# -------------------------
-# News Provider (GDELT)
-# -------------------------
-
-
-class GdeltNewsProvider:
-    """Lightweight keyword scanning via GDELT 2.1 DOC API.
-
-    No API key required, but availability is not guaranteed. In production, use a dedicated provider.
-    """
-
-    BASE = "https://api.gdeltproject.org/api/v2/doc/doc"
-
-    def __init__(self) -> None:
-        if requests is None:
-            raise RuntimeError("requests is required for GDELT provider")
-
-    def fetch_headlines(self, lookback_minutes: int) -> List[str]:
-        # Query broad crypto/macro context; we later score using configured keywords.
-        query = "(bitcoin OR btc OR crypto OR federal reserve OR inflation OR war OR sanctions)"
-        params = {
-            "query": query,
-            "mode": "ArtList",
-            "format": "json",
-            "maxrecords": 50,
-            "sort": "HybridRel",
-            "timelinesmooth": 0,
-        }
-        try:
-            r = requests.get(self.BASE, params=params, timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            arts = data.get("articles", []) or []
-            # GDELT doesn't expose exact timestamps in all modes; we just take the latest list.
-            return [a.get("title", "") for a in arts if a.get("title")]
-        except Exception:
-            return []
-
 
 # -------------------------
 # Strategy
@@ -205,6 +175,7 @@ class GdeltNewsProvider:
 
 @dataclass
 class StrategyState:
+    entry_price: float = 0.0
     peak_price_since_entry: float = 0.0
     entry_time: Optional[datetime] = None
     last_stop_time: Optional[datetime] = None
@@ -213,7 +184,7 @@ class StrategyState:
     day: Optional[str] = None
 
 
-class BtcLiqFundingSentimentStrategy:
+class EthTrendBreakoutStrategy:
     def __init__(self, config_path: str, broker: Broker, market: MarketData):
         self.cfg = self._load_config(config_path)
         self.symbol = self.cfg["symbol"]
@@ -222,93 +193,26 @@ class BtcLiqFundingSentimentStrategy:
         self.market = market
         self.state = StrategyState()
 
-        sg = self.cfg.get("sentiment_guard", {})
-        self.keywords = [k.lower() for k in sg.get("keywords", [])]
-        self.news_provider = None
-        if sg.get("enabled", True) and sg.get("news_provider") == "gdelt":
-            try:
-                self.news_provider = GdeltNewsProvider()
-            except Exception:
-                self.news_provider = None
-
     @staticmethod
     def _load_config(path: str) -> Dict[str, Any]:
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
 
-    # ---------- Sentiment Guard ----------
-    def _news_risk_score(self) -> float:
-        sg = self.cfg["sentiment_guard"]
-        if not sg.get("enabled", True):
-            return 0.0
-        lookback = int(sg.get("lookback_minutes", 30))
-        headlines: List[str] = []
-        if self.news_provider is not None:
-            headlines = self.news_provider.fetch_headlines(lookback)
-        else:
-            headlines = self.market.recent_headlines(lookback)
-
-        if not headlines:
-            return 0.0
-
-        score = 0.0
-        for h in headlines:
-            hl = h.lower()
-            for kw in self.keywords:
-                if kw in hl:
-                    score += 1.0
-        # Diminishing returns
-        return float(math.log1p(score))
-
-    # ---------- Liquidation Event Detection ----------
-    def _liquidation_event(self, df: pd.DataFrame) -> Tuple[bool, Dict[str, float]]:
-        la = self.cfg["liquidation_arbitrage"]
-
-        if len(df) < max(la.get("vwap_lookback", 60), la.get("atr_period", 14)) + 2:
-            return False, {}
-
-        last = df.iloc[-1]
-        o, h, l, c = (
-            float(last.open),
-            float(last.high),
-            float(last.low),
-            float(last.close),
-        )
-        rng = max(h - l, 1e-9)
-        lower_wick = max(min(o, c) - l, 0.0)
-        wick_ratio = lower_wick / rng
-
-        atr_val = float(atr(df, int(la.get("atr_period", 14))).iloc[-1])
-        vwap_val = vwap(df, int(la.get("vwap_lookback", 60)))
-        dislocation = (vwap_val - c) / max(atr_val, 1e-9)
-
-        vol_z = zscore(df["volume"], lookback=60)
-
-        # Optional real liquidation feed
-        liq_notional = self.market.liquidation_notional_1m(self.symbol)
-        has_liq_feed = liq_notional is not None
-        liq_ok = True
-        if has_liq_feed:
-            # Conservative default for paper: treat >= $25k notional/1m as "massive" for BTC.
-            liq_ok = float(liq_notional) >= 25_000.0
-
-        event = (
-            wick_ratio >= float(la.get("wick_ratio_threshold", 0.55))
-            and vol_z >= float(la.get("volume_zscore_threshold", 2.0))
-            and dislocation >= float(la.get("dislocation_atr_threshold", 1.2))
-            and liq_ok
-        )
-        metrics = {
-            "wick_ratio": wick_ratio,
-            "vol_z": vol_z,
-            "dislocation_atr": dislocation,
-            "atr": atr_val,
-            "vwap": vwap_val,
-            "liq_notional_1m": float(liq_notional)
-            if liq_notional is not None
-            else float("nan"),
-        }
-        return bool(event), metrics
+    # ---------- Indicators / Signals ----------
+    def _compute_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        p = self.cfg["params"]
+        out = df.copy()
+        close = cast(pd.Series, out["close"]).astype(float)
+        out["ema_fast"] = ema(close, int(p.get("ema_fast", 50)))
+        out["ema_slow"] = ema(close, int(p.get("ema_slow", 200)))
+        out["rsi"] = rsi(close, int(p.get("rsi_period", 14)))
+        out["atr"] = atr(out, int(p.get("atr_period", 14)))
+        donch = int(p.get("donchian_lookback", 20))
+        out["donch_high"] = out["high"].astype(float).rolling(donch).max()
+        out["donch_low"] = out["low"].astype(float).rolling(donch).min()
+        vol_lb = int(p.get("vol_sma_lookback", 20))
+        out["vol_sma"] = out["volume"].astype(float).rolling(vol_lb).mean()
+        return out
 
     # ---------- Risk / Position Sizing ----------
     def _risk_checks_and_state(self) -> None:
@@ -329,7 +233,7 @@ class BtcLiqFundingSentimentStrategy:
 
         # Max drawdown kill-switch (relative to starting equity)
         start_eq = float(risk_cfg.get("starting_equity_usd", eq))
-        if eq <= start_eq * (1.0 - float(risk_cfg.get("max_drawdown_pct", 0.2))):
+        if eq <= start_eq * (1.0 - float(risk_cfg.get("max_drawdown_pct", 0.10))):
             self.state.dd_kill = True
 
     def _cooldown_active(self) -> bool:
@@ -341,20 +245,16 @@ class BtcLiqFundingSentimentStrategy:
     def _position_size(
         self, stop_distance: float, size_multiplier: float = 1.0
     ) -> float:
-        """Compute base qty in BTC contracts/units (assumes linear perp in USD).
+        """Compute qty in base units (ETH) with risk in USD.
 
-        For a linear BTCUSDT perp, PnL approx: qty_btc * price_move_usd.
-        Risk per trade is enforced in USD; leverage controls margin, not risk.
+        For spot: PnL approx qty * price_move.
+        Risk per trade is enforced in USD.
         """
         risk_cfg = self.cfg["risk"]
         eq = float(self.broker.get_equity())
         risk_usd = eq * float(risk_cfg.get("risk_per_trade_pct", 0.01))
         price = float(self.broker.latest_price(self.symbol))
-        max_pos_usd = (
-            eq
-            * float(risk_cfg.get("max_position_pct_of_equity", 0.35))
-            * float(risk_cfg.get("max_leverage", 1))
-        )
+        max_pos_usd = eq * float(risk_cfg.get("max_position_pct_of_equity", 0.35))
 
         if stop_distance <= 0:
             return 0.0
@@ -366,63 +266,68 @@ class BtcLiqFundingSentimentStrategy:
         return float(max(qty, 0.0))
 
     # ---------- Order Logic ----------
-    def _place_liq_ladder(self, mid: float, atr_val: float, risk_off: bool) -> None:
-        la = self.cfg["liquidation_arbitrage"]
-        ladder = la["ladder"]
-        levels = ladder.get("levels", [1.5, 2.5, 3.5])
-        weights = ladder.get("weights", [0.5, 0.3, 0.2])
-
-        sg = self.cfg["sentiment_guard"]
-        depth_mult = (
-            float(sg.get("entry_depth_multiplier_on_risk", 1.5)) if risk_off else 1.0
-        )
-        size_mult = float(sg.get("size_multiplier_on_risk", 0.25)) if risk_off else 1.0
-
-        # Cancel any prior ladder orders
-        for o in self.broker.list_open_orders(self.symbol):
-            if o.tag.startswith("liq_ladder"):
-                self.broker.cancel_order(o.id)
-
-        # Stop distance for sizing: ATR-based with cap
-        stop_cfg = la["stop"]
-        raw_stop = float(stop_cfg.get("atr_mult", 1.2)) * atr_val
-        max_stop_pct = float(stop_cfg.get("max_stop_pct", 0.03))
-        stop_distance = min(raw_stop, mid * max_stop_pct)
-
-        base_qty = self._position_size(
-            stop_distance=stop_distance, size_multiplier=size_mult
-        )
-        if base_qty <= 0:
+    def _submit_market(self, side: str, qty: float, tag: str) -> None:
+        if qty <= 0:
             return
+        oid = f"{tag}_{int(time.time())}"
+        self.broker.submit_order(
+            Order(id=oid, side=side, qty=float(qty), order_type="market", tag=tag)
+        )
 
-        ttl = int(self.cfg["execution"].get("limit_order_ttl_minutes", 20))
-        post_only = bool(self.cfg["execution"].get("use_post_only_limits", True))
+    def _entry_signal(self, df_i: pd.DataFrame) -> Tuple[bool, Dict[str, float]]:
+        """Return (enter_long, metrics)."""
+        p = self.cfg["params"]
+        if len(df_i) < int(p.get("min_bars", 250)):
+            return False, {"reason": -1.0}
 
-        for i, (k, w) in enumerate(zip(levels, weights), start=1):
-            px = mid - (float(k) * atr_val * depth_mult)
-            qty = base_qty * float(w)
-            if qty <= 0 or px <= 0:
-                continue
-            oid = f"liq_ladder_{i}_{int(time.time())}"
-            self.broker.submit_order(
-                Order(
-                    id=oid,
-                    side="buy",
-                    qty=float(qty),
-                    order_type="limit",
-                    limit_price=float(px),
-                    created_at=utc_now(),
-                    ttl_minutes=ttl,
-                    post_only=post_only,
-                    tag="liq_ladder",
-                )
-            )
+        last = df_i.iloc[-1]
+        prev = df_i.iloc[-2]
+        close = float(last.close)
+        ema_fast_v = float(last.ema_fast)
+        ema_slow_v = float(last.ema_slow)
+        rsi_v = float(last.rsi)
+        atr_v = float(last.atr)
+        if not np.isfinite(atr_v) or atr_v <= 0:
+            return False, {"reason": -2.0}
+
+        trend_ok = ema_fast_v > ema_slow_v
+
+        # (A) Breakout
+        donch_high_prev = (
+            float(prev.donch_high) if np.isfinite(prev.donch_high) else float("nan")
+        )
+        breakout_buf = float(p.get("breakout_buffer_pct", 0.001))
+        breakout = np.isfinite(donch_high_prev) and close > donch_high_prev * (
+            1.0 + breakout_buf
+        )
+
+        vol_ok = True
+        vol_mult = float(p.get("breakout_volume_mult", 1.2))
+        if np.isfinite(last.vol_sma) and float(last.vol_sma) > 0:
+            vol_ok = float(last.volume) >= float(last.vol_sma) * vol_mult
+
+        # (B) Pullback (buy dip in uptrend)
+        pull_atr_mult = float(p.get("pullback_atr_mult", 0.8))
+        pullback = close <= ema_fast_v - pull_atr_mult * atr_v
+        rsi_oversold = float(p.get("rsi_oversold", 35.0))
+        pullback_ok = pullback and rsi_v <= rsi_oversold
+
+        enter = bool(trend_ok and ((breakout and vol_ok) or pullback_ok))
+        return enter, {
+            "trend_ok": 1.0 if trend_ok else 0.0,
+            "breakout": 1.0 if breakout else 0.0,
+            "vol_ok": 1.0 if vol_ok else 0.0,
+            "pullback": 1.0 if pullback else 0.0,
+            "rsi": rsi_v,
+            "atr": atr_v,
+            "ema_fast": ema_fast_v,
+            "ema_slow": ema_slow_v,
+        }
 
     def _manage_open_position(self, df: pd.DataFrame, risk_off: bool) -> None:
-        la = self.cfg["liquidation_arbitrage"]
-        tp = la["take_profit"]
         pos = self.broker.get_position(self.symbol)
         if not pos or pos.qty == 0:
+            self.state.entry_price = 0.0
             self.state.peak_price_since_entry = 0.0
             self.state.entry_time = None
             return
@@ -433,86 +338,61 @@ class BtcLiqFundingSentimentStrategy:
         )
         if self.state.entry_time is None:
             self.state.entry_time = utc_now()
+        if self.state.entry_price <= 0:
+            self.state.entry_price = float(pos.avg_price)
 
-        # Compute ATR
-        atr_val = float(atr(df, int(la.get("atr_period", 14))).iloc[-1])
+        p = self.cfg["params"]
+        risk_cfg = self.cfg["risk"]
 
-        # Hard stop (synthetic): exit market if price falls beyond stop distance
-        stop_cfg = la["stop"]
-        raw_stop = float(stop_cfg.get("atr_mult", 1.2)) * atr_val
-        max_stop_pct = float(stop_cfg.get("max_stop_pct", 0.03))
-        stop_distance = min(raw_stop, pos.avg_price * max_stop_pct)
-        stop_px = pos.avg_price - stop_distance
+        # Latest ATR
+        ind = self._compute_indicators(df)
+        atr_v = float(ind["atr"].iloc[-1])
+        if not np.isfinite(atr_v) or atr_v <= 0:
+            atr_v = max(1e-9, float(pos.avg_price) * 0.01)
+
+        # Hard stop
+        hard_stop_pct = float(risk_cfg.get("stop_loss_pct", 0.02))
+        hard_stop = float(pos.avg_price) * (1.0 - hard_stop_pct)
+
+        # ATR trailing stop
+        trail_mult = float(p.get("trail_atr_mult", 2.0))
+        trail_stop = self.state.peak_price_since_entry - trail_mult * atr_v
+
+        # If we're in profit, use the tighter of the two stops; otherwise use hard stop.
+        stop_px = (
+            max(hard_stop, trail_stop) if last_price > pos.avg_price else hard_stop
+        )
+
+        # Take profit
+        tp_pct = float(p.get("take_profit_pct", 0.06))
+        take_profit = float(pos.avg_price) * (1.0 + tp_pct)
+
+        # Time stop
+        max_hold_minutes = int(p.get("max_hold_minutes", 24 * 60))
+        time_stop = self.state.entry_time is not None and utc_now() >= (
+            self.state.entry_time + timedelta(minutes=max_hold_minutes)
+        )
+
+        # Trend exit (optional): if trend flips, exit.
+        exit_on_trend_flip = bool(p.get("exit_on_trend_flip", True))
+        if exit_on_trend_flip:
+            last = ind.iloc[-1]
+            if float(last.ema_fast) < float(last.ema_slow):
+                self._submit_market("sell", abs(pos.qty), tag="trend_flip_exit")
+                return
 
         if last_price <= stop_px:
-            oid = f"stop_exit_{int(time.time())}"
-            self.broker.submit_order(
-                Order(
-                    id=oid,
-                    side="sell",
-                    qty=abs(pos.qty),
-                    order_type="market",
-                    tag="stop_exit",
-                )
-            )
+            self._submit_market("sell", abs(pos.qty), tag="stop_exit")
             self.state.last_stop_time = utc_now()
             return
 
-        # Trailing take profit (activates after recovery)
-        activate_after = float(tp.get("activate_after_atr", 0.8)) * atr_val
-        trail = float(tp.get("trail_atr", 0.6)) * atr_val
-
-        if self.state.peak_price_since_entry >= pos.avg_price + activate_after:
-            trail_stop = self.state.peak_price_since_entry - trail
-            if last_price <= trail_stop:
-                oid = f"trail_tp_{int(time.time())}"
-                self.broker.submit_order(
-                    Order(
-                        id=oid,
-                        side="sell",
-                        qty=abs(pos.qty),
-                        order_type="market",
-                        tag="trail_tp",
-                    )
-                )
-                return
-
-        # Time stop
-        max_hold = int(tp.get("time_stop_minutes", 240))
-        if self.state.entry_time and utc_now() >= (
-            self.state.entry_time + timedelta(minutes=max_hold)
-        ):
-            oid = f"time_stop_{int(time.time())}"
-            self.broker.submit_order(
-                Order(
-                    id=oid,
-                    side="sell",
-                    qty=abs(pos.qty),
-                    order_type="market",
-                    tag="time_stop",
-                )
-            )
+        if last_price >= take_profit:
+            self._submit_market("sell", abs(pos.qty), tag="take_profit")
             return
 
-        # Funding-biased exit: if funding normalizes, reduce willingness to hold
-        fe = self.cfg.get("funding_exploitation", {})
-        if fe.get("enabled", True):
-            fr = self.market.funding_rate(self.symbol)
-            if fr is not None and float(fr) >= float(
-                fe.get("funding_recover_threshold", -0.0001)
-            ):
-                # If we are barely green, take it.
-                if last_price >= pos.avg_price * 1.001:
-                    oid = f"funding_norm_exit_{int(time.time())}"
-                    self.broker.submit_order(
-                        Order(
-                            id=oid,
-                            side="sell",
-                            qty=abs(pos.qty),
-                            order_type="market",
-                            tag="funding_norm_exit",
-                        )
-                    )
+        if time_stop:
+            self._submit_market("sell", abs(pos.qty), tag="time_stop")
+            return
 
     def on_bar(self) -> Dict[str, Any]:
         """Call once per new bar (1m by default). Returns diagnostics."""
@@ -525,12 +405,8 @@ class BtcLiqFundingSentimentStrategy:
             diag["status"] = "insufficient_data"
             return diag
 
-        news_score = self._news_risk_score()
-        sg = self.cfg["sentiment_guard"]
-        risk_off = news_score >= float(sg.get("risk_score_threshold", 2.0))
-        diag["news_risk_score"] = news_score
-        diag["risk_off"] = risk_off
-
+        # "risk_off" hook kept for future extensions; default False.
+        risk_off = False
         self._manage_open_position(df, risk_off=risk_off)
 
         # Entry gating
@@ -553,32 +429,31 @@ class BtcLiqFundingSentimentStrategy:
             diag["status"] = "max_positions"
             return diag
 
-        # Detect liquidation event
-        event, m = self._liquidation_event(df)
-        diag.update({f"liq_{k}": v for k, v in m.items()})
-        diag["liq_event"] = event
-        if not event:
+        ind = self._compute_indicators(df)
+        enter, m = self._entry_signal(ind)
+        diag.update({f"m_{k}": v for k, v in m.items() if isinstance(v, (int, float))})
+        diag["enter_long"] = bool(enter)
+
+        if not enter:
             diag["status"] = "no_signal"
             return diag
 
-        # Funding filter: prefer negative funding after crash
-        fe = self.cfg.get("funding_exploitation", {})
-        fr = self.market.funding_rate(self.symbol)
-        diag["funding_rate"] = float(fr) if fr is not None else None
-        if fe.get("enabled", True) and fr is not None:
-            if float(fr) > float(fe.get("funding_negative_threshold", -0.0005)):
-                diag["status"] = "funding_not_negative_enough"
-                return diag
-
-        # Place ladder
-        last_price = float(self.broker.latest_price(self.symbol))
-        atr_val = float(m.get("atr", 0.0))
-        if atr_val <= 0:
-            diag["status"] = "bad_atr"
+        # Size by risk vs stop distance
+        last = ind.iloc[-1]
+        px = float(self.broker.latest_price(self.symbol))
+        atr_v = float(last.atr)
+        hard_stop_pct = float(self.cfg["risk"].get("stop_loss_pct", 0.02))
+        stop_dist = max(
+            px * hard_stop_pct,
+            float(self.cfg["params"].get("entry_atr_stop_mult", 1.5)) * atr_v,
+        )
+        qty = self._position_size(stop_distance=stop_dist, size_multiplier=1.0)
+        if qty <= 0:
+            diag["status"] = "no_size"
             return diag
 
-        self._place_liq_ladder(mid=last_price, atr_val=atr_val, risk_off=risk_off)
-        diag["status"] = "placed_ladder"
+        self._submit_market("buy", qty, tag="entry_long")
+        diag["status"] = "entered_long"
         return diag
 
 
@@ -590,8 +465,7 @@ class BtcLiqFundingSentimentStrategy:
 class AlpacaBroker(Broker):
     """Alpaca adapter stub.
 
-    Alpaca supports spot crypto (BTC/USD), not perpetual futures. If you run this strategy on Alpaca,
-    you must disable funding/liquidation-feed features or treat them as external signals only.
+    Alpaca supports spot crypto (e.g., ETH/USD). This strategy is designed for spot.
 
     Required env vars:
       - ALPACA_API_KEY

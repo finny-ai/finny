@@ -15,7 +15,7 @@
   },
 
   "risk": {
-    "starting_equity_usd": 100.0,
+    "starting_equity_usd": 10000.0,
     "max_drawdown_pct": 0.1,
     "risk_per_trade_pct": 0.01,
     "max_position_pct_of_equity": 0.2,

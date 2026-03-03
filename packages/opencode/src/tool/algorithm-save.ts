@@ -2,6 +2,7 @@ import z from "zod"
 import { Tool } from "./tool"
 import DESCRIPTION from "./algorithm-save.txt"
 import { Algorithm } from "../algorithm"
+import { Validate } from "../algorithm/validate"
 
 export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
   description: DESCRIPTION,
@@ -22,6 +23,21 @@ export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
       metadata: {},
     })
 
+    // Validate code before saving
+    const validation = await Validate.run(params.code)
+
+    if (!validation.valid) {
+      return {
+        title: "Save blocked — validation failed",
+        output: Validate.format(validation),
+        metadata: {
+          blocked: true as const,
+          errorCount: validation.errors.length,
+          warningCount: validation.warnings.length,
+        } as Record<string, unknown>,
+      }
+    }
+
     const algo = await Algorithm.save({
       name: params.name,
       code: params.code,
@@ -32,9 +48,8 @@ export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
       localPath: params.localPath,
     })
 
-    return {
-      title: `Saved "${algo.name}" v${algo.version}`,
-      output: JSON.stringify(
+    const parts: string[] = [
+      JSON.stringify(
         {
           algorithmId: algo.algorithmId,
           name: algo.name,
@@ -45,11 +60,21 @@ export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
         null,
         2,
       ),
+    ]
+
+    if (validation.warnings.length > 0) {
+      parts.push("", Validate.format(validation))
+    }
+
+    return {
+      title: `Saved "${algo.name}" v${algo.version}`,
+      output: parts.join("\n"),
       metadata: {
         algorithmId: algo.algorithmId,
         name: algo.name,
         version: algo.version,
-      },
+        warningCount: validation.warnings.length,
+      } as Record<string, unknown>,
     }
   },
 })
