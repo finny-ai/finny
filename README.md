@@ -1,22 +1,26 @@
 ```
-███████╗██╗███╗   ██╗███╗   ██╗██╗   ██╗
-██╔════╝██║████╗  ██║████╗  ██║╚██╗ ██╔╝
-█████╗  ██║██╔██╗ ██║██╔██╗ ██║ ╚████╔╝
-██╔══╝  ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝
-██║     ██║██║ ╚████║██║ ╚████║   ██║
-╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
-```
+                                    ███████╗██╗███╗   ██╗███╗   ██╗██╗   ██╗
+                                    ██╔════╝██║████╗  ██║████╗  ██║╚██╗ ██╔╝
+                                    █████╗  ██║██╔██╗ ██║██╔██╗ ██║ ╚████╔╝
+                                    ██╔══╝  ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝
+                                    ██║     ██║██║ ╚████║██║ ╚████║   ██║
+                                    ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
 
-**AI-Powered Trading Strategy Generator**
+                                      Claude Code for Financial Markets
+```
+<a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/badge/npm-v0.6.7-3381C3?style=flat-square" /></a>
+<img src="https://img.shields.io/github/last-commit/Jaiminp007/finny?style=flat-square&color=orange&cacheSeconds=3600" alt="Last Commit">
 
 Build, backtest, and iterate on trading algorithms using natural language. Built on the [OpenCode](https://github.com/anomalyco/opencode) AI agent harness.
+
+<img width="1399" height="973" alt="Screenshot 2026-03-03 at 12 59 09 PM" src="https://github.com/user-attachments/assets/4f9d6b72-a280-47db-8bb6-34127d1c3c64" />
 
 ---
 
 ### Quick Start
 
 ```bash
-npm i -g finny-ai
+npm i -g finny
 finny
 ```
 
@@ -66,8 +70,8 @@ Press `Tab` to switch between modes.
 | Command | Description |
 | --- | --- |
 | `/algos` | List saved algorithms |
-| `/code [name]` | View algorithm source code |
-| `/backtest [name]` | Run historical backtest |
+| `/code` | View algorithm source code |
+| `/backtest` | Run historical backtest |
 | `/review` | Review strategy changes (commit, branch, or PR) |
 | `/init` | Initialize project rules for strategy generation |
 
