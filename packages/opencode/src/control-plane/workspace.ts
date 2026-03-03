@@ -70,13 +70,10 @@ export namespace Workspace {
       projectID: input.projectID,
     }
 
-        await ConvexWorkspaces.create({
-          id: info.id,
-          branch: info.branch ?? undefined,
-          project_id: info.projectID,
-          config: info.config,
-        })
-        .run()
+    await ConvexWorkspaces.create({
+      id: info.id,
+      branch: info.branch ?? undefined,
+      project_id: info.projectID,
     })
 
     await adaptor.create(config)
