@@ -11,6 +11,8 @@ import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
 import { AlgorithmGetTool } from "./algorithm-get"
+import { AlgorithmValidateTool } from "./algorithm-validate"
+import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -128,6 +130,8 @@ export namespace ToolRegistry {
       const algosave = yield* AlgorithmSaveTool
       const algolist = yield* AlgorithmListTool
       const algoget = yield* AlgorithmGetTool
+      const algovalidate = yield* AlgorithmValidateTool
+      const algoscaffold = yield* AlgorithmScaffoldTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -208,6 +212,8 @@ export namespace ToolRegistry {
             algosave: Tool.init(algosave),
             algolist: Tool.init(algolist),
             algoget: Tool.init(algoget),
+            algovalidate: Tool.init(algovalidate),
+            algoscaffold: Tool.init(algoscaffold),
           })
 
           return {
@@ -231,6 +237,8 @@ export namespace ToolRegistry {
               tool.algosave,
               tool.algolist,
               tool.algoget,
+              tool.algovalidate,
+              tool.algoscaffold,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

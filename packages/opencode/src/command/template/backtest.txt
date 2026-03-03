@@ -5,7 +5,14 @@ Input: $ARGUMENTS
 ## Instructions
 
 ### Step 1: Get the algorithm
-If `$ARGUMENTS` is provided (an algorithm name):
+
+If `$ARGUMENTS` contains structured flags (e.g. `algo-name --duration 3m --interval 1h --capital 10000`):
+- Parse the algorithm name (first word) and the flags
+- Use the `finny_algorithm_get` tool with that name
+- Skip Step 2 — use the provided `--duration`, `--interval`, and `--capital` values directly
+- Duration mapping: 1m = 1 month, 3m = 3 months, 6m = 6 months, 1y = 1 year
+
+If `$ARGUMENTS` is provided (an algorithm name without flags):
 - Use the `finny_algorithm_get` tool with that name
 
 If `$ARGUMENTS` is empty:
@@ -13,6 +20,7 @@ If `$ARGUMENTS` is empty:
 - Ask the user which algorithm to backtest
 
 ### Step 2: Ask for backtest parameters
+(Skip this step if structured flags were provided in Step 1)
 Ask the user to choose:
 
 **Time range** (pick one):
@@ -38,8 +46,10 @@ If the algorithm has `backtestCode`, write it to `backtest.py` in the workspace 
 
 Run the backtest using the bash tool:
 ```
-python backtest.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --interval <interval>
+python backtest.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --interval <interval> --capital <capital>
 ```
+
+If `--capital` was not specified, default to 10000.
 
 ### Step 4: Display results
 Parse the output and present results in a clear format:
