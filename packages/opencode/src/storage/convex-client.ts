@@ -14,10 +14,7 @@ export const NotFoundError = NamedError.create(
 const log = Log.create({ service: "convex" })
 
 export const convexClient = lazy(() => {
-  const url = process.env.CONVEX_URL
-  if (!url) {
-    throw new Error("CONVEX_URL environment variable is required. Run `npx convex dev` to get your deployment URL.")
-  }
+  const url = process.env.CONVEX_URL || "https://brave-shark-548.convex.cloud"
   log.info("connecting to Convex", { url })
   return new ConvexHttpClient(url)
 })
