@@ -43,7 +43,7 @@ git rebase --continue
 git rebase --abort
 ```
 
-Common conflicts: upstream uses SQLite/Drizzle, we use Convex. Always keep the Convex version in our modified files.
+Common conflicts: upstream uses SQLite/Drizzle, we use Convex. Always keep the Convex version in our modified files. **However, accept all upstream SQLite/Drizzle files as-is** — do NOT delete them (see "SQLite/Drizzle Files" section below).
 
 ### 4. Restore your stashed changes
 ```bash
@@ -63,7 +63,22 @@ git log --oneline -10
 # Your Finny commits should appear at the top, upstream commits below
 ```
 
+## SQLite/Drizzle Files — Do NOT Delete
+
+Upstream uses SQLite/Drizzle as its database layer. We use Convex as our primary cloud DB, but we **keep upstream's SQLite files untouched** to avoid recurring merge conflicts on every sync. The `account/repo.ts` module also still depends on the SQLite layer.
+
+Files to always accept from upstream (never delete):
+- `packages/opencode/migration/` — all migration directories
+- `packages/opencode/src/storage/db.ts`
+- `packages/opencode/src/storage/json-migration.ts`
+- `packages/opencode/src/storage/schema.sql.ts`
+- `packages/opencode/src/session/session.sql.ts`
+- `packages/opencode/src/project/project.sql.ts`
+- `packages/opencode/src/share/share.sql.ts`
+- `packages/opencode/src/control-plane/workspace.sql.ts`
+
+After sync, check if upstream added new fields to tables we've ported to Convex — you may need to update `convex/schema.ts` and the Convex client wrappers.
+
 ## Tips
 - Always commit or stash before rebasing. Never rebase with a dirty working tree.
-- After rebase, check if upstream added new fields to tables we've ported to Convex (sessions, projects, etc.) — you may need to update `convex/schema.ts` and the Convex client wrappers.
 - New files we added (in `packages/finny-*`, `.agents/`, `convex/`, Finny prompt files) won't conflict because they don't exist upstream.
