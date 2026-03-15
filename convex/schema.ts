@@ -108,9 +108,12 @@ export default defineSchema({
 
   workspaces: defineTable({
     id: v.string(),
+    type: v.string(),
     branch: v.optional(v.string()),
+    name: v.optional(v.string()),
+    directory: v.optional(v.string()),
+    extra: v.optional(v.any()),
     project_id: v.string(),
-    config: v.any(),
   })
     .index("by_ext_id", ["id"])
     .index("by_project_id", ["project_id"]),

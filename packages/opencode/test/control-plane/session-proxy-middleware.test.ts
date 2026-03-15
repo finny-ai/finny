@@ -4,6 +4,7 @@ import { Hono } from "hono"
 import { tmpdir } from "../fixture/fixture"
 import { Project } from "../../src/project/project"
 import { Instance } from "../../src/project/instance"
+import { WorkspaceContext } from "../../src/control-plane/workspace-context"
 import { ConvexWorkspaces } from "../../src/storage/convex/workspaces"
 import { resetDatabase } from "../fixture/db"
 import * as adaptors from "../../src/control-plane/adaptors"
@@ -69,13 +70,13 @@ async function setup(state: State) {
     id: id1,
     branch: "main",
     project_id: project.id,
-    config: remote,
+    type: remote.type, directory: remote.directory, name: remote.name,
   })
   await ConvexWorkspaces.create({
     id: id2,
     branch: "main",
     project_id: project.id,
-    config: { type: "worktree", directory: tmp.path },
+    type: "worktree", directory: tmp.path,
   })
 
   const { WorkspaceRouterMiddleware } = await import("../../src/control-plane/workspace-router-middleware")

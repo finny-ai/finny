@@ -4,11 +4,22 @@ import { api } from "../../../../../convex/_generated/api"
 export namespace ConvexWorkspaces {
   export async function create(input: {
     id: string
-    branch?: string
+    type: string
+    branch?: string | null
+    name?: string | null
+    directory?: string | null
+    extra?: unknown | null
     project_id: string
-    config: any
   }) {
-    return convexClient().mutation(api.workspaces.create, input)
+    return convexClient().mutation(api.workspaces.create, {
+      id: input.id,
+      type: input.type,
+      branch: input.branch ?? undefined,
+      name: input.name ?? undefined,
+      directory: input.directory ?? undefined,
+      extra: input.extra ?? undefined,
+      project_id: input.project_id,
+    })
   }
 
   export async function getById(id: string) {

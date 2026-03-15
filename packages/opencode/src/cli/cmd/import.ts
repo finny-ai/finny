@@ -155,7 +155,11 @@ export const ImportCommand = cmd({
         return
       }
 
-      await ConvexSessions.create(Session.toRow(exportData.info))
+      const sessionInfo = Session.Info.parse({
+        ...exportData.info,
+        projectID: Instance.project.id,
+      })
+      await ConvexSessions.create(Session.toRow(sessionInfo))
 
       const messageBatch = exportData.messages.map((msg) => ({
         id: msg.info.id,

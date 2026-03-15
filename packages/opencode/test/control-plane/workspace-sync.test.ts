@@ -59,13 +59,13 @@ describe("control-plane/workspace.startSyncing", () => {
       id: id1,
       branch: "main",
       project_id: project.id,
-      config: remote,
+      type: remote.type, directory: remote.directory, name: remote.name,
     })
     await ConvexWorkspaces.create({
       id: id2,
       branch: "main",
       project_id: project.id,
-      config: { type: "worktree", directory: tmp.path },
+      type: "worktree", directory: tmp.path,
     })
 
     const done = new Promise<void>((resolve) => {
