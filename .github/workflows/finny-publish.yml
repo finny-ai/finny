@@ -37,7 +37,7 @@ jobs:
           fi
 
       - name: Build CLI (all platforms)
-        run: ./packages/opencode/script/build.ts --skip-install
+        run: ./packages/opencode/script/build.ts
         env:
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_CHANNEL: ${{ steps.version.outputs.channel }}
