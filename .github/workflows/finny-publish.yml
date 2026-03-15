@@ -113,7 +113,7 @@ jobs:
             const deps = JSON.parse('${DEPS}');
             const out = {
               name: pkg.name,
-              bin: { [pkg.name]: './bin/' + pkg.name },
+              bin: { [pkg.name]: './bin/opencode' },
               scripts: { postinstall: 'bun ./postinstall.mjs || node ./postinstall.mjs' },
               version: '${VERSION}',
               license: pkg.license,
