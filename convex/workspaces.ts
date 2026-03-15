@@ -4,9 +4,12 @@ import { v } from "convex/values"
 export const create = mutation({
   args: {
     id: v.string(),
+    type: v.string(),
     branch: v.optional(v.string()),
+    name: v.optional(v.string()),
+    directory: v.optional(v.string()),
+    extra: v.optional(v.any()),
     project_id: v.string(),
-    config: v.any(),
   },
   handler: async (ctx, args) => {
     await ctx.db.insert("workspaces", args)

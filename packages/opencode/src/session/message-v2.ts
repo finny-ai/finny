@@ -1,8 +1,8 @@
 import { BusEvent } from "@/bus/bus-event"
+import { SessionID, MessageID, PartID } from "./schema"
 import z from "zod"
 import { NamedError } from "@opencode-ai/util/error"
 import { APICallError, convertToModelMessages, LoadAPIKeyError, type ModelMessage, type UIMessage } from "ai"
-import { Identifier } from "../id/id"
 import { LSP } from "../lsp"
 import { Snapshot } from "@/snapshot"
 import { fn } from "@/util/fn"
@@ -15,6 +15,7 @@ import { ProviderError } from "@/provider/error"
 import { iife } from "@/util/iife"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
+import { ModelID, ProviderID } from "@/provider/schema"
 
 export namespace MessageV2 {
   export function isMedia(mime: string) {
@@ -78,9 +79,9 @@ export namespace MessageV2 {
   export type OutputFormat = z.infer<typeof Format>
 
   const PartBase = z.object({
-    id: z.string(),
-    sessionID: z.string(),
-    messageID: z.string(),
+    id: PartID.zod,
+    sessionID: SessionID.zod,
+    messageID: MessageID.zod,
   })
 
   export const SnapshotPart = PartBase.extend({
@@ -213,8 +214,8 @@ export namespace MessageV2 {
     agent: z.string(),
     model: z
       .object({
-        providerID: z.string(),
-        modelID: z.string(),
+        providerID: ProviderID.zod,
+        modelID: ModelID.zod,
       })
       .optional(),
     command: z.string().optional(),
@@ -343,8 +344,8 @@ export namespace MessageV2 {
   export type ToolPart = z.infer<typeof ToolPart>
 
   const Base = z.object({
-    id: z.string(),
-    sessionID: z.string(),
+    id: MessageID.zod,
+    sessionID: SessionID.zod,
   })
 
   export const User = Base.extend({
@@ -362,8 +363,8 @@ export namespace MessageV2 {
       .optional(),
     agent: z.string(),
     model: z.object({
-      providerID: z.string(),
-      modelID: z.string(),
+      providerID: ProviderID.zod,
+      modelID: ModelID.zod,
     }),
     system: z.string().optional(),
     tools: z.record(z.string(), z.boolean()).optional(),
@@ -410,9 +411,9 @@ export namespace MessageV2 {
         APIError.Schema,
       ])
       .optional(),
-    parentID: z.string(),
-    modelID: z.string(),
-    providerID: z.string(),
+    parentID: MessageID.zod,
+    modelID: ModelID.zod,
+    providerID: ProviderID.zod,
     /**
      * @deprecated
      */
@@ -457,8 +458,8 @@ export namespace MessageV2 {
     Removed: BusEvent.define(
       "message.removed",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
       }),
     ),
     PartUpdated: BusEvent.define(
@@ -470,9 +471,9 @@ export namespace MessageV2 {
     PartDelta: BusEvent.define(
       "message.part.delta",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
-        partID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
+        partID: PartID.zod,
         field: z.string(),
         delta: z.string(),
       }),
@@ -480,9 +481,9 @@ export namespace MessageV2 {
     PartRemoved: BusEvent.define(
       "message.part.removed",
       z.object({
-        sessionID: z.string(),
-        messageID: z.string(),
-        partID: z.string(),
+        sessionID: SessionID.zod,
+        messageID: MessageID.zod,
+        partID: PartID.zod,
       }),
     ),
   }
@@ -492,6 +493,21 @@ export namespace MessageV2 {
     parts: z.array(Part),
   })
   export type WithParts = z.infer<typeof WithParts>
+
+  const Cursor = z.object({
+    id: MessageID.zod,
+    time: z.number(),
+  })
+  type Cursor = z.infer<typeof Cursor>
+
+  export const cursor = {
+    encode(input: Cursor) {
+      return Buffer.from(JSON.stringify(input)).toString("base64url")
+    },
+    decode(input: string) {
+      return Cursor.parse(JSON.parse(Buffer.from(input, "base64url").toString("utf8")))
+    },
+  }
 
   export function toModelMessages(
     input: WithParts[],
@@ -698,7 +714,7 @@ export namespace MessageV2 {
           // media (images, PDFs) in tool results
           if (media.length > 0) {
             result.push({
-              id: Identifier.ascending("message"),
+              id: MessageID.ascending(),
               role: "user",
               parts: [
                 {
@@ -728,7 +744,76 @@ export namespace MessageV2 {
     )
   }
 
-  export const stream = fn(Identifier.schema("session"), async function* (sessionID) {
+  export const page = fn(
+    z.object({
+      sessionID: SessionID.zod,
+      limit: z.number().int().positive(),
+      before: z.string().optional(),
+    }),
+    async (input) => {
+      // Delegate to Convex-backed stream and collect results with cursor support
+      const size = input.limit + 1
+      const before = input.before ? cursor.decode(input.before) : undefined
+
+      const rows = await ConvexMessages.stream(input.sessionID, size, 0)
+      // Filter rows older than cursor if provided
+      const filtered = before
+        ? rows.filter(
+            (row: any) =>
+              row.data.time.created < before.time ||
+              (row.data.time.created === before.time && row.id < before.id),
+          )
+        : rows
+
+      const limited = filtered.slice(0, input.limit + 1)
+
+      if (limited.length === 0) {
+        return {
+          items: [] as MessageV2.WithParts[],
+          more: false,
+        }
+      }
+
+      const more = limited.length > input.limit
+      const pageRows = more ? limited.slice(0, input.limit) : limited
+
+      const ids = pageRows.map((row: any) => row.id as string)
+      const partsByMessage = new Map<string, MessageV2.Part[]>()
+      if (ids.length > 0) {
+        const batchResult = await ConvexParts.listByMessages(ids)
+        for (const [messageId, partRows] of Object.entries(batchResult)) {
+          const mapped = (partRows as any[]).map(
+            (row) =>
+              ({
+                ...row.data,
+                id: row.id,
+                sessionID: row.session_id,
+                messageID: row.message_id,
+              }) as MessageV2.Part,
+          )
+          partsByMessage.set(messageId, mapped)
+        }
+      }
+
+      const items = pageRows.map((row: any) => ({
+        info: { ...row.data, id: row.id, sessionID: row.session_id } as MessageV2.Info,
+        parts: partsByMessage.get(row.id) ?? [],
+      }))
+      items.reverse()
+
+      const tail = pageRows.at(-1)
+      return {
+        items,
+        more,
+        cursor:
+          more && tail
+            ? cursor.encode({ id: tail.id as MessageID, time: tail.data.time?.created ?? Date.now() })
+            : undefined,
+      }
+    },
+  )
+
+  export const stream = fn(SessionID.zod, async function* (sessionID) {
     const size = 50
     let offset = 0
     while (true) {
@@ -766,7 +851,7 @@ export namespace MessageV2 {
     }
   })
 
-  export const parts = fn(Identifier.schema("message"), async (message_id) => {
+  export const parts = fn(MessageID.zod, async (message_id) => {
     const rows = await ConvexParts.listByMessage(message_id)
     return rows.map(
       (row: any) => ({ ...row.data, id: row.id, sessionID: row.session_id, messageID: row.message_id }) as MessageV2.Part,
@@ -775,8 +860,8 @@ export namespace MessageV2 {
 
   export const get = fn(
     z.object({
-      sessionID: Identifier.schema("session"),
-      messageID: Identifier.schema("message"),
+      sessionID: SessionID.zod,
+      messageID: MessageID.zod,
     }),
     async (input): Promise<WithParts> => {
       const row = await ConvexMessages.getById(input.messageID)
@@ -807,7 +892,7 @@ export namespace MessageV2 {
     return result
   }
 
-  export function fromError(e: unknown, ctx: { providerID: string }) {
+  export function fromError(e: unknown, ctx: { providerID: ProviderID }): NonNullable<Assistant["error"]> {
     switch (true) {
       case e instanceof DOMException && e.name === "AbortError":
         return new MessageV2.AbortedError(

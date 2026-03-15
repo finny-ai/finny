@@ -121,6 +121,7 @@ export namespace ShareNext {
     })
       .then((x) => x.json())
       .then((x) => x as { id: string; url: string; secret: string })
+    const result = response
     await ConvexSessionShares.upsert({
       session_id: sessionID,
       share_id: result.id,

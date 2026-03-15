@@ -4,7 +4,6 @@ import path from "path"
 import { ConvexProjects } from "../storage/convex/projects"
 import { Log } from "../util/log"
 import { Flag } from "@/flag/flag"
-import { work } from "../util/queue"
 import { fn } from "@opencode-ai/util/fn"
 import { BusEvent } from "@/bus/bus-event"
 import { iife } from "@/util/iife"
@@ -13,6 +12,7 @@ import { existsSync } from "fs"
 import { git } from "../util/git"
 import { Glob } from "../util/glob"
 import { which } from "../util/which"
+import { ProjectID } from "./schema"
 
 export namespace Project {
   const log = Log.create({ service: "project" })
@@ -31,7 +31,7 @@ export namespace Project {
 
   export const Info = z
     .object({
-      id: z.string(),
+      id: ProjectID.zod,
       worktree: z.string(),
       vcs: z.literal("git").optional(),
       name: z.string().optional(),
@@ -81,7 +81,7 @@ export namespace Project {
         ? { url: row.icon_url ?? undefined, color: row.icon_color ?? undefined }
         : undefined
     return {
-      id: row.id,
+      id: ProjectID.make(row.id),
       worktree: row.worktree,
       vcs: row.vcs ? Info.shape.vcs.parse(row.vcs) : undefined,
       name: row.name ?? undefined,
@@ -99,6 +99,7 @@ export namespace Project {
   function readCachedId(dir: string) {
     return Filesystem.readText(path.join(dir, "opencode"))
       .then((x) => x.trim())
+      .then(ProjectID.make)
       .catch(() => undefined)
   }
 
@@ -119,7 +120,7 @@ export namespace Project {
 
         if (!gitBinary) {
           return {
-            id: id ?? "global",
+            id: id ?? ProjectID.global,
             worktree: sandbox,
             sandbox,
             vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
@@ -138,7 +139,7 @@ export namespace Project {
 
         if (!worktree) {
           return {
-            id: id ?? "global",
+            id: id ?? ProjectID.global,
             worktree: sandbox,
             sandbox,
             vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
@@ -154,7 +155,7 @@ export namespace Project {
 
         // generate id from root commit
         if (!id) {
-          const roots = await git(["rev-list", "--max-parents=0", "--all"], {
+          const roots = await git(["rev-list", "--max-parents=0", "HEAD"], {
             cwd: sandbox,
           })
             .then(async (result) =>
@@ -168,22 +169,23 @@ export namespace Project {
 
           if (!roots) {
             return {
-              id: "global",
+              id: ProjectID.global,
               worktree: sandbox,
               sandbox,
               vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
             }
           }
 
-          id = roots[0]
+          id = roots[0] ? ProjectID.make(roots[0]) : undefined
           if (id) {
-            await Filesystem.write(path.join(dotgit, "opencode"), id).catch(() => undefined)
+            // Write to common dir so the cache is shared across worktrees.
+            await Filesystem.write(path.join(worktree, ".git", "opencode"), id).catch(() => undefined)
           }
         }
 
         if (!id) {
           return {
-            id: "global",
+            id: ProjectID.global,
             worktree: sandbox,
             sandbox,
             vcs: "git",
@@ -216,7 +218,7 @@ export namespace Project {
       }
 
       return {
-        id: "global",
+        id: ProjectID.global,
         worktree: "/",
         sandbox: "/",
         vcs: Info.shape.vcs.parse(Flag.OPENCODE_FAKE_VCS),
@@ -227,16 +229,17 @@ export namespace Project {
     const existing = await iife(async () => {
       if (row) return fromRow(row)
       const fresh: Info = {
-        id: data.id,
+        id: data.id as ProjectID,
         worktree: data.worktree,
         vcs: data.vcs as Info["vcs"],
-        sandboxes: [],
+        sandboxes: [] as string[],
         time: {
           created: Date.now(),
           updated: Date.now(),
         },
       }
-      if (data.id !== "global") {
+      // Migrate sessions from "global" to this project when first seen
+      if (data.id !== ProjectID.global) {
         await ConvexProjects.migrateFromGlobal(data.id, data.worktree)
       }
       return fresh
@@ -304,19 +307,20 @@ export namespace Project {
     return
   }
 
-  export async function setInitialized(id: string) {
+  export async function setInitialized(id: ProjectID) {
     await ConvexProjects.setInitialized(id)
   }
 
   export async function list() {
     const rows = await ConvexProjects.list()
-    return rows.map((row: any) => fromRow(row))
+    return rows.map((row) => fromRow(row))
   }
 
-  export async function get(id: string): Promise<Info | undefined> {
-    const row = await ConvexProjects.getById(id)
-    if (!row) return undefined
-    return fromRow(row)
+  export function get(id: ProjectID): Promise<Info | undefined> {
+    return ConvexProjects.getById(id).then((row) => {
+      if (!row) return undefined
+      return fromRow(row)
+    })
   }
 
   export async function initGit(input: { directory: string; project: Info }) {
@@ -336,14 +340,15 @@ export namespace Project {
 
   export const update = fn(
     z.object({
-      projectID: z.string(),
+      projectID: ProjectID.zod,
       name: z.string().optional(),
       icon: Info.shape.icon.optional(),
       commands: Info.shape.commands.optional(),
     }),
     async (input) => {
+      const id = ProjectID.make(input.projectID)
       const result = await ConvexProjects.update({
-        id: input.projectID,
+        id,
         name: input.name,
         icon_url: input.icon?.url,
         icon_color: input.icon?.color,
@@ -362,7 +367,7 @@ export namespace Project {
     },
   )
 
-  export async function sandboxes(id: string) {
+  export async function sandboxes(id: ProjectID) {
     const row = await ConvexProjects.getById(id)
     if (!row) return []
     const data = fromRow(row)
@@ -374,7 +379,7 @@ export namespace Project {
     return valid
   }
 
-  export async function addSandbox(id: string, directory: string) {
+  export async function addSandbox(id: ProjectID, directory: string) {
     const row = await ConvexProjects.getById(id)
     if (!row) throw new Error(`Project not found: ${id}`)
     const sandboxes = [...row.sandboxes]
@@ -391,10 +396,10 @@ export namespace Project {
     return data
   }
 
-  export async function removeSandbox(id: string, directory: string) {
+  export async function removeSandbox(id: ProjectID, directory: string) {
     const row = await ConvexProjects.getById(id)
     if (!row) throw new Error(`Project not found: ${id}`)
-    const sandboxes = row.sandboxes.filter((s: string) => s !== directory)
+    const sandboxes = row.sandboxes.filter((s) => s !== directory)
     const result = await ConvexProjects.updateSandboxes(id, sandboxes)
     if (!result) throw new Error(`Project not found: ${id}`)
     const data = fromRow(result)

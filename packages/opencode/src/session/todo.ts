@@ -24,12 +24,12 @@ export namespace Todo {
     ),
   }
 
-  export async function update(input: { sessionID: string; todos: Info[] }) {
+  export async function update(input: { sessionID: SessionID; todos: Info[] }) {
     await ConvexTodos.replaceForSession(input.sessionID, input.todos)
     Bus.publish(Event.Updated, input)
   }
 
-  export async function get(sessionID: string) {
+  export async function get(sessionID: SessionID) {
     const rows = await ConvexTodos.getBySession(sessionID)
     return rows.map((row: any) => ({
       content: row.content,
