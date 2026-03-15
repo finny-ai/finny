@@ -49,11 +49,10 @@ You are working in a **Bun + Turbo** monorepo forked from OpenCode. The TUI is b
 4. **Backend Implementation (Cloudflare/SST/Hono)**:
    - API endpoints are primarily handled as Cloudflare workers (often routed via Hono). Do not write Node.js specific code that depends on `fs` or `path` in Worker contexts unless using Node compat layers where permitted.
 
-5. **Database Changes (Convex)**:
-   - Schema modifications MUST be done in `convex/schema.ts`. We have migrated off Drizzle. Do NOT use Drizzle or write `*.sql.ts` files.
-   - Core tables include `projects`, `sessions`, `messages`, `workspaces`, and `controlAccounts`. Domain-specific tables include `algoclashUsers`, `algoclashAlgorithms`, `algoclashTrades`, `algoclashPortfolios`, and `algoclashLeaderboard`.
+5. **Database Changes (Dual DB Architecture)**:
+   - **Convex (primary, cloud)**: Schema modifications for Finny data go in `convex/schema.ts`. Core Convex tables: `projects`, `sessions`, `messages`, `workspaces`, `controlAccounts`. Domain tables: `algoclashUsers`, `algoclashAlgorithms`, `algoclashTrades`, `algoclashPortfolios`, `algoclashLeaderboard`. Synced via `bunx convex dev`.
+   - **SQLite/Drizzle (upstream, local)**: Upstream's DB layer is kept as-is for compatibility (`account/repo.ts` depends on it). Do NOT delete `*.sql.ts` files or migration directories — they come from upstream and prevent sync conflicts. Do NOT modify them either.
    - Table names and fields generally use `camelCase` or plural lowercase.
-   - Changes are synced directly via `bunx convex dev` instead of generating migrations.
 
 6. **Safety & Stability**:
    - Do not restart development servers independently.
