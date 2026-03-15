@@ -36,8 +36,15 @@ jobs:
             echo "channel=dev" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Install cross-platform native deps
+        run: |
+          OPENTUI_VER=$(node -p "require('./packages/opencode/package.json').dependencies['@opentui/core']")
+          PARCEL_VER=$(node -p "require('./packages/opencode/package.json').dependencies['@parcel/watcher']")
+          bun install --os="*" --cpu="*" @opentui/core@$OPENTUI_VER
+          bun install --os="*" --cpu="*" @parcel/watcher@$PARCEL_VER
+
       - name: Build CLI (all platforms)
-        run: ./packages/opencode/script/build.ts
+        run: ./packages/opencode/script/build.ts --skip-install
         env:
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_CHANNEL: ${{ steps.version.outputs.channel }}
