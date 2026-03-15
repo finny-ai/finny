@@ -117,6 +117,27 @@ const targets = singleFlag
 
 await $`rm -rf dist`
 
+// Bundle migrations so the compiled binary doesn't need to read them from disk
+const migrationDir = path.join(dir, "migration")
+const migrationEntries = fs
+  .readdirSync(migrationDir, { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => {
+    const sqlFile = path.join(migrationDir, entry.name, "migration.sql")
+    if (!fs.existsSync(sqlFile)) return
+    const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(entry.name)
+    const timestamp = match
+      ? Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6])
+      : 0
+    return {
+      sql: fs.readFileSync(sqlFile, "utf-8"),
+      timestamp,
+      name: entry.name,
+    }
+  })
+  .filter(Boolean)
+  .sort((a: any, b: any) => a.timestamp - b.timestamp)
+
 const binaries: Record<string, string> = {}
 if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
@@ -166,6 +187,7 @@ for (const item of targets) {
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      OPENCODE_MIGRATIONS: JSON.stringify(migrationEntries),
     },
   })
 
