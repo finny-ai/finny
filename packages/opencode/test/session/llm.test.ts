@@ -332,9 +332,10 @@ describe("session.llm.stream", () => {
       throw new Error("Server not initialized")
     }
 
-    const providerID = "alibaba"
+    const providerIDStr = "alibaba"
+    const providerID = ProviderID.make(providerIDStr)
     const modelID = "qwen-plus"
-    const fixture = await loadFixture(providerID, modelID)
+    const fixture = await loadFixture(providerIDStr, modelID)
     const model = fixture.model
 
     const request = waitRequest(
@@ -351,9 +352,9 @@ describe("session.llm.stream", () => {
           path.join(dir, "opencode.json"),
           JSON.stringify({
             $schema: "https://opencode.ai/config.json",
-            enabled_providers: [providerID],
+            enabled_providers: [providerIDStr],
             provider: {
-              [providerID]: {
+              [providerIDStr]: {
                 options: {
                   apiKey: "test-key",
                   baseURL: `${server.url.origin}/v1`,
