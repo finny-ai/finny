@@ -151,9 +151,6 @@ export function Home() {
           </Show>
         </box>
         <box flexGrow={1} />
-        <box flexShrink={0}>
-          <text fg={theme.textMuted}>{Installation.VERSION}</text>
-        </box>
       </box>
     </>
   )
