@@ -13,6 +13,9 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_FINNY_BUILD from "./prompt/finny-build.txt"
+import PROMPT_FINNY_RESEARCH from "./prompt/finny-research.txt"
+import PROMPT_FINNY_CHAT from "./prompt/finny-chat.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -107,8 +110,9 @@ export namespace Agent {
           const agents: Record<string, Info> = {
             build: {
               name: "build",
-              description: "The default agent. Executes tools based on configured permissions.",
+              description: "Build mode. Generates trading algorithms immediately based on your specifications.",
               options: {},
+              prompt: PROMPT_FINNY_BUILD,
               permission: Permission.merge(
                 defaults,
                 Permission.fromConfig({
@@ -120,10 +124,11 @@ export namespace Agent {
               mode: "primary",
               native: true,
             },
-            plan: {
-              name: "plan",
-              description: "Plan mode. Disallows all edit tools.",
+            research: {
+              name: "research",
+              description: "Research mode. Asks questions first, researches strategy, then builds.",
               options: {},
+              prompt: PROMPT_FINNY_RESEARCH,
               permission: Permission.merge(
                 defaults,
                 Permission.fromConfig({
@@ -138,6 +143,22 @@ export namespace Agent {
                     [path.relative(Instance.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]:
                       "allow",
                   },
+                }),
+                user,
+              ),
+              mode: "primary",
+              native: true,
+            },
+            chat: {
+              name: "chat",
+              description: "Chat mode. Conversational assistant for markets, strategies, and platform help.",
+              options: {},
+              prompt: PROMPT_FINNY_CHAT,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  question: "allow",
+                  edit: "deny",
                 }),
                 user,
               ),

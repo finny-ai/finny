@@ -24,7 +24,10 @@ describe("Session.list", () => {
           fn: async () => Session.create({}),
         })
 
-        const sessions = [...Session.list({ directory: tmp.path })]
+        const sessions: Session.Info[] = []
+        for await (const item of Session.list({ directory: tmp.path })) {
+          sessions.push(item)
+        }
         const ids = sessions.map((s) => s.id)
 
         expect(ids).toContain(first.id)
@@ -41,7 +44,10 @@ describe("Session.list", () => {
         const root = await Session.create({ title: "root-session" })
         const child = await Session.create({ title: "child-session", parentID: root.id })
 
-        const sessions = [...Session.list({ roots: true })]
+        const sessions: Session.Info[] = []
+        for await (const item of Session.list({ roots: true })) {
+          sessions.push(item)
+        }
         const ids = sessions.map((s) => s.id)
 
         expect(ids).toContain(root.id)
@@ -58,7 +64,10 @@ describe("Session.list", () => {
         const session = await Session.create({ title: "new-session" })
         const futureStart = Date.now() + 86400000
 
-        const sessions = [...Session.list({ start: futureStart })]
+        const sessions: Session.Info[] = []
+        for await (const item of Session.list({ start: futureStart })) {
+          sessions.push(item)
+        }
         expect(sessions.length).toBe(0)
       },
     })
@@ -72,7 +81,10 @@ describe("Session.list", () => {
         await Session.create({ title: "unique-search-term-abc" })
         await Session.create({ title: "other-session-xyz" })
 
-        const sessions = [...Session.list({ search: "unique-search" })]
+        const sessions: Session.Info[] = []
+        for await (const item of Session.list({ search: "unique-search" })) {
+          sessions.push(item)
+        }
         const titles = sessions.map((s) => s.title)
 
         expect(titles).toContain("unique-search-term-abc")
@@ -90,7 +102,10 @@ describe("Session.list", () => {
         await Session.create({ title: "session-2" })
         await Session.create({ title: "session-3" })
 
-        const sessions = [...Session.list({ limit: 2 })]
+        const sessions: Session.Info[] = []
+        for await (const item of Session.list({ limit: 2 })) {
+          sessions.push(item)
+        }
         expect(sessions.length).toBe(2)
       },
     })

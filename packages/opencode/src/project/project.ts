@@ -2,6 +2,7 @@ import z from "zod"
 import { and, Database, eq } from "../storage/db"
 import { ProjectTable } from "./project.sql"
 import { SessionTable } from "../session/session.sql"
+import { ConvexProjects } from "../storage/convex/projects"
 import { Log } from "../util/log"
 import { Flag } from "@/flag/flag"
 import { BusEvent } from "@/bus/bus-event"
@@ -52,15 +53,25 @@ export namespace Project {
     Updated: BusEvent.define("project.updated", Info),
   }
 
-  type Row = typeof ProjectTable.$inferSelect
-
-  export function fromRow(row: Row): Info {
+  export function fromRow(row: {
+    id: string
+    worktree: string
+    vcs?: string | null
+    name?: string | null
+    icon_url?: string | null
+    icon_color?: string | null
+    time_created: number
+    time_updated: number
+    time_initialized?: number | null
+    sandboxes: string[]
+    commands?: { start?: string } | null
+  }): Info {
     const icon =
       row.icon_url || row.icon_color
         ? { url: row.icon_url ?? undefined, color: row.icon_color ?? undefined }
         : undefined
     return {
-      id: row.id,
+      id: ProjectID.make(row.id),
       worktree: row.worktree,
       vcs: row.vcs ? Info.shape.vcs.parse(row.vcs) : undefined,
       name: row.name ?? undefined,
@@ -312,6 +323,23 @@ export namespace Project {
             .run(),
         )
 
+        // mirror to Convex cloud
+        yield* Effect.promise(() =>
+          ConvexProjects.upsert({
+            id: result.id,
+            worktree: result.worktree,
+            vcs: result.vcs ?? undefined,
+            name: result.name,
+            icon_url: result.icon?.url,
+            icon_color: result.icon?.color,
+            time_created: result.time.created,
+            time_updated: result.time.updated,
+            time_initialized: result.time.initialized,
+            sandboxes: result.sandboxes,
+            commands: result.commands,
+          }),
+        ).pipe(Effect.ignore)
+
         if (data.id !== ProjectID.global) {
           yield* db((d) =>
             d
@@ -477,20 +505,16 @@ export namespace Project {
     return runPromise((svc) => svc.discover(input))
   }
 
-  export function list() {
-    return Database.use((db) =>
-      db
-        .select()
-        .from(ProjectTable)
-        .all()
-        .map((row) => fromRow(row)),
-    )
+  export async function list() {
+    const rows = await ConvexProjects.list()
+    return rows.map((row) => fromRow(row))
   }
 
-  export function get(id: ProjectID): Info | undefined {
-    const row = Database.use((db) => db.select().from(ProjectTable).where(eq(ProjectTable.id, id)).get())
-    if (!row) return undefined
-    return fromRow(row)
+  export function get(id: ProjectID): Promise<Info | undefined> {
+    return ConvexProjects.getById(id).then((row) => {
+      if (!row) return undefined
+      return fromRow(row)
+    })
   }
 
   export function setInitialized(id: ProjectID) {

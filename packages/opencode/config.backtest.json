@@ -1,0 +1,48 @@
+{
+  "strategy_name": "eth_trend_breakout_v1",
+  "mode": "paper",
+  "symbol": "ETH/USD",
+  "timeframe": "15m",
+  "timezone": "UTC",
+
+  "execution": {
+    "max_concurrent_positions": 3,
+    "use_post_only_limits": false,
+    "limit_order_ttl_minutes": 10,
+    "maker_fee_bps": 2.0,
+    "taker_fee_bps": 7.0,
+    "slippage_bps": 1.0
+  },
+
+  "risk": {
+    "starting_equity_usd": 10000.0,
+    "max_drawdown_pct": 0.1,
+    "risk_per_trade_pct": 0.01,
+    "max_position_pct_of_equity": 0.2,
+    "stop_loss_pct": 0.02,
+    "daily_loss_limit_pct": 0.03,
+    "cooldown_minutes_after_stop": 30
+  },
+
+  "params": {
+    "min_bars": 250,
+    "ema_fast": 50,
+    "ema_slow": 200,
+    "rsi_period": 14,
+    "rsi_oversold": 35.0,
+    "atr_period": 14,
+
+    "donchian_lookback": 20,
+    "breakout_buffer_pct": 0.001,
+    "vol_sma_lookback": 20,
+    "breakout_volume_mult": 1.2,
+
+    "pullback_atr_mult": 0.8,
+
+    "entry_atr_stop_mult": 1.5,
+    "trail_atr_mult": 2.0,
+    "take_profit_pct": 0.06,
+    "max_hold_minutes": 1440,
+    "exit_on_trend_flip": true
+  }
+}

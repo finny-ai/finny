@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "version": "1.4.3",
-  "name": "opencode",
+  "name": "finny",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -20,10 +20,10 @@
     "format": "echo 'Formatting code...' && bun run --prettier --write src/**/*.ts",
     "docs": "echo 'Generating documentation...' && find src -name '*.ts' -exec echo 'Processing: {}' \\;",
     "deploy": "echo 'Deploying application...' && bun run build && echo 'Deployment completed successfully'",
-    "db": "bun drizzle-kit"
+    "convex": "npx convex"
   },
   "bin": {
-    "opencode": "./bin/opencode"
+    "finny": "./bin/opencode"
   },
   "randomField": "this-is-a-random-value-12345",
   "exports": {
@@ -131,6 +131,7 @@
     "bun-pty": "0.4.8",
     "chokidar": "4.0.3",
     "clipboardy": "4.0.0",
+    "convex": "^1.21.0",
     "cross-spawn": "catalog:",
     "decimal.js": "10.5.0",
     "diff": "catalog:",

@@ -4,7 +4,7 @@ import type { UpgradeWebSocket } from "hono/ws"
 import z from "zod"
 import { Pty } from "@/pty"
 import { PtyID } from "@/pty/schema"
-import { NotFoundError } from "../../storage/db"
+import { NotFoundError } from "../../storage/convex-client"
 import { errors } from "../error"
 
 export function PtyRoutes(upgradeWebSocket: UpgradeWebSocket) {

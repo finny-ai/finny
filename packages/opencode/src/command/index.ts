@@ -10,6 +10,9 @@ import { Skill } from "../skill"
 import { Log } from "../util/log"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
+import PROMPT_ALGOS from "./template/algos.txt"
+import PROMPT_CODE from "./template/code.txt"
+import PROMPT_BACKTEST from "./template/backtest.txt"
 
 export namespace Command {
   const log = Log.create({ service: "command" })
@@ -85,7 +88,7 @@ export namespace Command {
 
         commands[Default.INIT] = {
           name: Default.INIT,
-          description: "guided AGENTS.md setup",
+          description: "initialize project rules for Finny strategy generation",
           source: "command",
           get template() {
             return PROMPT_INITIALIZE.replace("${path}", ctx.worktree)
@@ -94,13 +97,40 @@ export namespace Command {
         }
         commands[Default.REVIEW] = {
           name: Default.REVIEW,
-          description: "review changes [commit|branch|pr], defaults to uncommitted",
+          description: "review strategy changes [commit|branch|pr], defaults to uncommitted",
           source: "command",
           get template() {
             return PROMPT_REVIEW.replace("${path}", ctx.worktree)
           },
           subtask: true,
           hints: hints(PROMPT_REVIEW),
+        }
+        commands["algos"] = {
+          name: "algos",
+          description: "list all saved trading algorithms",
+          source: "command",
+          get template() {
+            return PROMPT_ALGOS
+          },
+          hints: hints(PROMPT_ALGOS),
+        }
+        commands["code"] = {
+          name: "code",
+          description: "show source code for a saved algorithm [name]",
+          source: "command",
+          get template() {
+            return PROMPT_CODE
+          },
+          hints: hints(PROMPT_CODE),
+        }
+        commands["backtest"] = {
+          name: "backtest",
+          description: "run a backtest on a saved algorithm [name]",
+          source: "command",
+          get template() {
+            return PROMPT_BACKTEST
+          },
+          hints: hints(PROMPT_BACKTEST),
         }
 
         for (const [name, command] of Object.entries(cfg.command ?? {})) {

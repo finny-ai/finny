@@ -7,7 +7,12 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
-import { TodoWriteTool } from "./todo"
+import { TodoWriteTool, TodoReadTool } from "./todo"
+import { AlgorithmSaveTool } from "./algorithm-save"
+import { AlgorithmListTool } from "./algorithm-list"
+import { AlgorithmGetTool } from "./algorithm-get"
+import { AlgorithmValidateTool } from "./algorithm-validate"
+import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -105,6 +110,7 @@ export namespace ToolRegistry {
       const read = yield* ReadTool
       const question = yield* QuestionTool
       const todo = yield* TodoWriteTool
+      const todoread = yield* TodoReadTool
       const lsptool = yield* LspTool
       const plan = yield* PlanExitTool
       const webfetch = yield* WebFetchTool
@@ -184,6 +190,7 @@ export namespace ToolRegistry {
             task: Tool.init(task),
             fetch: Tool.init(webfetch),
             todo: Tool.init(todo),
+            todoread: Tool.init(todoread),
             search: Tool.init(websearch),
             code: Tool.init(codesearch),
             skill: Tool.init(skilltool),
@@ -191,6 +198,11 @@ export namespace ToolRegistry {
             question: Tool.init(question),
             lsp: Tool.init(lsptool),
             plan: Tool.init(plan),
+            algoSave: Tool.init(AlgorithmSaveTool),
+            algoList: Tool.init(AlgorithmListTool),
+            algoGet: Tool.init(AlgorithmGetTool),
+            algoValidate: Tool.init(AlgorithmValidateTool),
+            algoScaffold: Tool.init(AlgorithmScaffoldTool),
           })
 
           return {
@@ -207,10 +219,16 @@ export namespace ToolRegistry {
               tool.task,
               tool.fetch,
               tool.todo,
+              tool.todoread,
               tool.search,
               tool.code,
               tool.skill,
               tool.patch,
+              tool.algoSave,
+              tool.algoList,
+              tool.algoGet,
+              tool.algoValidate,
+              tool.algoScaffold,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

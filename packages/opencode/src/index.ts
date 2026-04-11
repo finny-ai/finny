@@ -37,6 +37,7 @@ import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { drizzle } from "drizzle-orm/bun-sqlite"
+import { registerDevice } from "./device/register"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -64,7 +65,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("opencode")
+  .scriptName("finny")
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
@@ -103,8 +104,9 @@ const cli = yargs(args)
     process.env.AGENT = "1"
     process.env.OPENCODE = "1"
     process.env.OPENCODE_PID = String(process.pid)
+    process.env.FINNY = "1"
 
-    Log.Default.info("opencode", {
+    Log.Default.info("finny", {
       version: Installation.VERSION,
       args: process.argv.slice(2),
     })
@@ -145,6 +147,9 @@ const cli = yargs(args)
       }
       process.stderr.write("Database migration complete." + EOL)
     }
+
+    // Register device with Convex cloud
+    registerDevice()
   })
   .usage("")
   .completion("completion", "generate shell completion script")

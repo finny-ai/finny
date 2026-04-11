@@ -1,0 +1,26 @@
+Validate a trading algorithm's Python code without saving it. Checks for syntax errors, structural issues, forbidden imports, dangerous calls, and common trading pitfalls.
+
+## When to Use
+- Before calling `finny_algorithm_save` to catch errors early
+- When debugging a strategy that isn't working
+- After modifying strategy code to verify correctness
+
+## What It Checks
+
+### Hard Errors (block save)
+- Python syntax errors
+- Missing `class Strategy` definition
+- Missing `__init__(self)` method
+- Missing `on_tick(self, bar)` method or wrong parameters
+- Forbidden imports (os, subprocess, sys, socket, requests, pickle, threading, asyncio)
+- Dangerous calls (exec, eval, __import__, compile, open)
+
+### Warnings (informational)
+- Lookahead bias: using `bar["close"]` in conditionals
+- Unbounded lists: `.append()` without `deque`
+- Division without zero-check
+- Missing return in `on_tick`
+- Bad return values (not "BUY", "SELL", or "HOLD")
+
+## Output
+Returns validation results with error/warning codes, line numbers, and fix suggestions.

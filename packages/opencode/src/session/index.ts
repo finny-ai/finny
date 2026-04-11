@@ -13,6 +13,8 @@ import { SyncEvent } from "../sync"
 import type { SQL } from "../storage/db"
 import { PartTable, SessionTable } from "./session.sql"
 import { ProjectTable } from "../project/project.sql"
+import { ConvexSessions } from "../storage/convex/sessions"
+import { ConvexProjects } from "../storage/convex/projects"
 import { Storage } from "@/storage/storage"
 import { Log } from "../util/log"
 import { updateSchema } from "../util/update-schema"
@@ -28,6 +30,7 @@ import { SessionID, MessageID, PartID } from "./schema"
 import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Global } from "@/global"
+import { DeviceProfile } from "@/device"
 import type { LanguageModelV2Usage } from "@ai-sdk/provider"
 import { Effect, Layer, ServiceMap } from "effect"
 import { makeRuntime } from "@/effect/run-service"
@@ -48,9 +51,28 @@ export namespace Session {
     ).test(title)
   }
 
-  type SessionRow = typeof SessionTable.$inferSelect
-
-  export function fromRow(row: SessionRow): Info {
+  export function fromRow(row: {
+    id: string
+    project_id: string
+    workspace_id?: string | null
+    parent_id?: string | null
+    user_id?: string | null
+    slug: string
+    directory: string
+    title: string
+    version: string
+    share_url?: string | null
+    summary_additions?: number | null
+    summary_deletions?: number | null
+    summary_files?: number | null
+    summary_diffs?: any
+    revert?: any
+    permission?: any
+    time_created: number
+    time_updated: number
+    time_compacting?: number | null
+    time_archived?: number | null
+  }): Info {
     const summary =
       row.summary_additions !== null || row.summary_deletions !== null || row.summary_files !== null
         ? {
@@ -63,12 +85,13 @@ export namespace Session {
     const share = row.share_url ? { url: row.share_url } : undefined
     const revert = row.revert ?? undefined
     return {
-      id: row.id,
+      id: row.id as SessionID,
       slug: row.slug,
-      projectID: row.project_id,
-      workspaceID: row.workspace_id ?? undefined,
+      projectID: row.project_id as ProjectID,
+      workspaceID: (row.workspace_id ?? undefined) as WorkspaceID | undefined,
       directory: row.directory,
-      parentID: row.parent_id ?? undefined,
+      parentID: (row.parent_id ?? undefined) as SessionID | undefined,
+      userID: row.user_id ?? undefined,
       title: row.title,
       version: row.version,
       summary,
@@ -90,6 +113,7 @@ export namespace Session {
       project_id: info.projectID,
       workspace_id: info.workspaceID,
       parent_id: info.parentID,
+      user_id: info.userID,
       slug: info.slug,
       directory: info.directory,
       title: info.title,
@@ -126,6 +150,7 @@ export namespace Session {
       workspaceID: WorkspaceID.zod.optional(),
       directory: z.string(),
       parentID: SessionID.zod.optional(),
+      userID: z.string().optional(),
       summary: z
         .object({
           additions: z.number(),
@@ -701,7 +726,7 @@ export namespace Session {
     runPromise((svc) => svc.messages(input)),
   )
 
-  export function* list(input?: {
+  export async function* list(input?: {
     directory?: string
     workspaceID?: WorkspaceID
     roots?: boolean
@@ -744,7 +769,7 @@ export namespace Session {
     }
   }
 
-  export function* listGlobal(input?: {
+  export async function* listGlobal(input?: {
     directory?: string
     roots?: boolean
     start?: number
@@ -753,57 +778,21 @@ export namespace Session {
     limit?: number
     archived?: boolean
   }) {
-    const conditions: SQL[] = []
+    const rows = await ConvexSessions.listGlobal(input)
 
-    if (input?.directory) {
-      conditions.push(eq(SessionTable.directory, input.directory))
-    }
-    if (input?.roots) {
-      conditions.push(isNull(SessionTable.parent_id))
-    }
-    if (input?.start) {
-      conditions.push(gte(SessionTable.time_updated, input.start))
-    }
-    if (input?.cursor) {
-      conditions.push(lt(SessionTable.time_updated, input.cursor))
-    }
-    if (input?.search) {
-      conditions.push(like(SessionTable.title, `%${input.search}%`))
-    }
-    if (!input?.archived) {
-      conditions.push(isNull(SessionTable.time_archived))
-    }
-
-    const limit = input?.limit ?? 100
-
-    const rows = Database.use((db) => {
-      const query =
-        conditions.length > 0
-          ? db
-              .select()
-              .from(SessionTable)
-              .where(and(...conditions))
-          : db.select().from(SessionTable)
-      return query.orderBy(desc(SessionTable.time_updated), desc(SessionTable.id)).limit(limit).all()
-    })
-
-    const ids = [...new Set(rows.map((row) => row.project_id))]
+    const ids = [...new Set<string>(rows.map((row: any) => row.project_id))]
     const projects = new Map<string, ProjectInfo>()
 
     if (ids.length > 0) {
-      const items = Database.use((db) =>
-        db
-          .select({ id: ProjectTable.id, name: ProjectTable.name, worktree: ProjectTable.worktree })
-          .from(ProjectTable)
-          .where(inArray(ProjectTable.id, ids))
-          .all(),
-      )
-      for (const item of items) {
-        projects.set(item.id, {
-          id: item.id,
-          name: item.name ?? undefined,
-          worktree: item.worktree,
-        })
+      for (const id of ids) {
+        const proj = await ConvexProjects.getById(id)
+        if (proj) {
+          projects.set(id, {
+            id: proj.id as ProjectID,
+            name: proj.name ?? undefined,
+            worktree: proj.worktree,
+          })
+        }
       }
     }
 

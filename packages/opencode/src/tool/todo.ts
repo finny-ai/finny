@@ -46,3 +46,38 @@ export const TodoWriteTool = Tool.defineEffect<typeof parameters, Metadata, Todo
     } satisfies Tool.DefWithoutID<typeof parameters, Metadata>
   }),
 )
+
+const readParameters = z.object({})
+
+type ReadMetadata = {
+  todos: Todo.Info[]
+}
+
+export const TodoReadTool = Tool.defineEffect<typeof readParameters, ReadMetadata, Todo.Service>(
+  "todoread",
+  Effect.gen(function* () {
+    const todo = yield* Todo.Service
+
+    return {
+      description: "Use this tool to read your todo list",
+      parameters: readParameters,
+      async execute(_params: z.infer<typeof readParameters>, ctx: Tool.Context<ReadMetadata>) {
+        await ctx.ask({
+          permission: "todoread",
+          patterns: ["*"],
+          always: ["*"],
+          metadata: {},
+        })
+
+        const todos = await todo.get(ctx.sessionID).pipe(Effect.runPromise)
+        return {
+          title: `${todos.filter((x) => x.status !== "completed").length} todos`,
+          output: JSON.stringify(todos, null, 2),
+          metadata: {
+            todos,
+          },
+        }
+      },
+    } satisfies Tool.DefWithoutID<typeof readParameters, ReadMetadata>
+  }),
+)

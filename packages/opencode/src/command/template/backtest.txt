@@ -1,0 +1,67 @@
+Run a backtest for a saved trading algorithm.
+
+Input: $ARGUMENTS
+
+## Instructions
+
+### Step 1: Get the algorithm
+
+If `$ARGUMENTS` contains structured flags (e.g. `algo-name --duration 3m --interval 1h --capital 10000`):
+- Parse the algorithm name (first word) and the flags
+- Use the `finny_algorithm_get` tool with that name
+- Skip Step 2 — use the provided `--duration`, `--interval`, and `--capital` values directly
+- Duration mapping: 1m = 1 month, 3m = 3 months, 6m = 6 months, 1y = 1 year
+
+If `$ARGUMENTS` is provided (an algorithm name without flags):
+- Use the `finny_algorithm_get` tool with that name
+
+If `$ARGUMENTS` is empty:
+- Use the `finny_algorithm_list` tool to show available algorithms
+- Ask the user which algorithm to backtest
+
+### Step 2: Ask for backtest parameters
+(Skip this step if structured flags were provided in Step 1)
+Ask the user to choose:
+
+**Time range** (pick one):
+- 1 month
+- 3 months
+- 6 months
+- 1 year
+- Custom (user specifies start and end dates)
+
+**Candle interval** (pick one):
+- 1min
+- 5min
+- 15min
+- 30min
+- 1h
+- 4h
+- 1d
+
+### Step 3: Run the backtest
+Calculate the start and end dates based on the user's selection (end date defaults to today).
+
+If the algorithm has `backtestCode`, write it to `backtest.py` in the workspace first.
+
+Run the backtest using the bash tool:
+```
+python backtest.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --interval <interval> --capital <capital>
+```
+
+If `--capital` was not specified, default to 10000.
+
+### Step 4: Display results
+Parse the output and present results in a clear format:
+
+**Backtest Results — [Algorithm Name]**
+| Metric | Value |
+|--------|-------|
+| Total Return | X% |
+| Sharpe Ratio | X.XX |
+| Max Drawdown | X% |
+| Win Rate | X% |
+| Total Trades | N |
+| Profit Factor | X.XX |
+
+If the backtest fails, show the error and suggest possible fixes.

@@ -6,6 +6,7 @@ import { Effect, Layer, ServiceMap } from "effect"
 import z from "zod"
 import { Database, eq, asc } from "../storage/db"
 import { TodoTable } from "./session.sql"
+import { ConvexTodos } from "../storage/convex/todos"
 
 export namespace Todo {
   export const Info = z
@@ -57,6 +58,8 @@ export namespace Todo {
               .run()
           }),
         )
+        // mirror to Convex for cloud sync
+        yield* Effect.promise(() => ConvexTodos.replaceForSession(input.sessionID, input.todos)).pipe(Effect.ignore)
         yield* bus.publish(Event.Updated, input)
       })
 

@@ -110,11 +110,26 @@ const MigrateCommand = cmd({
   },
 })
 
+const InfoCommand = cmd({
+  command: "info",
+  describe: "show Convex database info",
+  handler: async () => {
+    const url = process.env.CONVEX_URL ?? "(not set)"
+    UI.println(`Database: Convex`)
+    UI.println(`CONVEX_URL: ${url}`)
+  },
+})
+
 export const DbCommand = cmd({
   command: "db",
   describe: "database tools",
   builder: (yargs: Argv) => {
-    return yargs.command(QueryCommand).command(PathCommand).command(MigrateCommand).demandCommand()
+    return yargs
+      .command(QueryCommand)
+      .command(PathCommand)
+      .command(MigrateCommand)
+      .command(InfoCommand)
+      .demandCommand()
   },
   handler: () => {},
 })
