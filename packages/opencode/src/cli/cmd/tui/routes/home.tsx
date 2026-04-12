@@ -1,5 +1,5 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import { createEffect, createSignal } from "solid-js"
+import { createEffect, createSignal, onMount, Show } from "solid-js"
 import { Logo } from "../component/logo"
 import { useProject } from "../context/project"
 import { useSync } from "../context/sync"
@@ -8,12 +8,17 @@ import { useArgs } from "../context/args"
 import { useRouteData } from "@tui/context/route"
 import { usePromptRef } from "../context/prompt"
 import { useLocal } from "../context/local"
+import { useKV } from "../context/kv"
 import { TuiPluginRuntime } from "../plugin"
+import { RecentAlgosCard } from "../component/card-recent-algos"
+import { GettingStartedCard } from "../component/card-getting-started"
+import { PortfolioCard } from "../component/card-portfolio"
 
-// TODO: what is the best way to do this?
+const FIRST_RUN_KEY = "home_getting_started_seen"
+
 let once = false
 const placeholder = {
-  normal: ["Fix a TODO in the codebase", "What is the tech stack of this project?", "Fix broken tests"],
+  normal: ["Describe a strategy...", "Build me a mean-reversion algo", "Research momentum strategies"],
   shell: ["ls -la", "git status", "pwd"],
 }
 
@@ -25,7 +30,19 @@ export function Home() {
   const [ref, setRef] = createSignal<PromptRef | undefined>()
   const args = useArgs()
   const local = useLocal()
+  const kv = useKV()
   let sent = false
+
+  // First-run flag: show Getting Started only on the very first Home visit.
+  const [showGettingStarted, setShowGettingStarted] = createSignal(!kv.get(FIRST_RUN_KEY, false))
+
+  onMount(() => {
+    if (showGettingStarted()) {
+      kv.set(FIRST_RUN_KEY, true)
+    }
+  })
+
+  const dismissGettingStarted = () => setShowGettingStarted(false)
 
   const bind = (r: PromptRef | undefined) => {
     setRef(r)
@@ -41,7 +58,6 @@ export function Home() {
     once = true
   }
 
-  // Wait for sync and model store to be ready before auto-submitting --prompt
   createEffect(() => {
     const r = ref()
     if (sent) return
@@ -55,16 +71,37 @@ export function Home() {
 
   return (
     <>
-      <box flexGrow={1} alignItems="center" paddingLeft={2} paddingRight={2}>
+      <box
+        flexGrow={1}
+        paddingLeft={3}
+        paddingRight={3}
+        paddingTop={2}
+        flexDirection="column"
+      >
+        {/* Getting Started floats top-right, smaller, first-run only */}
+        <Show when={showGettingStarted()}>
+          <box flexDirection="row" flexShrink={0}>
+            <box flexGrow={1} />
+            <box width={38} flexShrink={0}>
+              <GettingStartedCard onDismiss={dismissGettingStarted} />
+            </box>
+          </box>
+        </Show>
+
+        {/* Top spacer — pushes the logo/prompt/cards group toward the middle */}
         <box flexGrow={1} minHeight={0} />
-        <box height={2} minHeight={0} flexShrink={1} />
-        <box flexShrink={0}>
+
+        {/* Logo (centered) */}
+        <box flexShrink={0} alignItems="center">
           <TuiPluginRuntime.Slot name="home_logo" mode="replace">
             <Logo />
           </TuiPluginRuntime.Slot>
         </box>
-        <box height={1} minHeight={0} flexShrink={1} />
-        <box width="100%" maxWidth={75} zIndex={1000} paddingTop={1} flexShrink={0}>
+
+        <box height={1} minHeight={0} flexShrink={0} />
+
+        {/* Prompt */}
+        <box width="100%" maxWidth={90} zIndex={1000} flexShrink={0} alignSelf="center">
           <TuiPluginRuntime.Slot
             name="home_prompt"
             mode="replace"
@@ -79,7 +116,29 @@ export function Home() {
             />
           </TuiPluginRuntime.Slot>
         </box>
+
+        <box height={2} minHeight={0} flexShrink={0} />
+
+        {/* Dashboard cards: Recent Algos + Portfolio */}
+        <box
+          width="100%"
+          maxWidth={110}
+          alignSelf="center"
+          flexDirection="row"
+          gap={2}
+          flexShrink={0}
+          minHeight={0}
+        >
+          <box flexGrow={1} minWidth={0}>
+            <RecentAlgosCard />
+          </box>
+          <box flexGrow={1} minWidth={0}>
+            <PortfolioCard />
+          </box>
+        </box>
+
         <TuiPluginRuntime.Slot name="home_bottom" />
+        {/* Bottom spacer — keeps group vertically centered but still bounded */}
         <box flexGrow={1} minHeight={0} />
         <Toast />
       </box>

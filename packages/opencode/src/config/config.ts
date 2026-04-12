@@ -766,6 +766,12 @@ export namespace Config {
       tips_toggle: z.string().optional().default("<leader>h").describe("Toggle tips on home screen"),
       plugin_manager: z.string().optional().default("none").describe("Open plugin manager dialog"),
       display_thinking: z.string().optional().default("none").describe("Toggle thinking blocks visibility"),
+      nav_home: z.string().optional().default("<leader>1").describe("Navigate to the Home dashboard"),
+      nav_algorithms: z.string().optional().default("<leader>2").describe("Navigate to the Algorithms page"),
+      nav_backtests: z.string().optional().default("<leader>3").describe("Navigate to the Backtests page"),
+      nav_portfolio: z.string().optional().default("<leader>4").describe("Navigate to the Portfolio page"),
+      nav_sessions: z.string().optional().default("<leader>5").describe("Navigate to the Sessions page"),
+      nav_settings: z.string().optional().default("<leader>6").describe("Navigate to the Settings page"),
     })
     .strict()
     .meta({

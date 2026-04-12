@@ -19,7 +19,22 @@ export type PluginRoute = {
   data?: Record<string, unknown>
 }
 
-export type Route = HomeRoute | SessionRoute | PluginRoute
+export type AlgorithmsRoute = { type: "algorithms" }
+export type BacktestsRoute = { type: "backtests" }
+export type PortfolioRoute = { type: "portfolio" }
+export type SessionsRoute = { type: "sessions" }
+export type SettingsTab = "appearance" | "model" | "providers" | "mcp" | "agents" | "paper-trading" | "skills" | "pro"
+export type SettingsRoute = { type: "settings"; tab?: SettingsTab }
+
+export type Route =
+  | HomeRoute
+  | SessionRoute
+  | PluginRoute
+  | AlgorithmsRoute
+  | BacktestsRoute
+  | PortfolioRoute
+  | SessionsRoute
+  | SettingsRoute
 
 export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
   name: "Route",

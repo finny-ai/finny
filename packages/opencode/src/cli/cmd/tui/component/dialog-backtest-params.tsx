@@ -1,11 +1,14 @@
 import { TextAttributes } from "@opentui/core"
-import { onMount } from "solid-js"
+import { createSignal, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import { useKeyboard } from "@opentui/solid"
+import { Plan } from "@/plan"
+import { DialogProUpsell } from "./dialog-pro-upsell"
 
 const DURATIONS = [
+  { label: "1 week", value: "1w" },
   { label: "1 month", value: "1m" },
   { label: "3 months", value: "3m" },
   { label: "6 months", value: "6m" },
@@ -49,6 +52,9 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
 
+  const [proUser, setProUser] = createSignal(false)
+  const maxDurationIndex = () => (proUser() ? DURATIONS.length - 1 : 2) // free: 1w, 1m, 3m only
+
   const [store, setStore] = createStore({
     active: "duration" as Field,
     durationIndex: 1,
@@ -58,7 +64,10 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
 
   function cycleOption(field: Field, direction: number) {
     if (field === "duration") {
-      setStore("durationIndex", (store.durationIndex + direction + DURATIONS.length) % DURATIONS.length)
+      const max = maxDurationIndex()
+      const len = max + 1
+      const next = (store.durationIndex + direction + len) % len
+      setStore("durationIndex", next)
     } else if (field === "interval") {
       setStore("intervalIndex", (store.intervalIndex + direction + INTERVALS.length) % INTERVALS.length)
     } else if (field === "capital") {
@@ -95,8 +104,9 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
     }
   })
 
-  onMount(() => {
+  onMount(async () => {
     dialog.setSize("medium")
+    setProUser(await Plan.isPro())
   })
 
   function FieldRow(fieldProps: {
@@ -144,10 +154,17 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
       </box>
 
       <box>
-        <FieldRow label="Duration" field="duration" options={DURATIONS} selectedIndex={store.durationIndex} />
+        <FieldRow label="Duration" field="duration" options={DURATIONS.slice(0, maxDurationIndex() + 1)} selectedIndex={store.durationIndex} />
         <FieldRow label="Interval" field="interval" options={INTERVALS} selectedIndex={store.intervalIndex} />
         <FieldRow label="Capital" field="capital" options={CAPITALS} selectedIndex={store.capitalIndex} />
       </box>
+
+      {!proUser() && (
+        <text fg={theme.textMuted}>
+          6m and 1y durations available with{" "}
+          <span style={{ fg: theme.primary }}>Finny Pro</span>
+        </text>
+      )}
 
       <text fg={theme.textMuted}>
         <span style={{ fg: theme.text }}>←/→</span> change value · <span style={{ fg: theme.text }}>↑/↓</span> switch

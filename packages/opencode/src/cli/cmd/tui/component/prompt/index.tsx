@@ -15,6 +15,7 @@ import { MessageID, PartID } from "@/session/schema"
 import { createStore, produce } from "solid-js/store"
 import { useKeybind } from "@tui/context/keybind"
 import { usePromptHistory, type PromptInfo } from "./history"
+import { useBacktestHistory } from "@tui/context/backtest-history"
 import { assign } from "./part"
 import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
@@ -104,6 +105,7 @@ export function Prompt(props: PromptProps) {
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const history = usePromptHistory()
+  const backtestHistory = useBacktestHistory()
   const stash = usePromptStash()
   const command = useCommandDialog()
   const renderer = useRenderer()
@@ -654,6 +656,12 @@ export function Prompt(props: PromptProps) {
         capital: params.capital,
       })
       if (result.ok) {
+        backtestHistory.add({
+          algorithmId: algo.algorithmId,
+          algorithmName: algo.name,
+          params,
+          results: result.results,
+        })
         DialogBacktestResults.show(dialog, algo.name, params, result.results)
       } else {
         await DialogAlert.show(dialog, "Backtest Failed", result.error)

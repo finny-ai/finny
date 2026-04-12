@@ -41,6 +41,15 @@ import { KeybindProvider, useKeybind } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
 import { Session } from "@tui/routes/session"
+import { Algorithms } from "@tui/routes/algorithms"
+import { Backtests } from "@tui/routes/backtests"
+import { Portfolio } from "@tui/routes/portfolio"
+import { Sessions } from "@tui/routes/sessions"
+import { Settings } from "@tui/routes/settings"
+import { Shell } from "@tui/component/shell"
+import { AlgorithmsProvider } from "@tui/context/algorithms"
+import { BacktestHistoryProvider } from "@tui/context/backtest-history"
+import { LiveRunsProvider } from "@tui/context/live-runs"
 import { PromptHistoryProvider } from "./component/prompt/history"
 import { FrecencyProvider } from "./component/prompt/frecency"
 import { PromptStashProvider } from "./component/prompt/stash"
@@ -221,17 +230,23 @@ export function tui(input: {
                               <LocalProvider>
                                 <KeybindProvider>
                                   <PromptStashProvider>
-                                    <DialogProvider>
-                                      <CommandProvider>
-                                        <FrecencyProvider>
-                                          <PromptHistoryProvider>
-                                            <PromptRefProvider>
-                                              <App onSnapshot={input.onSnapshot} />
-                                            </PromptRefProvider>
-                                          </PromptHistoryProvider>
-                                        </FrecencyProvider>
-                                      </CommandProvider>
-                                    </DialogProvider>
+                                    <AlgorithmsProvider>
+                                      <BacktestHistoryProvider>
+                                        <LiveRunsProvider>
+                                          <DialogProvider>
+                                            <CommandProvider>
+                                              <FrecencyProvider>
+                                                <PromptHistoryProvider>
+                                                  <PromptRefProvider>
+                                                    <App onSnapshot={input.onSnapshot} />
+                                                  </PromptRefProvider>
+                                                </PromptHistoryProvider>
+                                              </FrecencyProvider>
+                                            </CommandProvider>
+                                          </DialogProvider>
+                                        </LiveRunsProvider>
+                                      </BacktestHistoryProvider>
+                                    </AlgorithmsProvider>
                                   </PromptStashProvider>
                                 </KeybindProvider>
                               </LocalProvider>
@@ -336,6 +351,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     renderer.clearSelection()
   })
 
+  // Global exit handler — on non-home/session routes there is no prompt to catch
+  // ctrl+c, so the app becomes un-exitable. This handler catches it globally.
+  useKeyboard((evt) => {
+    if (evt.defaultPrevented) return
+    if (!keybind.match("app_exit", evt)) return
+    // Don't interfere when a dialog is open (dialog has its own escape handler)
+    if (dialog.stack.length > 0) return
+    // On home/session routes the prompt handles exit — don't double-fire
+    if (route.data.type === "home" || route.data.type === "session") return
+    evt.preventDefault()
+    exit()
+  })
+
   // Wire up console copy-to-clipboard via opentui's onCopySelection callback
   renderer.console.onCopySelection = async (text: string) => {
     if (!text || text.length === 0) return
@@ -371,7 +399,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
     if (route.data.type === "plugin") {
       renderer.setTerminalTitle(`Finny | ${route.data.id}`)
+      return
     }
+
+    const titleByType: Record<string, string> = {
+      algorithms: "Finny | Algorithms",
+      backtests: "Finny | Backtests",
+      portfolio: "Finny | Portfolio",
+      sessions: "Finny | Sessions",
+      settings: "Finny | Settings",
+    }
+    const title = titleByType[route.data.type]
+    if (title) renderer.setTerminalTitle(title)
   })
 
   const args = useArgs()
@@ -687,6 +726,82 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
+      title: "Go to Home",
+      value: "nav.home",
+      keybind: "nav_home",
+      category: "Navigation",
+      slash: { name: "home" },
+      onSelect: (dialog) => {
+        route.navigate({ type: "home" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Go to Algorithms",
+      value: "nav.algorithms",
+      keybind: "nav_algorithms",
+      category: "Navigation",
+      slash: { name: "algorithms", aliases: ["algos"] },
+      onSelect: (dialog) => {
+        route.navigate({ type: "algorithms" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Go to Backtests",
+      value: "nav.backtests",
+      keybind: "nav_backtests",
+      category: "Navigation",
+      slash: { name: "backtests" },
+      onSelect: (dialog) => {
+        route.navigate({ type: "backtests" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Go to Portfolio",
+      value: "nav.portfolio",
+      keybind: "nav_portfolio",
+      category: "Navigation",
+      slash: { name: "portfolio" },
+      onSelect: (dialog) => {
+        route.navigate({ type: "portfolio" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Go to Sessions",
+      value: "nav.sessions",
+      keybind: "nav_sessions",
+      category: "Navigation",
+      slash: { name: "sessions" },
+      onSelect: (dialog) => {
+        route.navigate({ type: "sessions" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Go to Settings",
+      value: "nav.settings",
+      keybind: "nav_settings",
+      category: "Navigation",
+      slash: { name: "settings" },
+      onSelect: (dialog) => {
+        route.navigate({ type: "settings" })
+        dialog.clear()
+      },
+    },
+    {
+      title: "Manage Skills",
+      value: "nav.skills",
+      category: "Navigation",
+      slash: { name: "skills", aliases: ["add-skill"] },
+      onSelect: (dialog) => {
+        route.navigate({ type: "settings", tab: "skills" })
+        dialog.clear()
+      },
+    },
+    {
       title: "Exit the app",
       value: "app.exit",
       slash: {
@@ -897,14 +1012,31 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         <TimeToFirstDraw />
       </Show>
       <Show when={ready()}>
-        <Switch>
-          <Match when={route.data.type === "home"}>
-            <Home />
-          </Match>
-          <Match when={route.data.type === "session"}>
-            <Session />
-          </Match>
-        </Switch>
+        <Shell>
+          <Switch>
+            <Match when={route.data.type === "home"}>
+              <Home />
+            </Match>
+            <Match when={route.data.type === "session"}>
+              <Session />
+            </Match>
+            <Match when={route.data.type === "algorithms"}>
+              <Algorithms />
+            </Match>
+            <Match when={route.data.type === "backtests"}>
+              <Backtests />
+            </Match>
+            <Match when={route.data.type === "portfolio"}>
+              <Portfolio />
+            </Match>
+            <Match when={route.data.type === "sessions"}>
+              <Sessions />
+            </Match>
+            <Match when={route.data.type === "settings"}>
+              <Settings />
+            </Match>
+          </Switch>
+        </Shell>
       </Show>
       {plugin()}
       <TuiPluginRuntime.Slot name="app" />

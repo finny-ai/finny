@@ -60,14 +60,11 @@ export namespace UI {
 
     const result: string[] = []
     const reset = "\x1b[0m"
-    const fg = "\x1b[38;5;250m" // grey color
-    const teal = "\x1b[38;5;43m" // teal color for Y
+    const brand = "\x1b[38;2;99;102;241m" // finny brand indigo (#6366f1)
 
     glyphs.lines.forEach((line) => {
       if (pad) result.push(pad)
-      const before = line.slice(0, glyphs.yStart)
-      const yPart = line.slice(glyphs.yStart)
-      result.push(fg, before, reset, teal, yPart, reset)
+      result.push(brand, line, reset)
       result.push(EOL)
     })
     // Add tagline and version

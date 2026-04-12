@@ -1,16 +1,13 @@
 export const logo = {
   lines: [
-    "███████╗██╗███╗   ██╗███╗   ██╗██╗   ██╗",
-    "██╔════╝██║████╗  ██║████╗  ██║╚██╗ ██╔╝",
-    "█████╗  ██║██╔██╗ ██║██╔██╗ ██║ ╚████╔╝ ",
-    "██╔══╝  ██║██║╚██╗██║██║╚██╗██║  ╚██╔╝  ",
-    "██║     ██║██║ ╚████║██║ ╚████║   ██║   ",
-    "╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝   ",
+    "██████  ██  ██  ██  ██  ██  ██  ██",
+    "██      ██  ███ ██  ███ ██   ████ ",
+    "█████   ██  ██████  ██████    ██  ",
+    "██      ██  ██ ███  ██ ███    ██  ",
+    "██      ██  ██  ██  ██  ██    ██  ",
   ],
-  // Character index where the "Y" column starts - everything from here to end of line is teal
-  yStart: 31,
-  tagline: "AI-Powered Trading Strategy Generator",
-  version: "v0.6.7 • inspired by opencode",
+  tagline: "Think Strategies, Ship Alpha",
+  version: "v0.6.7 • AI trading agent",
 }
 
 export const marks = "_^~"

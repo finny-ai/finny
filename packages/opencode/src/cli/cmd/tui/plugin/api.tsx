@@ -96,11 +96,15 @@ function routeCurrent(route: ReturnType<typeof useRoute>): TuiPluginApi["route"]
       },
     }
   }
-
-  return {
-    name: route.data.id,
-    params: route.data.data,
+  if (route.data.type === "plugin") {
+    return {
+      name: route.data.id,
+      params: route.data.data,
+    }
   }
+  // First-party finny routes (algorithms/backtests/portfolio/sessions/settings)
+  // are not addressable from the plugin API in v1 — surface the route type as the name.
+  return { name: route.data.type }
 }
 
 function mapOption<Value>(item: TuiDialogSelectOption<Value>): SelectOption<Value> {

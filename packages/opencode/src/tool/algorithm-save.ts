@@ -3,6 +3,7 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./algorithm-save.txt"
 import { Algorithm } from "../algorithm"
 import { Validate } from "../algorithm/validate"
+import { Plan } from "../plan"
 
 export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
   description: DESCRIPTION,
@@ -35,6 +36,20 @@ export const AlgorithmSaveTool = Tool.define("finny_algorithm_save", {
           errorCount: validation.errors.length,
           warningCount: validation.warnings.length,
         } as Record<string, unknown>,
+      }
+    }
+
+    // Free tier: limit to 3 saved algorithms (updates to existing algos are always allowed)
+    const existingAlgo = await Algorithm.get(params.name)
+    if (!existingAlgo && !(await Plan.isPro())) {
+      const allAlgos = await Algorithm.list()
+      if (allAlgos.length >= 3) {
+        return {
+          title: "Save blocked — free tier limit",
+          output:
+            "Free users can save up to 3 algorithms. Delete an existing algorithm or upgrade to Finny Pro for unlimited algorithms.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.",
+          metadata: { blocked: true } as Record<string, unknown>,
+        }
       }
     }
 

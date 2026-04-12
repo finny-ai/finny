@@ -92,4 +92,9 @@ export namespace Algorithm {
     const algo = await get(name)
     return algo?.code ?? null
   }
+
+  export async function remove(algorithmId: string): Promise<void> {
+    await ConvexAlgorithms.remove(algorithmId)
+    log.info("algorithm removed", { algorithmId })
+  }
 }

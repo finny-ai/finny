@@ -57,3 +57,12 @@ DialogAlert.show = (dialog: DialogContext, title: string, message: string) => {
     )
   })
 }
+
+DialogAlert.confirm = (dialog: DialogContext, title: string, message: string): Promise<boolean> => {
+  return new Promise<boolean>((resolve) => {
+    dialog.replace(
+      () => <DialogAlert title={title} message={message} onConfirm={() => resolve(true)} />,
+      () => resolve(false),
+    )
+  })
+}

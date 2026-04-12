@@ -13,6 +13,8 @@ import { AlgorithmListTool } from "./algorithm-list"
 import { AlgorithmGetTool } from "./algorithm-get"
 import { AlgorithmValidateTool } from "./algorithm-validate"
 import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
+import { BacktestRunTool } from "./backtest-run"
+import { BacktestHistoryTool } from "./backtest-history"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -132,6 +134,8 @@ export namespace ToolRegistry {
       const algoget = yield* AlgorithmGetTool
       const algovalidate = yield* AlgorithmValidateTool
       const algoscaffold = yield* AlgorithmScaffoldTool
+      const backtestrun = yield* BacktestRunTool
+      const backtesthistory = yield* BacktestHistoryTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -214,6 +218,8 @@ export namespace ToolRegistry {
             algoget: Tool.init(algoget),
             algovalidate: Tool.init(algovalidate),
             algoscaffold: Tool.init(algoscaffold),
+            backtestrun: Tool.init(backtestrun),
+            backtesthistory: Tool.init(backtesthistory),
           })
 
           return {
@@ -239,6 +245,8 @@ export namespace ToolRegistry {
               tool.algoget,
               tool.algovalidate,
               tool.algoscaffold,
+              tool.backtestrun,
+              tool.backtesthistory,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],
