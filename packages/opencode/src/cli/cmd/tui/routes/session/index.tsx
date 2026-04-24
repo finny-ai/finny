@@ -164,6 +164,13 @@ export function Session() {
   const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
+  // Finny: "Validation failed — regenerating" banner shown while an algorithm save is
+  // being retried. Cleared when the next save succeeds or after a short timeout.
+  const [regenStatus, setRegenStatus] = createSignal<
+    { name: string; attempt: number; max: number } | null
+  >(null)
+  let regenClearTimer: ReturnType<typeof setTimeout> | undefined
+
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
     if (session()?.parentID) return false
@@ -215,6 +222,35 @@ export function Session() {
     } else if (part.tool === "plan_enter") {
       local.agent.set("plan")
       lastSwitch = part.id
+    }
+  })
+
+  // Finny: show the "regenerating" banner when a validation-failed save is retrying.
+  // The Finny-specific events (algorithm.regenerating, algorithm.saved) aren't in the
+  // generated @opencode-ai/sdk/v2 type union yet, so we subscribe via the untyped
+  // `subscribe` bypass. Runtime is unaffected — the server forwards all Bus events
+  // via Bus.subscribeAll (see src/server/instance/event.ts:64).
+  event.subscribe((rawEvt: any) => {
+    if (rawEvt?.type === "algorithm.regenerating") {
+      const p = rawEvt.properties as {
+        sessionID: string
+        algorithmName: string
+        attempt: number
+        maxAttempts: number
+      }
+      if (p.sessionID !== route.sessionID) return
+      setRegenStatus({ name: p.algorithmName, attempt: p.attempt, max: p.maxAttempts })
+      if (regenClearTimer) clearTimeout(regenClearTimer)
+      // Auto-clear as a safety net — normally cleared on algorithm.saved.
+      regenClearTimer = setTimeout(() => setRegenStatus(null), 30_000)
+      return
+    }
+    if (rawEvt?.type === "algorithm.saved") {
+      const p = rawEvt.properties as { name: string }
+      if (p.name === regenStatus()?.name) {
+        setRegenStatus(null)
+        if (regenClearTimer) clearTimeout(regenClearTimer)
+      }
     }
   })
 
@@ -1181,6 +1217,15 @@ export function Session() {
               <Show when={session()?.parentID}>
                 <SubagentFooter />
               </Show>
+              <Show when={regenStatus()}>
+                {(s) => (
+                  <box paddingLeft={3} marginTop={1}>
+                    <text style={{ fg: theme.textMuted }}>
+                      {`⟳ Validation failed (${s().attempt}/${s().max}) — regenerating ${s().name}…`}
+                    </text>
+                  </box>
+                )}
+              </Show>
               <Show when={visible()}>
                 <TuiPluginRuntime.Slot
                   name="session_prompt"
@@ -1510,6 +1555,15 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
+    // Always hide tool parts that are explicitly marked transient (e.g. Finny's
+    // validation retry cycles — the user should see the final saved algorithm,
+    // not the intermediate attempts that the validator rejected).
+    if (
+      props.part.state.status === "completed" &&
+      (props.part.state.metadata as Record<string, unknown> | undefined)?.transient === true
+    ) {
+      return true
+    }
     if (ctx.showDetails()) return false
     if (props.part.state.status !== "completed") return false
     return true

@@ -71,11 +71,14 @@ class Strategy:
         avg_gain = sum(self.gains) / self.period
         avg_loss = sum(self.losses) / self.period
 
-        if avg_loss != 0:
+        if avg_loss > 0:
             rs = avg_gain / avg_loss
             rsi = 100 - (100 / (1 + rs))
-        else:
+        elif avg_gain > 0:
             rsi = 100
+        else:
+            # flat market: no gains, no losses — treat as neutral, not overbought
+            rsi = 50
 
         if rsi < self.oversold:
             return "BUY"
@@ -102,7 +105,7 @@ class Strategy:
             return "HOLD"
 
         mean = sum(self.prices) / self.period
-        variance = sum((p - mean) ** 2 for p in self.prices) / self.period
+        variance = sum((p - mean) ** 2 for p in self.prices) / (self.period - 1)
         std = math.sqrt(variance)
 
         if std != 0:

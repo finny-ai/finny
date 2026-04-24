@@ -34,6 +34,16 @@ export namespace Algorithm {
         version: z.number(),
       }),
     ),
+    Regenerating: BusEvent.define(
+      "algorithm.regenerating",
+      z.object({
+        sessionID: z.string(),
+        algorithmName: z.string(),
+        attempt: z.number(),
+        maxAttempts: z.number(),
+        errorCodes: z.array(z.string()),
+      }),
+    ),
   }
 
   export interface SaveInput {

@@ -231,7 +231,7 @@ for i in range(1, len(curve)):
 
 if len(rets) > 1:
     mean_ret = sum(rets) / len(rets)
-    var_r = sum((r - mean_ret) ** 2 for r in rets) / len(rets)
+    var_r = sum((r - mean_ret) ** 2 for r in rets) / (len(rets) - 1)
     std_r = math.sqrt(var_r)
     interval_map = {"1min": 252 * 390, "5min": 252 * 78, "15min": 252 * 26, "30min": 252 * 13,
                     "1h": 252 * 6.5, "4h": 252 * 1.6, "1d": 252}

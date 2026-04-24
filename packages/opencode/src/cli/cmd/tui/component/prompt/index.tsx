@@ -217,14 +217,15 @@ export function Prompt(props: PromptProps) {
 
       syncedSessionID = sessionID
 
-      // Only set agent if it's a primary agent (not a subagent)
+      // Only set agent if it's a primary agent (not a subagent).
+      // Note: intentionally do NOT adopt `msg.model` from the last message —
+      // that reverts the user's current model picker to whatever the session's
+      // previous message used, stomping on explicit switches (e.g. Sonnet → Grok).
+      // The user's active model is already driven by local.model.current() via
+      // the per-agent store + fallback chain in local.tsx.
       const isPrimaryAgent = local.agent.list().some((x) => x.name === msg.agent)
       if (msg.agent && isPrimaryAgent) {
         local.agent.set(msg.agent)
-        if (msg.model) {
-          local.model.set(msg.model)
-          local.model.variant.set(msg.model.variant)
-        }
       }
     }
   })
