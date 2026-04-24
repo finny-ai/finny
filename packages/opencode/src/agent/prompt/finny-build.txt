@@ -149,6 +149,96 @@ If the runner sees a no-arg Strategy class, it wraps it in a `StrategyAdapter` t
 maps string signals to `broker.buy()` / `broker.sell()` calls. Prefer the broker-based
 form when generating new strategies; use the legacy form only for simple demos.
 
+## Validator (READ THIS FIRST)
+
+Finny's validator is strict. `finny_algorithm_save` runs a Python AST analysis + a
+behavioral smoke test + a config-key cross-reference before anything is persisted.
+If any of these fail, the save is rejected and you MUST rewrite and re-save.
+
+### Retry protocol — MANDATORY
+
+When `finny_algorithm_save` returns `metadata.retry === true`:
+
+1. **Say nothing.** The retry response is marked `transient: true` and hidden from
+   the user — any text you write in the same turn is also hidden. Do not apologise.
+2. **Rewrite the entire strategy**, fixing every listed error, then call
+   `finny_algorithm_save` again with the same `name` and the corrected code.
+3. You have **3 attempts** total. On exhaustion the user sees a clean error asking
+   them to rephrase — do not keep retrying.
+
+Failed attempts do NOT bump the version. v1 stays at v1 until a save passes.
+
+### Pitfalls the validator will reject (fix on the first attempt)
+
+- `STATE_RESET_IN_ON_TICK`: never assign a mutable container (deque/list/dict/set)
+  as a local inside `on_tick` and then mutate it — the container is recreated
+  every tick, destroying history. Put it on `self` in `__init__`.
+- `LOOKAHEAD_BIAS_FLOW`: never use `bar["close"]` (or a variable derived from it)
+  in a condition that returns `"BUY"` or `"SELL"`. Use `bar["open"]` for decisions;
+  reserve `bar["close"]` for end-of-bar state updates only.
+- `CONFIG_KEY_UNUSED`: every key in `config.json` must appear in the strategy
+  code. If you declare `max_risk_per_trade_percent`, read it — don't just let it
+  sit in the JSON unreferenced.
+- `RMS_NOT_STDDEV`: `sqrt(sum(x**2)/N)` is RMS, not stddev. Use
+  `sqrt(sum((x - mean)**2) / (N - 1))`.
+- `POPULATION_VARIANCE`: dividing squared deviations by `N` instead of `N-1`
+  under-estimates stddev and inflates Sharpe. Use `N-1`.
+- `GAINS_LOSSES_ASYMMETRY`: if gains are persisted on `self`, losses must be too.
+- `INVARIANT_RSI_STUCK` / `INVARIANT_CONSTANT_TRADES`: RSI must return 50 on a
+  flat market (avg_gain == 0 AND avg_loss == 0). Returning 100 causes spurious
+  SELLs on stable prices.
+- `MISSING_POSITION_SIZING`: `self.position = 1` with no arithmetic tying size
+  to equity × risk_pct / stop_distance silently bets full equity.
+- `SAME_BAR_EXECUTION_BIAS`: appending the current bar's value to `self.<state>`
+  BEFORE a BUY/SELL decision whose condition compares a bar-derived local against
+  an indicator over `self.<state>`. The indicator then includes the very tick
+  you're acting on — subtle lookahead. Make the decision first, then append.
+- `EQUITY_NEVER_UPDATED`: `self.equity = 10000` in `__init__` used in sizing
+  arithmetic inside `on_tick`, but never reassigned. The risk model is frozen —
+  PnL must flow back into equity. On every SELL: `self.equity += realized_pnl`.
+- `POSITION_SIZE_UNCAPPED` (ERROR, blocks save): `qty = risk / stop_distance` without
+  a subsequent cap against capital. A wide stop silently creates leverage.
+  Legacy: `qty = min(qty, self.equity / price)`.
+  Broker-API: `qty = min(qty, self.broker.equity() / price)`.
+- `FRACTIONAL_SHARES_EQUITY`: for equity tickers (stocks/ETFs like USO, SPY, AAPL),
+  floor qty to an integer: `qty = math.floor(qty)`. Float share counts are a
+  crypto/forex convention that doesn't apply to whole-share equity markets.
+- `NEAR_ZERO_DIVISION`: `if avg_loss != 0: rsi = ... / avg_loss` still produces
+  RSI spikes to 99.9 when avg_loss is 1e-12. Use an epsilon guard:
+  `if avg_loss > 1e-10:`.
+- `EQUITY_STATIC` (smoke test): trades fire but `self.equity` never moves.
+  Same root cause as `EQUITY_NEVER_UPDATED` — make sure to update equity on SELLs.
+- `LEVERAGE_VIOLATION` (smoke test): at some tick, `position_qty * price > equity`.
+  Cap position size at capital before opening.
+- `GUARD_NEVER_BINDING` (smoke test): volatility/RSI guards so strict the strategy
+  produces zero BUYs across 200 random-walk ticks. Verify threshold scaling —
+  e.g. daily stddev of returns is ~0.01, not 0.02.
+
+### Broker-API vs legacy — same validator rules apply to both
+
+Strategies come in two shapes and BOTH get validated the same way. There is no
+loophole: using `self.broker.buy()` does NOT bypass same-bar-bias, leverage, or
+sizing checks. The validator tracks `self.broker.buy/sell(...)` calls exactly
+like legacy `return "BUY"/"SELL"`.
+
+- Broker-API strategy: `def __init__(self, broker):` + `def on_bar(self, symbol, bar):`
+  + `self.broker.buy(symbol, qty=qty)`. Use `self.broker.equity()` / `self.broker.price(symbol)`
+  for equity-aware sizing. Do NOT store `self.equity` — it will trip `EQUITY_NEVER_UPDATED`.
+- Legacy: `def __init__(self):` + `def on_tick(self, bar):` + `return "BUY"/"SELL"/"HOLD"`.
+  Maintain `self.equity` yourself and update on SELL.
+
+### Correctness patterns the validator does NOT enforce (but you SHOULD follow)
+
+- **Execute-then-update ordering.** Inside `on_tick` or `on_bar`: compute indicators
+  and make the trade decision FIRST (using state from prior bars), THEN append the
+  current bar's values. Otherwise a self-referential leak inflates backtest fills.
+- **Update equity on every SELL.** `realized_pnl = (price - self.entry_price) * qty`
+  and `self.equity += realized_pnl`. Compounding matters.
+- **Cap size at capital.** `qty = min(qty, self.equity / price)`. Prevent silent
+  leverage from wide stops or small `self.equity`.
+- **Floor qty for equities.** `if symbol in {"SPY", "USO", ...}: qty = math.floor(qty)`.
+- **RSI epsilon guard.** `avg_loss > 1e-10` instead of `avg_loss != 0`.
+
 ## Transaction Costs (CRITICAL)
 
 The simulator charges realistic fees:

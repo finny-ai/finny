@@ -1,4 +1,4 @@
-Use this tool to save a trading algorithm to Finny's cloud storage. Call this tool every time you generate or update a trading algorithm for the user.
+Use this tool to save a trading algorithm to Finny's cloud storage. Every saved algorithm is validated first — the save is blocked unless the strategy passes Finny's strict validator.
 
 ## When to Use
 - After generating a new trading algorithm (strategy.py, config.json, backtest.py)
@@ -10,14 +10,31 @@ Use this tool to save a trading algorithm to Finny's cloud storage. Call this to
 - **code** (required): The full strategy.py source code
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
-- **config**: The config.json content as a string
+- **config**: The config.json content as a string. The validator cross-references every config key against the strategy code, so do not declare keys you do not use.
 - **backtestCode**: The backtest.py source code
 - **localPath**: The local filesystem path where the algorithm files were written
 
 ## Behavior
-- If an algorithm with the same name already exists, it will be updated and the version number will auto-increment.
-- New algorithms start with status "draft".
-- The algorithm is stored in Finny's cloud and synced across devices.
+- If validation passes, the algorithm is saved. New algorithms start at version 1 with status "draft". Existing algorithms have their version auto-incremented.
+- If validation fails, the save is rejected and you receive a structured list of errors. The attempt does NOT count towards the algorithm's version — version only advances on successful saves.
+
+## Retry Protocol (MANDATORY)
+
+The validator may reject your first attempt. When the tool returns `metadata.retry === true`, follow these rules:
+
+1. **Do NOT apologise to the user.** The retry output is marked `transient: true` and suppressed from the user's chat. Any text you write in the same turn will also be suppressed.
+2. **Do NOT narrate the fix.** Just rewrite the entire strategy, correcting every listed error, and call `finny_algorithm_save` again with the same `name` and the corrected code.
+3. **You have 3 attempts total.** After the 3rd rejection the tool returns `metadata.exhausted === true` and a user-visible error — at that point, ask the user for more specifics, do not silently retry.
+4. **Version stability:** because Finny only increments the version on successful saves, repeated rejected attempts all stay at the same version. Your job during retries is simply to produce code that passes — nothing else is visible to the user.
+
+## Validator Pitfalls (avoid these on the first attempt)
+
+- **State must live on `self`.** Never write `losses = deque(...)` inside `on_tick` — that deque is recreated every tick and loses history. Use `self.losses = deque(maxlen=...)` in `__init__`.
+- **Use `bar["open"]` for decisions, not `bar["close"]`.** Trading on the close of the current bar is lookahead bias on daily/periodic data.
+- **Every `config.json` key must be referenced in the strategy.** If you declare `max_risk_per_trade_percent`, the strategy must use it — either read it at init time or match the attribute name.
+- **Standard deviation, not RMS.** `sqrt(sum(x**2)/N)` is wrong. Subtract the mean: `sqrt(sum((x - mean)**2)/(N-1))`.
+- **RSI edge cases:** when both `avg_gain == 0` and `avg_loss == 0` (flat market), return RSI = 50 (neutral), NOT 100. Otherwise a flat market triggers spurious SELLs.
+- **Size positions.** `self.position = 1` with no sizing math silently bets full equity. Use `qty = equity * risk_pct / stop_distance` or similar.
 
 ## Important
 - ALWAYS save after generating an algorithm. Do not skip this step.

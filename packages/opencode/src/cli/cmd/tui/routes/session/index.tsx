@@ -164,6 +164,13 @@ export function Session() {
   const [animationsEnabled, setAnimationsEnabled] = kv.signal("animations_enabled", true)
   const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
+  // Finny: "Validation failed — regenerating" banner shown while an algorithm save is
+  // being retried. Cleared when the next save succeeds or after a short timeout.
+  const [regenStatus, setRegenStatus] = createSignal<
+    { name: string; attempt: number; max: number } | null
+  >(null)
+  let regenClearTimer: ReturnType<typeof setTimeout> | undefined
+
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
     if (session()?.parentID) return false
@@ -215,6 +222,25 @@ export function Session() {
     } else if (part.tool === "plan_enter") {
       local.agent.set("plan")
       lastSwitch = part.id
+    }
+  })
+
+  // Finny: show the "regenerating" banner when a validation-failed save is retrying.
+  event.on("algorithm.regenerating", (evt) => {
+    if (evt.properties.sessionID !== route.sessionID) return
+    setRegenStatus({
+      name: evt.properties.algorithmName,
+      attempt: evt.properties.attempt,
+      max: evt.properties.maxAttempts,
+    })
+    if (regenClearTimer) clearTimeout(regenClearTimer)
+    // Auto-clear as a safety net — normally the banner is cleared on algorithm.saved.
+    regenClearTimer = setTimeout(() => setRegenStatus(null), 30_000)
+  })
+  event.on("algorithm.saved", (evt) => {
+    if (evt.properties.name === regenStatus()?.name) {
+      setRegenStatus(null)
+      if (regenClearTimer) clearTimeout(regenClearTimer)
     }
   })
 
@@ -1181,6 +1207,15 @@ export function Session() {
               <Show when={session()?.parentID}>
                 <SubagentFooter />
               </Show>
+              <Show when={regenStatus()}>
+                {(s) => (
+                  <box paddingLeft={3} marginTop={1}>
+                    <text style={{ fg: theme.textMuted }}>
+                      {`⟳ Validation failed (${s().attempt}/${s().max}) — regenerating ${s().name}…`}
+                    </text>
+                  </box>
+                )}
+              </Show>
               <Show when={visible()}>
                 <TuiPluginRuntime.Slot
                   name="session_prompt"
@@ -1510,6 +1545,15 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
+    // Always hide tool parts that are explicitly marked transient (e.g. Finny's
+    // validation retry cycles — the user should see the final saved algorithm,
+    // not the intermediate attempts that the validator rejected).
+    if (
+      props.part.state.status === "completed" &&
+      (props.part.state.metadata as Record<string, unknown> | undefined)?.transient === true
+    ) {
+      return true
+    }
     if (ctx.showDetails()) return false
     if (props.part.state.status !== "completed") return false
     return true

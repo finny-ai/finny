@@ -1,0 +1,16 @@
+{
+  "symbol": "USO",
+  "interval": "1d",
+  "risk": {
+    "starting_equity_usd": 10000
+  },
+  "bollinger_period": 20,
+  "bollinger_std": 2.0,
+  "rsi_period": 14,
+  "rsi_oversold": 30,
+  "rsi_overbought": 70,
+  "volatility_threshold": 0.02,
+  "max_risk_per_trade_percent": 1.0,
+  "stop_loss_pct": 0.02,
+  "take_profit_pct": 0.04
+}
