@@ -226,21 +226,31 @@ export function Session() {
   })
 
   // Finny: show the "regenerating" banner when a validation-failed save is retrying.
-  event.on("algorithm.regenerating", (evt) => {
-    if (evt.properties.sessionID !== route.sessionID) return
-    setRegenStatus({
-      name: evt.properties.algorithmName,
-      attempt: evt.properties.attempt,
-      max: evt.properties.maxAttempts,
-    })
-    if (regenClearTimer) clearTimeout(regenClearTimer)
-    // Auto-clear as a safety net — normally the banner is cleared on algorithm.saved.
-    regenClearTimer = setTimeout(() => setRegenStatus(null), 30_000)
-  })
-  event.on("algorithm.saved", (evt) => {
-    if (evt.properties.name === regenStatus()?.name) {
-      setRegenStatus(null)
+  // The Finny-specific events (algorithm.regenerating, algorithm.saved) aren't in the
+  // generated @opencode-ai/sdk/v2 type union yet, so we subscribe via the untyped
+  // `subscribe` bypass. Runtime is unaffected — the server forwards all Bus events
+  // via Bus.subscribeAll (see src/server/instance/event.ts:64).
+  event.subscribe((rawEvt: any) => {
+    if (rawEvt?.type === "algorithm.regenerating") {
+      const p = rawEvt.properties as {
+        sessionID: string
+        algorithmName: string
+        attempt: number
+        maxAttempts: number
+      }
+      if (p.sessionID !== route.sessionID) return
+      setRegenStatus({ name: p.algorithmName, attempt: p.attempt, max: p.maxAttempts })
       if (regenClearTimer) clearTimeout(regenClearTimer)
+      // Auto-clear as a safety net — normally cleared on algorithm.saved.
+      regenClearTimer = setTimeout(() => setRegenStatus(null), 30_000)
+      return
+    }
+    if (rawEvt?.type === "algorithm.saved") {
+      const p = rawEvt.properties as { name: string }
+      if (p.name === regenStatus()?.name) {
+        setRegenStatus(null)
+        if (regenClearTimer) clearTimeout(regenClearTimer)
+      }
     }
   })
 
