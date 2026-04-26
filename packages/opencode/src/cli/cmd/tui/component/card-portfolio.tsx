@@ -4,7 +4,7 @@ import { useTheme } from "../context/theme"
 import { useRoute } from "../context/route"
 import { useLiveRuns } from "../context/live-runs"
 import { Card } from "./card"
-import { type AlpacaAccount, listAlpacaAccounts } from "@/live/alpaca-accounts"
+import { BrokerRegistry, type BrokerAccount } from "@/live/brokers"
 
 function formatCurrency(value?: number): string {
   if (value === undefined || value === null || !isFinite(value)) return "—"
@@ -16,11 +16,16 @@ export function PortfolioCard() {
   const route = useRoute()
   const liveRuns = useLiveRuns()
 
-  const [accounts, setAccounts] = createSignal<AlpacaAccount[]>([])
+  const [accounts, setAccounts] = createSignal<BrokerAccount[]>([])
 
   onMount(async () => {
-    setAccounts(await listAlpacaAccounts())
+    setAccounts(await BrokerRegistry.listAccounts())
   })
+
+  const brokerCount = () => {
+    const kinds = new Set(accounts().map((a) => a.brokerKind))
+    return kinds.size
+  }
 
   const activeRuns = createMemo(() =>
     liveRuns.runs().filter((r) => r.status === "running" || r.status === "starting"),
@@ -75,7 +80,8 @@ export function PortfolioCard() {
           <Show when={activeRuns().length === 0 && accounts().length > 0}>
             <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
               <text fg={theme.text}>
-                {accounts().length} account{accounts().length > 1 ? "s" : ""} connected
+                {accounts().length} account{accounts().length > 1 ? "s" : ""} across {brokerCount()} brokerage
+                {brokerCount() !== 1 ? "s" : ""}
               </text>
               <text fg={theme.textMuted}>
                 No algos running. Click to view.

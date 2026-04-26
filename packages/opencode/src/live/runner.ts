@@ -7,7 +7,7 @@ import { Log } from "@/util/log"
 import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
-import { readAlpacaCredentials, listAlpacaAccounts } from "./alpaca-accounts"
+import { BrokerRegistry, type BrokerKind } from "./brokers"
 import { Plan } from "@/plan"
 
 const log = Log.create({ service: "live" })
@@ -52,6 +52,7 @@ export namespace LiveRunner {
     algorithmName: string
     symbol: string
     interval: string
+    brokerKind: BrokerKind
     accountProviderID: string
     accountLabel?: string
     status: RunStatus
@@ -71,6 +72,7 @@ export namespace LiveRunner {
     symbol: string
     interval: string
     accountProviderID: string
+    brokerKind?: BrokerKind
   }
 
   type RunState = Run & {
@@ -113,18 +115,34 @@ export namespace LiveRunner {
   }
 
   const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback
-from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from finny_broker import AlpacaBroker, load_strategy, emit, log_err
+from finny_broker import load_strategy, emit, log_err
+
+
+def make_broker(kind: str):
+    if kind == "alpaca":
+        from finny_broker import AlpacaBroker
+        key_id = os.environ.get("ALPACA_API_KEY_ID")
+        secret = os.environ.get("ALPACA_API_SECRET_KEY")
+        if not key_id or not secret:
+            raise RuntimeError("Missing ALPACA_API_KEY_ID or ALPACA_API_SECRET_KEY")
+        paper = os.environ.get("ALPACA_PAPER", "1") not in ("0", "false", "False")
+        return AlpacaBroker(key_id=key_id, secret=secret, paper=paper), "Alpaca paper" if paper else "Alpaca LIVE"
+    if kind == "binance":
+        from finny_broker import BinanceBroker
+        api_key = os.environ.get("BINANCE_API_KEY")
+        secret = os.environ.get("BINANCE_API_SECRET")
+        if not api_key or not secret:
+            raise RuntimeError("Missing BINANCE_API_KEY or BINANCE_API_SECRET")
+        testnet = os.environ.get("BINANCE_TESTNET", "1") not in ("0", "false", "False")
+        return BinanceBroker(api_key=api_key, secret=secret, testnet=testnet), "Binance testnet" if testnet else "Binance LIVE"
+    raise RuntimeError(f"Unknown broker kind: {kind}")
+
 
 def main():
-    key_id = os.environ.get("ALPACA_API_KEY_ID")
-    secret = os.environ.get("ALPACA_API_SECRET_KEY")
-    if not key_id or not secret:
-        emit({"type": "error", "message": "Missing ALPACA_API_KEY_ID or ALPACA_API_SECRET_KEY"})
-        sys.exit(1)
+    broker_kind = os.environ.get("FINNY_BROKER_KIND", "alpaca")
 
     with open(Path(__file__).parent / "config.json") as f:
         config = json.load(f)
@@ -132,7 +150,6 @@ def main():
     symbol = config.get("symbol", "AAPL")
     interval = config.get("interval", "1min")
     run_id = config.get("run_id", "unknown")
-    paper = bool(config.get("paper", True))
 
     poll_map = {
         "1min": 30, "5min": 60, "15min": 90, "30min": 120,
@@ -141,9 +158,9 @@ def main():
     poll_seconds = poll_map.get(interval, 60)
 
     try:
-        broker = AlpacaBroker(key_id=key_id, secret=secret, paper=paper)
+        broker, broker_label = make_broker(broker_kind)
     except Exception as e:
-        emit({"type": "error", "message": f"Connect to Alpaca failed: {e}"})
+        emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
 
     try:
@@ -154,10 +171,9 @@ def main():
         sys.exit(3)
 
     emit({"type": "init", "run_id": run_id, "symbol": symbol, "interval": interval,
-          "paper": paper, "cash": cash_start, "equity": eq_start})
-    mode_label = "paper" if paper else "LIVE"
+          "broker_kind": broker_kind, "cash": cash_start, "equity": eq_start})
     emit({"type": "log", "level": "info",
-          "message": "Connected to Alpaca {}. Cash: {:,.2f} Equity: {:,.2f}".format(mode_label, cash_start, eq_start)})
+          "message": "Connected to {}. Cash: {:,.2f} Equity: {:,.2f}".format(broker_label, cash_start, eq_start)})
 
     strategy_path = Path(__file__).parent / "strategy.py"
     try:
@@ -176,19 +192,15 @@ def main():
     signal.signal(signal.SIGINT, handle_stop)
 
     last_ts = None
-    is_crypto = AlpacaBroker.is_crypto(symbol)
 
     while not stopped["value"]:
         try:
-            if not is_crypto and not broker.market_is_open():
+            if not broker.market_is_open(symbol):
                 emit({"type": "log", "level": "info", "message": "Market closed, sleeping 5m"})
-                for _ in range(300):
-                    if stopped["value"]:
-                        break
-                    time.sleep(1)
+                _sleep(300, stopped)
                 continue
 
-            bar = _fetch_latest_bar(broker, symbol, interval)
+            bar = broker.fetch_bar(symbol, interval)
             if bar is None:
                 emit({"type": "log", "level": "warn", "message": "No bar data yet"})
                 _sleep(poll_seconds, stopped)
@@ -200,7 +212,10 @@ def main():
             last_ts = bar["timestamp"]
 
             emit({"type": "bar", "symbol": symbol, **bar})
-            broker.set_price(symbol, bar["close"])
+            try:
+                broker.set_price(symbol, bar["close"])
+            except AttributeError:
+                pass
 
             try:
                 step(symbol, bar)
@@ -223,12 +238,11 @@ def main():
                   "trace": traceback.format_exc()})
             _sleep(poll_seconds, stopped)
 
-    # On exit, warn if positions are still open.
     try:
         pos = broker.position(symbol)
         if pos != 0:
             emit({"type": "log", "level": "warn",
-                  "message": f"⚠ You have {pos} open {symbol} position(s). They remain in Alpaca. Close manually if needed."})
+                  "message": f"⚠ You have {pos} open {symbol} position(s). They remain at the broker. Close manually if needed."})
     except Exception:
         pass
 
@@ -242,73 +256,15 @@ def _sleep(seconds, stopped):
         time.sleep(1)
 
 
-def _fetch_latest_bar(broker, symbol, interval):
-    try:
-        from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
-        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-
-        tf_map = {
-            "1min": TimeFrame.Minute,
-            "5min": TimeFrame(5, TimeFrameUnit.Minute),
-            "15min": TimeFrame(15, TimeFrameUnit.Minute),
-            "30min": TimeFrame(30, TimeFrameUnit.Minute),
-            "1h": TimeFrame.Hour,
-            "4h": TimeFrame(4, TimeFrameUnit.Hour),
-            "1d": TimeFrame.Day,
-        }
-        tf = tf_map.get(interval, TimeFrame.Minute)
-
-        lookback = {
-            "1min": timedelta(minutes=15),
-            "5min": timedelta(hours=1),
-            "15min": timedelta(hours=3),
-            "30min": timedelta(hours=6),
-            "1h": timedelta(hours=24),
-            "4h": timedelta(days=4),
-            "1d": timedelta(days=30),
-        }.get(interval, timedelta(minutes=15))
-
-        start = datetime.now(timezone.utc) - lookback
-        is_crypto = AlpacaBroker.is_crypto(symbol)
-        norm = AlpacaBroker.normalize_symbol(symbol)
-
-        if is_crypto:
-            req = CryptoBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
-            resp = broker._crypto_data.get_crypto_bars(req)
-        else:
-            req = StockBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
-            resp = broker._stock_data.get_stock_bars(req)
-
-        bars = resp.data.get(norm, []) if hasattr(resp, "data") else []
-        if not bars:
-            return None
-        latest = bars[-1]
-        return {
-            "timestamp": latest.timestamp.isoformat(),
-            "open": float(latest.open),
-            "high": float(latest.high),
-            "low": float(latest.low),
-            "close": float(latest.close),
-            "volume": float(latest.volume),
-        }
-    except Exception as e:
-        emit({"type": "error", "message": f"Fetch bar error: {e}"})
-        return None
-
-
 if __name__ == "__main__":
     main()
 `
 
   export async function start(params: StartParams): Promise<Run> {
     // Free plan: limit to 1 simultaneous live algo.
-    const activeCount = [...runs.values()].filter(
-      (r) => r.status === "starting" || r.status === "running",
-    ).length
+    const activeCount = [...runs.values()].filter((r) => r.status === "starting" || r.status === "running").length
     if (activeCount >= 1 && !(await Plan.isPro())) {
-      throw new Error(
-        "Free plan allows 1 simultaneous live algo. Upgrade to Finny Pro for unlimited. (Settings → Pro)",
-      )
+      throw new Error("Free plan allows 1 simultaneous live algo. Upgrade to Finny Pro for unlimited. (Settings → Pro)")
     }
 
     // Prevent duplicate: only one active run per algorithm.
@@ -317,24 +273,27 @@ if __name__ == "__main__":
         existing.algorithmId === params.algorithm.algorithmId &&
         (existing.status === "running" || existing.status === "starting")
       ) {
-        throw new Error(
-          `"${params.algorithm.name}" is already running. Stop it before starting a new run.`,
-        )
+        throw new Error(`"${params.algorithm.name}" is already running. Stop it before starting a new run.`)
       }
     }
 
+    // Resolve broker kind from explicit param or providerID prefix.
+    const brokerKind: BrokerKind =
+      params.brokerKind ?? BrokerRegistry.detectKind(params.accountProviderID) ?? "alpaca"
+    const spec = BrokerRegistry.getSpec(brokerKind)
+
     // Fast pre-check: credentials must be present before we promise a run.
-    const creds = await readAlpacaCredentials(params.accountProviderID)
+    const creds = await BrokerRegistry.readCredentials(params.accountProviderID)
     if (!creds) {
       throw new Error(
-        "Alpaca paper credentials not found. Open Settings → Paper Trading and connect your Alpaca account first.",
+        `${spec.displayName} credentials not found. Open Settings → Paper Trading and connect your ${spec.displayName} account first.`,
       )
     }
 
     const id = crypto.randomUUID()
 
     // Resolve account label for display.
-    const accounts = await listAlpacaAccounts()
+    const accounts = await BrokerRegistry.listAccounts(brokerKind)
     const accountLabel = accounts.find((a) => a.providerID === params.accountProviderID)?.label
 
     // Create an initial "starting" run state IMMEDIATELY so the caller can open
@@ -346,6 +305,7 @@ if __name__ == "__main__":
       algorithmName: params.algorithm.name,
       symbol: params.symbol,
       interval: params.interval,
+      brokerKind,
       accountProviderID: params.accountProviderID,
       accountLabel,
       status: "starting",
@@ -386,7 +346,7 @@ if __name__ == "__main__":
               symbol: params.symbol,
               interval: params.interval,
               run_id: id,
-              paper: true,
+              broker_kind: brokerKind,
             },
             null,
             2,
@@ -397,9 +357,8 @@ if __name__ == "__main__":
         const proc = Process.spawn([env.python, "live_worker.py"], {
           cwd: tmpDir,
           env: {
-            ALPACA_API_KEY_ID: creds.keyId,
-            ALPACA_API_SECRET_KEY: creds.secret,
-            ALPACA_ENDPOINT: creds.endpoint,
+            FINNY_BROKER_KIND: brokerKind,
+            ...spec.envVars(creds),
           },
           stdout: "pipe",
           stderr: "pipe",

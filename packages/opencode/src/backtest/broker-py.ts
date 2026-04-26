@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 import sys
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
 
@@ -83,6 +83,27 @@ class Broker:
 
     def price(self, symbol: str) -> Optional[float]:
         raise NotImplementedError
+
+    def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
+        """Return the latest bar for the symbol or None if not available.
+
+        Implementations must return a dict with keys
+        timestamp/open/high/low/close/volume (all floats except timestamp ISO str).
+        """
+        raise NotImplementedError
+
+    def market_is_open(self, symbol: str) -> bool:
+        """Whether trading the given symbol is allowed right now.
+
+        Default: True (24/7 markets such as crypto). Equity brokers should
+        override for stocks while still returning True for their crypto pairs.
+        """
+        return True
+
+    @staticmethod
+    def is_crypto(symbol: str) -> bool:
+        u = symbol.upper()
+        return "/" in u or "-" in u
 
 
 class SimBroker(Broker):
@@ -246,12 +267,95 @@ class AlpacaBroker(Broker):
     @staticmethod
     def is_crypto(symbol: str) -> bool:
         u = symbol.upper()
-        return "/" in u or u.endswith("-USD") or u.endswith("USD") and len(u) <= 7 and not u.isalpha()
+        if "/" in u or "-" in u:
+            return True
+        # Bare-ticker heuristic: pairs like BTCUSD or ETHUSDT.
+        for quote in ("USDT", "USDC", "USD"):
+            if u.endswith(quote) and len(u) > len(quote):
+                return True
+        return False
 
     @staticmethod
     def normalize_symbol(symbol: str) -> str:
-        # Alpaca wants "BTCUSD" (no slash) for crypto pairs.
-        return symbol.replace("/", "")
+        # Alpaca's crypto Data API requires the slashed format "BTC/USD".
+        # Equities are bare tickers ("AAPL").
+        u = symbol.upper().replace("-", "/")
+        if not AlpacaBroker.is_crypto(u):
+            return u
+        if "/" in u:
+            return u
+        for q in ("USDT", "USDC", "USD"):
+            if u.endswith(q) and len(u) > len(q):
+                return f"{u[:-len(q)]}/{q}"
+        return u
+
+    def market_is_open(self, symbol: str) -> bool:
+        # Crypto trades 24/7 on Alpaca.
+        if AlpacaBroker.is_crypto(symbol):
+            return True
+        try:
+            clock = self._trading.get_clock()
+            return bool(clock.is_open)
+        except Exception:
+            # Fail open: don't block the loop on a transient clock-endpoint error.
+            return True
+
+    def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
+        try:
+            from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        except ImportError as e:
+            log_err(f"alpaca-py missing for fetch_bar: {e}")
+            return None
+
+        tf_map = {
+            "1min": TimeFrame.Minute,
+            "5min": TimeFrame(5, TimeFrameUnit.Minute),
+            "15min": TimeFrame(15, TimeFrameUnit.Minute),
+            "30min": TimeFrame(30, TimeFrameUnit.Minute),
+            "1h": TimeFrame.Hour,
+            "4h": TimeFrame(4, TimeFrameUnit.Hour),
+            "1d": TimeFrame.Day,
+        }
+        tf = tf_map.get(interval, TimeFrame.Minute)
+
+        lookback = {
+            "1min": timedelta(minutes=15),
+            "5min": timedelta(hours=1),
+            "15min": timedelta(hours=3),
+            "30min": timedelta(hours=6),
+            "1h": timedelta(hours=24),
+            "4h": timedelta(days=4),
+            "1d": timedelta(days=30),
+        }.get(interval, timedelta(minutes=15))
+
+        start = datetime.now(timezone.utc) - lookback
+        is_crypto = AlpacaBroker.is_crypto(symbol)
+        norm = AlpacaBroker.normalize_symbol(symbol)
+
+        try:
+            if is_crypto:
+                req = CryptoBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
+                resp = self._crypto_data.get_crypto_bars(req)
+            else:
+                req = StockBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
+                resp = self._stock_data.get_stock_bars(req)
+        except Exception as e:
+            log_err(f"Fetch bar error: {e}")
+            return None
+
+        bars = resp.data.get(norm, []) if hasattr(resp, "data") else []
+        if not bars:
+            return None
+        latest = bars[-1]
+        return {
+            "timestamp": latest.timestamp.isoformat(),
+            "open": float(latest.open),
+            "high": float(latest.high),
+            "low": float(latest.low),
+            "close": float(latest.close),
+            "volume": float(latest.volume),
+        }
 
     def set_price(self, symbol: str, price: float) -> None:
         self._last_price[symbol] = float(price)
@@ -322,12 +426,155 @@ class AlpacaBroker(Broker):
     def price(self, symbol):
         return self._last_price.get(symbol)
 
-    def market_is_open(self) -> bool:
+    def _reject(self, symbol, side, reason):
+        return OrderRecord(
+            order_id="rejected",
+            symbol=symbol,
+            side=side,
+            qty=0,
+            price=0,
+            status=f"rejected: {reason}",
+            ts=datetime.now(timezone.utc).isoformat(),
+        )
+
+
+class BinanceBroker(Broker):
+    """Live broker backed by ccxt for Binance spot. Used by the live runner."""
+
+    KNOWN_QUOTES = ("USDT", "USDC", "BUSD", "USD", "BTC", "ETH")
+
+    def __init__(self, api_key: str, secret: str, testnet: bool = True):
         try:
-            clock = self._trading.get_clock()
-            return bool(clock.is_open)
+            import ccxt  # type: ignore
+        except ImportError as e:
+            raise RuntimeError(
+                f"ccxt import failed ({e}). The managed Python env may be missing "
+                f"a transitive dep. Try resetting it from Settings → Paper Trading."
+            ) from e
+
+        self._ccxt = ccxt
+        self._exchange = ccxt.binance({
+            "apiKey": api_key,
+            "secret": secret,
+            "enableRateLimit": True,
+            "options": {"defaultType": "spot"},
+        })
+        if testnet:
+            self._exchange.set_sandbox_mode(True)
+        self._last_price: Dict[str, float] = {}
+
+    @staticmethod
+    def is_crypto(symbol: str) -> bool:
+        return True
+
+    @staticmethod
+    def normalize_symbol(symbol: str) -> str:
+        u = symbol.upper().replace("-", "/")
+        if "/" in u:
+            return u
+        for q in BinanceBroker.KNOWN_QUOTES:
+            if u.endswith(q) and len(u) > len(q):
+                return f"{u[:-len(q)]}/{q}"
+        return f"{u}/USDT"
+
+    def market_is_open(self, symbol: str) -> bool:
+        return True
+
+    def set_price(self, symbol: str, price: float) -> None:
+        self._last_price[symbol] = float(price)
+
+    def price(self, symbol: str) -> Optional[float]:
+        return self._last_price.get(symbol)
+
+    def buy(self, symbol, qty=None, notional=None):
+        return self._submit(symbol, "buy", qty, notional)
+
+    def sell(self, symbol, qty=None, notional=None):
+        if qty is None and notional is None:
+            qty = self.position(symbol)
+            if qty <= 0:
+                return self._reject(symbol, "sell", "no open position")
+        return self._submit(symbol, "sell", qty, notional)
+
+    def _submit(self, symbol, side, qty, notional):
+        norm = BinanceBroker.normalize_symbol(symbol)
+        try:
+            if qty is None and notional is not None:
+                ticker = self._exchange.fetch_ticker(norm)
+                px = float(ticker.get("last") or ticker.get("close") or 0)
+                if px <= 0:
+                    return self._reject(symbol, side, "no price for notional sizing")
+                qty = notional / px
+            if qty is None:
+                return self._reject(symbol, side, "must specify qty or notional")
+            order = self._exchange.create_order(norm, "market", side, qty)
+            filled_price = float(order.get("average") or order.get("price") or 0) or self._last_price.get(symbol, 0)
+            return OrderRecord(
+                order_id=str(order.get("id", "")),
+                symbol=symbol,
+                side=side,
+                qty=float(order.get("amount") or qty or 0),
+                price=filled_price,
+                status=str(order.get("status", "submitted")),
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as e:
+            return self._reject(symbol, side, str(e))
+
+    def position(self, symbol: str) -> float:
+        norm = BinanceBroker.normalize_symbol(symbol)
+        base = norm.split("/")[0]
+        try:
+            bal = self._exchange.fetch_balance()
+            asset = bal.get(base) or {}
+            return float(asset.get("total") or 0)
         except Exception:
-            return True  # fail-open for crypto and unknown cases
+            return 0.0
+
+    def cash(self) -> float:
+        try:
+            bal = self._exchange.fetch_balance()
+            usdt = bal.get("USDT") or {}
+            return float(usdt.get("free") or 0)
+        except Exception:
+            return 0.0
+
+    def equity(self) -> float:
+        try:
+            bal = self._exchange.fetch_balance()
+            usdt_total = float((bal.get("USDT") or {}).get("total") or 0)
+            position_value = 0.0
+            for sym, px in self._last_price.items():
+                base = BinanceBroker.normalize_symbol(sym).split("/")[0]
+                qty = float((bal.get(base) or {}).get("total") or 0)
+                position_value += qty * px
+            return usdt_total + position_value
+        except Exception:
+            return 0.0
+
+    def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
+        tf_map = {
+            "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m",
+            "1h": "1h", "4h": "4h", "1d": "1d",
+        }
+        tf = tf_map.get(interval, "1m")
+        norm = BinanceBroker.normalize_symbol(symbol)
+        try:
+            bars = self._exchange.fetch_ohlcv(norm, timeframe=tf, limit=1)
+        except Exception as e:
+            log_err(f"Binance fetch_bar error: {e}")
+            return None
+        if not bars:
+            return None
+        ts, o, h, l, c, v = bars[-1]
+        return {
+            "timestamp": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
+            "open": float(o),
+            "high": float(h),
+            "low": float(l),
+            "close": float(c),
+            "volume": float(v),
+        }
 
     def _reject(self, symbol, side, reason):
         return OrderRecord(
@@ -402,16 +649,22 @@ class StrategyAdapter:
                 self.broker.sell(symbol, qty=current)
 
 
-def load_strategy(strategy_path, broker: Broker):
+def load_strategy(strategy_path, broker: Broker, params=None):
     """
     Load strategy.py and return a callable step(symbol, bar).
 
-    Supports two conventions:
-    1. New: class Strategy(broker) with on_bar(symbol, bar), calls broker directly
-    2. Legacy: class Strategy() with on_tick(bar) -> string, wrapped by StrategyAdapter
+    Supports three conventions:
+    1. Sweep-friendly: class Strategy(broker, params=None) — params is a dict from
+       config["params"], used by finny_backtest_sweep to vary settings.
+    2. Standard:  class Strategy(broker) with on_bar(symbol, bar)
+    3. Legacy:    class Strategy() with on_tick(bar) -> string, wrapped by StrategyAdapter
     """
     import importlib.util
+    import inspect
     from pathlib import Path
+
+    if params is None:
+        params = {}
 
     spec = importlib.util.spec_from_file_location("strategy", str(strategy_path))
     mod = importlib.util.module_from_spec(spec)
@@ -422,20 +675,29 @@ def load_strategy(strategy_path, broker: Broker):
 
     StrategyCls = mod.Strategy
 
-    # Try broker-based constructor first.
+    accepts_params = False
     try:
-        instance = StrategyCls(broker)
+        sig = inspect.signature(StrategyCls.__init__)
+        accepts_params = "params" in sig.parameters or any(
+            p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+        )
+    except (TypeError, ValueError):
+        pass
+
+    try:
+        if accepts_params:
+            instance = StrategyCls(broker, params=params)
+        else:
+            instance = StrategyCls(broker)
         if hasattr(instance, "on_bar") and callable(getattr(instance, "on_bar")):
             log_err("[finny_broker] using Strategy(broker).on_bar(symbol, bar)")
             return instance.on_bar
-        # Broker constructor worked but no on_bar — fall through to adapter.
         adapter = StrategyAdapter(instance, broker)
         log_err(f"[finny_broker] using legacy adapter on Strategy(broker).{adapter.handler_name}")
         return adapter.on_bar
     except TypeError:
         pass
 
-    # Legacy: Strategy() with no args
     instance = StrategyCls()
     adapter = StrategyAdapter(instance, broker)
     log_err(f"[finny_broker] using legacy adapter on Strategy().{adapter.handler_name}")

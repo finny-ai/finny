@@ -3,6 +3,7 @@ import path from "path"
 import { Process } from "@/util/process"
 import { Global } from "@/global"
 import { Log } from "@/util/log"
+import { BrokerRegistry } from "./brokers"
 
 const log = Log.create({ service: "live.python-env" })
 
@@ -12,11 +13,12 @@ export namespace PythonEnv {
   const PY_BIN = IS_WIN ? path.join(ENV_DIR, "Scripts", "python.exe") : path.join(ENV_DIR, "bin", "python")
   const PIP_BIN = IS_WIN ? path.join(ENV_DIR, "Scripts", "pip.exe") : path.join(ENV_DIR, "bin", "pip")
 
-  const REQUIRED_PACKAGES = [
-    { name: "alpaca-py", spec: "alpaca-py>=0.30", importCheck: "alpaca.trading.client" },
-    { name: "pytz", spec: "pytz", importCheck: "pytz" },
-    { name: "alpaca-data", spec: "", importCheck: "alpaca.data.historical" },
-  ]
+  // Always-required packages (independent of any broker).
+  const BASE_PACKAGES = [{ spec: "pytz", importCheck: "pytz" }]
+
+  function requiredPackages(): { spec: string; importCheck: string }[] {
+    return [...BASE_PACKAGES, ...BrokerRegistry.unionPythonDeps()]
+  }
 
   export type ProgressCallback = (message: string) => void
 
@@ -77,7 +79,9 @@ export namespace PythonEnv {
   }
 
   async function installPackages(onProgress: ProgressCallback): Promise<void> {
-    const specs = REQUIRED_PACKAGES.map((p) => p.spec).filter((s) => s.length > 0)
+    const specs = requiredPackages()
+      .map((p) => p.spec)
+      .filter((s) => s.length > 0)
     onProgress(`Installing ${specs.join(", ")} (this takes 30-60s, one-time)…`)
 
     // Upgrade pip quietly first so older pips don't choke on modern wheels.
@@ -115,10 +119,10 @@ export namespace PythonEnv {
    * in the UI (e.g. into a live run's log panel).
    */
   export async function ensure(onProgress: ProgressCallback = () => {}): Promise<Environment> {
-    // Fast path: venv exists and alpaca is importable.
+    // Fast path: venv exists and every required package is importable.
     if (await exists(PY_BIN)) {
       let allOk = true
-      for (const pkg of REQUIRED_PACKAGES) {
+      for (const pkg of requiredPackages()) {
         if (!(await checkPackage(pkg.importCheck))) {
           allOk = false
           break

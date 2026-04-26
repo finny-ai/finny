@@ -8,7 +8,7 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
   {
     runs(): LiveRunner.Run[]
     get(id: string): LiveRunner.Run | undefined
-    start(params: { algorithm: Algorithm.Info; symbol: string; interval: string; accountProviderID: string }): Promise<LiveRunner.Run>
+    start(params: LiveRunner.StartParams): Promise<LiveRunner.Run>
     stop(id: string): Promise<void>
     remove(id: string): void
   },
@@ -30,7 +30,7 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
       get(id: string) {
         return store.runs.find((r) => r.id === id) ?? LiveRunner.get(id)
       },
-      async start(params: { algorithm: Algorithm.Info; symbol: string; interval: string; accountProviderID: string }) {
+      async start(params: LiveRunner.StartParams) {
         return LiveRunner.start(params)
       },
       async stop(id: string) {

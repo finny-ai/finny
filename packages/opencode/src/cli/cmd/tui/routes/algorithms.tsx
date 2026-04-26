@@ -2,6 +2,7 @@ import { createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { BacktestRunner } from "@/backtest/runner"
 import { Algorithm } from "@/algorithm"
+import { parseConfig } from "@/algorithm/strategy-params"
 import { useTheme } from "../context/theme"
 import { useAlgorithms } from "../context/algorithms"
 import { useBacktestHistory } from "../context/backtest-history"
@@ -34,16 +35,11 @@ export function Algorithms() {
   onMount(() => algos.refetch())
 
   const guessSymbolForAlgo = (algo: Algorithm.Info): string => {
-    if (algo.config) {
-      try {
-        const c = JSON.parse(algo.config)
-        if (typeof c?.symbol === "string") return c.symbol
-      } catch {}
-    }
+    const params = parseConfig(algo.config)
+    if (params.symbol) return params.symbol
     const code = algo.code || ""
     const m1 = code.match(/SYMBOL\s*=\s*["']([^"']+)["']/)
     if (m1) return m1[1]
-    // Fallback: scan the algo name for a ticker-shaped token
     const stop = new Set([
       "INTRADAY", "HYBRID", "MOMENTUM", "MEAN", "REVERSION", "BREAKOUT",
       "STRATEGY", "ALGO", "V1", "V2", "V3", "V4", "V5",
@@ -56,13 +52,8 @@ export function Algorithms() {
   }
 
   const guessIntervalForAlgo = (algo: Algorithm.Info): string => {
-    if (algo.config) {
-      try {
-        const c = JSON.parse(algo.config)
-        if (typeof c?.interval === "string") return c.interval
-      } catch {}
-    }
-    // Scan code for INTERVAL = "..."
+    const params = parseConfig(algo.config)
+    if (params.interval) return params.interval
     const m = (algo.code || "").match(/INTERVAL\s*=\s*["']([^"']+)["']/)
     if (m) return m[1]
     return "1min"
@@ -73,9 +64,13 @@ export function Algorithms() {
       await DialogManagedHosting.show(dialog)
       return
     }
+    const liveCfg = parseConfig(algo.config)
+    const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
     const params = await DialogLiveConfirm.show(dialog, algo, {
       symbol: guessSymbolForAlgo(algo),
       interval: guessIntervalForAlgo(algo) as any,
+      brokerKind: liveCfg.brokerage,
+      equityUsd: liveEquity,
     })
     if (!params) return
     // Immediately start the run (returns fast with a "starting" state)
@@ -86,6 +81,7 @@ export function Algorithms() {
         symbol: params.symbol,
         interval: params.interval,
         accountProviderID: params.accountProviderID,
+        brokerKind: params.brokerKind,
       })
       DialogLiveRun.show(dialog, run.id)
       toast.show({
@@ -114,7 +110,13 @@ export function Algorithms() {
         return
       }
     }
-    const params = await DialogBacktestParams.show(dialog, algo.name)
+    const cfg = parseConfig(algo.config)
+    const equity = cfg.equity_usd ?? cfg.risk?.starting_equity_usd
+    const params = await DialogBacktestParams.show(dialog, algo.name, {
+      duration: cfg.backtest?.duration,
+      interval: cfg.interval,
+      capital: equity !== undefined ? String(equity) : undefined,
+    })
     if (!params) {
       dialog.clear()
       return

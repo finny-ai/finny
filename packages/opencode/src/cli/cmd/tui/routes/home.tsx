@@ -13,6 +13,8 @@ import { TuiPluginRuntime } from "../plugin"
 import { RecentAlgosCard } from "../component/card-recent-algos"
 import { GettingStartedCard } from "../component/card-getting-started"
 import { PortfolioCard } from "../component/card-portfolio"
+import { ModelCapsule } from "../component/model-capsule"
+import { ProviderCapsule } from "../component/provider-capsule"
 
 const FIRST_RUN_KEY = "home_getting_started_seen"
 
@@ -117,7 +119,22 @@ export function Home() {
           </TuiPluginRuntime.Slot>
         </box>
 
-        <box height={2} minHeight={0} flexShrink={0} />
+        {/* Model + Provider picker capsules (left-aligned, hug prompt) */}
+        <box
+          width="100%"
+          maxWidth={90}
+          alignSelf="center"
+          flexShrink={0}
+          flexDirection="row"
+          gap={1}
+          zIndex={1500}
+          marginTop={-1}
+        >
+          <ModelCapsule />
+          <ProviderCapsule />
+        </box>
+
+        <box height={1} minHeight={0} flexShrink={0} />
 
         {/* Dashboard cards: Recent Algos + Portfolio */}
         <box

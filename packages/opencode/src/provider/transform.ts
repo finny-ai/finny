@@ -365,9 +365,18 @@ export namespace ProviderTransform {
     if (!model.capabilities.reasoning) return {}
 
     const id = model.id.toLowerCase()
-    const isAnthropicAdaptive = ["opus-4-6", "opus-4.6", "sonnet-4-6", "sonnet-4.6"].some((v) =>
-      model.api.id.includes(v),
-    )
+    const isAnthropicAdaptive = [
+      "opus-4-6",
+      "opus-4.6",
+      "opus-4-7",
+      "opus-4.7",
+      "sonnet-4-6",
+      "sonnet-4.6",
+      "sonnet-4-7",
+      "sonnet-4.7",
+      "haiku-4-5",
+      "haiku-4.5",
+    ].some((v) => model.api.id.includes(v))
     const adaptiveEfforts = ["low", "medium", "high", "max"]
     if (
       id.includes("deepseek") ||

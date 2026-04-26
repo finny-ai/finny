@@ -9,9 +9,14 @@ const parameters = z.object({
     .string()
     .describe("Name of the saved algorithm to backtest (e.g. 'uco-intraday-hybrid')"),
   duration: z
-    .enum(["1w", "1m", "3m", "6m", "1y"])
+    .string()
+    .regex(/^\d+[dwmy]$/i, "Duration must match <number><unit> where unit is d/w/m/y (e.g. '5d', '2w', '1m', '1y')")
     .default("1m")
-    .describe("Backtest period: 1w=1 week, 1m=1 month, 3m=3 months, 6m=6 months, 1y=1 year"),
+    .describe(
+      "Backtest period as <number><unit> where unit is d (days), w (weeks), m (months), or y (years). " +
+        "Examples: '5d' = 5 days, '2w' = 2 weeks, '1m' = 1 month, '3m' = 3 months, '1y' = 1 year. " +
+        "Free-tier accounts are limited to ≤90 days; pro accounts can use any value.",
+    ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
     .default("5min")

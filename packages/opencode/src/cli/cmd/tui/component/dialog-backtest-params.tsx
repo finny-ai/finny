@@ -1,14 +1,17 @@
 import { TextAttributes } from "@opentui/core"
-import { createSignal, onMount } from "solid-js"
+import { createSignal, createMemo, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import { useKeyboard } from "@opentui/solid"
 import { Plan } from "@/plan"
-import { DialogProUpsell } from "./dialog-pro-upsell"
+import { BacktestRunner } from "@/backtest/runner"
 
-const DURATIONS = [
+// Standard preset chips. Free tier sees only those ≤ 90 days. Chat-derived
+// non-preset durations are injected at the front of the list when present.
+const STANDARD_DURATIONS = [
   { label: "1 week", value: "1w" },
+  { label: "2 weeks", value: "2w" },
   { label: "1 month", value: "1m" },
   { label: "3 months", value: "3m" },
   { label: "6 months", value: "6m" },
@@ -33,6 +36,8 @@ const CAPITALS = [
   { label: "$100,000", value: "100000" },
 ] as const
 
+const FREE_TIER_DAYS = 90
+
 type Field = "duration" | "interval" | "capital"
 const FIELDS: Field[] = ["duration", "interval", "capital"]
 
@@ -42,10 +47,48 @@ export interface BacktestParamsResult {
   capital: string
 }
 
+export interface BacktestParamsDefaults {
+  duration?: string  // e.g., "2w" or any "Nd/Nw/Nm/Ny" — injected as first chip if non-standard
+  interval?: string
+  capital?: string   // dollar amount as string, e.g., "100"
+}
+
 export interface DialogBacktestParamsProps {
   algorithmName: string
+  defaults?: BacktestParamsDefaults
   onConfirm: (params: BacktestParamsResult) => void
   onCancel?: () => void
+}
+
+function buildDurations(chatDuration?: string): { label: string; value: string }[] {
+  const presets = STANDARD_DURATIONS.map((d) => ({ ...d }))
+  if (!chatDuration) return presets
+  if (presets.some((p) => p.value === chatDuration)) return presets
+  // Non-standard chat duration → inject as the first chip.
+  return [{ label: `Chat (${chatDuration})`, value: chatDuration }, ...presets]
+}
+
+function indexOfDuration(list: { value: string }[], value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  const i = list.findIndex((d) => d.value === value)
+  return i >= 0 ? i : fallback
+}
+
+function nearestCapitalIndex(target: string | undefined): number {
+  if (!target) return 2
+  const num = parseFloat(target)
+  if (!Number.isFinite(num)) return 2
+  let best = 0
+  let bestDelta = Infinity
+  for (let i = 0; i < CAPITALS.length; i++) {
+    const v = parseFloat(CAPITALS[i].value)
+    const d = Math.abs(v - num)
+    if (d < bestDelta) {
+      best = i
+      bestDelta = d
+    }
+  }
+  return best
 }
 
 export function DialogBacktestParams(props: DialogBacktestParamsProps) {
@@ -53,19 +96,31 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
   const { theme } = useTheme()
 
   const [proUser, setProUser] = createSignal(false)
-  const maxDurationIndex = () => (proUser() ? DURATIONS.length - 1 : 2) // free: 1w, 1m, 3m only
+  const allDurations = createMemo(() => buildDurations(props.defaults?.duration))
+
+  const allowedDurations = createMemo(() => {
+    if (proUser()) return allDurations()
+    return allDurations().filter((d) => {
+      const days = BacktestRunner.parseDurationDays(d.value)
+      return days !== null && days <= FREE_TIER_DAYS
+    })
+  })
+
+  const initialDurationIdx = () => indexOfDuration(allowedDurations(), props.defaults?.duration, 0)
+  const initialIntervalIdx = () => indexOfDuration(INTERVALS as any, props.defaults?.interval, 4)
+  const initialCapitalIdx = () => nearestCapitalIndex(props.defaults?.capital)
 
   const [store, setStore] = createStore({
     active: "duration" as Field,
-    durationIndex: 1,
+    durationIndex: 0,
     intervalIndex: 4,
     capitalIndex: 2,
   })
 
   function cycleOption(field: Field, direction: number) {
     if (field === "duration") {
-      const max = maxDurationIndex()
-      const len = max + 1
+      const len = allowedDurations().length
+      if (len === 0) return
       const next = (store.durationIndex + direction + len) % len
       setStore("durationIndex", next)
     } else if (field === "interval") {
@@ -96,7 +151,7 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
     }
     if (evt.name === "return") {
       props.onConfirm({
-        duration: DURATIONS[store.durationIndex].value,
+        duration: allowedDurations()[store.durationIndex]?.value ?? "1m",
         interval: INTERVALS[store.intervalIndex].value,
         capital: CAPITALS[store.capitalIndex].value,
       })
@@ -107,6 +162,10 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
   onMount(async () => {
     dialog.setSize("medium")
     setProUser(await Plan.isPro())
+    // Apply chat-derived defaults after we know free/pro status.
+    setStore("durationIndex", initialDurationIdx())
+    setStore("intervalIndex", initialIntervalIdx())
+    setStore("capitalIndex", initialCapitalIdx())
   })
 
   function FieldRow(fieldProps: {
@@ -134,7 +193,7 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
             fg={active() ? theme.primary : theme.text}
             attributes={active() ? TextAttributes.BOLD : undefined}
           >
-            {fieldProps.options[fieldProps.selectedIndex].label}
+            {fieldProps.options[fieldProps.selectedIndex]?.label ?? "—"}
           </text>
           <text fg={theme.textMuted}>{active() ? "▶" : " "}</text>
         </box>
@@ -154,15 +213,14 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
       </box>
 
       <box>
-        <FieldRow label="Duration" field="duration" options={DURATIONS.slice(0, maxDurationIndex() + 1)} selectedIndex={store.durationIndex} />
+        <FieldRow label="Duration" field="duration" options={allowedDurations()} selectedIndex={store.durationIndex} />
         <FieldRow label="Interval" field="interval" options={INTERVALS} selectedIndex={store.intervalIndex} />
         <FieldRow label="Capital" field="capital" options={CAPITALS} selectedIndex={store.capitalIndex} />
       </box>
 
       {!proUser() && (
         <text fg={theme.textMuted}>
-          6m and 1y durations available with{" "}
-          <span style={{ fg: theme.primary }}>Finny Pro</span>
+          Free tier: durations up to 90 days. <span style={{ fg: theme.primary }}>Finny Pro</span> unlocks 6m and 1y.
         </text>
       )}
 
@@ -174,12 +232,17 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
   )
 }
 
-DialogBacktestParams.show = (dialog: DialogContext, algorithmName: string) => {
+DialogBacktestParams.show = (
+  dialog: DialogContext,
+  algorithmName: string,
+  defaults?: BacktestParamsDefaults,
+) => {
   return new Promise<BacktestParamsResult | null>((resolve) => {
     dialog.replace(
       () => (
         <DialogBacktestParams
           algorithmName={algorithmName}
+          defaults={defaults}
           onConfirm={(params) => resolve(params)}
           onCancel={() => resolve(null)}
         />

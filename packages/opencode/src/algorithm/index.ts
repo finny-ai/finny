@@ -107,4 +107,34 @@ export namespace Algorithm {
     await ConvexAlgorithms.remove(algorithmId)
     log.info("algorithm removed", { algorithmId })
   }
+
+  // Patch only the `config` JSON string on an existing algorithm. Does NOT
+  // bump version — used for chat-driven parameter updates that don't change
+  // the strategy code.
+  export async function updateConfig(algorithmId: string, config: string): Promise<Info | null> {
+    const raw = await ConvexAlgorithms.getById(algorithmId)
+    if (!raw) return null
+    // Convex documents carry `_id` / `_creationTime` system fields. The upsert
+    // mutation has a strict args validator and rejects them, so we explicitly
+    // pick only the Info-shaped fields rather than spreading the raw doc.
+    const e = raw as any
+    const record: Info = {
+      algorithmId: e.algorithmId,
+      userId: e.userId,
+      name: e.name,
+      code: e.code,
+      language: e.language,
+      version: e.version,
+      status: e.status,
+      description: e.description,
+      config,
+      backtestCode: e.backtestCode,
+      localPath: e.localPath,
+      time_created: e.time_created,
+      time_updated: Date.now(),
+    }
+    await ConvexAlgorithms.upsert(record)
+    log.info("algorithm config updated", { algorithmId, name: e.name })
+    return record
+  }
 }

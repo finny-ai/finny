@@ -11,6 +11,16 @@ export namespace BacktestRunner {
     duration: string // "1w" | "1m" | "3m" | "6m" | "1y"
     interval: string // "1min" | "5min" | "15min" | "30min" | "1h" | "4h" | "1d"
     capital: string // "1000" | "5000" | "10000" | "50000" | "100000"
+    // When set, overrides the duration-derived window. ISO YYYY-MM-DD.
+    // Used by walk-forward backtests to run two adjacent windows on the same algo.
+    startDate?: string
+    endDate?: string
+    // Patches merged into config.json before running. Top-level keys are
+    // shallow-replaced unless both old and new values are plain objects, in
+    // which case they're shallow-merged (so e.g. configOverrides.params replaces
+    // the whole params object, while configOverrides.risk merges with existing).
+    // Used by sweep to vary strategy params per combo.
+    configOverrides?: Record<string, unknown>
   }
 
   export interface Results {
@@ -48,12 +58,37 @@ export namespace BacktestRunner {
     return symbol.replace("/", "-")
   }
 
+  // Parse a duration token of the form `<int><unit>` where unit is one of
+  // d / w / m / y. Returns the number of calendar days the window represents
+  // (used for free-tier gating). Returns null on unparseable input.
+  export function parseDurationDays(duration: string): number | null {
+    const m = /^(\d+)([dwmy])$/.exec(duration.trim().toLowerCase())
+    if (!m) return null
+    const n = parseInt(m[1], 10)
+    if (!Number.isFinite(n) || n <= 0) return null
+    switch (m[2]) {
+      case "d": return n
+      case "w": return n * 7
+      case "m": return n * 30
+      case "y": return n * 365
+    }
+    return null
+  }
+
   function computeDateRange(duration: string): { start: string; end: string } {
     const end = new Date()
     const start = new Date()
-    if (duration === "1w") {
-      start.setDate(start.getDate() - 7)
+    const m = /^(\d+)([dwmy])$/.exec(duration.trim().toLowerCase())
+    if (m) {
+      const n = parseInt(m[1], 10)
+      switch (m[2]) {
+        case "d": start.setDate(start.getDate() - n); break
+        case "w": start.setDate(start.getDate() - n * 7); break
+        case "m": start.setMonth(start.getMonth() - n); break
+        case "y": start.setFullYear(start.getFullYear() - n); break
+      }
     } else {
+      // Legacy fallback for any pre-existing tokens not matching <int><unit>.
       const months = DURATION_MONTHS[duration] ?? 3
       start.setMonth(start.getMonth() - months)
     }
@@ -167,8 +202,9 @@ capital = float(args.capital)
 broker = SimBroker(starting_cash=capital)
 
 strategy_path = Path(__file__).parent / "strategy.py"
+strategy_params = config.get("params") if isinstance(config.get("params"), dict) else {}
 try:
-    step = load_strategy(strategy_path, broker)
+    step = load_strategy(strategy_path, broker, params=strategy_params)
 except Exception as e:
     print(f"ERROR loading strategy: {e}", file=sys.stderr)
     sys.exit(2)
@@ -364,7 +400,7 @@ print(f"profit_factor: {profit_factor}")
   }
 
   export async function run(params: Params): Promise<RunResult> {
-    const { algorithm, duration, interval, capital } = params
+    const { algorithm, duration, interval, capital, startDate, endDate, configOverrides } = params
 
     // Fallbacks: synthesize default backtest.py and config.json if the algo is missing them.
     const backtestCode = algorithm.backtestCode && algorithm.backtestCode.trim().length > 0
@@ -396,10 +432,25 @@ print(f"profit_factor: {profit_factor}")
       }
       config.risk = config.risk ?? {}
       config.risk.starting_equity_usd = parseFloat(capital)
+
+      if (configOverrides) {
+        for (const [k, v] of Object.entries(configOverrides)) {
+          const isPlainObj = (x: unknown): x is Record<string, unknown> =>
+            x !== null && typeof x === "object" && !Array.isArray(x)
+          if (isPlainObj(v) && isPlainObj(config[k])) {
+            config[k] = { ...config[k], ...v }
+          } else {
+            config[k] = v
+          }
+        }
+      }
+
       await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(config, null, 2))
 
-      // Compute dates and symbol
-      const { start, end } = computeDateRange(duration)
+      // Compute dates and symbol — explicit start/end win over duration-derived window.
+      const computed = computeDateRange(duration)
+      const start = startDate ?? computed.start
+      const end = endDate ?? computed.end
       const symbol = toYfinanceSymbol(config.symbol ?? "ETH/USD")
       const yfinanceInterval = INTERVAL_MAP[interval] ?? "1h"
       const csvPath = "ohlcv.csv"

@@ -40,6 +40,7 @@ import { useTextareaKeybindings } from "../textarea-keybindings"
 import { DialogSkill } from "../dialog-skill"
 import { DialogAlgorithmList } from "../dialog-algorithm-list"
 import { DialogAlgorithmCode } from "../dialog-algorithm-code"
+import { parseConfig } from "@/algorithm/strategy-params"
 import { DialogBacktestParams } from "../dialog-backtest-params"
 import { DialogBacktestRunning } from "../dialog-backtest-running"
 import { DialogBacktestResults } from "../dialog-backtest-results"
@@ -644,7 +645,13 @@ export function Prompt(props: PromptProps) {
       input.clear()
       const algo = await DialogAlgorithmList.show(dialog, "Backtest Algorithm")
       if (!algo) return
-      const params = await DialogBacktestParams.show(dialog, algo.name)
+      const cfg = parseConfig(algo.config)
+      const equity = cfg.equity_usd ?? cfg.risk?.starting_equity_usd
+      const params = await DialogBacktestParams.show(dialog, algo.name, {
+        duration: cfg.backtest?.duration,
+        interval: cfg.interval,
+        capital: equity !== undefined ? String(equity) : undefined,
+      })
       if (!params) {
         dialog.clear()
         return

@@ -11,10 +11,13 @@ import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
 import { AlgorithmGetTool } from "./algorithm-get"
+import { AlgorithmSetParamsTool } from "./algorithm-set-params"
 import { AlgorithmValidateTool } from "./algorithm-validate"
 import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
+import { BacktestWalkforwardTool } from "./backtest-walkforward"
+import { BacktestSweepTool } from "./backtest-sweep"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -132,10 +135,13 @@ export namespace ToolRegistry {
       const algosave = yield* AlgorithmSaveTool
       const algolist = yield* AlgorithmListTool
       const algoget = yield* AlgorithmGetTool
+      const algosetparams = yield* AlgorithmSetParamsTool
       const algovalidate = yield* AlgorithmValidateTool
       const algoscaffold = yield* AlgorithmScaffoldTool
       const backtestrun = yield* BacktestRunTool
       const backtesthistory = yield* BacktestHistoryTool
+      const backtestwalkforward = yield* BacktestWalkforwardTool
+      const backtestsweep = yield* BacktestSweepTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -216,10 +222,13 @@ export namespace ToolRegistry {
             algosave: Tool.init(algosave),
             algolist: Tool.init(algolist),
             algoget: Tool.init(algoget),
+            algosetparams: Tool.init(algosetparams),
             algovalidate: Tool.init(algovalidate),
             algoscaffold: Tool.init(algoscaffold),
             backtestrun: Tool.init(backtestrun),
             backtesthistory: Tool.init(backtesthistory),
+            backtestwalkforward: Tool.init(backtestwalkforward),
+            backtestsweep: Tool.init(backtestsweep),
           })
 
           return {
@@ -243,10 +252,13 @@ export namespace ToolRegistry {
               tool.algosave,
               tool.algolist,
               tool.algoget,
+              tool.algosetparams,
               tool.algovalidate,
               tool.algoscaffold,
               tool.backtestrun,
               tool.backtesthistory,
+              tool.backtestwalkforward,
+              tool.backtestsweep,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

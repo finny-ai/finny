@@ -7,7 +7,10 @@ import { useLiveRuns } from "../context/live-runs"
 import { Card } from "../component/card"
 import { RouteHeader, ROUTE_ICONS } from "../component/route-header"
 import { DialogLiveRun } from "../component/dialog-live-run"
-import { type AlpacaAccount, listAlpacaAccounts, maskKey } from "@/live/alpaca-accounts"
+import { DialogAddAccount } from "../component/dialog-add-account"
+import { maskKey } from "@/live/alpaca-accounts"
+import { BrokerRegistry, type BrokerAccount, type BrokerKind } from "@/live/brokers"
+import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
 
 function formatCurrency(value?: number): string {
@@ -21,26 +24,59 @@ export function Portfolio() {
   const liveRuns = useLiveRuns()
   const dialog = useDialog()
 
-  const [accounts, setAccounts] = createSignal<AlpacaAccount[]>([])
+  const allSpecs = BrokerRegistry.specs()
+  const [accounts, setAccounts] = createSignal<BrokerAccount[]>([])
+  const [activeKind, setActiveKind] = createSignal<BrokerKind>(allSpecs[0]?.kind ?? "alpaca")
+
+  const refreshAccounts = async () => {
+    try {
+      setAccounts(await BrokerRegistry.listAccounts())
+    } catch {
+      setAccounts([])
+    }
+  }
 
   onMount(async () => {
-    setAccounts(await listAlpacaAccounts())
+    await refreshAccounts()
+    // Prefer the first broker that has accounts.
+    const first = allSpecs.find((s) => accounts().some((a) => a.brokerKind === s.kind))
+    if (first) setActiveKind(first.kind)
   })
 
   const activeRuns = createMemo(() =>
     liveRuns.runs().filter((r) => r.status === "running" || r.status === "starting"),
   )
 
-  const connected = () => accounts().length > 0
+  const accountsForKind = (kind: BrokerKind) => accounts().filter((a) => a.brokerKind === kind)
+  const activeSpec = () => BrokerRegistry.getSpec(activeKind())
+  const connected = () => accountsForKind(activeKind()).length > 0
+
+  const tabOptions = (): SegmentedOption<BrokerKind>[] =>
+    allSpecs.map((s) => {
+      const n = accountsForKind(s.kind).length
+      return {
+        value: s.kind,
+        label: s.displayName,
+        badge: n > 0 ? `· ${n}` : undefined,
+      }
+    })
 
   const goToSettings = () => route.navigate({ type: "settings", tab: "paper-trading" })
+
+  const openAddDialog = async () => {
+    const saved = await DialogAddAccount.show(dialog, { initialKind: activeKind() })
+    if (saved) await refreshAccounts()
+  }
+
+  const totalAccounts = () => accounts().length
+  const brokerCount = () => allSpecs.filter((s) => accountsForKind(s.kind).length > 0).length
 
   return (
     <box flexGrow={1} flexDirection="column">
       <RouteHeader
         icon={ROUTE_ICONS.portfolio as unknown as string[]}
         title="Portfolio"
-        subtitle="Alpaca paper trading positions and performance"
+        subtitle="Paper trading positions across your connected brokerages"
       />
 
       <box
@@ -59,82 +95,106 @@ export function Portfolio() {
             <Card title=" Running algos ">
               <box flexDirection="column" gap={1}>
                 <For each={activeRuns()}>
-                  {(run) => (
-                    <box
-                      flexDirection="row"
-                      paddingLeft={1}
-                      paddingRight={1}
-                      gap={2}
-                      onMouseUp={() => DialogLiveRun.show(dialog, run.id)}
-                    >
-                      <text fg={theme.success} attributes={TextAttributes.BOLD}>
-                        ●
-                      </text>
-                      <box width={24} flexShrink={0}>
-                        <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                          {run.algorithmName}
+                  {(run) => {
+                    const brokerLabel = () => {
+                      const k = (run as any).brokerKind as BrokerKind | undefined
+                      return k ? BrokerRegistry.getSpec(k).displayName : "Alpaca paper"
+                    }
+                    return (
+                      <box
+                        flexDirection="row"
+                        paddingLeft={1}
+                        paddingRight={1}
+                        gap={2}
+                        onMouseUp={() => DialogLiveRun.show(dialog, run.id)}
+                      >
+                        <text fg={theme.success} attributes={TextAttributes.BOLD}>
+                          ●
                         </text>
-                      </box>
-                      <box width={14} flexShrink={0}>
-                        <text fg={theme.textMuted}>
-                          {run.symbol} · {run.interval}
-                        </text>
-                      </box>
-                      <box width={22} flexShrink={0}>
-                        <text fg={theme.text}>
-                          <span style={{ fg: theme.textMuted }}>equity</span>{" "}
-                          {formatCurrency(run.equity)}
-                        </text>
-                      </box>
-                      <Show when={run.accountLabel}>
-                        <box width={14} flexShrink={0}>
-                          <text fg={theme.textMuted}>
-                            {run.accountLabel}
+                        <box width={24} flexShrink={0}>
+                          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                            {run.algorithmName}
                           </text>
                         </box>
-                      </Show>
-                      <box flexGrow={1}>
-                        <text fg={theme.textMuted}>click to open logs</text>
+                        <box width={14} flexShrink={0}>
+                          <text fg={theme.textMuted}>
+                            {run.symbol} · {run.interval}
+                          </text>
+                        </box>
+                        <box width={22} flexShrink={0}>
+                          <text fg={theme.text}>
+                            <span style={{ fg: theme.textMuted }}>equity</span>{" "}
+                            {formatCurrency(run.equity)}
+                          </text>
+                        </box>
+                        <box width={18} flexShrink={0}>
+                          <text fg={theme.textMuted}>
+                            {brokerLabel()}
+                            <Show when={run.accountLabel}> · {run.accountLabel}</Show>
+                          </text>
+                        </box>
+                        <box flexGrow={1}>
+                          <text fg={theme.textMuted}>click to open logs</text>
+                        </box>
                       </box>
-                    </box>
-                  )}
+                    )
+                  }}
                 </For>
               </box>
             </Card>
           </box>
         </Show>
 
-        {/* Accounts */}
-        <Card title=" Alpaca Accounts ">
+        {/* Brokerage tabs */}
+        <SegmentedControl
+          options={tabOptions()}
+          value={activeKind()}
+          onChange={setActiveKind}
+        />
+
+        <Show when={totalAccounts() > 0}>
+          <text fg={theme.textMuted}>
+            {totalAccounts()} account{totalAccounts() !== 1 ? "s" : ""} across {brokerCount()} brokerage
+            {brokerCount() !== 1 ? "s" : ""}.
+          </text>
+        </Show>
+
+        {/* Active broker accounts */}
+        <Card title={` ${activeSpec().displayName} accounts `}>
           <Show
             when={connected()}
             fallback={
               <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
                 <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                  Alpaca not connected
+                  {activeSpec().displayName} not connected
                 </text>
                 <text fg={theme.textMuted}>
-                  Connect your Alpaca paper account to see live positions.
+                  Connect a {activeSpec().displayName} account to see live positions.
                 </text>
-                <text fg={theme.textMuted}>
-                  Get free keys at docs.alpaca.markets, then paste them in Settings.
-                </text>
+                <Show when={activeSpec().docsUrl}>
+                  <box flexDirection="row" flexShrink={0}>
+                    <text fg={theme.textMuted}>Get keys at </text>
+                    <Link href={activeSpec().docsUrl} fg={theme.primary}>
+                      {activeSpec().docsUrl}
+                    </Link>
+                  </box>
+                </Show>
                 <box height={1} minHeight={0} />
                 <box
                   paddingLeft={2}
                   paddingRight={2}
                   backgroundColor={theme.primary}
-                  onMouseUp={goToSettings}
+                  onMouseUp={openAddDialog}
                 >
                   <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                    → Connect Alpaca in Settings
+                    → Connect {activeSpec().displayName}
                   </text>
                 </box>
               </box>
             }
           >
             <box flexDirection="column" gap={1}>
-              <For each={accounts()}>
+              <For each={accountsForKind(activeKind())}>
                 {(account) => (
                   <box
                     flexDirection="row"
@@ -159,29 +219,62 @@ export function Portfolio() {
               </For>
               <box height={1} minHeight={0} />
               <text fg={theme.textMuted}>
-                Positions, cash, and P&L will render here once the live runner reports back.
+                Positions, cash, and P&L will render here once a live runner reports back.
               </text>
-              <box flexDirection="row" flexShrink={0}>
-                <text fg={theme.textMuted}>For now, check your account at </text>
-                <Link href="https://app.alpaca.markets/paper/dashboard/overview" fg={theme.primary}>
-                  app.alpaca.markets/paper/dashboard/overview
-                </Link>
-                <text fg={theme.textMuted}>.</text>
-              </box>
+              <Show when={activeSpec().docsUrl}>
+                <box flexDirection="row" flexShrink={0}>
+                  <text fg={theme.textMuted}>Account dashboard: </text>
+                  <Link href={activeSpec().docsUrl} fg={theme.primary}>
+                    {activeSpec().docsUrl}
+                  </Link>
+                </box>
+              </Show>
               <box height={1} minHeight={0} />
               <box flexDirection="row" gap={2} flexShrink={0}>
+                <box
+                  paddingLeft={2}
+                  paddingRight={2}
+                  backgroundColor={theme.success}
+                  onMouseUp={openAddDialog}
+                >
+                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                    + Add {activeSpec().displayName} account
+                  </text>
+                </box>
                 <box
                   paddingLeft={2}
                   paddingRight={2}
                   backgroundColor={theme.backgroundElement}
                   onMouseUp={goToSettings}
                 >
-                  <text fg={theme.text}>Manage accounts</text>
+                  <text fg={theme.text}>Manage in Settings</text>
                 </box>
               </box>
             </box>
           </Show>
         </Card>
+
+        <box
+          paddingLeft={2}
+          paddingRight={2}
+          paddingTop={1}
+          paddingBottom={1}
+          border={["left"]}
+          borderColor={theme.info}
+          flexDirection="column"
+          gap={0}
+          flexShrink={0}
+        >
+          <text fg={theme.info} attributes={TextAttributes.BOLD}>
+            Not investment advice
+          </text>
+          <text fg={theme.textMuted}>
+            Keys are saved locally at ~/.local/share/finny/auth.json (0600 perms). Finny servers never see them.
+          </text>
+          <text fg={theme.textMuted}>
+            Paper / testnet trading uses virtual money. Strategies generated here are not financial advice.
+          </text>
+        </box>
       </box>
     </box>
   )

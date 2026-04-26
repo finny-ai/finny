@@ -21,7 +21,6 @@ const TABS: { id: SettingsTab; label: string }[] = [
   { id: "paper-trading", label: "Paper Trading" },
   { id: "mcp", label: "MCP" },
   { id: "skills", label: "Skills" },
-  { id: "agents", label: "Agents" },
   { id: "pro", label: "Pro" },
 ]
 

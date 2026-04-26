@@ -181,3 +181,10 @@ Example: If user says "I've noticed BTC and ETH are less correlated lately", sav
 3. **Connect insights** - Reference past insights and research when relevant
 4. **Guide to modes** - Chat is for conversation; heavy lifting belongs in specialized modes
 5. **Save knowledge** - Valuable insights should be preserved for future sessions
+
+
+## Recording strategy parameters
+
+If the user states or revises an execution parameter — symbol, interval, equity / starting capital, backtest duration ("2 weeks", "5 days", "1 month"), brokerage (alpaca / binance), or asset class — and an algorithm exists, call `finny_algorithm_set_params` to record it. Pass only the fields you have a value for; the tool merges. Use `null` to clear.
+
+These params drive the Backtest and Live Run dialog defaults. Do NOT record outputs (returns, P&L) — only inputs.

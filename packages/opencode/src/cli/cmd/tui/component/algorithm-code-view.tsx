@@ -2,6 +2,7 @@ import { TextAttributes } from "@opentui/core"
 import { Show } from "solid-js"
 import { useTheme } from "../context/theme"
 import type { Algorithm } from "@/algorithm"
+import { parseConfig } from "@/algorithm/strategy-params"
 
 export function AlgorithmCodeView(props: { algorithm: Algorithm.Info }) {
   const { theme } = useTheme()
@@ -9,6 +10,12 @@ export function AlgorithmCodeView(props: { algorithm: Algorithm.Info }) {
   const updatedAt = () => {
     const d = new Date(props.algorithm.time_updated)
     return d.toLocaleDateString()
+  }
+
+  const prettyParams = () => {
+    const parsed = parseConfig(props.algorithm.config)
+    if (Object.keys(parsed).length === 0) return null
+    return JSON.stringify(parsed, null, 2)
   }
 
   return (
@@ -40,17 +47,6 @@ export function AlgorithmCodeView(props: { algorithm: Algorithm.Info }) {
             <text fg={theme.text}>{props.algorithm.code}</text>
           </box>
 
-          <Show when={props.algorithm.config}>
-            <box paddingTop={1} flexShrink={0}>
-              <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-                config.json
-              </text>
-            </box>
-            <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
-              <text fg={theme.text}>{props.algorithm.config}</text>
-            </box>
-          </Show>
-
           <Show when={props.algorithm.backtestCode}>
             <box paddingTop={1} flexShrink={0}>
               <text fg={theme.primary} attributes={TextAttributes.BOLD}>
@@ -59,6 +55,29 @@ export function AlgorithmCodeView(props: { algorithm: Algorithm.Info }) {
             </box>
             <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
               <text fg={theme.text}>{props.algorithm.backtestCode}</text>
+            </box>
+          </Show>
+
+          <box paddingTop={1} flexShrink={0}>
+            <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+              strategy-params.json
+            </text>
+          </box>
+          <text fg={theme.textMuted}>
+            Captured from chat — read by the Backtest and Live Run dialogs as defaults.
+          </text>
+          <Show
+            when={prettyParams()}
+            fallback={
+              <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
+                <text fg={theme.textMuted}>
+                  No params captured yet. Mention symbol, interval, equity, duration, or brokerage in chat and the agent will record them.
+                </text>
+              </box>
+            }
+          >
+            <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
+              <text fg={theme.text}>{prettyParams()}</text>
             </box>
           </Show>
         </box>
