@@ -34,7 +34,7 @@ jobs:
           else
             TIMESTAMP=$(date -u +%Y%m%d%H%M)
             echo "version=0.0.0-dev-${TIMESTAMP}" >> "$GITHUB_OUTPUT"
-            echo "channel=dev" >> "$GITHUB_OUTPUT"
+            echo "channel=latest" >> "$GITHUB_OUTPUT"
           fi
       - name: Install cross-platform native deps
         run: bun install --os="*" --cpu="*"
