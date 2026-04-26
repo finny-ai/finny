@@ -2,6 +2,9 @@ name: finny-publish
 run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
 
 on:
+  push:
+    branches:
+      - dev
   workflow_dispatch:
     inputs:
       version:
@@ -21,9 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: ./.github/actions/setup-bun
-
       - name: Set version
         id: version
         run: |
@@ -35,21 +36,17 @@ jobs:
             echo "version=0.0.0-dev-${TIMESTAMP}" >> "$GITHUB_OUTPUT"
             echo "channel=dev" >> "$GITHUB_OUTPUT"
           fi
-
       - name: Install cross-platform native deps
         run: bun install --os="*" --cpu="*"
-
       - name: Build CLI (all platforms)
         run: ./packages/opencode/script/build.ts --skip-install
         env:
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_CHANNEL: ${{ steps.version.outputs.channel }}
-
       - uses: actions/upload-artifact@v4
         with:
           name: finny-cli
           path: packages/opencode/dist
-
     outputs:
       version: ${{ steps.version.outputs.version }}
       channel: ${{ steps.version.outputs.channel }}
@@ -59,19 +56,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: ./.github/actions/setup-bun
-
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           registry-url: "https://registry.npmjs.org"
-
       - uses: actions/download-artifact@v4
         with:
           name: finny-cli
           path: packages/opencode/dist
-
       - name: Publish to npm
         working-directory: packages/opencode
         run: |
@@ -86,14 +79,12 @@ jobs:
               cd -
             fi
           done
-
           # Build and publish the main finny-ai package
           PKG_NAME=$(node -p "require('./package.json').name")
           VERSION="${{ needs.build.outputs.version }}"
           mkdir -p "dist/${PKG_NAME}"
           cp -r ./bin "dist/${PKG_NAME}/bin"
           cp ./script/postinstall.mjs "dist/${PKG_NAME}/postinstall.mjs"
-
           # Collect optionalDependencies from platform packages
           DEPS=$(node -e "
             const fs = require('fs');
@@ -107,7 +98,6 @@ jobs:
             }
             console.log(JSON.stringify(deps));
           ")
-
           node -e "
             const pkg = require('./package.json');
             const deps = JSON.parse('${DEPS}');
@@ -121,7 +111,6 @@ jobs:
             };
             require('fs').writeFileSync('./dist/${PKG_NAME}/package.json', JSON.stringify(out, null, 2));
           "
-
           cd "dist/${PKG_NAME}"
           bun pm pack
           npm publish *.tgz --access public --tag ${{ needs.build.outputs.channel }}
