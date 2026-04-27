@@ -9,6 +9,7 @@ import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind } from "./brokers"
 import { Plan } from "@/plan"
+import { requireBrokerTier } from "@/plan/brokers"
 
 const log = Log.create({ service: "live" })
 
@@ -260,11 +261,22 @@ if __name__ == "__main__":
     main()
 `
 
+  // Per-tier simultaneous live algorithm caps. Pro is uncapped (Infinity).
+  const TERMINAL_RUN_CAP: Record<Plan.Tier, number> = {
+    free: 1,
+    lite: 3,
+    pro: Number.POSITIVE_INFINITY,
+  }
+
   export async function start(params: StartParams): Promise<Run> {
-    // Free plan: limit to 1 simultaneous live algo.
+    const tier = await Plan.getTier()
+
+    // Tiered cap on simultaneous live algos.
     const activeCount = [...runs.values()].filter((r) => r.status === "starting" || r.status === "running").length
-    if (activeCount >= 1 && !(await Plan.isPro())) {
-      throw new Error("Free plan allows 1 simultaneous live algo. Upgrade to Finny Pro for unlimited. (Settings → Pro)")
+    const cap = TERMINAL_RUN_CAP[tier]
+    if (activeCount >= cap) {
+      const required: Plan.Tier = tier === "free" ? "lite" : "pro"
+      throw new Plan.PlanLimitError({ current: tier, required, feature: "terminal_runs" })
     }
 
     // Prevent duplicate: only one active run per algorithm.
@@ -280,6 +292,11 @@ if __name__ == "__main__":
     // Resolve broker kind from explicit param or providerID prefix.
     const brokerKind: BrokerKind =
       params.brokerKind ?? BrokerRegistry.detectKind(params.accountProviderID) ?? "alpaca"
+
+    // Tier gate for live trading on this brokerage. Paper trading bypasses
+    // this check entirely — it never enters this code path.
+    await requireBrokerTier(brokerKind)
+
     const spec = BrokerRegistry.getSpec(brokerKind)
 
     // Fast pre-check: credentials must be present before we promise a run.

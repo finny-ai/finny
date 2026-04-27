@@ -67,17 +67,17 @@ export function SidebarNav() {
   const route = useRoute()
   const toast = useToast()
 
-  const [proActive, setProActive] = createSignal(false)
+  const [tier, setTier] = createSignal<Plan.Tier>("free")
 
   const activeType = createMemo(() => {
     const t = route.data.type
     return t === "session" ? "sessions" : t
   })
 
-  // Re-check Pro status whenever the route changes (e.g. after activating in Settings)
+  // Re-check tier whenever the route changes (e.g. after activating in Settings)
   createEffect(() => {
     activeType() // track route changes
-    Plan.isPro().then(setProActive)
+    Plan.getTier().then(setTier)
   })
 
   const runAction = (item: NavItem) => {
@@ -120,9 +120,14 @@ export function SidebarNav() {
           <text fg={theme.primary} attributes={TextAttributes.BOLD}>
             FINNY
           </text>
-          <Show when={proActive()}>
-            <text fg={theme.success} attributes={TextAttributes.BOLD}>
+          <Show when={tier() === "pro"}>
+            <text fg="#5fa5fa" attributes={TextAttributes.BOLD}>
               PRO
+            </text>
+          </Show>
+          <Show when={tier() === "lite"}>
+            <text fg="#00cab4" attributes={TextAttributes.BOLD}>
+              LITE
             </text>
           </Show>
         </box>
@@ -143,7 +148,7 @@ export function SidebarNav() {
         <text fg={theme.border}>──────────────────────</text>
       </box>
       <box flexDirection="column" flexShrink={0} paddingBottom={2}>
-        <Show when={!proActive()}>
+        <Show when={tier() === "free"}>
           <NavRow item={UPGRADE_ITEM} isActive={false} onSelect={() => runAction(UPGRADE_ITEM)} />
         </Show>
         <For each={BOTTOM_ITEMS}>

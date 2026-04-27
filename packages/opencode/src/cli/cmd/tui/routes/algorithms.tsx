@@ -60,10 +60,22 @@ export function Algorithms() {
   }
 
   const runLive = async (algo: Algorithm.Info) => {
-    if (await Plan.isPro()) {
+    const tier = await Plan.getTier()
+    // Free: live trading is paid — upsell to Lite (cheapest tier that unlocks it).
+    if (tier === "free") {
+      await DialogProUpsell.show(
+        dialog,
+        "Live trading is a paid feature. Upgrade to Lite to start live runs.",
+        "lite",
+      )
+      return
+    }
+    // Pro: cloud / managed hosting request form (server enforces 5-run cap).
+    if (tier === "pro") {
       await DialogManagedHosting.show(dialog)
       return
     }
+    // Lite: local terminal live run (runner enforces 3 simultaneous + broker tier).
     const liveCfg = parseConfig(algo.config)
     const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
     const params = await DialogLiveConfirm.show(dialog, algo, {
@@ -90,23 +102,45 @@ export function Algorithms() {
         duration: 3000,
       })
     } catch (e: any) {
+      if (e instanceof Plan.PlanLimitError) {
+        const featureLabel =
+          e.feature === "terminal_runs"
+            ? "terminal live runs"
+            : e.feature.startsWith("live_brokerage:")
+              ? `live trading on ${e.feature.split(":")[1]}`
+              : e.feature
+        const message =
+          e.required === "pro"
+            ? `You've hit your Lite limit for ${featureLabel}. Upgrade to Finny Pro for unlimited.`
+            : `${featureLabel} requires Finny Lite or Pro.`
+        await DialogProUpsell.show(dialog, message, e.required)
+        return
+      }
       const msg = e?.message ?? "Failed to start live run"
       await DialogAlert.show(dialog, "Live Run Failed", msg)
     }
   }
 
-  const FREE_DAILY_BACKTEST_LIMIT = 5
+  const DAILY_BACKTEST_LIMIT: Record<Plan.Tier, number> = {
+    free: 5,
+    lite: 10,
+    pro: Number.POSITIVE_INFINITY,
+  }
 
   const runBacktest = async (algo: Algorithm.Info) => {
-    if (!(await Plan.isPro())) {
+    const tier = await Plan.getTier()
+    const cap = DAILY_BACKTEST_LIMIT[tier]
+    if (Number.isFinite(cap)) {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
       const todayCount = history.list().filter((e) => e.timestamp >= todayStart.getTime()).length
-      if (todayCount >= FREE_DAILY_BACKTEST_LIMIT) {
-        await DialogProUpsell.show(
-          dialog,
-          "Free plan allows 5 backtests per day. Upgrade to Pro for unlimited backtests.",
-        )
+      if (todayCount >= cap) {
+        const required: Plan.Tier = tier === "free" ? "lite" : "pro"
+        const message =
+          tier === "free"
+            ? "Free plan allows 5 backtests per day. Upgrade to Lite for 10/day, or Pro for unlimited."
+            : "Lite plan allows 10 backtests per day. Upgrade to Pro for unlimited."
+        await DialogProUpsell.show(dialog, message, required)
         return
       }
     }

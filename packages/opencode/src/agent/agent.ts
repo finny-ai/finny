@@ -111,6 +111,7 @@ export namespace Agent {
             build: {
               name: "build",
               description: "Build mode. Generates trading algorithms immediately based on your specifications.",
+              color: "#f97316",
               options: {},
               prompt: PROMPT_FINNY_BUILD,
               permission: Permission.merge(
@@ -127,6 +128,7 @@ export namespace Agent {
             research: {
               name: "research",
               description: "Research mode. Asks questions first, researches strategy, then builds.",
+              color: "#a78bfa",
               options: {},
               prompt: PROMPT_FINNY_RESEARCH,
               permission: Permission.merge(
@@ -152,6 +154,7 @@ export namespace Agent {
             chat: {
               name: "chat",
               description: "Chat mode. Conversational assistant for markets, strategies, and platform help.",
+              color: "#22c55e",
               options: {},
               prompt: PROMPT_FINNY_CHAT,
               permission: Permission.merge(
