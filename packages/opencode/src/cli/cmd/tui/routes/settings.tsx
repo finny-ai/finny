@@ -16,12 +16,10 @@ import { SettingsPanelPro } from "../component/settings-panel-pro"
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
-  { id: "model", label: "Model" },
-  { id: "providers", label: "Providers" },
   { id: "paper-trading", label: "Paper Trading" },
   { id: "mcp", label: "MCP" },
   { id: "skills", label: "Skills" },
-  { id: "pro", label: "Pro" },
+  { id: "pro", label: "Plan" },
 ]
 
 type SimpleCopy = { title: string; body: string; cta: string }
@@ -79,7 +77,7 @@ export function Settings() {
       <RouteHeader
         icon={ROUTE_ICONS.settings as unknown as string[]}
         title="Settings"
-        subtitle="Appearance, model, providers, MCP, skills, paper trading"
+        subtitle="Appearance, MCP, skills, paper trading, plan"
       />
 
       <box

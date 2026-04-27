@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core"
-import { For } from "solid-js"
+import { For, type JSX } from "solid-js"
 import { useTheme } from "../context/theme"
 
 type RouteHeaderProps = {
@@ -7,6 +7,7 @@ type RouteHeaderProps = {
   title: string
   subtitle?: string
   meta?: string
+  right?: JSX.Element
 }
 
 export function RouteHeader(props: RouteHeaderProps) {
@@ -50,6 +51,11 @@ export function RouteHeader(props: RouteHeaderProps) {
           </box>
         ) : null}
       </box>
+      {props.right ? (
+        <box flexShrink={0} flexDirection="column" alignItems="flex-end">
+          {props.right}
+        </box>
+      ) : null}
     </box>
   )
 }

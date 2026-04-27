@@ -77,6 +77,27 @@ export function Portfolio() {
         icon={ROUTE_ICONS.portfolio as unknown as string[]}
         title="Portfolio"
         subtitle="Paper trading positions across your connected brokerages"
+        right={
+          <box
+            paddingLeft={2}
+            paddingRight={1}
+            border={["left"]}
+            borderColor={theme.info}
+            flexDirection="column"
+            gap={0}
+            flexShrink={0}
+          >
+            <text fg={theme.info} attributes={TextAttributes.BOLD}>
+              Not investment advice
+            </text>
+            <text fg={theme.textMuted}>
+              Keys are saved locally at ~/.local/share/finny/auth.json (0600 perms).
+            </text>
+            <text fg={theme.textMuted}>
+              Paper / testnet uses virtual money. Strategies are not financial advice.
+            </text>
+          </box>
+        }
       />
 
       <box
@@ -160,121 +181,99 @@ export function Portfolio() {
         </Show>
 
         {/* Active broker accounts */}
-        <Card title={` ${activeSpec().displayName} accounts `}>
-          <Show
-            when={connected()}
-            fallback={
-              <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
-                <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                  {activeSpec().displayName} not connected
-                </text>
+        <box flexShrink={0}>
+          <Card title={` ${activeSpec().displayName} accounts `}>
+            <Show
+              when={connected()}
+              fallback={
+                <box alignItems="center" justifyContent="center" gap={1} flexShrink={0}>
+                  <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                    {activeSpec().displayName} not connected
+                  </text>
+                  <text fg={theme.textMuted}>
+                    Connect a {activeSpec().displayName} account to see live positions.
+                  </text>
+                  <Show when={activeSpec().docsUrl}>
+                    <box flexDirection="row" flexShrink={0}>
+                      <text fg={theme.textMuted}>Get keys at </text>
+                      <Link href={activeSpec().docsUrl} fg={theme.primary}>
+                        {activeSpec().docsUrl}
+                      </Link>
+                    </box>
+                  </Show>
+                  <box
+                    paddingLeft={2}
+                    paddingRight={2}
+                    backgroundColor={theme.primary}
+                    onMouseUp={openAddDialog}
+                  >
+                    <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                      → Connect {activeSpec().displayName}
+                    </text>
+                  </box>
+                </box>
+              }
+            >
+              <box flexDirection="column" gap={1} flexShrink={0}>
+                <For each={accountsForKind(activeKind())}>
+                  {(account) => (
+                    <box
+                      flexDirection="row"
+                      gap={2}
+                      paddingLeft={1}
+                      paddingRight={1}
+                      flexShrink={0}
+                    >
+                      <text fg={theme.success} attributes={TextAttributes.BOLD}>
+                        ✓
+                      </text>
+                      <box width={20} flexShrink={0}>
+                        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                          {account.label}
+                        </text>
+                      </box>
+                      <text fg={theme.textMuted}>
+                        Key: {maskKey(account.keyId)}
+                      </text>
+                    </box>
+                  )}
+                </For>
                 <text fg={theme.textMuted}>
-                  Connect a {activeSpec().displayName} account to see live positions.
+                  Positions, cash, and P&L will render here once a live runner reports back.
                 </text>
                 <Show when={activeSpec().docsUrl}>
                   <box flexDirection="row" flexShrink={0}>
-                    <text fg={theme.textMuted}>Get keys at </text>
+                    <text fg={theme.textMuted}>Account dashboard: </text>
                     <Link href={activeSpec().docsUrl} fg={theme.primary}>
                       {activeSpec().docsUrl}
                     </Link>
                   </box>
                 </Show>
-                <box height={1} minHeight={0} />
-                <box
-                  paddingLeft={2}
-                  paddingRight={2}
-                  backgroundColor={theme.primary}
-                  onMouseUp={openAddDialog}
-                >
-                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                    → Connect {activeSpec().displayName}
-                  </text>
-                </box>
-              </box>
-            }
-          >
-            <box flexDirection="column" gap={1}>
-              <For each={accountsForKind(activeKind())}>
-                {(account) => (
+                <box flexDirection="row" gap={2} flexShrink={0} paddingTop={1}>
                   <box
-                    flexDirection="row"
-                    gap={2}
-                    paddingLeft={1}
-                    paddingRight={1}
-                    flexShrink={0}
+                    paddingLeft={2}
+                    paddingRight={2}
+                    backgroundColor={theme.success}
+                    onMouseUp={openAddDialog}
                   >
-                    <text fg={theme.success} attributes={TextAttributes.BOLD}>
-                      ✓
-                    </text>
-                    <box width={20} flexShrink={0}>
-                      <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                        {account.label}
-                      </text>
-                    </box>
-                    <text fg={theme.textMuted}>
-                      Key: {maskKey(account.keyId)}
+                    <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                      + Add {activeSpec().displayName} account
                     </text>
                   </box>
-                )}
-              </For>
-              <box height={1} minHeight={0} />
-              <text fg={theme.textMuted}>
-                Positions, cash, and P&L will render here once a live runner reports back.
-              </text>
-              <Show when={activeSpec().docsUrl}>
-                <box flexDirection="row" flexShrink={0}>
-                  <text fg={theme.textMuted}>Account dashboard: </text>
-                  <Link href={activeSpec().docsUrl} fg={theme.primary}>
-                    {activeSpec().docsUrl}
-                  </Link>
-                </box>
-              </Show>
-              <box height={1} minHeight={0} />
-              <box flexDirection="row" gap={2} flexShrink={0}>
-                <box
-                  paddingLeft={2}
-                  paddingRight={2}
-                  backgroundColor={theme.success}
-                  onMouseUp={openAddDialog}
-                >
-                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                    + Add {activeSpec().displayName} account
-                  </text>
-                </box>
-                <box
-                  paddingLeft={2}
-                  paddingRight={2}
-                  backgroundColor={theme.backgroundElement}
-                  onMouseUp={goToSettings}
-                >
-                  <text fg={theme.text}>Manage in Settings</text>
+                  <box
+                    paddingLeft={2}
+                    paddingRight={2}
+                    backgroundColor={theme.backgroundElement}
+                    onMouseUp={goToSettings}
+                  >
+                    <text fg={theme.text}>Manage in Settings</text>
+                  </box>
                 </box>
               </box>
-            </box>
-          </Show>
-        </Card>
-
-        <box
-          paddingLeft={2}
-          paddingRight={2}
-          paddingTop={1}
-          paddingBottom={1}
-          border={["left"]}
-          borderColor={theme.info}
-          flexDirection="column"
-          gap={0}
-          flexShrink={0}
-        >
-          <text fg={theme.info} attributes={TextAttributes.BOLD}>
-            Not investment advice
-          </text>
-          <text fg={theme.textMuted}>
-            Keys are saved locally at ~/.local/share/finny/auth.json (0600 perms). Finny servers never see them.
-          </text>
-          <text fg={theme.textMuted}>
-            Paper / testnet trading uses virtual money. Strategies generated here are not financial advice.
-          </text>
+            </Show>
+          </Card>
         </box>
+
       </box>
     </box>
   )

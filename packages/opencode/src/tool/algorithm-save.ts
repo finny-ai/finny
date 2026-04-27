@@ -109,16 +109,26 @@ export const AlgorithmSaveTool = Tool.define(
 
             // Validation passed — proceed with save.
             const existingAlgo = await Algorithm.get(params.name)
-            if (!existingAlgo && !(await Plan.isPro())) {
-              const allAlgos = await Algorithm.list()
-              if (allAlgos.length >= 3) {
-                return {
-                  result: {
-                    title: "Save blocked — free tier limit",
-                    output:
-                      "Free users can save up to 3 algorithms. Delete an existing algorithm or upgrade to Finny Pro for unlimited algorithms.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.",
-                    metadata: { blocked: true },
-                  },
+            if (!existingAlgo) {
+              const tier = await Plan.getTier()
+              const SAVE_CAP: Record<Plan.Tier, number> = {
+                free: 3,
+                lite: 10,
+                pro: Number.POSITIVE_INFINITY,
+              }
+              const cap = SAVE_CAP[tier]
+              if (Number.isFinite(cap)) {
+                const allAlgos = await Algorithm.list()
+                if (allAlgos.length >= cap) {
+                  const upgradeTo = tier === "free" ? "Finny Lite (10) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
+                  return {
+                    result: {
+                      title: `Save blocked — ${tier} tier limit`,
+                      output:
+                        `Your plan (${tier}) allows up to ${cap} saved algorithms. Delete an existing algorithm or upgrade to ${upgradeTo}.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.`,
+                      metadata: { blocked: true },
+                    },
+                  }
                 }
               }
             }
