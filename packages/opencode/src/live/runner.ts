@@ -263,8 +263,8 @@ if __name__ == "__main__":
 
   // Per-tier simultaneous live algorithm caps. Pro is uncapped (Infinity).
   const TERMINAL_RUN_CAP: Record<Plan.Tier, number> = {
-    free: 1,
-    lite: 3,
+    free: 2,
+    lite: 5,
     pro: Number.POSITIVE_INFINITY,
   }
 

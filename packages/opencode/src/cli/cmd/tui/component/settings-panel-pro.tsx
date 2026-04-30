@@ -191,9 +191,9 @@ export function SettingsPanelPro() {
                       Lite — $10/mo
                     </text>
                   </box>
-                  <text fg={theme.textMuted}>• 10 saved strategies, 10 backtests/day</text>
+                  <text fg={theme.textMuted}>• 15 saved strategies, 20 backtests/day</text>
                   <text fg={theme.textMuted}>• Live trading on Alpaca, Polymarket, Binance</text>
-                  <text fg={theme.textMuted}>• 3 terminal + 1 cloud live run</text>
+                  <text fg={theme.textMuted}>• 5 terminal + 3 cloud live runs</text>
                   <text fg={theme.textMuted}>• Discord Lite badge</text>
 
                   <box paddingTop={2}>

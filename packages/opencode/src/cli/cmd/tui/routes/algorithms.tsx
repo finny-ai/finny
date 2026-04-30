@@ -75,7 +75,7 @@ export function Algorithms() {
       await DialogManagedHosting.show(dialog)
       return
     }
-    // Lite: local terminal live run (runner enforces 3 simultaneous + broker tier).
+    // Lite: local terminal live run (runner enforces 5 simultaneous + broker tier).
     const liveCfg = parseConfig(algo.config)
     const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
     const params = await DialogLiveConfirm.show(dialog, algo, {
@@ -122,8 +122,8 @@ export function Algorithms() {
   }
 
   const DAILY_BACKTEST_LIMIT: Record<Plan.Tier, number> = {
-    free: 5,
-    lite: 10,
+    free: 10,
+    lite: 20,
     pro: Number.POSITIVE_INFINITY,
   }
 
@@ -138,8 +138,8 @@ export function Algorithms() {
         const required: Plan.Tier = tier === "free" ? "lite" : "pro"
         const message =
           tier === "free"
-            ? "Free plan allows 5 backtests per day. Upgrade to Lite for 10/day, or Pro for unlimited."
-            : "Lite plan allows 10 backtests per day. Upgrade to Pro for unlimited."
+            ? "Free plan allows 10 backtests per day. Upgrade to Lite for 20/day, or Pro for unlimited."
+            : "Lite plan allows 20 backtests per day. Upgrade to Pro for unlimited."
         await DialogProUpsell.show(dialog, message, required)
         return
       }
