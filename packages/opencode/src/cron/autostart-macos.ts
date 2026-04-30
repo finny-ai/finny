@@ -67,7 +67,8 @@ ${args}
     const isBunDev = path.basename(exec) === "bun" && argv1 && argv1.endsWith(".ts")
 
     if (isBunDev) {
-      // index.ts lives in <pkg>/src/index.ts — go up two dirs to <pkg>.
+      // index.ts lives at <pkg>/src/index.ts. dirname(argv1) is <pkg>/src; go
+      // up one more level to land at the package root so node_modules resolves.
       const pkgDir = path.resolve(path.dirname(argv1), "..")
       return {
         programArguments: [exec, "run", "--conditions=browser", argv1, "serve", "--scheduler"],

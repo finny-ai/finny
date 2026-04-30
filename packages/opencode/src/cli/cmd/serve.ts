@@ -29,13 +29,25 @@ export const ServeCommand = cmd({
       console.log("cron scheduler running (1m tick)")
     }
 
+    let stopping = false
     const stop = async () => {
+      if (stopping) return
+      stopping = true
       if (args.scheduler) Scheduler.stop()
       await server.stop()
       process.exit(0)
     }
-    process.on("SIGINT", stop)
-    process.on("SIGTERM", stop)
+    // process.on doesn't await async listeners. Wrap so any rejection from
+    // server.stop() is logged instead of becoming an unhandled rejection,
+    // and so a second signal during shutdown is a no-op.
+    const handleSignal = () => {
+      void stop().catch((err) => {
+        console.error("shutdown error:", err)
+        process.exit(1)
+      })
+    }
+    process.on("SIGINT", handleSignal)
+    process.on("SIGTERM", handleSignal)
 
     await new Promise(() => {})
   },

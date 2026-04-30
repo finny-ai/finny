@@ -9,7 +9,10 @@ function fmtJob(job: Job.Schema): string {
   const status = job.enabled ? "on" : "off"
   const last = job.lastRunAt ? new Date(job.lastRunAt).toISOString() : "—"
   const fired = job.lastFiredAt ? new Date(job.lastFiredAt).toISOString() : "—"
-  const tag = job.kind === "check" ? `check:${job.check?.type}${job.check?.symbol ? " " + job.check?.symbol : ""}` : "prompt"
+  const tag =
+    job.kind === "check"
+      ? `check:${job.check.type}${"symbol" in job.check ? " " + job.check.symbol : ""}`
+      : "prompt"
   return [
     `${job.id}  [${status}]  ${job.name}`,
     `    ${tag}  ·  ${job.scheduleSource}  (${job.schedule})${job.marketAware ? "  market-aware" : ""}`,
@@ -54,26 +57,48 @@ const AddCommand = cmd({
       process.exit(1)
     }
 
-    const job = await CronStorage.create({
+    const common = {
       name: args.name,
-      kind: isCheck ? "check" : "prompt",
       schedule: parsed.cron,
       scheduleSource: args.schedule,
       marketAware: parsed.marketAware,
       timezone: parsed.timezone,
       enabled: true,
-      check: isCheck
-        ? {
-            type: args["check-type"]! as Job.CheckType,
-            symbol: args.symbol,
-            op: args.op! as Job.CheckOp,
-            value: args.value!,
-            cooldownMinutes: args["cooldown-minutes"],
-          }
-        : undefined,
-      prompt: !isCheck ? { text: args.prompt!, agent: args.agent } : undefined,
       notification: { title: args["notify-title"], body: args["notify-body"] },
-    } as any)
+    } as const
+
+    let input: Job.Input
+    if (isCheck) {
+      const checkType = args["check-type"] as Job.CheckType
+      const op = args.op as Job.CheckOp
+      const value = args.value as number
+      const cooldownMinutes = args["cooldown-minutes"]
+      if (checkType === "position" && op === "%change") {
+        UI.error("%change is not a valid operator for position checks")
+        process.exit(1)
+      }
+      if ((checkType === "price" || checkType === "position") && !args.symbol) {
+        UI.error(`--symbol is required for ${checkType} checks`)
+        process.exit(1)
+      }
+      const check =
+        checkType === "pnl"
+          ? { type: "pnl" as const, op, value, cooldownMinutes }
+          : checkType === "price"
+            ? { type: "price" as const, symbol: args.symbol!, op, value, cooldownMinutes }
+            : {
+                type: "position" as const,
+                symbol: args.symbol!,
+                op: op as Exclude<Job.CheckOp, "%change">,
+                value,
+                cooldownMinutes,
+              }
+      input = { ...common, kind: "check", check }
+    } else {
+      input = { ...common, kind: "prompt", prompt: { text: args.prompt!, agent: args.agent } }
+    }
+
+    const job = await CronStorage.create(input)
 
     process.stdout.write(`created ${job.id}${EOL}`)
     process.stdout.write(fmtJob(job) + EOL)

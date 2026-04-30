@@ -4,8 +4,11 @@ export namespace Schedule {
    * Supports: *, comma-lists, ranges (a-b), step (* /n, a-b/n), single values.
    * No seconds. No L/W/#. Good enough for v1.
    *
-   * Market aliases — recognised at parse time, expanded to a cron *and* a
-   * marketAware flag the scheduler honours via the calendar wrapper:
+   * Market aliases — recognised at parse time and expanded to a weekday-only
+   * cron expression. The marketAware flag is set so the scheduler can later
+   * skip NYSE holidays via a calendar wrapper. As of this commit the calendar
+   * wrapper is not yet wired, so jobs using these aliases fire on every weekday
+   * (ignoring market holidays):
    *   @market_open   → 30 9 * * 1-5    (NYSE 9:30 ET, weekday)
    *   @market_close  → 0 16 * * 1-5    (NYSE 16:00 ET, weekday)
    *   @pre_market    → 0 7 * * 1-5     (07:00 ET, weekday)
@@ -75,7 +78,11 @@ export namespace Schedule {
     return out
   }
 
-  /** True if the cron expression matches the given Date in the target tz. */
+  /**
+   * True if the cron expression matches the given Date in the target tz.
+   * Returns false (rather than throwing) on malformed input so a single
+   * corrupt job entry can't crash a whole scheduler tick.
+   */
   export function matches(cron: string, when: Date, timezone: string): boolean {
     const fields = cron.split(/\s+/)
     if (fields.length !== 5) return false
@@ -86,15 +93,19 @@ export namespace Schedule {
       [1, 12],
       [0, 6],
     ]
-    const sets = fields.map((f, i) => parseField(f, ranges[i]![0], ranges[i]![1]))
-    const parts = parts_in_tz(when, timezone)
-    return (
-      sets[0]!.has(parts.minute) &&
-      sets[1]!.has(parts.hour) &&
-      sets[2]!.has(parts.day) &&
-      sets[3]!.has(parts.month) &&
-      sets[4]!.has(parts.weekday)
-    )
+    try {
+      const sets = fields.map((f, i) => parseField(f, ranges[i]![0], ranges[i]![1]))
+      const parts = parts_in_tz(when, timezone)
+      return (
+        sets[0]!.has(parts.minute) &&
+        sets[1]!.has(parts.hour) &&
+        sets[2]!.has(parts.day) &&
+        sets[3]!.has(parts.month) &&
+        sets[4]!.has(parts.weekday)
+      )
+    } catch {
+      return false
+    }
   }
 
   function parts_in_tz(date: Date, timezone: string) {
