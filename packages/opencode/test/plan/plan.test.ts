@@ -149,34 +149,24 @@ describe("BROKER_MIN_TIER", () => {
 })
 
 describe("per-feature gating shape", () => {
-  test("backtest cap: free=5, lite=10, pro=Infinity (per-day)", () => {
-    const DAILY_BACKTEST_LIMIT: Record<Plan.Tier, number> = {
-      free: 5,
-      lite: 10,
-      pro: Number.POSITIVE_INFINITY,
-    }
-    expect(DAILY_BACKTEST_LIMIT.free).toBe(5)
-    expect(DAILY_BACKTEST_LIMIT.lite).toBe(10)
-    expect(Number.isFinite(DAILY_BACKTEST_LIMIT.pro)).toBe(false)
+  test("backtest cap: free=10, lite=20, pro=Infinity (per-day)", () => {
+    expect(Plan.DAILY_BACKTEST_LIMIT.free).toBe(10)
+    expect(Plan.DAILY_BACKTEST_LIMIT.lite).toBe(20)
+    expect(Number.isFinite(Plan.DAILY_BACKTEST_LIMIT.pro)).toBe(false)
   })
-  test("save cap: free=3, lite=10, pro=Infinity", () => {
-    const SAVE_CAP: Record<Plan.Tier, number> = {
-      free: 3,
-      lite: 10,
-      pro: Number.POSITIVE_INFINITY,
-    }
-    expect(SAVE_CAP.free).toBe(3)
-    expect(SAVE_CAP.lite).toBe(10)
-    expect(Number.isFinite(SAVE_CAP.pro)).toBe(false)
+  test("save cap: free=5, lite=15, pro=Infinity", () => {
+    expect(Plan.SAVE_CAP.free).toBe(5)
+    expect(Plan.SAVE_CAP.lite).toBe(15)
+    expect(Number.isFinite(Plan.SAVE_CAP.pro)).toBe(false)
   })
-  test("terminal-run cap: free=1, lite=3, pro=Infinity", () => {
-    const TERMINAL_RUN_CAP: Record<Plan.Tier, number> = {
-      free: 1,
-      lite: 3,
-      pro: Number.POSITIVE_INFINITY,
-    }
-    expect(TERMINAL_RUN_CAP.free).toBe(1)
-    expect(TERMINAL_RUN_CAP.lite).toBe(3)
-    expect(Number.isFinite(TERMINAL_RUN_CAP.pro)).toBe(false)
+  test("terminal-run cap: free=2, lite=5, pro=Infinity", () => {
+    expect(Plan.TERMINAL_RUN_CAP.free).toBe(2)
+    expect(Plan.TERMINAL_RUN_CAP.lite).toBe(5)
+    expect(Number.isFinite(Plan.TERMINAL_RUN_CAP.pro)).toBe(false)
+  })
+  test("cloud-run cap: free=0, lite=3, pro=5", () => {
+    expect(Plan.CLOUD_RUN_CAP.free).toBe(0)
+    expect(Plan.CLOUD_RUN_CAP.lite).toBe(3)
+    expect(Plan.CLOUD_RUN_CAP.pro).toBe(5)
   })
 })

@@ -111,16 +111,11 @@ export const AlgorithmSaveTool = Tool.define(
             const existingAlgo = await Algorithm.get(params.name)
             if (!existingAlgo) {
               const tier = await Plan.getTier()
-              const SAVE_CAP: Record<Plan.Tier, number> = {
-                free: 3,
-                lite: 10,
-                pro: Number.POSITIVE_INFINITY,
-              }
-              const cap = SAVE_CAP[tier]
+              const cap = Plan.SAVE_CAP[tier]
               if (Number.isFinite(cap)) {
                 const allAlgos = await Algorithm.list()
                 if (allAlgos.length >= cap) {
-                  const upgradeTo = tier === "free" ? "Finny Lite (10) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
+                  const upgradeTo = tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
                   return {
                     result: {
                       title: `Save blocked — ${tier} tier limit`,

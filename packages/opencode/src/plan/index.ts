@@ -18,6 +18,30 @@ export namespace Plan {
   // Back-compat alias — older code referenced Plan.PROVIDER_ID.
   export const PROVIDER_ID = PRO_PROVIDER_ID
 
+  export const SAVE_CAP: Record<Tier, number> = {
+    free: 5,
+    lite: 15,
+    pro: Number.POSITIVE_INFINITY,
+  }
+
+  export const DAILY_BACKTEST_LIMIT: Record<Tier, number> = {
+    free: 10,
+    lite: 20,
+    pro: Number.POSITIVE_INFINITY,
+  }
+
+  export const TERMINAL_RUN_CAP: Record<Tier, number> = {
+    free: 2,
+    lite: 5,
+    pro: Number.POSITIVE_INFINITY,
+  }
+
+  export const CLOUD_RUN_CAP: Record<Tier, number> = {
+    free: 0,
+    lite: 3,
+    pro: 5,
+  }
+
   const PRO_KEY_PREFIX = "FINNY-PRO-"
   const LITE_KEY_PREFIX = "FINNY-LITE-"
 

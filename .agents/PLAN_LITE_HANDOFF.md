@@ -18,8 +18,8 @@ license-signing service live on **finnyai.tech** and need matching changes.
 ### 1. Stripe — Lite product
 
 - Create a Stripe product **"Finny Lite"**, recurring **$10 USD / month**.
-  - Description: *Managed cloud trading for retail traders. 10 strategies,
-    10 backtests/day, 3 terminal + 1 cloud live run. Alpaca, Polymarket,
+  - Description: *Managed cloud trading for retail traders. 15 strategies,
+    20 backtests/day, 5 terminal + 3 cloud live runs. Alpaca, Polymarket,
     Binance. BYOK + metered models. Discord Lite badge.*
   - No trial (mirror Pro).
 - Export `LITE_PRICE_ID` env var (alongside the existing `PRO_PRICE_ID`).
@@ -59,8 +59,9 @@ Handle the same three events for both Lite and Pro:
 
 ### 5. Server-side caps that the CLI cannot enforce
 
-- **Cloud live runs**: 1 (Lite) / 5 (Pro). The CLI gates the request form
-  but the actual deploy queue lives server-side; enforce the cap there.
+- **Cloud live runs**: 3 (Lite) / 5 (Pro). The CLI exposes the request form
+  for paid tiers, but the actual deploy queue lives server-side; enforce the
+  cap there.
 - **Top-tier model metering**: monthly token allowance for Lite + (higher)
   Pro. When exhausted, the CLI falls back to BYOK for the rest of the month.
   The CLI has a `Plan.modelAllowance()` placeholder but the real meter is
