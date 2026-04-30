@@ -59,8 +59,9 @@ Handle the same three events for both Lite and Pro:
 
 ### 5. Server-side caps that the CLI cannot enforce
 
-- **Cloud live runs**: 3 (Lite) / 5 (Pro). The CLI gates the request form
-  but the actual deploy queue lives server-side; enforce the cap there.
+- **Cloud live runs**: 3 (Lite) / 5 (Pro). The CLI exposes the request form
+  for paid tiers, but the actual deploy queue lives server-side; enforce the
+  cap there.
 - **Top-tier model metering**: monthly token allowance for Lite + (higher)
   Pro. When exhausted, the CLI falls back to BYOK for the rest of the month.
   The CLI has a `Plan.modelAllowance()` placeholder but the real meter is

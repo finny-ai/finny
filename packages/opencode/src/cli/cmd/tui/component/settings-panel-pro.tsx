@@ -128,6 +128,11 @@ export function SettingsPanelPro() {
     toast.show({ message: "Opening Pro page in browser…", variant: "info", duration: 2000 })
   }
 
+  const cloudRunCopy = () => {
+    const cap = Plan.CLOUD_RUN_CAP[tier()]
+    return cap === 1 ? "1 cloud live run" : `${cap} cloud live runs`
+  }
+
   return (
     <box flexGrow={1} flexDirection="row" gap={2} minHeight={0}>
       {/* Left pane — plan ladder */}
@@ -247,14 +252,14 @@ export function SettingsPanelPro() {
                   </box>
                 </Show>
 
-                <Show when={tier() === "pro"}>
+                <Show when={tier() !== "free"}>
                   <box paddingTop={2}>
                     <text fg={theme.text} attributes={TextAttributes.BOLD}>
                       Managed Hosting
                     </text>
                   </box>
                   <text fg={theme.textMuted}>
-                    Deploy your algo on our infrastructure with Telegram monitoring.
+                    Deploy your algo on our infrastructure with Telegram monitoring. Your plan includes {cloudRunCopy()}.
                   </text>
                   <box flexDirection="row">
                     <box paddingLeft={2} paddingRight={2} backgroundColor={theme.primary} onMouseUp={() => DialogManagedHosting.show(dialog)}>

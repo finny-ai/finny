@@ -261,19 +261,12 @@ if __name__ == "__main__":
     main()
 `
 
-  // Per-tier simultaneous live algorithm caps. Pro is uncapped (Infinity).
-  const TERMINAL_RUN_CAP: Record<Plan.Tier, number> = {
-    free: 2,
-    lite: 5,
-    pro: Number.POSITIVE_INFINITY,
-  }
-
   export async function start(params: StartParams): Promise<Run> {
     const tier = await Plan.getTier()
 
     // Tiered cap on simultaneous live algos.
     const activeCount = [...runs.values()].filter((r) => r.status === "starting" || r.status === "running").length
-    const cap = TERMINAL_RUN_CAP[tier]
+    const cap = Plan.TERMINAL_RUN_CAP[tier]
     if (activeCount >= cap) {
       const required: Plan.Tier = tier === "free" ? "lite" : "pro"
       throw new Plan.PlanLimitError({ current: tier, required, feature: "terminal_runs" })

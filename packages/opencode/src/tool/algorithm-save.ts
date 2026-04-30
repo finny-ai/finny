@@ -111,12 +111,7 @@ export const AlgorithmSaveTool = Tool.define(
             const existingAlgo = await Algorithm.get(params.name)
             if (!existingAlgo) {
               const tier = await Plan.getTier()
-              const SAVE_CAP: Record<Plan.Tier, number> = {
-                free: 5,
-                lite: 15,
-                pro: Number.POSITIVE_INFINITY,
-              }
-              const cap = SAVE_CAP[tier]
+              const cap = Plan.SAVE_CAP[tier]
               if (Number.isFinite(cap)) {
                 const allAlgos = await Algorithm.list()
                 if (allAlgos.length >= cap) {

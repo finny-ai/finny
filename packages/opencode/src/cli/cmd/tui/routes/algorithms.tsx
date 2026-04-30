@@ -30,9 +30,13 @@ export function Algorithms() {
   const dialog = useDialog()
   const toast = useToast()
   const [selectedId, setSelectedId] = createSignal<string | undefined>(undefined)
+  const [tier, setTier] = createSignal<Plan.Tier>("free")
 
   // Always refetch on route mount so newly-built algos show up.
-  onMount(() => algos.refetch())
+  onMount(async () => {
+    algos.refetch()
+    setTier(await Plan.getTier())
+  })
 
   const guessSymbolForAlgo = (algo: Algorithm.Info): string => {
     const params = parseConfig(algo.config)
@@ -60,22 +64,8 @@ export function Algorithms() {
   }
 
   const runLive = async (algo: Algorithm.Info) => {
-    const tier = await Plan.getTier()
-    // Free: live trading is paid — upsell to Lite (cheapest tier that unlocks it).
-    if (tier === "free") {
-      await DialogProUpsell.show(
-        dialog,
-        "Live trading is a paid feature. Upgrade to Lite to start live runs.",
-        "lite",
-      )
-      return
-    }
-    // Pro: cloud / managed hosting request form (server enforces 5-run cap).
-    if (tier === "pro") {
-      await DialogManagedHosting.show(dialog)
-      return
-    }
-    // Lite: local terminal live run (runner enforces 5 simultaneous + broker tier).
+    // Local terminal live run. The runner enforces per-tier simultaneous caps;
+    // broker-specific tier checks still apply before real brokerage access.
     const liveCfg = parseConfig(algo.config)
     const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
     const params = await DialogLiveConfirm.show(dialog, algo, {
@@ -121,15 +111,23 @@ export function Algorithms() {
     }
   }
 
-  const DAILY_BACKTEST_LIMIT: Record<Plan.Tier, number> = {
-    free: 10,
-    lite: 20,
-    pro: Number.POSITIVE_INFINITY,
+  const requestCloudRun = async () => {
+    const currentTier = await Plan.getTier()
+    setTier(currentTier)
+    if (!Plan.hasAtLeast(currentTier, "lite")) {
+      await DialogProUpsell.show(
+        dialog,
+        "Cloud live runs are included with Finny Lite and Pro.",
+        "lite",
+      )
+      return
+    }
+    await DialogManagedHosting.show(dialog)
   }
 
   const runBacktest = async (algo: Algorithm.Info) => {
     const tier = await Plan.getTier()
-    const cap = DAILY_BACKTEST_LIMIT[tier]
+    const cap = Plan.DAILY_BACKTEST_LIMIT[tier]
     if (Number.isFinite(cap)) {
       const todayStart = new Date()
       todayStart.setHours(0, 0, 0, 0)
@@ -304,6 +302,18 @@ export function Algorithms() {
                         ◉ Run Live
                       </text>
                     </box>
+                    <Show when={Plan.hasAtLeast(tier(), "lite")}>
+                      <box
+                        paddingLeft={2}
+                        paddingRight={2}
+                        backgroundColor={theme.backgroundElement}
+                        onMouseUp={requestCloudRun}
+                      >
+                        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                          ☁ Request Cloud
+                        </text>
+                      </box>
+                    </Show>
                   </box>
                   <AlgorithmCodeView algorithm={algo()} />
                 </box>
