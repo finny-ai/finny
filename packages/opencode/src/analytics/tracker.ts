@@ -38,20 +38,20 @@ export namespace Analytics {
   }) {
     if (!enabled) return
 
-    if (!event.userId) {
-      // Track the userId-resolution promise too so drain() can wait on it.
-      // Without this an event still mid-resolution at shutdown would be dropped.
-      const p: Promise<void> = DeviceProfile.userId()
-        .then((uid) => send({ ...event, userId: uid }))
-        .catch(() => send(event))
-        .finally(() => {
-          inFlight.delete(p)
-        })
-      inFlight.add(p)
-      return
-    }
-
-    send(event)
+    // Always wrap in a single tracked promise that includes BOTH the userId
+    // lookup (if any) and the convex round-trip. drain() races on this outer
+    // promise, so it won't return until the actual mutation has settled.
+    const p: Promise<void> = (async () => {
+      try {
+        const userId = event.userId ?? (await DeviceProfile.userId().catch(() => undefined))
+        await send({ ...event, userId })
+      } catch (err) {
+        log.warn("failed to track event", { error: err, eventName: event.eventName })
+      }
+    })().finally(() => {
+      inFlight.delete(p)
+    })
+    inFlight.add(p)
   }
 
   function send(event: {
@@ -62,25 +62,20 @@ export namespace Analytics {
     userId?: string
     metadata?: Record<string, any>
     source?: string
-  }) {
+  }): Promise<void> {
     const entry: InteractionEvent = {
       ...event,
       timestamp: Date.now(),
       version: Installation.VERSION,
     }
     if (debug) log.info("tracking", { eventName: entry.eventName })
-
-    const p: Promise<void> = ConvexAnalytics.trackInteraction(entry)
+    return ConvexAnalytics.trackInteraction(entry)
       .then(() => {
         if (debug) log.info("track ok", { eventName: entry.eventName })
       })
       .catch((err) => {
         log.warn("failed to track event", { error: err, eventName: entry.eventName })
       })
-      .finally(() => {
-        inFlight.delete(p)
-      })
-    inFlight.add(p)
   }
 
   // Wait for any pending writes — useful before process exit so we don't lose

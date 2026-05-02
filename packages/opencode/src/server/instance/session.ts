@@ -30,13 +30,16 @@ import { Analytics } from "../../analytics/tracker"
 
 const log = Log.create({ service: "server" })
 
-function trackAgentRun(sessionID: string, mode: "prompt" | "prompt_async" | "command", model?: string) {
+// `mode` is a fixed string union (closed enum), not user data, so it stays.
+// We deliberately omit the model identifier: provider/model IDs can come
+// from plugins or custom config and would leak that surface.
+function trackAgentRun(sessionID: string, mode: "prompt" | "prompt_async" | "command") {
   try {
     Analytics.track({
       eventType: "agent",
       eventName: "agent.run",
       sessionId: sessionID,
-      metadata: { mode, model },
+      metadata: { mode },
     })
   } catch {}
 }
@@ -860,7 +863,7 @@ export const SessionRoutes = lazy(() =>
         return stream(c, async (stream) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
-          trackAgentRun(sessionID, "prompt", (body as any)?.model)
+          trackAgentRun(sessionID, "prompt")
           const msg = await SessionPrompt.prompt({ ...body, sessionID })
           stream.write(JSON.stringify(msg))
         })
@@ -890,7 +893,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
-        trackAgentRun(sessionID, "prompt_async", (body as any)?.model)
+        trackAgentRun(sessionID, "prompt_async")
         SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
           log.error("prompt_async failed", { sessionID, error: err })
           Bus.publish(Session.Event.Error, {
@@ -935,7 +938,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
-        trackAgentRun(sessionID, "command", (body as any)?.model)
+        trackAgentRun(sessionID, "command")
         const msg = await SessionPrompt.command({ ...body, sessionID })
         return c.json(msg)
       },

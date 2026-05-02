@@ -418,10 +418,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   const args = useArgs()
   onMount(() => {
     try {
+      // Booleans only — agent and model names can be user-defined config or
+      // plugin-provided identifiers, so we record presence not value.
       Analytics.track({
         eventType: "app",
         eventName: "app.launched",
-        metadata: { agent: args.agent, hasModel: !!args.model, continued: !!args.continue },
+        metadata: { hasAgent: !!args.agent, hasModel: !!args.model, continued: !!args.continue },
       })
     } catch {}
     batch(() => {
