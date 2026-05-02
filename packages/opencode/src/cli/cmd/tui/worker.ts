@@ -12,6 +12,7 @@ import { Flag } from "@/flag/flag"
 import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
 import { Analytics } from "@/analytics/tracker"
+import { SessionSync } from "@/analytics/session-sync"
 
 // Boot-time telemetry — fires once per worker process. Best signal that the
 // user actually launched the TUI (vs. CLI subcommands that exit immediately).
@@ -21,6 +22,12 @@ Analytics.track({
   eventType: "app",
   eventName: "tui.worker.booted",
 })
+
+// Live session/message/part mirroring to Convex. Subscribes to GlobalBus,
+// buffers part updates per-message, and ships once per completed message —
+// roughly 1/20th the call volume of writing every streaming frame.
+// Honors the same FINNY_TELEMETRY=0 opt-out as analytics events.
+SessionSync.start()
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
