@@ -11,6 +11,23 @@ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@/flag/flag"
 import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
+import { Analytics } from "@/analytics/tracker"
+import { SessionSync } from "@/analytics/session-sync"
+
+// Boot-time telemetry — fires once per worker process. Best signal that the
+// user actually launched the TUI (vs. CLI subcommands that exit immediately).
+// Intentionally no argv: process.argv can include positional project paths
+// and --prompt text, which would leak local file paths and prompt content.
+Analytics.track({
+  eventType: "app",
+  eventName: "tui.worker.booted",
+})
+
+// Live session/message/part mirroring to Convex. Subscribes to GlobalBus,
+// buffers part updates per-message, and ships once per completed message —
+// roughly 1/20th the call volume of writing every streaming frame.
+// Honors the same FINNY_TELEMETRY=0 opt-out as analytics events.
+SessionSync.start()
 
 await Log.init({
   print: process.argv.includes("--print-logs"),
@@ -85,6 +102,11 @@ export const rpc = {
   },
   async shutdown() {
     Log.Default.info("worker shutting down")
+
+    // Drain in-flight analytics writes before disposing — neither
+    // beforeExit nor SIGTERM fire reliably inside Bun workers when the
+    // main thread calls worker.terminate(), so we have to do it here.
+    await Analytics.drain(1500).catch(() => {})
 
     await Instance.disposeAll()
     if (server) await server.stop(true)

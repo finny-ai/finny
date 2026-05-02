@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {
+    "commit": "",
+    "pr": ""
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cmd=$(jq -r '.tool_input.command // \"\"'); if printf '%s' \"$cmd\" | grep -qE 'Co-Authored-By: Claude|Generated with \\[Claude Code\\]'; then printf 'BLOCKED: do not add Claude/Anthropic attribution to commits or PRs. Retry without the Co-Authored-By trailer and without the \"Generated with [Claude Code]\" footer.\\n' >&2; exit 2; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

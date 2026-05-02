@@ -13,6 +13,7 @@ import {
 } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { useKeybind } from "@tui/context/keybind"
+import { Analytics } from "@/analytics/tracker"
 
 type Context = ReturnType<typeof init>
 const ctx = createContext<Context>()
@@ -37,12 +38,30 @@ function init() {
   const dialog = useDialog()
   const keybind = useKeybind()
 
+  // Wrap each option's onSelect so analytics fires once regardless of how
+  // the command was activated (palette / slash / keybind / plugin / bus).
+  // Privacy: command `value` is plugin-controlled, so we record only the
+  // option's coarse `category` plus a built-in/plugin bit (built-in
+  // commands are categorized; most plugin commands are not).
   const entries = createMemo(() => {
     const all = registrations().flatMap((x) => x())
-    return all.map((x) => ({
-      ...x,
-      footer: x.keybind ? keybind.print(x.keybind) : undefined,
-    }))
+    return all.map((x) => {
+      const wrapped: CommandOption = {
+        ...x,
+        footer: x.keybind ? keybind.print(x.keybind) : undefined,
+        onSelect: (ctx) => {
+          try {
+            Analytics.track({
+              eventType: "command",
+              eventName: "command.executed",
+              metadata: { category: x.category, builtin: !!x.category },
+            })
+          } catch {}
+          x.onSelect?.(ctx)
+        },
+      }
+      return wrapped
+    })
   })
 
   const isEnabled = (option: CommandOption) => option.enabled !== false

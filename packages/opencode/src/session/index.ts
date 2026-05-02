@@ -691,7 +691,22 @@ export namespace Session {
         workspaceID: WorkspaceID.zod.optional(),
       })
       .optional(),
-    (input) => runPromise((svc) => svc.create(input)),
+    async (input) => {
+      const result = await runPromise((svc) => svc.create(input))
+      try {
+        // Intentionally omit projectId: it's a stable repo identifier and
+        // would let analytics correlate sessions to a specific checkout
+        // over time. fork-vs-fresh is enough for usage signal.
+        const { Analytics } = await import("../analytics/tracker")
+        Analytics.track({
+          eventType: "session",
+          eventName: "session.created",
+          sessionId: result?.id,
+          metadata: { fork: !!input?.parentID },
+        })
+      } catch {}
+      return result
+    },
   )
 
   export const fork = fn(z.object({ sessionID: SessionID.zod, messageID: MessageID.zod.optional() }), (input) =>

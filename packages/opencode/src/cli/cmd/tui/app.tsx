@@ -37,6 +37,8 @@ import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
+import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
+import { Analytics } from "@/analytics/tracker"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -415,6 +417,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   const args = useArgs()
   onMount(() => {
+    try {
+      // Booleans only — agent and model names can be user-defined config or
+      // plugin-provided identifiers, so we record presence not value.
+      Analytics.track({
+        eventType: "app",
+        eventName: "app.launched",
+        metadata: { hasAgent: !!args.agent, hasModel: !!args.model, continued: !!args.continue },
+      })
+    } catch {}
     batch(() => {
       if (args.agent) local.agent.set(args.agent)
       if (args.model) {
@@ -483,6 +494,35 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
         dialog.replace(() => <DialogProviderList />)
+      },
+    ),
+  )
+
+  // First-launch email capture — fires once after sync completes, KV has
+  // finished loading, at least one provider is configured, and no other
+  // dialog is open. Honor the telemetry opt-out: if the user disabled
+  // telemetry we don't prompt (the email POST goes to the same Convex
+  // deployment as analytics).
+  createEffect(
+    on(
+      () =>
+        sync.status === "complete" &&
+        kv.ready &&
+        sync.data.provider.length > 0 &&
+        dialog.stack.length === 0 &&
+        Analytics.isEnabled(),
+      (ready) => {
+        if (!ready) return
+        if (kv.get("email_capture_status")) return
+        // The dismiss callback runs whenever the dialog goes away — including
+        // when the dialog is replaced by another one or cleared after a
+        // successful submit. Only mark "skipped" if no terminal status has
+        // been set in the meantime, otherwise we'd overwrite "submitted".
+        DialogEmailCapture.show(dialog, () => {
+          if (!kv.get("email_capture_status")) {
+            kv.set("email_capture_status", "skipped")
+          }
+        })
       },
     ),
   )
@@ -726,6 +766,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
+      title: "Subscribe to release notes",
+      value: "subscribe.release_notes",
+      slash: {
+        name: "subscribe",
+      },
+      category: "System",
+      // Hide when telemetry is disabled; the email POST hits the same Convex
+      // deployment as analytics, so the opt-out covers both.
+      hidden: !Analytics.isEnabled(),
+      onSelect: () => {
+        if (!Analytics.isEnabled()) {
+          toast.show({ variant: "info", message: "Telemetry is disabled (FINNY_TELEMETRY=0)", duration: 3000 })
+          return
+        }
+        DialogEmailCapture.show(dialog)
+      },
+    },
+    {
       title: "Go to Home",
       value: "nav.home",
       keybind: "nav_home",
@@ -897,6 +955,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   ])
 
   event.on(TuiEvent.CommandExecute.type, (evt) => {
+    // command.trigger() emits the analytics event itself, covering palette /
+    // slash / keybind / plugin / bus paths uniformly. Don't double-track here.
     command.trigger(evt.properties.command)
   })
 
@@ -930,6 +990,18 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const error = evt.properties.error
     if (error && typeof error === "object" && error.name === "MessageAbortedError") return
     const message = errorMessage(error)
+
+    try {
+      // Only the error name (a stable identifier) — never the message. Many
+      // error messages in this codebase embed user-controlled prompt text
+      // and local file paths (e.g. PROMPT_TOO_LARGE includes filenames).
+      Analytics.track({
+        eventType: "error",
+        eventName: "error.surfaced",
+        sessionId: (evt.properties as any).sessionID,
+        metadata: { name: (error as any)?.name },
+      })
+    } catch {}
 
     toast.show({
       variant: "error",

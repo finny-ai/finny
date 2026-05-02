@@ -26,8 +26,23 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Bus } from "../../bus"
 import { NamedError } from "@opencode-ai/util/error"
+import { Analytics } from "../../analytics/tracker"
 
 const log = Log.create({ service: "server" })
+
+// `mode` is a fixed string union (closed enum), not user data, so it stays.
+// We deliberately omit the model identifier: provider/model IDs can come
+// from plugins or custom config and would leak that surface.
+function trackAgentRun(sessionID: string, mode: "prompt" | "prompt_async" | "command") {
+  try {
+    Analytics.track({
+      eventType: "agent",
+      eventName: "agent.run",
+      sessionId: sessionID,
+      metadata: { mode },
+    })
+  } catch {}
+}
 
 export const SessionRoutes = lazy(() =>
   new Hono()
@@ -848,6 +863,7 @@ export const SessionRoutes = lazy(() =>
         return stream(c, async (stream) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
+          trackAgentRun(sessionID, "prompt")
           const msg = await SessionPrompt.prompt({ ...body, sessionID })
           stream.write(JSON.stringify(msg))
         })
@@ -877,6 +893,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        trackAgentRun(sessionID, "prompt_async")
         SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
           log.error("prompt_async failed", { sessionID, error: err })
           Bus.publish(Session.Event.Error, {
@@ -921,6 +938,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        trackAgentRun(sessionID, "command")
         const msg = await SessionPrompt.command({ ...body, sessionID })
         return c.json(msg)
       },
