@@ -43,7 +43,9 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
         platform: process.platform,
       })
       kv.set("email_capture_status", "submitted")
-      kv.set("email_capture_address", value.toLowerCase())
+      // Intentionally NOT persisting the email address locally — it lives in
+      // Convex (the source of truth) and we have no product use for a local
+      // copy, so storing it would just be unnecessary PII retention.
       toast.show({ variant: "info", message: "Thanks — you're on the list.", duration: 3000 })
       props.onClose?.()
       dialog.clear()

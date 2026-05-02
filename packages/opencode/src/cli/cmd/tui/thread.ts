@@ -16,6 +16,7 @@ import { win32DisableProcessedInput, win32InstallCtrlCGuard } from "./win32"
 import { TuiConfig } from "@/config/tui"
 import { Instance } from "@/project/instance"
 import { writeHeapSnapshot } from "v8"
+import { Analytics } from "@/analytics/tracker"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -234,6 +235,10 @@ export const TuiThreadCommand = cmd({
     } finally {
       unguard?.()
     }
+    // Main-thread analytics drain — worker.shutdown() already drains its own
+    // tracker, but events fired in this process (rare today, but possible if
+    // anything pre-worker tracked) need their own drain before process.exit.
+    await Analytics.drain(1500).catch(() => {})
     process.exit(0)
   },
 })

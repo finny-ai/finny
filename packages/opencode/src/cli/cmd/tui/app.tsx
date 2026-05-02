@@ -496,15 +496,31 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ),
   )
 
-  // First-launch email capture — fires once after sync completes and at least one
-  // provider is configured. Esc/skip both mark it done so we never re-prompt.
+  // First-launch email capture — fires once after sync completes, KV has
+  // finished loading, at least one provider is configured, and no other
+  // dialog is open. Honor the telemetry opt-out: if the user disabled
+  // telemetry we don't prompt (the email POST goes to the same Convex
+  // deployment as analytics).
   createEffect(
     on(
-      () => sync.status === "complete" && sync.data.provider.length > 0 && dialog.stack.length === 0,
+      () =>
+        sync.status === "complete" &&
+        kv.ready &&
+        sync.data.provider.length > 0 &&
+        dialog.stack.length === 0 &&
+        Analytics.isEnabled(),
       (ready) => {
         if (!ready) return
         if (kv.get("email_capture_status")) return
-        DialogEmailCapture.show(dialog, () => kv.set("email_capture_status", "skipped"))
+        // The dismiss callback runs whenever the dialog goes away — including
+        // when the dialog is replaced by another one or cleared after a
+        // successful submit. Only mark "skipped" if no terminal status has
+        // been set in the meantime, otherwise we'd overwrite "submitted".
+        DialogEmailCapture.show(dialog, () => {
+          if (!kv.get("email_capture_status")) {
+            kv.set("email_capture_status", "skipped")
+          }
+        })
       },
     ),
   )
@@ -754,7 +770,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "subscribe",
       },
       category: "System",
+      // Hide when telemetry is disabled; the email POST hits the same Convex
+      // deployment as analytics, so the opt-out covers both.
+      hidden: !Analytics.isEnabled(),
       onSelect: () => {
+        if (!Analytics.isEnabled()) {
+          toast.show({ variant: "info", message: "Telemetry is disabled (FINNY_TELEMETRY=0)", duration: 3000 })
+          return
+        }
         DialogEmailCapture.show(dialog)
       },
     },
@@ -930,13 +953,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   ])
 
   event.on(TuiEvent.CommandExecute.type, (evt) => {
-    try {
-      Analytics.track({
-        eventType: "command",
-        eventName: "command.executed",
-        metadata: { command: evt.properties.command },
-      })
-    } catch {}
+    // command.trigger() emits the analytics event itself, covering palette /
+    // slash / keybind / plugin / bus paths uniformly. Don't double-track here.
     command.trigger(evt.properties.command)
   })
 
@@ -972,11 +990,14 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const message = errorMessage(error)
 
     try {
+      // Only the error name (a stable identifier) — never the message. Many
+      // error messages in this codebase embed user-controlled prompt text
+      // and local file paths (e.g. PROMPT_TOO_LARGE includes filenames).
       Analytics.track({
         eventType: "error",
         eventName: "error.surfaced",
         sessionId: (evt.properties as any).sessionID,
-        metadata: { name: (error as any)?.name, message: typeof message === "string" ? message.slice(0, 200) : undefined },
+        metadata: { name: (error as any)?.name },
       })
     } catch {}
 

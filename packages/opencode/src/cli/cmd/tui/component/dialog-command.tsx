@@ -13,6 +13,7 @@ import {
 } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { useKeybind } from "@tui/context/keybind"
+import { Analytics } from "@/analytics/tracker"
 
 type Context = ReturnType<typeof init>
 const ctx = createContext<Context>()
@@ -78,6 +79,15 @@ function init() {
       for (const option of entries()) {
         if (option.value === name) {
           if (!isEnabled(option)) return
+          // Single hook for every command activation — palette, slash,
+          // keybind, plugin, bus event all flow through here.
+          try {
+            Analytics.track({
+              eventType: "command",
+              eventName: "command.executed",
+              metadata: { command: name },
+            })
+          } catch {}
           option.onSelect?.(dialog)
           return
         }

@@ -15,10 +15,11 @@ import { Analytics } from "@/analytics/tracker"
 
 // Boot-time telemetry — fires once per worker process. Best signal that the
 // user actually launched the TUI (vs. CLI subcommands that exit immediately).
+// Intentionally no argv: process.argv can include positional project paths
+// and --prompt text, which would leak local file paths and prompt content.
 Analytics.track({
   eventType: "app",
   eventName: "tui.worker.booted",
-  metadata: { argv: process.argv.slice(2).join(" ") },
 })
 
 await Log.init({
@@ -94,6 +95,11 @@ export const rpc = {
   },
   async shutdown() {
     Log.Default.info("worker shutting down")
+
+    // Drain in-flight analytics writes before disposing — neither
+    // beforeExit nor SIGTERM fire reliably inside Bun workers when the
+    // main thread calls worker.terminate(), so we have to do it here.
+    await Analytics.drain(1500).catch(() => {})
 
     await Instance.disposeAll()
     if (server) await server.stop(true)
