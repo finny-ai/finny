@@ -18,6 +18,7 @@ import type * as permissions from "../permissions.js";
 import type * as projects from "../projects.js";
 import type * as sessionShares from "../sessionShares.js";
 import type * as sessions from "../sessions.js";
+import type * as subscriptions from "../subscriptions.js";
 import type * as todos from "../todos.js";
 import type * as workspaces from "../workspaces.js";
 
@@ -38,6 +39,7 @@ declare const fullApi: ApiFromModules<{
   projects: typeof projects;
   sessionShares: typeof sessionShares;
   sessions: typeof sessions;
+  subscriptions: typeof subscriptions;
   todos: typeof todos;
   workspaces: typeof workspaces;
 }>;

@@ -691,7 +691,20 @@ export namespace Session {
         workspaceID: WorkspaceID.zod.optional(),
       })
       .optional(),
-    (input) => runPromise((svc) => svc.create(input)),
+    async (input) => {
+      const result = await runPromise((svc) => svc.create(input))
+      try {
+        const { Analytics } = await import("../analytics/tracker")
+        Analytics.track({
+          eventType: "session",
+          eventName: "session.created",
+          sessionId: result?.id,
+          projectId: Instance.project?.id,
+          metadata: { fork: !!input?.parentID },
+        })
+      } catch {}
+      return result
+    },
   )
 
   export const fork = fn(z.object({ sessionID: SessionID.zod, messageID: MessageID.zod.optional() }), (input) =>

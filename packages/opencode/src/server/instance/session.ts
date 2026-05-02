@@ -26,8 +26,20 @@ import { errors } from "../error"
 import { lazy } from "../../util/lazy"
 import { Bus } from "../../bus"
 import { NamedError } from "@opencode-ai/util/error"
+import { Analytics } from "../../analytics/tracker"
 
 const log = Log.create({ service: "server" })
+
+function trackAgentRun(sessionID: string, mode: "prompt" | "prompt_async" | "command", model?: string) {
+  try {
+    Analytics.track({
+      eventType: "agent",
+      eventName: "agent.run",
+      sessionId: sessionID,
+      metadata: { mode, model },
+    })
+  } catch {}
+}
 
 export const SessionRoutes = lazy(() =>
   new Hono()
@@ -848,6 +860,7 @@ export const SessionRoutes = lazy(() =>
         return stream(c, async (stream) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
+          trackAgentRun(sessionID, "prompt", (body as any)?.model)
           const msg = await SessionPrompt.prompt({ ...body, sessionID })
           stream.write(JSON.stringify(msg))
         })
@@ -877,6 +890,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        trackAgentRun(sessionID, "prompt_async", (body as any)?.model)
         SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
           log.error("prompt_async failed", { sessionID, error: err })
           Bus.publish(Session.Event.Error, {
@@ -921,6 +935,7 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
+        trackAgentRun(sessionID, "command", (body as any)?.model)
         const msg = await SessionPrompt.command({ ...body, sessionID })
         return c.json(msg)
       },

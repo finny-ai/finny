@@ -37,6 +37,8 @@ import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
+import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
+import { Analytics } from "@/analytics/tracker"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -415,6 +417,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   const args = useArgs()
   onMount(() => {
+    try {
+      Analytics.track({
+        eventType: "app",
+        eventName: "app.launched",
+        metadata: { agent: args.agent, hasModel: !!args.model, continued: !!args.continue },
+      })
+    } catch {}
     batch(() => {
       if (args.agent) local.agent.set(args.agent)
       if (args.model) {
@@ -483,6 +492,19 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
         dialog.replace(() => <DialogProviderList />)
+      },
+    ),
+  )
+
+  // First-launch email capture — fires once after sync completes and at least one
+  // provider is configured. Esc/skip both mark it done so we never re-prompt.
+  createEffect(
+    on(
+      () => sync.status === "complete" && sync.data.provider.length > 0 && dialog.stack.length === 0,
+      (ready) => {
+        if (!ready) return
+        if (kv.get("email_capture_status")) return
+        DialogEmailCapture.show(dialog, () => kv.set("email_capture_status", "skipped"))
       },
     ),
   )
@@ -726,6 +748,17 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       category: "System",
     },
     {
+      title: "Subscribe to release notes",
+      value: "subscribe.release_notes",
+      slash: {
+        name: "subscribe",
+      },
+      category: "System",
+      onSelect: () => {
+        DialogEmailCapture.show(dialog)
+      },
+    },
+    {
       title: "Go to Home",
       value: "nav.home",
       keybind: "nav_home",
@@ -897,6 +930,13 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   ])
 
   event.on(TuiEvent.CommandExecute.type, (evt) => {
+    try {
+      Analytics.track({
+        eventType: "command",
+        eventName: "command.executed",
+        metadata: { command: evt.properties.command },
+      })
+    } catch {}
     command.trigger(evt.properties.command)
   })
 
@@ -930,6 +970,15 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const error = evt.properties.error
     if (error && typeof error === "object" && error.name === "MessageAbortedError") return
     const message = errorMessage(error)
+
+    try {
+      Analytics.track({
+        eventType: "error",
+        eventName: "error.surfaced",
+        sessionId: (evt.properties as any).sessionID,
+        metadata: { name: (error as any)?.name, message: typeof message === "string" ? message.slice(0, 200) : undefined },
+      })
+    } catch {}
 
     toast.show({
       variant: "error",

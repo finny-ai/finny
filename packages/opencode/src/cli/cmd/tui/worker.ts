@@ -11,6 +11,15 @@ import type { GlobalEvent } from "@opencode-ai/sdk/v2"
 import { Flag } from "@/flag/flag"
 import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
+import { Analytics } from "@/analytics/tracker"
+
+// Boot-time telemetry — fires once per worker process. Best signal that the
+// user actually launched the TUI (vs. CLI subcommands that exit immediately).
+Analytics.track({
+  eventType: "app",
+  eventName: "tui.worker.booted",
+  metadata: { argv: process.argv.slice(2).join(" ") },
+})
 
 await Log.init({
   print: process.argv.includes("--print-logs"),

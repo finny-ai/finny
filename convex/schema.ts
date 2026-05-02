@@ -208,4 +208,14 @@ export default defineSchema({
     time_created: v.number(),
     time_updated: v.number(),
   }).index("by_userId", ["userId"]),
+
+  emailSubscriptions: defineTable({
+    email: v.string(),
+    source: v.optional(v.string()),
+    version: v.optional(v.string()),
+    platform: v.optional(v.string()),
+    deviceId: v.optional(v.string()),
+    time_created: v.number(),
+    time_updated: v.number(),
+  }).index("by_email", ["email"]),
 })
