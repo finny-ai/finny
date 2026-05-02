@@ -19,6 +19,14 @@ concurrency:
 permissions:
   contents: write
 
+# Skip Electron's postinstall binary download. The desktop-electron package
+# is part of the workspace but not shipped with the finny CLI; its binary
+# fetch from github.com/electron/electron/releases is flaky (502s) and
+# adds ~250MB of unnecessary download time. Set at job-env so it covers
+# every step that runs `bun install`, including the setup-bun composite.
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
 jobs:
   build:
     runs-on: ubuntu-latest
