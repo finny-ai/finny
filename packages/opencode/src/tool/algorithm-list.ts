@@ -6,6 +6,65 @@ import { Plan } from "../plan"
 
 const parameters = z.object({})
 
+export type AlgorithmSummary = {
+  name: string
+  version: number
+  status: string
+  language: string
+  description: string
+  updated: string
+}
+
+export type AlgorithmListPayload = {
+  count: number
+  /** number of slots, or null when the tier is unlimited */
+  capacity: number | null
+  /** remaining slots, or null when the tier is unlimited */
+  remaining: number | null
+  tier: string
+  algorithms: AlgorithmSummary[]
+}
+
+/**
+ * Pure helper — exposed for testing. Collapses rows to one entry per unique
+ * name (latest version wins) and reports cap usage in a JSON-safe shape:
+ * `null` is used for both `capacity` and `remaining` when the tier has no
+ * cap, so callers never have to deal with `Infinity` (which JSON.stringify
+ * coerces to `null` anyway).
+ */
+export function buildAlgorithmListPayload(
+  algos: ReadonlyArray<Algorithm.Info>,
+  tier: Plan.Tier,
+): AlgorithmListPayload {
+  const latestByName = new Map<string, Algorithm.Info>()
+  for (const a of algos) {
+    const prev = latestByName.get(a.name)
+    if (!prev || a.version > prev.version) latestByName.set(a.name, a)
+  }
+  const unique = Array.from(latestByName.values()).sort((a, b) => b.time_updated - a.time_updated)
+
+  const rawCap = Plan.SAVE_CAP[tier]
+  const capacity = Number.isFinite(rawCap) ? rawCap : null
+  const remaining = capacity === null ? null : Math.max(0, capacity - unique.length)
+
+  const algorithms: AlgorithmSummary[] = unique.map((a) => ({
+    name: a.name,
+    version: a.version,
+    status: a.status,
+    language: a.language,
+    description: a.description ?? "",
+    updated: new Date(a.time_updated).toISOString(),
+  }))
+
+  return { count: unique.length, capacity, remaining, tier, algorithms }
+}
+
+function buildTitle(p: AlgorithmListPayload): string {
+  if (p.count === 0) return `No algorithms (${p.tier} tier)`
+  const slotPart = p.capacity === null ? "" : `, ${p.remaining} slot${p.remaining === 1 ? "" : "s"} left`
+  return `${p.count} algorithm${p.count === 1 ? "" : "s"} (${p.tier} tier${slotPart})`
+}
+
 export const AlgorithmListTool = Tool.define(
   "finny_algorithm_list",
   Effect.succeed({
@@ -21,50 +80,20 @@ export const AlgorithmListTool = Tool.define(
           metadata: {},
         })
 
-        const algos = await Algorithm.list()
-
-        // Collapse to one entry per unique name (latest version wins). This
-        // hides historical/orphan rows so the model doesn't double-count
-        // when checking whether the user is at their plan's save cap.
-        const latestByName = new Map<string, (typeof algos)[number]>()
-        for (const a of algos) {
-          const prev = latestByName.get(a.name)
-          if (!prev || a.version > prev.version) latestByName.set(a.name, a)
-        }
-        const unique = Array.from(latestByName.values()).sort((a, b) => b.time_updated - a.time_updated)
-
-        const tier = await Plan.getTier()
-        const capacity = Plan.SAVE_CAP[tier]
-        const remaining = Number.isFinite(capacity) ? Math.max(0, capacity - unique.length) : null
-
-        if (unique.length === 0) {
-          return {
-            title: "No algorithms",
-            output: `No algorithms saved yet. Use Build mode to generate a trading algorithm. (Plan: ${tier}, capacity: ${Number.isFinite(capacity) ? capacity : "unlimited"})`,
-            metadata: { count: 0, capacity, remaining, tier },
-          }
-        }
-
-        const summary = unique.map((a) => ({
-          name: a.name,
-          version: a.version,
-          status: a.status,
-          language: a.language,
-          description: a.description ?? "",
-          updated: new Date(a.time_updated).toISOString(),
-        }))
-
-        const header = {
-          count: unique.length,
-          capacity: Number.isFinite(capacity) ? capacity : "unlimited",
-          remaining: remaining ?? "unlimited",
-          tier,
-        }
+        const [algos, tier] = await Promise.all([Algorithm.list(), Plan.getTier()])
+        const payload = buildAlgorithmListPayload(algos, tier)
 
         return {
-          title: `${unique.length} algorithm${unique.length === 1 ? "" : "s"} (${tier} tier${Number.isFinite(capacity) ? `, ${remaining} slot${remaining === 1 ? "" : "s"} left` : ""})`,
-          output: JSON.stringify({ ...header, algorithms: summary }, null, 2),
-          metadata: { count: unique.length, capacity, remaining, tier },
+          title: buildTitle(payload),
+          // Always JSON, even when empty — keeps the schema consistent for
+          // any caller that parses this output.
+          output: JSON.stringify(payload, null, 2),
+          metadata: {
+            count: payload.count,
+            capacity: payload.capacity,
+            remaining: payload.remaining,
+            tier: payload.tier,
+          },
         }
       }),
   }),
