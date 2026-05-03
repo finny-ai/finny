@@ -40,6 +40,18 @@ describe("buildAlgorithmListPayload", () => {
     expect(p.algorithms.map((a) => `${a.name}@${a.version}`)).toEqual(["orb@7", "capital@4"])
   })
 
+  test("ties on version are broken by time_updated (most recent wins)", () => {
+    const algos = [
+      row({ name: "x", version: 3, time_updated: 100, algorithmId: "old" }),
+      row({ name: "x", version: 3, time_updated: 500, algorithmId: "new" }),
+      row({ name: "x", version: 3, time_updated: 200, algorithmId: "mid" }),
+    ]
+    const p = buildAlgorithmListPayload(algos, "free")
+    expect(p.count).toBe(1)
+    // The Map collapses to a single entry; verify it's the most recently updated.
+    expect(p.algorithms[0].updated).toBe(new Date(500).toISOString())
+  })
+
   test("free tier reports remaining slots", () => {
     const algos = [
       row({ name: "a", version: 1 }),

@@ -21,7 +21,7 @@ export type AlgorithmListPayload = {
   capacity: number | null
   /** remaining slots, or null when the tier is unlimited */
   remaining: number | null
-  tier: string
+  tier: Plan.Tier
   algorithms: AlgorithmSummary[]
 }
 
@@ -36,10 +36,19 @@ export function buildAlgorithmListPayload(
   algos: ReadonlyArray<Algorithm.Info>,
   tier: Plan.Tier,
 ): AlgorithmListPayload {
+  // Pick the "latest" row per name: highest version, with time_updated as
+  // the tiebreaker so the choice is deterministic when duplicate-name rows
+  // share a version (e.g., config-only updates that didn't bump version).
   const latestByName = new Map<string, Algorithm.Info>()
   for (const a of algos) {
     const prev = latestByName.get(a.name)
-    if (!prev || a.version > prev.version) latestByName.set(a.name, a)
+    if (
+      !prev ||
+      a.version > prev.version ||
+      (a.version === prev.version && a.time_updated > prev.time_updated)
+    ) {
+      latestByName.set(a.name, a)
+    }
   }
   const unique = Array.from(latestByName.values()).sort((a, b) => b.time_updated - a.time_updated)
 
