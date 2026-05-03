@@ -3,9 +3,10 @@ import { buildAlgorithmListPayload } from "../../src/tool/algorithm-list"
 import { countUniqueAlgorithms } from "../../src/tool/algorithm-save"
 import type { Algorithm } from "../../src/algorithm"
 
+let nextAlgorithmId = 1
 function row(over: Partial<Algorithm.Info>): Algorithm.Info {
   return {
-    algorithmId: over.algorithmId ?? `id-${Math.random()}`,
+    algorithmId: over.algorithmId ?? `id-${nextAlgorithmId++}`,
     userId: "u1",
     name: over.name ?? "anon",
     code: "",
