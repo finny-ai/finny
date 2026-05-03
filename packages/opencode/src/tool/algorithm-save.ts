@@ -114,7 +114,11 @@ export const AlgorithmSaveTool = Tool.define(
               const cap = Plan.SAVE_CAP[tier]
               if (Number.isFinite(cap)) {
                 const allAlgos = await Algorithm.list()
-                if (allAlgos.length >= cap) {
+                // Count unique algorithm names, not rows. Historical /
+                // orphaned rows under the same name should not consume cap
+                // slots — this matches what algorithm-list now shows.
+                const uniqueCount = new Set(allAlgos.map((a) => a.name)).size
+                if (uniqueCount >= cap) {
                   const upgradeTo = tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
                   return {
                     result: {
