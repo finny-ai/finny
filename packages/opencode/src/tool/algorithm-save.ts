@@ -8,6 +8,17 @@ import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Plan } from "../plan"
 import { Bus } from "../bus"
 
+/**
+ * Count unique algorithm names against the user's saved set. Historical /
+ * orphaned rows that share a name don't consume separate cap slots — this
+ * keeps the cap consistent with what `algorithm-list` shows.
+ *
+ * Pure helper, exposed for testing.
+ */
+export function countUniqueAlgorithms(algos: ReadonlyArray<{ name: string }>): number {
+  return new Set(algos.map((a) => a.name)).size
+}
+
 const parameters = z.object({
   name: z.string().describe("Short descriptive name for the algorithm (kebab-case)"),
   code: z.string().describe("The full strategy.py source code"),
@@ -114,7 +125,7 @@ export const AlgorithmSaveTool = Tool.define(
               const cap = Plan.SAVE_CAP[tier]
               if (Number.isFinite(cap)) {
                 const allAlgos = await Algorithm.list()
-                if (allAlgos.length >= cap) {
+                if (countUniqueAlgorithms(allAlgos) >= cap) {
                   const upgradeTo = tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
                   return {
                     result: {
