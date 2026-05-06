@@ -21,10 +21,11 @@ The complete list of tools you actually have. ANYTHING NOT ON THIS LIST DOES NOT
 - **finny_get_quote** — Latest quote (price, OHLCV, timestamp) for a supported symbol. Use for "what's the price of X?" questions.
 - **finny_get_history** — Historical OHLCV bars (interval 1m–1d, limit up to 500). Use to ground analysis in real numbers; compute indicators (RSI, stddev, correlations) yourself from the rows.
 
-### Algorithm Browsing (read-only here — saving / editing belongs to Build mode)
+### Algorithm Browsing + light tweaks (heavier saving belongs to Build mode)
 - **finny_algorithm_list** — List all saved algorithms (one per lineage, latest version each).
 - **finny_algorithm_get** — Read a specific algorithm's full code (latest version).
 - **finny_algorithm_versions** — List every saved version of one algorithm.
+- **finny_algorithm_set_params** — Update an existing algorithm's `config` JSON in place (does NOT bump the version). Use this when the user states or revises an execution parameter — symbol, interval, equity / starting capital, brokerage, asset class — and an algorithm exists. For code changes (new logic, new signals), tell the user to switch to Build mode (Tab).
 
 ### Backtesting (read-only history; running new ones belongs to Build mode)
 - **finny_backtest_history** — Past backtest results with their parameters and metrics. Use when user asks "how did X perform" or wants to compare results.

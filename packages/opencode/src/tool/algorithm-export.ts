@@ -43,16 +43,19 @@ export const AlgorithmExportTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
-        // Resolve full destination first so the permission prompt shows the
-        // real path the user will see written.
-        const destPath = path.resolve(expandHome(params.destPath))
-        if (!path.isAbsolute(destPath)) {
+        // Validate absoluteness on the EXPANDED path (after `~` substitution
+        // but before resolve). path.resolve() always returns an absolute path
+        // by prefixing process.cwd(), so checking after resolve would silently
+        // accept relative paths and write them to wherever Finny was started.
+        const expanded = expandHome(params.destPath)
+        if (!path.isAbsolute(expanded)) {
           return {
             title: "Bad destPath",
-            output: `destPath must be absolute (got "${params.destPath}").`,
+            output: `destPath must be absolute (got "${params.destPath}"). Use an absolute path like /Users/you/Documents/strategy.py or ~/Documents/strategy.py.`,
             metadata: { blocked: true },
           }
         }
+        const destPath = path.resolve(expanded)
 
         await ctx.ask({
           permission: "finny_algorithm_export",

@@ -30,8 +30,12 @@ df = t.history(period="2d", interval="1m")
 if df.empty:
     df = t.history(period="5d", interval="1h")
 if df.empty:
+    # Exit 0 — caller parses stdout for the {"error": "no data"} sentinel
+    # and maps it to a clean "no_data" tool result. Exiting non-zero would
+    # route through the stderr-based fetch_failed path and the structured
+    # error would be lost.
     print(json.dumps({"error": "no data"}))
-    sys.exit(1)
+    sys.exit(0)
 
 last = df.iloc[-1]
 ts = df.index[-1]

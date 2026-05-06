@@ -26,6 +26,14 @@ export function DialogAlgorithmVersions(props: DialogAlgorithmVersionsProps) {
 
   let scrollRef: any
   useKeyboard((evt) => {
+    // Escape closes — checked before the scrollRef guard so esc works even
+    // before the scrollbox has mounted. The footer hint says "esc close",
+    // but the original handler skipped this branch entirely (mouse-only).
+    if (evt.name === "escape") {
+      dialog.clear()
+      evt.preventDefault()
+      return
+    }
     if (!scrollRef) return
     if (evt.name === "up" || (evt.ctrl && evt.name === "p")) {
       scrollRef.scrollBy(-1)

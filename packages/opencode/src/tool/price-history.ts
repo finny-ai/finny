@@ -8,16 +8,19 @@ import { Process } from "@/util/process"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
 
-const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const
+const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
 type Interval = (typeof INTERVALS)[number]
 
+// yfinance's native intervals. There is intentionally no `4h` here — yfinance
+// does not provide native 4h bars, and silently aliasing it to 1h was lying
+// to the model (the response said "4h" but rows were 1h). When client-side
+// resampling lands, add "4h" back with a matching downsample step.
 const YF_INTERVAL: Record<Interval, string> = {
   "1m": "1m",
   "5m": "5m",
   "15m": "15m",
   "30m": "30m",
   "1h": "1h",
-  "4h": "1h", // yfinance has no native 4h; client-side resampling deferred
   "1d": "1d",
 }
 
@@ -28,7 +31,6 @@ const YF_PERIOD: Record<Interval, string> = {
   "15m": "60d",
   "30m": "60d",
   "1h": "180d",
-  "4h": "180d",
   "1d": "5y",
 }
 
@@ -39,7 +41,7 @@ const parameters = z.object({
   interval: z
     .enum(INTERVALS)
     .default("1h")
-    .describe("Bar interval. yfinance does not provide native 4h bars — '4h' currently aliases to 1h."),
+    .describe("Bar interval. yfinance only supports the listed natives; 4h was removed because it aliased to 1h and lied about bar size."),
   limit: z
     .number()
     .int()
@@ -60,8 +62,12 @@ import yfinance as yf
 t = yf.Ticker("${yfSymbol}")
 df = t.history(period="${period}", interval="${interval}")
 if df.empty:
+    # Exit 0 — caller parses stdout for the {"error": "no data"} sentinel
+    # and maps it to a clean "no_data" tool result. Exiting non-zero would
+    # route through the stderr-based fetch_failed path and the structured
+    # error would be lost.
     print(json.dumps({"error": "no data"}))
-    sys.exit(1)
+    sys.exit(0)
 
 df = df.tail(${limit})
 rows = []

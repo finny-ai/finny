@@ -55,8 +55,13 @@ export const patchLatestConfig = mutation({
     if (rows.length === 0) return null
     let latest = rows[0]
     for (const row of rows) if (row.version > latest.version) latest = row
-    await ctx.db.patch(latest._id, { config: args.config, time_updated: Date.now() })
-    return { ...latest, config: args.config }
+    // Capture `now` once so the patched value and the returned value match.
+    // Previously the return spread `latest.time_updated` (the OLD value)
+    // even though the DB row was patched with a fresh timestamp — callers
+    // using the return for UI state would render a stale timestamp.
+    const now = Date.now()
+    await ctx.db.patch(latest._id, { config: args.config, time_updated: now })
+    return { ...latest, config: args.config, time_updated: now }
   },
 })
 
