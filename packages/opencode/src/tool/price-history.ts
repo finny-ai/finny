@@ -137,6 +137,11 @@ export const PriceHistoryTool = Tool.define(
           const result = await Process.run([pythonCmd, scriptPath], {
             cwd: tmpDir,
             nothrow: true,
+            // Hard wall-clock cap — see quote.ts for rationale. 60s here
+            // because larger history pulls (500 bars at 1m) can be slower
+            // than a single quote.
+            timeout: 60_000,
+            abort: ctx.abort,
           })
           if (result.code !== 0) {
             const stderr = result.stderr.toString().trim()

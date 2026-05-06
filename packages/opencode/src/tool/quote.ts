@@ -99,6 +99,12 @@ export const QuoteTool = Tool.define(
           const result = await Process.run([pythonCmd, scriptPath], {
             cwd: tmpDir,
             nothrow: true,
+            // Hard wall-clock cap — yfinance / network can hang indefinitely
+            // and a stuck quote would tie up the session's tool executor.
+            // 30s is generous: a healthy fetch is sub-second.
+            timeout: 30_000,
+            // Wire ctx.abort so cancelling the session also kills this child.
+            abort: ctx.abort,
           })
           if (result.code !== 0) {
             const stderr = result.stderr.toString().trim()

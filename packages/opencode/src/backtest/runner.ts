@@ -5,7 +5,7 @@ import { Process } from "@/util/process"
 import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
-import { resolveSymbol, SUPPORTED_SYMBOLS } from "@/data/symbols"
+import { resolveSymbol } from "@/data/symbols"
 
 export namespace BacktestRunner {
   export interface Params {

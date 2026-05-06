@@ -114,24 +114,46 @@ export namespace Python {
    * Ensure the managed venv exists and every package in {@link packages} is
    * importable. Fast path (already installed) returns in < 100ms; cold path
    * pays a 30-60s venv-create + pip-install once.
+   *
+   * Concurrent calls in the same process (e.g. quote / history / backtest
+   * tools firing in parallel during a single agent turn) are coalesced via
+   * the `inflight` Map keyed by the install target. Without this, two cold
+   * callers would race through `createVenv` and `pipInstall` against the
+   * same directory, occasionally corrupting the env or producing flaky
+   * "module not found" errors. Cross-process locking (e.g. when multiple
+   * finny instances run concurrently) is intentionally not handled here —
+   * callers in that scenario should retry or run `Python.reset()`.
    */
+  const inflight = new Map<string, Promise<Environment>>()
+
   export async function ensurePythonEnv(
     packages: PackageRequirement[],
     onProgress: ProgressCallback = () => {},
   ): Promise<Environment> {
-    if (!(await exists(PY_BIN))) {
-      await createVenv(onProgress)
-    }
+    // Stable key over the requested packages so independent callers asking
+    // for the same set share a single in-flight promise.
+    const key = packages.map((p) => p.spec).sort().join("|")
+    const existing = inflight.get(key)
+    if (existing) return existing
 
-    const missing: string[] = []
-    for (const pkg of packages) {
-      if (!(await checkPackage(pkg.importCheck))) missing.push(pkg.spec)
-    }
-    if (missing.length > 0) {
-      await pipInstall(missing, onProgress)
-    }
+    const promise = (async () => {
+      if (!(await exists(PY_BIN))) {
+        await createVenv(onProgress)
+      }
+      const missing: string[] = []
+      for (const pkg of packages) {
+        if (!(await checkPackage(pkg.importCheck))) missing.push(pkg.spec)
+      }
+      if (missing.length > 0) {
+        await pipInstall(missing, onProgress)
+      }
+      return { python: PY_BIN, pip: PIP_BIN, envDir: ENV_DIR }
+    })().finally(() => {
+      inflight.delete(key)
+    })
 
-    return { python: PY_BIN, pip: PIP_BIN, envDir: ENV_DIR }
+    inflight.set(key, promise)
+    return promise
   }
 
   /** Nuke the managed env. Useful for recovery if install state corrupts. */

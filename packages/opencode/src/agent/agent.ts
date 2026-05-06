@@ -130,6 +130,12 @@ export namespace Agent {
             list: "deny",
             bash: "deny",
             external_directory: "deny",
+            // `websearch` is denied so the runtime matches what the prompts
+            // already advertise ("there is no websearch tool"). Without this,
+            // websearch was registered + allowed by the default `*: allow`
+            // and the model would intermittently call it, breaking when no
+            // search-API key was configured.
+            websearch: "deny",
             // `webfetch` stays allowed — useful for grounding decisions in
             // a known news/docs URL the user provided.
             // `task` (subagent spawn), `todowrite`, `skill`, and the

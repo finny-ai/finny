@@ -30,7 +30,7 @@ You have access to powerful market data, analysis, and backtesting tools:
 
 - **finny_get_history** - Historical OHLCV bars (capped at 500)
   - Required: `symbol`
-  - Optional: `interval` (1m|5m|15m|30m|1h|4h|1d, default 1h), `limit` (default 100, max 500)
+  - Optional: `interval` (1m|5m|15m|30m|1h|1d, default 1h), `limit` (default 100, max 500). 4h is not supported — yfinance has no native 4h bars.
   - Returns: list of bars with timestamp, open, high, low, close, volume
 
 Use these to ground indicator periods, threshold sizing, and volatility checks in real bars instead of guesses. Computing indicators (RSI, MACD, Bollinger, stddev, correlations) is your job — derive them from `finny_get_history` rows in your reasoning, do not expect a separate indicator tool.

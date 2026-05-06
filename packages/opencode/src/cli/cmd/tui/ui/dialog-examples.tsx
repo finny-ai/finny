@@ -69,8 +69,28 @@ export function DialogExamples() {
 
   const maxHeight = () => Math.floor(dimensions().height * 0.6)
 
+  let scrollRef: any
+
   useKeyboard((evt) => {
-    if (evt.name === "escape") dialog.clear()
+    if (evt.name === "escape") {
+      dialog.clear()
+      evt.preventDefault()
+      return
+    }
+    if (!scrollRef) return
+    if (evt.name === "up" || (evt.ctrl && evt.name === "p")) {
+      scrollRef.scrollBy(-1)
+      evt.preventDefault()
+    } else if (evt.name === "down" || (evt.ctrl && evt.name === "n")) {
+      scrollRef.scrollBy(1)
+      evt.preventDefault()
+    } else if (evt.name === "pageup") {
+      scrollRef.scrollBy(-10)
+      evt.preventDefault()
+    } else if (evt.name === "pagedown") {
+      scrollRef.scrollBy(10)
+      evt.preventDefault()
+    }
   })
 
   const pick = (template: Template) => {
@@ -85,8 +105,6 @@ export function DialogExamples() {
     })
     dialog.clear()
   }
-
-  let scrollRef: any
 
   return (
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>

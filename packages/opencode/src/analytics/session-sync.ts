@@ -91,9 +91,16 @@ async function syncCompletedMessage(sessionID: string, info: any) {
         // owner. Failure to resolve the device userId is non-fatal — the row
         // still gets created, just without ownership for that one session.
         const user_id = await DeviceProfile.userId().catch(() => undefined)
+        // Build the payload, then ONLY add `user_id` if it resolved.
+        // Convex's arg validator distinguishes "field omitted" from "field
+        // present with value undefined" — the latter can be rejected for
+        // optional fields. Spreading `{ user_id: undefined }` was breaking
+        // session creation on devices where DeviceProfile.userId() failed.
+        const payload: Record<string, unknown> = { ...(Session.toRow(sess) as any) }
+        if (user_id !== undefined) payload.user_id = user_id
         // No upsert mutation server-side — try create, swallow duplicate errors.
         // Rare path (once per session per process), so the extra round-trip is fine.
-        await ConvexSessions.create({ ...(Session.toRow(sess) as any), user_id }).catch((err) => {
+        await ConvexSessions.create(payload as any).catch((err) => {
           // Convex mutations re-throw on uniqueness violations; treat as a no-op.
           log.info("session row already exists or create failed", {
             sessionID,

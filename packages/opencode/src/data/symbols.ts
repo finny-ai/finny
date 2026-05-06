@@ -110,6 +110,18 @@ export function listByKind(kind: SymbolKind): readonly SupportedSymbol[] {
 // Most common stable / quote currencies we strip when normalizing pair forms.
 const QUOTE_CURRENCIES = ["USD", "USDT", "USDC", "BUSD", "DAI"]
 
+// Bare crypto bases that aren't in the curated SUPPORTED_SYMBOLS list but
+// are common enough that bare-ticker resolution should treat them as crypto,
+// not as stock. Without this, `PEPE` / `SHIB` etc. would match the
+// stock-ticker shape (1-5 caps) and get misrouted to yfinance equities.
+const KNOWN_CRYPTO_BASES = new Set<string>([
+  "PEPE", "SHIB", "BONK", "WIF", "FLOKI", "TRUMP", "TURBO",
+  "INJ", "TIA", "TON", "JUP", "SEI", "STRK", "TAO", "RNDR",
+  "FET", "AGIX", "OCEAN", "GRT", "FIL", "ICP", "APT", "LDO",
+  "MKR", "COMP", "SNX", "CRV", "BAL", "1INCH", "GMX", "DYDX",
+  "RUNE", "OSMO", "JTO", "PYTH", "MEME", "ORDI", "SATS",
+])
+
 // Permissive shape check. A "ticker-ish" string is 1-5 chars of uppercase
 // letters, optionally with a single hyphen-separated suffix (BRK-B, BF-B,
 // RDS-A class shares).
@@ -156,12 +168,20 @@ export function resolveSymbol(input: string): SupportedSymbol | null {
   const glued = upper.match(new RegExp(`^([A-Z0-9]{2,6})(${QUOTE_CURRENCIES.join("|")})$`))
   if (glued) return { name: glued[1], kind: "crypto", yfinance: `${glued[1]}-USD`, canonical: `${glued[1]}/USD`, unknown: true }
 
-  // (3) bare stock/ETF ticker — assume yfinance has it.
+  // (3) Known crypto base (PEPE, SHIB, etc.) — checked BEFORE the stock
+  // ticker fallback because the regexes overlap (4-letter caps match both).
+  // Without this, "PEPE" would route to yfinance equities and fail.
+  if (KNOWN_CRYPTO_BASES.has(upper)) {
+    return { name: upper, kind: "crypto", yfinance: `${upper}-USD`, canonical: `${upper}/USD`, unknown: true }
+  }
+
+  // (4) Bare stock/ETF ticker — assume yfinance has it.
   if (looksLikeStockTicker(upper)) {
     return { name: upper, kind: "stock", yfinance: upper, canonical: upper, unknown: true }
   }
 
-  // (4) bare crypto base (no quote). Less common but happens — "DOGE", "PEPE".
+  // (5) Bare crypto base (no quote, not in known set). Last resort for
+  // longer/numeric bases that aren't curated and don't look like stocks.
   if (looksLikeCryptoBase(upper)) {
     return { name: upper, kind: "crypto", yfinance: `${upper}-USD`, canonical: `${upper}/USD`, unknown: true }
   }
