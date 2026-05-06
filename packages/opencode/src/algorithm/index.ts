@@ -81,7 +81,6 @@ export namespace Algorithm {
     const existing = await ConvexAlgorithms.getByName(userId, input.name)
 
     let algorithmId: string
-    let version: number
     let time_created: number
     let status: string
 
@@ -94,7 +93,6 @@ export namespace Algorithm {
         )
       }
       algorithmId = crypto.randomUUID()
-      version = 1
       time_created = now
       status = "draft"
     } else {
@@ -105,18 +103,19 @@ export namespace Algorithm {
         )
       }
       algorithmId = existing.algorithmId
-      version = existing.version + 1
       time_created = existing.time_created
       status = existing.status ?? "draft"
     }
 
-    const record: Info = {
+    // Version is assigned atomically server-side; insertVersion returns the
+    // saved row including the resolved version number. Don't compute it
+    // here — concurrent saves on two devices would race otherwise.
+    const saved = (await ConvexAlgorithms.insertVersion({
       algorithmId,
       userId,
       name: input.name,
       code: input.code,
       language: input.language ?? "python",
-      version,
       status,
       description: input.description,
       config: input.config,
@@ -124,10 +123,9 @@ export namespace Algorithm {
       localPath: input.localPath,
       time_created,
       time_updated: now,
-    }
-
-    await ConvexAlgorithms.insertVersion(record)
-    log.info("algorithm saved", { algorithmId, name: input.name, version, saveMode: input.saveMode })
+    })) as Info
+    const record: Info = saved
+    log.info("algorithm saved", { algorithmId, name: input.name, version: saved.version, saveMode: input.saveMode })
 
     return record
   }

@@ -37,10 +37,10 @@ describe("normalizeSymbol", () => {
     expect(normalizeSymbol(input)).toBe(expected)
   })
 
-  test("wider crypto base outside the supported set still canonicalizes", () => {
-    // XRP, DOGE etc. are in CRYPTO_BASES but not in the user-facing
-    // SUPPORTED_SYMBOLS list — the normalizer should still produce a
-    // sane pair so legacy algorithms don't break.
+  test("crypto bases canonicalize regardless of input form", () => {
+    // XRP and DOGE are now in the curated SUPPORTED_SYMBOLS — they hit the
+    // registry directly. XRPUSDT exercises the glued-pair fallback path
+    // (Binance-style ticker → BASE/USD canonical).
     expect(normalizeSymbol("XRP")).toBe("XRP/USD")
     expect(normalizeSymbol("DOGE-USD")).toBe("DOGE/USD")
     expect(normalizeSymbol("XRPUSDT")).toBe("XRP/USD")

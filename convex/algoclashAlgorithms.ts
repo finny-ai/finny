@@ -2,9 +2,13 @@ import { mutation, query } from "./_generated/server"
 import { v } from "convex/values"
 
 // One row per VERSION. `algorithmId` is the lineage id (shared across all
-// versions); `version` is the monotonic integer within that lineage. The
-// callers in packages/opencode resolve algorithmId+version before calling
-// `insertVersion`; this mutation never invents IDs or chooses versions.
+// versions); `version` is the monotonic integer within that lineage.
+//
+// Version assignment is ATOMIC server-side: callers do NOT pass `version`.
+// The mutation reads max(existing) + 1 inside the same Convex transaction
+// that does the insert. Two concurrent saves from different devices (or a
+// retry after a slow network) cannot collide because Convex serializes
+// mutations on the same documents.
 export const insertVersion = mutation({
   args: {
     algorithmId: v.string(),
@@ -12,7 +16,6 @@ export const insertVersion = mutation({
     name: v.string(),
     code: v.string(),
     language: v.string(),
-    version: v.number(),
     status: v.string(),
     description: v.optional(v.string()),
     config: v.optional(v.string()),
@@ -22,20 +25,20 @@ export const insertVersion = mutation({
     time_updated: v.number(),
   },
   handler: async (ctx, args) => {
-    // Defensive: refuse to write if the (algorithmId, version) tuple already
-    // exists. The TS-side resolver should always pick a fresh version, so
-    // hitting this means a race or a bug — louder to throw than overwrite.
-    const collision = await ctx.db
+    // Atomically compute next version: scan existing rows for this lineage
+    // (always small — capped at 100 in practice) and pick max+1. The whole
+    // mutation runs as a single Convex transaction, so no client-side race
+    // can produce a duplicate (algorithmId, version) tuple.
+    const existing = await ctx.db
       .query("algoclashAlgorithms")
-      .withIndex("by_algorithmId_version", (q) => q.eq("algorithmId", args.algorithmId).eq("version", args.version))
-      .first()
-    if (collision) {
-      throw new Error(
-        `algoclashAlgorithms: refusing to overwrite (algorithmId=${args.algorithmId}, version=${args.version}) — pick a higher version`,
-      )
-    }
-    await ctx.db.insert("algoclashAlgorithms", args)
-    return args
+      .withIndex("by_algorithmId", (q) => q.eq("algorithmId", args.algorithmId))
+      .collect()
+    let nextVersion = 1
+    for (const row of existing) if (row.version >= nextVersion) nextVersion = row.version + 1
+
+    const row = { ...args, version: nextVersion }
+    await ctx.db.insert("algoclashAlgorithms", row)
+    return row
   },
 })
 

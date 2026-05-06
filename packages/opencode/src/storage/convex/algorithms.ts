@@ -2,13 +2,15 @@ import { convexClient } from "../convex-client"
 import { api } from "../../../../../convex/_generated/api"
 
 export namespace ConvexAlgorithms {
+  // `version` is intentionally NOT in the args — Convex assigns it atomically
+  // server-side (max(existing for algorithmId) + 1) so concurrent saves from
+  // multiple devices can't collide.
   export async function insertVersion(values: {
     algorithmId: string
     userId: string
     name: string
     code: string
     language: string
-    version: number
     status: string
     description?: string
     config?: string

@@ -157,8 +157,12 @@ except Exception as e:
     if "timeout" in msg or "connection" in msg or "network" in msg or "max retries" in msg:
         print(f"__FINNY_FETCH_ERROR__: network: ${symbol}: {e}", file=sys.stderr)
         sys.exit(4)
-    print(f"__FINNY_FETCH_ERROR__: network: ${symbol}: {e}", file=sys.stderr)
-    sys.exit(4)
+    # Unknown exception class -- emit "internal" instead of misclassifying
+    # as network. classifyFetchError on the TS side maps the kind into the
+    # user-visible message; "network" implied a connectivity issue we do
+    # not actually know about.
+    print(f"__FINNY_FETCH_ERROR__: internal: ${symbol}: {e}", file=sys.stderr)
+    sys.exit(6)
 
 if df.empty:
     print(f"__FINNY_FETCH_ERROR__: empty_window: ${symbol}: no bars between ${start} and ${end} at ${interval}", file=sys.stderr)
@@ -586,6 +590,21 @@ print(f"profit_factor: {profit_factor}")
         }
       }
 
+      // Re-normalize symbol AFTER overrides — an override could reintroduce a
+      // non-canonical form (e.g. param sweep passing "btcusdt") and undo the
+      // canonicalization above. Cheap to redo; expensive when symbol drift
+      // produces empty yfinance results downstream.
+      if (config.symbol) {
+        try {
+          config.symbol = normalizeSymbol(String(config.symbol))
+        } catch (e) {
+          if (e instanceof UnknownSymbolError) {
+            return { ok: false, error: e.message, kind: "unknown_symbol", suggestions: e.suggestions }
+          }
+          throw e
+        }
+      }
+
       await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(config, null, 2))
 
       // Compute dates and symbol — explicit start/end win over duration-derived window.
@@ -613,10 +632,13 @@ print(f"profit_factor: {profit_factor}")
         }
       }
 
-      // Fetch market data
+      // Fetch market data — wall-clock cap so a stalled yfinance pull can't
+      // hang the tool executor indefinitely. 2 minutes is generous for a
+      // single fetch; healthy ones complete in under 5 seconds.
       const fetchResult = await Process.run([pythonCmd, "_fetch_data.py"], {
         cwd: tmpDir,
         nothrow: true,
+        timeout: 120_000,
       })
 
       if (fetchResult.code !== 0) {
@@ -641,12 +663,15 @@ print(f"profit_factor: {profit_factor}")
         }
       }
 
-      // Run backtest
+      // Run backtest — generous wall-clock cap (5 min) for full history runs
+      // with many bars. If a strategy infinite-loops on bad logic, this stops
+      // the session from being held hostage.
       const backtestResult = await Process.run(
         [pythonCmd, "backtest.py", "--csv", csvPath, "--config", "config.json", "--interval", interval, "--capital", capital],
         {
           cwd: tmpDir,
           nothrow: true,
+          timeout: 300_000,
         },
       )
 
