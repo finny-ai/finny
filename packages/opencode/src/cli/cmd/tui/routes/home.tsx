@@ -1,11 +1,12 @@
 import { Prompt, type PromptRef } from "@tui/component/prompt"
 import { createEffect, createSignal, onMount, Show } from "solid-js"
+import { useTerminalDimensions } from "@opentui/solid"
 import { Logo } from "../component/logo"
 import { useProject } from "../context/project"
 import { useSync } from "../context/sync"
 import { Toast } from "../ui/toast"
 import { useArgs } from "../context/args"
-import { useRouteData } from "@tui/context/route"
+import { useRoute, useRouteData } from "@tui/context/route"
 import { usePromptRef } from "../context/prompt"
 import { useLocal } from "../context/local"
 import { useKV } from "../context/kv"
@@ -28,6 +29,7 @@ export function Home() {
   const sync = useSync()
   const project = useProject()
   const route = useRouteData("home")
+  const routeCtx = useRoute()
   const promptRef = usePromptRef()
   const [ref, setRef] = createSignal<PromptRef | undefined>()
   const args = useArgs()
@@ -35,8 +37,15 @@ export function Home() {
   const kv = useKV()
   let sent = false
 
+  const dimensions = useTerminalDimensions()
+
   // First-run flag: show Getting Started only on the very first Home visit.
-  const [showGettingStarted, setShowGettingStarted] = createSignal(!kv.get(FIRST_RUN_KEY, false))
+  // Also gate on terminal height — on short windows the card crowded out the
+  // logo / prompt / dashboard cards. Users on short windows can still reach
+  // the same content via /help or /examples.
+  const [seenGettingStarted, setSeenGettingStarted] = createSignal(!!kv.get(FIRST_RUN_KEY, false))
+  const showGettingStarted = () => !seenGettingStarted() && dimensions().height >= 30
+  const setShowGettingStarted = (v: boolean) => setSeenGettingStarted(!v)
 
   onMount(() => {
     if (showGettingStarted()) {
@@ -46,19 +55,40 @@ export function Home() {
 
   const dismissGettingStarted = () => setShowGettingStarted(false)
 
+  // Track the last initialPrompt we applied so the effect below doesn't
+  // re-apply on every reactive tick. Initialized empty so the very first
+  // navigation always triggers an apply.
+  let lastAppliedInitialPrompt: string | undefined
+
   const bind = (r: PromptRef | undefined) => {
     setRef(r)
     promptRef.set(r)
     if (once || !r) return
-    if (route.initialPrompt) {
-      r.set(route.initialPrompt)
-      once = true
-      return
-    }
+    // Bind only handles the one-shot CLI `--prompt` flag now. Route's
+    // `initialPrompt` is handled by the effect below — that's the only
+    // way to also catch SUBSEQUENT navigations (e.g. /examples → click
+    // template, when home is already mounted and bind never re-fires).
+    once = true
     if (!args.prompt) return
     r.set({ input: args.prompt, parts: [] })
-    once = true
   }
+
+  // Apply route.initialPrompt whenever it changes — works on first mount
+  // AND on every subsequent navigation. After applying we CLEAR the field
+  // from the route store so it's strictly a one-shot signal: navigating
+  // back to home (or off to session) won't re-fill the input with stale
+  // template text.
+  createEffect(() => {
+    const r = ref()
+    if (!r) return
+    const ip = route.initialPrompt
+    if (!ip) return
+    const key = ip.input + "|" + (ip.parts?.length ?? 0)
+    if (key === lastAppliedInitialPrompt) return
+    lastAppliedInitialPrompt = key
+    r.set(ip)
+    routeCtx.clearInitialPrompt()
+  })
 
   createEffect(() => {
     const r = ref()

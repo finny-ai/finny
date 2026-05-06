@@ -1,4 +1,4 @@
-import { createStore } from "solid-js/store"
+import { createStore, reconcile } from "solid-js/store"
 import { createSimpleContext } from "./helper"
 import type { PromptInfo } from "../component/prompt/history"
 
@@ -51,8 +51,23 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
       get data() {
         return store
       },
+      // `reconcile` instead of plain setStore so navigation REPLACES the
+      // store (deep diff to the new value) instead of merging top-level
+      // keys. Without this, fields from the previous route — e.g.
+      // `initialPrompt` set by a /examples click — leak into the next
+      // route, which is how the session view ended up with the same
+      // template text the home prompt just submitted.
       navigate(route: Route) {
-        setStore(route)
+        setStore(reconcile(route))
+      },
+      // Clear `initialPrompt` after a route applies it, so re-mounting the
+      // same route (or a sibling route reading the same field) doesn't
+      // re-apply stale state. Idempotent — safe to call when the field is
+      // already absent.
+      clearInitialPrompt() {
+        if ((store as any).initialPrompt !== undefined) {
+          setStore("initialPrompt" as any, undefined)
+        }
       },
     }
   },

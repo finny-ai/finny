@@ -8,14 +8,28 @@ Use this tool to save a trading algorithm to Finny's cloud storage. Every saved 
 ## Parameters
 - **name** (required): A short, descriptive name for the algorithm (e.g., "momentum-spy", "mean-reversion-eth", "breakout-qqq"). Use kebab-case.
 - **code** (required): The full strategy.py source code
+- **saveMode** (required): Either `"new"` or `"version"`. There is no default — you must choose every time. See **Choosing saveMode** below.
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. The validator cross-references every config key against the strategy code, so do not declare keys you do not use.
 - **backtestCode**: The backtest.py source code
 - **localPath**: The local filesystem path where the algorithm files were written
 
+## Choosing saveMode
+
+You MUST decide explicitly. Versions cannot be split apart later — getting this wrong has frustrated real users.
+
+- Use `saveMode: "version"` ONLY for parameter tweaks, bug fixes, or small refinements to the SAME strategy logic. The new save will be saved as v(N+1) of the existing algorithm, and v1..vN remain available in the version history.
+- Use `saveMode: "new"` (with a derived name like `<base>-bear`, `<base>-tight`, or `<base>-2`) when the user describes a materially different strategy direction — different signals, different exit logic, different asset class. The new save creates a sibling algorithm that lives alongside the original.
+- **When in doubt, prefer `"new"`.** A user who wanted a version bump can always merge later by deleting the sibling; a user who wanted a sibling and got a version bump has lost their original.
+
+If you pass `saveMode: "new"` and the name is already taken, the tool returns an error with a suggested alternative name — do NOT retry with the same name.
+
+If you pass `saveMode: "version"` and no algorithm with that name exists yet, the tool returns an error — switch to `saveMode: "new"`.
+
 ## Behavior
-- If validation passes, the algorithm is saved. New algorithms start at version 1 with status "draft". Existing algorithms have their version auto-incremented.
+- On success: a new row is inserted. With `saveMode: "new"` the algorithm starts at version 1 with status "draft". With `saveMode: "version"` the version is incremented and the lineage's status is preserved.
+- Old versions are NOT deleted — every save adds to the history. Users can list versions with `finny_algorithm_versions` and export a specific version with `finny_algorithm_export`.
 - If validation fails, the save is rejected and you receive a structured list of errors. The attempt does NOT count towards the algorithm's version — version only advances on successful saves.
 
 ## Retry Protocol (MANDATORY)

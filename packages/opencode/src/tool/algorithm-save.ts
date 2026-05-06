@@ -22,6 +22,11 @@ export function countUniqueAlgorithms(algos: ReadonlyArray<{ name: string }>): n
 const parameters = z.object({
   name: z.string().describe("Short descriptive name for the algorithm (kebab-case)"),
   code: z.string().describe("The full strategy.py source code"),
+  saveMode: z
+    .enum(["new", "version"])
+    .describe(
+      'REQUIRED. Pick "new" to create a sibling algorithm (fresh lineage, version=1) or "version" to bump the existing algorithm with this name (version+1, history preserved). No default. See the tool description for the heuristic.',
+    ),
   language: z.string().optional().describe("Programming language, defaults to python"),
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
@@ -119,19 +124,20 @@ export const AlgorithmSaveTool = Tool.define(
             }
 
             // Validation passed — proceed with save.
-            const existingAlgo = await Algorithm.get(params.name)
-            if (!existingAlgo) {
+            // Tier cap only applies to NEW lineages. Version bumps don't add a
+            // unique algorithm slot (the lineage already counts).
+            if (params.saveMode === "new") {
               const tier = await Plan.getTier()
               const cap = Plan.SAVE_CAP[tier]
               if (Number.isFinite(cap)) {
                 const allAlgos = await Algorithm.list()
                 if (countUniqueAlgorithms(allAlgos) >= cap) {
-                  const upgradeTo = tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
+                  const upgradeTo =
+                    tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
                   return {
                     result: {
                       title: `Save blocked — ${tier} tier limit`,
-                      output:
-                        `Your plan (${tier}) allows up to ${cap} saved algorithms. Delete an existing algorithm or upgrade to ${upgradeTo}.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.`,
+                      output: `Your plan (${tier}) allows up to ${cap} saved algorithms. Delete an existing algorithm or upgrade to ${upgradeTo}.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.`,
                       metadata: { blocked: true },
                     },
                   }
@@ -139,15 +145,32 @@ export const AlgorithmSaveTool = Tool.define(
               }
             }
 
-            const algo = await Algorithm.save({
-              name: params.name,
-              code: params.code,
-              language: params.language,
-              description: params.description,
-              config: params.config,
-              backtestCode: params.backtestCode,
-              localPath: params.localPath,
-            })
+            let algo
+            try {
+              algo = await Algorithm.save({
+                name: params.name,
+                code: params.code,
+                language: params.language,
+                description: params.description,
+                config: params.config,
+                backtestCode: params.backtestCode,
+                localPath: params.localPath,
+                saveMode: params.saveMode,
+              })
+            } catch (err) {
+              if (err instanceof Algorithm.SaveModeConflictError) {
+                const lines = [err.message]
+                if (err.suggested) lines.push(`Suggested name: "${err.suggested}".`)
+                return {
+                  result: {
+                    title: err.kind === "name_taken" ? "Name already in use" : "No existing algorithm to version",
+                    output: lines.join(" "),
+                    metadata: { blocked: true, saveModeConflict: err.kind, suggestedName: err.suggested },
+                  },
+                }
+              }
+              throw err
+            }
 
             const parts: string[] = [
               JSON.stringify(

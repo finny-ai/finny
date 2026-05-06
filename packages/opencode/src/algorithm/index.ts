@@ -46,6 +46,11 @@ export namespace Algorithm {
     ),
   }
 
+  // Caller picks `new` (sibling lineage, fresh algorithmId, version=1) or
+  // `version` (same lineage, version+1). The save() function refuses to
+  // guess — see the SaveModeError cases below.
+  export type SaveMode = "new" | "version"
+
   export interface SaveInput {
     name: string
     code: string
@@ -54,6 +59,19 @@ export namespace Algorithm {
     config?: string
     backtestCode?: string
     localPath?: string
+    saveMode: SaveMode
+  }
+
+  // Tagged errors so the tool layer can format clean messages without
+  // string-matching exception text.
+  export class SaveModeConflictError extends Error {
+    readonly kind: "name_taken" | "no_existing_to_version"
+    readonly suggested?: string
+    constructor(kind: "name_taken" | "no_existing_to_version", message: string, suggested?: string) {
+      super(message)
+      this.kind = kind
+      this.suggested = suggested
+    }
   }
 
   export async function save(input: SaveInput): Promise<Info> {
@@ -61,8 +79,36 @@ export namespace Algorithm {
     const now = Date.now()
 
     const existing = await ConvexAlgorithms.getByName(userId, input.name)
-    const version = existing ? existing.version + 1 : 1
-    const algorithmId = existing?.algorithmId ?? crypto.randomUUID()
+
+    let algorithmId: string
+    let version: number
+    let time_created: number
+    let status: string
+
+    if (input.saveMode === "new") {
+      if (existing) {
+        throw new SaveModeConflictError(
+          "name_taken",
+          `Algorithm "${input.name}" already exists. Either choose a different name or use saveMode: "version" to bump it.`,
+          deriveSiblingName(input.name),
+        )
+      }
+      algorithmId = crypto.randomUUID()
+      version = 1
+      time_created = now
+      status = "draft"
+    } else {
+      if (!existing) {
+        throw new SaveModeConflictError(
+          "no_existing_to_version",
+          `Cannot version-bump "${input.name}" — no existing algorithm with that name. Use saveMode: "new".`,
+        )
+      }
+      algorithmId = existing.algorithmId
+      version = existing.version + 1
+      time_created = existing.time_created
+      status = existing.status ?? "draft"
+    }
 
     const record: Info = {
       algorithmId,
@@ -71,17 +117,17 @@ export namespace Algorithm {
       code: input.code,
       language: input.language ?? "python",
       version,
-      status: existing?.status ?? "draft",
+      status,
       description: input.description,
       config: input.config,
       backtestCode: input.backtestCode,
       localPath: input.localPath,
-      time_created: existing?.time_created ?? now,
+      time_created,
       time_updated: now,
     }
 
-    await ConvexAlgorithms.upsert(record)
-    log.info("algorithm saved", { algorithmId, name: input.name, version })
+    await ConvexAlgorithms.insertVersion(record)
+    log.info("algorithm saved", { algorithmId, name: input.name, version, saveMode: input.saveMode })
 
     return record
   }
@@ -103,38 +149,37 @@ export namespace Algorithm {
     return algo?.code ?? null
   }
 
-  export async function remove(algorithmId: string): Promise<void> {
-    await ConvexAlgorithms.remove(algorithmId)
-    log.info("algorithm removed", { algorithmId })
+  // All versions for a lineage, newest first. Capped at 100 server-side.
+  export async function listVersions(algorithmId: string): Promise<Info[]> {
+    const results = await ConvexAlgorithms.listVersions(algorithmId)
+    return (results as Info[]) ?? []
   }
 
-  // Patch only the `config` JSON string on an existing algorithm. Does NOT
-  // bump version — used for chat-driven parameter updates that don't change
-  // the strategy code.
+  export async function getVersion(algorithmId: string, version: number): Promise<Info | null> {
+    const result = await ConvexAlgorithms.getByIdAndVersion(algorithmId, version)
+    return (result as Info) ?? null
+  }
+
+  // Deletes ALL versions of the lineage.
+  export async function remove(algorithmId: string): Promise<void> {
+    await ConvexAlgorithms.remove(algorithmId)
+    log.info("algorithm removed (all versions)", { algorithmId })
+  }
+
+  // In-place patch on the latest version's config string. Does NOT bump
+  // version — used for chat-driven param tweaks where the strategy code
+  // hasn't changed.
   export async function updateConfig(algorithmId: string, config: string): Promise<Info | null> {
-    const raw = await ConvexAlgorithms.getById(algorithmId)
-    if (!raw) return null
-    // Convex documents carry `_id` / `_creationTime` system fields. The upsert
-    // mutation has a strict args validator and rejects them, so we explicitly
-    // pick only the Info-shaped fields rather than spreading the raw doc.
-    const e = raw as any
-    const record: Info = {
-      algorithmId: e.algorithmId,
-      userId: e.userId,
-      name: e.name,
-      code: e.code,
-      language: e.language,
-      version: e.version,
-      status: e.status,
-      description: e.description,
-      config,
-      backtestCode: e.backtestCode,
-      localPath: e.localPath,
-      time_created: e.time_created,
-      time_updated: Date.now(),
-    }
-    await ConvexAlgorithms.upsert(record)
-    log.info("algorithm config updated", { algorithmId, name: e.name })
-    return record
+    const result = await ConvexAlgorithms.patchLatestConfig(algorithmId, config)
+    if (!result) return null
+    log.info("algorithm config patched", { algorithmId })
+    return result as Info
+  }
+
+  function deriveSiblingName(base: string): string {
+    // Strip a trailing `-vN` if present, then append `-2` / `-3` / ... so the
+    // suggestion doesn't collide with the conflicting name.
+    const stripped = base.replace(/-v?\d+$/, "")
+    return `${stripped}-2`
   }
 }

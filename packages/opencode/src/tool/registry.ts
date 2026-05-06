@@ -14,10 +14,14 @@ import { AlgorithmGetTool } from "./algorithm-get"
 import { AlgorithmSetParamsTool } from "./algorithm-set-params"
 import { AlgorithmValidateTool } from "./algorithm-validate"
 import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
+import { AlgorithmVersionsTool } from "./algorithm-versions"
+import { AlgorithmExportTool } from "./algorithm-export"
 import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
 import { BacktestWalkforwardTool } from "./backtest-walkforward"
 import { BacktestSweepTool } from "./backtest-sweep"
+import { QuoteTool } from "./quote"
+import { PriceHistoryTool } from "./price-history"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -138,10 +142,14 @@ export namespace ToolRegistry {
       const algosetparams = yield* AlgorithmSetParamsTool
       const algovalidate = yield* AlgorithmValidateTool
       const algoscaffold = yield* AlgorithmScaffoldTool
+      const algoversions = yield* AlgorithmVersionsTool
+      const algoexport = yield* AlgorithmExportTool
       const backtestrun = yield* BacktestRunTool
       const backtesthistory = yield* BacktestHistoryTool
       const backtestwalkforward = yield* BacktestWalkforwardTool
       const backtestsweep = yield* BacktestSweepTool
+      const quote = yield* QuoteTool
+      const pricehistory = yield* PriceHistoryTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -225,10 +233,14 @@ export namespace ToolRegistry {
             algosetparams: Tool.init(algosetparams),
             algovalidate: Tool.init(algovalidate),
             algoscaffold: Tool.init(algoscaffold),
+            algoversions: Tool.init(algoversions),
+            algoexport: Tool.init(algoexport),
             backtestrun: Tool.init(backtestrun),
             backtesthistory: Tool.init(backtesthistory),
             backtestwalkforward: Tool.init(backtestwalkforward),
             backtestsweep: Tool.init(backtestsweep),
+            quote: Tool.init(quote),
+            pricehistory: Tool.init(pricehistory),
           })
 
           return {
@@ -255,10 +267,14 @@ export namespace ToolRegistry {
               tool.algosetparams,
               tool.algovalidate,
               tool.algoscaffold,
+              tool.algoversions,
+              tool.algoexport,
               tool.backtestrun,
               tool.backtesthistory,
               tool.backtestwalkforward,
               tool.backtestsweep,
+              tool.quote,
+              tool.pricehistory,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

@@ -1,41 +1,37 @@
-import { TextAttributes } from "@opentui/core"
-import { For } from "solid-js"
 import { useTheme } from "../context/theme"
+import { useDialog } from "../ui/dialog"
+import { DialogExamples } from "../ui/dialog-examples"
 import { Card } from "./card"
 
-const STEPS = [
-  { num: "1", title: "Describe a strategy", hint: "Type what you want to build in the prompt." },
-  { num: "2", title: "Choose your mode", hint: "Build / Research / Chat — press Tab to cycle." },
-  { num: "3", title: "Backtest & iterate", hint: "Run /backtest, review metrics, refine." },
-]
-
+// Compact 2-line first-run hint. Earlier versions of this card had 6+ lines
+// of bullets and pushed the home logo / prompt off-screen on shorter
+// terminals. This is intentionally tiny — the dense onboarding content
+// lives in /examples (templates) and /help (full guide).
 export function GettingStartedCard(props: { onDismiss?: () => void }) {
   const { theme } = useTheme()
+  const dialog = useDialog()
+
+  const openExamples = () => {
+    dialog.setSize("large")
+    dialog.replace(() => <DialogExamples />)
+  }
+
   return (
     <Card title=" Getting started ">
-      <box flexDirection="column" gap={1}>
-        <For each={STEPS}>
-          {(step) => (
-            <box flexDirection="row" gap={2}>
-              <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-                {step.num}
-              </text>
-              <box flexDirection="column" flexGrow={1}>
-                <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                  {step.title}
-                </text>
-                <text fg={theme.textMuted}>{step.hint}</text>
-              </box>
-            </box>
-          )}
-        </For>
-        {props.onDismiss ? (
-          <box paddingTop={1} flexDirection="row">
+      <box flexDirection="column" gap={0}>
+        <box paddingLeft={1} paddingRight={1} backgroundColor={theme.backgroundElement} onMouseUp={openExamples}>
+          <text fg={theme.text}>▸ Browse 7 templates</text>
+        </box>
+        <box flexDirection="row" justifyContent="space-between">
+          <text fg={theme.textMuted}>
+            <span style={{ fg: theme.text }}>/help</span> for full guide
+          </text>
+          {props.onDismiss ? (
             <text fg={theme.textMuted} onMouseUp={props.onDismiss}>
               dismiss
             </text>
-          </box>
-        ) : null}
+          ) : null}
+        </box>
       </box>
     </Card>
   )

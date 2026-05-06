@@ -116,7 +116,7 @@ function use() {
 
 export function Session() {
   const route = useRouteData("session")
-  const { navigate } = useRoute()
+  const { navigate, clearInitialPrompt } = useRoute()
   const sync = useSync()
   const event = useEvent()
   const project = useProject()
@@ -262,6 +262,10 @@ export function Session() {
     if (seeded || !route.initialPrompt || !r) return
     seeded = true
     r.set(route.initialPrompt)
+    // Drop the field from the store after seeding so it's a strict
+    // one-shot. Otherwise navigating away and back to the same session
+    // route would re-seed with stale text.
+    clearInitialPrompt()
   }
   const keybind = useKeybind()
   const dialog = useDialog()
