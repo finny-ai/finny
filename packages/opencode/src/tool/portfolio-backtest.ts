@@ -21,7 +21,30 @@ const parameters = z.object({
       }),
     )
     .min(1)
-    .describe("Holdings in the portfolio with their target weights."),
+    // 50 covers any reasonable retail portfolio; anything beyond risks
+    // multi-minute yfinance fan-out (price download + per-ticker currency
+    // detection) and would blow past the 120s tool timeout.
+    .max(50, "At most 50 tickers — keeps backtests fast and avoids excessive market-data downloads.")
+    // Dedupe by case-folded ticker. The Python side builds weights via dict
+    // comprehension (last-write-wins), so duplicates would silently change
+    // the allocation AND make the TS-side sum-to-1 check disagree with what
+    // actually runs. Force callers to merge explicitly.
+    .refine(
+      (items) => {
+        const seen = new Set<string>()
+        for (const h of items) {
+          const k = h.ticker.trim().toUpperCase()
+          if (seen.has(k)) return false
+          seen.add(k)
+        }
+        return true
+      },
+      {
+        message:
+          "Duplicate tickers in holdings — combine each ticker into a single entry and sum the weights.",
+      },
+    )
+    .describe("Holdings in the portfolio with their target weights. Max 50 tickers, no duplicates."),
   capital: z.number().positive().default(10000).describe("Starting capital in the user's currency (numeric)."),
   duration: z
     .string()

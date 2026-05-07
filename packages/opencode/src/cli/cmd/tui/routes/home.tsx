@@ -95,9 +95,10 @@ export function Home() {
       if (r.current.input !== ip.input) return
       sent = true
       r.submit()
-      setTimeout(() => {
-        if (r) r.reset()
-      }, 100)
+      // Prompt.submit() already clears the input and (when on home)
+      // schedules a navigate-to-session ~50ms later, which unmounts this
+      // component. A follow-up reset() on the captured ref would race
+      // that unmount and touch a destroyed input — drop it entirely.
       routeCtx.clearInitialPrompt()
       return
     }
