@@ -13,6 +13,8 @@ const parameters = z.object({
       z.object({
         ticker: z
           .string()
+          .trim()
+          .min(1, "Ticker cannot be empty.")
           .describe(
             "yfinance-compatible ticker. Equities use the bare symbol (VOO, AAPL, VFV.TO). Crypto uses dash form (BTC-USD, ETH-USD). Foreign listings use suffixes (e.g. VFV.TO for TSX).",
           ),
@@ -123,8 +125,9 @@ if len(px) < 2:
 # (the canonical TFSA case mixing US + Canadian listings) would produce
 # unit-mismatched equity curves.
 def detect_currency(t):
+    tk = yf.Ticker(t)
     try:
-        fi = yf.Ticker(t).fast_info
+        fi = tk.fast_info
         ccy = getattr(fi, "currency", None)
         if not ccy and hasattr(fi, "get"):
             ccy = fi.get("currency")
@@ -133,7 +136,7 @@ def detect_currency(t):
     except Exception:
         pass
     try:
-        info = yf.Ticker(t).info or {}
+        info = tk.info or {}
         ccy = info.get("currency")
         if ccy:
             return str(ccy).upper()
@@ -418,7 +421,7 @@ export const PortfolioBacktestTool = Tool.define(
             configPath,
             JSON.stringify(
               {
-                holdings: params.holdings.map((h) => ({ ticker: h.ticker, weight: h.weight })),
+                holdings: params.holdings.map((h) => ({ ticker: h.ticker.trim(), weight: h.weight })),
                 capital: params.capital,
                 start,
                 end,
