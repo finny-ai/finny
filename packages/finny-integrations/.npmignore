@@ -1,0 +1,10 @@
+# Defence-in-depth: never let secrets ride into a published tarball, even if
+# this package is flipped from private:true to public in the future.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.DS_Store
+node_modules
