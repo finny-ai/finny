@@ -124,22 +124,21 @@ export namespace Python {
    * not handled here — callers in that scenario should retry or run
    * `Python.reset()`.
    */
-  const inflight = new Map<string, Promise<Environment>>()
+  let queue: Promise<void> = Promise.resolve()
 
   export async function ensurePythonEnv(
     packages: PackageRequirement[],
     onProgress: ProgressCallback = () => {},
   ): Promise<Environment> {
-    // One lock per ENV_DIR so different package sets cannot race writes to
-    // the same virtualenv.
-    const key = ENV_DIR
-    while (true) {
-      const existing = inflight.get(key)
-      if (!existing) break
-      await existing
-    }
-
-    const promise = (async () => {
+    // Queue one operation at a time for this shared ENV_DIR.
+    let release: (() => void) | undefined
+    const next = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const wait = queue
+    queue = wait.then(() => next)
+    await wait
+    try {
       if (!(await exists(PY_BIN))) {
         await createVenv(onProgress)
       }
@@ -151,12 +150,9 @@ export namespace Python {
         await pipInstall(missing, onProgress)
       }
       return { python: PY_BIN, pip: PIP_BIN, envDir: ENV_DIR }
-    })().finally(() => {
-      if (inflight.get(key) === promise) inflight.delete(key)
-    })
-
-    inflight.set(key, promise)
-    return promise
+    } finally {
+      release?.()
+    }
   }
 
   /** Nuke the managed env. Useful for recovery if install state corrupts. */
