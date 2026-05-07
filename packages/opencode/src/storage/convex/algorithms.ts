@@ -2,13 +2,15 @@ import { convexClient } from "../convex-client"
 import { api } from "../../../../../convex/_generated/api"
 
 export namespace ConvexAlgorithms {
-  export async function upsert(values: {
+  // `version` is intentionally NOT in the args — Convex assigns it atomically
+  // server-side (max(existing for algorithmId) + 1) so concurrent saves from
+  // multiple devices can't collide.
+  export async function insertVersion(values: {
     algorithmId: string
     userId: string
     name: string
     code: string
     language: string
-    version: number
     status: string
     description?: string
     config?: string
@@ -17,11 +19,19 @@ export namespace ConvexAlgorithms {
     time_created: number
     time_updated: number
   }) {
-    return convexClient().mutation(api.algoclashAlgorithms.upsert, values)
+    return convexClient().mutation(api.algoclashAlgorithms.insertVersion, values)
+  }
+
+  export async function patchLatestConfig(algorithmId: string, config: string) {
+    return convexClient().mutation(api.algoclashAlgorithms.patchLatestConfig, { algorithmId, config })
   }
 
   export async function getById(algorithmId: string) {
     return convexClient().query(api.algoclashAlgorithms.getById, { algorithmId })
+  }
+
+  export async function getByIdAndVersion(algorithmId: string, version: number) {
+    return convexClient().query(api.algoclashAlgorithms.getByIdAndVersion, { algorithmId, version })
   }
 
   export async function getByName(userId: string, name: string) {
@@ -30,6 +40,10 @@ export namespace ConvexAlgorithms {
 
   export async function listByUser(userId: string) {
     return convexClient().query(api.algoclashAlgorithms.listByUser, { userId })
+  }
+
+  export async function listVersions(algorithmId: string) {
+    return convexClient().query(api.algoclashAlgorithms.listVersions, { algorithmId })
   }
 
   export async function updateStatus(algorithmId: string, status: string) {

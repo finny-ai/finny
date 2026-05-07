@@ -503,6 +503,30 @@
         "@opentui/solid",
       ],
     },
+    "packages/schedule-status": {
+      "name": "@finny/schedule-status",
+      "version": "0.0.1",
+      "dependencies": {
+        "@cloudflare/vite-plugin": "1.15.2",
+        "@kobalte/core": "catalog:",
+        "@openauthjs/openauth": "catalog:",
+        "@opencode-ai/console-resource": "workspace:*",
+        "@opencode-ai/ui": "workspace:*",
+        "@solidjs/meta": "catalog:",
+        "@solidjs/router": "catalog:",
+        "@solidjs/start": "catalog:",
+        "convex": "^1.21.0",
+        "nitro": "3.0.1-alpha.1",
+        "solid-js": "catalog:",
+        "vite": "catalog:",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@typescript/native-preview": "catalog:",
+        "typescript": "catalog:",
+        "wrangler": "4.50.0",
+      },
+    },
     "packages/script": {
       "name": "@opencode-ai/script",
       "dependencies": {
@@ -1186,6 +1210,8 @@
     "@finny-ai/integrations": ["@finny-ai/integrations@workspace:packages/finny-integrations"],
 
     "@finny-ai/registry": ["@finny-ai/registry@workspace:packages/finny-registry"],
+
+    "@finny/schedule-status": ["@finny/schedule-status@workspace:packages/schedule-status"],
 
     "@floating-ui/core": ["@floating-ui/core@1.7.5", "", { "dependencies": { "@floating-ui/utils": "^0.2.11" } }, "sha512-1Ih4WTWyw0+lKyFMcBHGbb5U5FtuHJuujoyyr5zTaWS5EYMeT6Jb2AuDeftsCsEuchO+mM2ij5+q9crhydzLhQ=="],
 

@@ -18,6 +18,11 @@ export namespace Plan {
   // Back-compat alias — older code referenced Plan.PROVIDER_ID.
   export const PROVIDER_ID = PRO_PROVIDER_ID
 
+  // Single source of truth for the upgrade CTA. DialogHelp, the welcome card,
+  // and any future paywall reference this — change in one place if marketing
+  // moves the page.
+  export const UPGRADE_URL = "https://www.finnyai.tech/pro"
+
   export const SAVE_CAP: Record<Tier, number> = {
     free: 5,
     lite: 15,

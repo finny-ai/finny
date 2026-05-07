@@ -20,6 +20,7 @@ import { DialogLiveRun } from "../component/dialog-live-run"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogManagedHosting } from "../component/dialog-managed-hosting"
 import { DialogProUpsell } from "../component/dialog-pro-upsell"
+import { DialogAlgorithmVersions } from "../component/dialog-algorithm-versions"
 import { Plan } from "@/plan"
 
 export function Algorithms() {
@@ -280,6 +281,13 @@ export function Algorithms() {
                       onMouseUp={() => deleteAlgo(algo())}
                     >
                       <text fg={theme.error}>Delete</text>
+                    </box>
+                    <box
+                      paddingLeft={2}
+                      paddingRight={2}
+                      onMouseUp={() => DialogAlgorithmVersions.show(dialog, algo())}
+                    >
+                      <text fg={theme.text}>Versions</text>
                     </box>
                     <box flexGrow={1} />
                     <box

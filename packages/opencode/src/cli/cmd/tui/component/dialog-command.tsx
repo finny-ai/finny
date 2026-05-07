@@ -14,6 +14,7 @@ import {
 import { useKeyboard } from "@opentui/solid"
 import { useKeybind } from "@tui/context/keybind"
 import { Analytics } from "@/analytics/tracker"
+import { Classify } from "@/analytics/classify"
 
 type Context = ReturnType<typeof init>
 const ctx = createContext<Context>()
@@ -40,9 +41,10 @@ function init() {
 
   // Wrap each option's onSelect so analytics fires once regardless of how
   // the command was activated (palette / slash / keybind / plugin / bus).
-  // Privacy: command `value` is plugin-controlled, so we record only the
-  // option's coarse `category` plus a built-in/plugin bit (built-in
-  // commands are categorized; most plugin commands are not).
+  // Privacy: command `value` is plugin-controlled — `Classify.command` only
+  // returns the literal name for built-in commands (init / review); anything
+  // else (user config, MCP, skill, plugin) is bucketed as "custom" so plugin
+  // identifiers never leak. `category` and `builtin` stay for back-compat.
   const entries = createMemo(() => {
     const all = registrations().flatMap((x) => x())
     return all.map((x) => {
@@ -54,7 +56,11 @@ function init() {
             Analytics.track({
               eventType: "command",
               eventName: "command.executed",
-              metadata: { category: x.category, builtin: !!x.category },
+              metadata: {
+                category: x.category,
+                builtin: !!x.category,
+                commandName: Classify.command(x.value),
+              },
             })
           } catch {}
           x.onSelect?.(ctx)

@@ -301,8 +301,51 @@ export function Prompt(props: PromptProps) {
               sessionID: props.sessionID,
             })
             setStore("interrupt", 0)
+            // Real users hit cancel and then have no idea what to do — Scott's
+            // session 2117c473a re-pasted the same prompt 49s after a silent
+            // abort. Surface the recovery option explicitly.
+            toast.show({
+              variant: "info",
+              message: "Cancelled. Type /retry to re-run the last prompt.",
+              duration: 4000,
+            })
           }
           dialog.clear()
+        },
+      },
+      {
+        title: "Retry last prompt",
+        value: "session.retry",
+        category: "Session",
+        slash: {
+          name: "retry",
+        },
+        // Only meaningful when there is a session AND a previous user message
+        // to pull from. Otherwise hide so users don't see a noop in the palette.
+        enabled: !!props.sessionID && !!lastUserMessage(),
+        onSelect: (dialog) => {
+          dialog.clear()
+          const last = lastUserMessage()
+          if (!last || !props.sessionID) {
+            toast.show({ variant: "warning", message: "Nothing to retry yet.", duration: 2500 })
+            return
+          }
+          // Rebuild input from the user message's text parts. File attachments
+          // are intentionally not re-attached — re-uploading via /retry is an
+          // edge case; users can drop the file back in if needed.
+          const parts = sync.data.part[last.id] ?? []
+          const text = parts
+            .filter((p: any) => p.type === "text" && typeof p.text === "string")
+            .map((p: any) => p.text as string)
+            .join("\n")
+            .trim()
+          if (!text) {
+            toast.show({ variant: "warning", message: "Last prompt had no text to retry.", duration: 2500 })
+            return
+          }
+          input.clear()
+          input.insertText(text)
+          submit()
         },
       },
       {
@@ -729,16 +772,34 @@ export function Prompt(props: PromptProps) {
     const currentMode = store.mode
     const variant = local.model.variant.current()
 
-    if (store.mode === "shell") {
-      sdk.client.session.shell({
-        sessionID,
-        agent: local.agent.current().name,
-        model: {
-          providerID: selectedModel.providerID,
-          modelID: selectedModel.modelID,
-        },
-        command: inputText,
+    // Submit-failure UX: misu's session 216e3bed1 sent "what markets do you have
+    // access to?" twice 72s apart because the first send silently failed (the
+    // old code did `.prompt().catch(() => {})` and swallowed the error). The
+    // input was cleared regardless of outcome, so the user had no signal that
+    // anything went wrong. Now: every send has a real error handler that
+    // surfaces a toast and points the user at the history recall.
+    const onSendFailed = (err: unknown) => {
+      toast.show({
+        variant: "error",
+        message: "Failed to send. Press ↑ to restore the prompt and try again.",
+        duration: 5000,
       })
+      // Log for the session log so support / triage can find why.
+      console.error("session send failed", err)
+    }
+
+    if (store.mode === "shell") {
+      sdk.client.session
+        .shell({
+          sessionID,
+          agent: local.agent.current().name,
+          model: {
+            providerID: selectedModel.providerID,
+            modelID: selectedModel.modelID,
+          },
+          command: inputText,
+        })
+        .catch(onSendFailed)
       setStore("mode", "normal")
     } else if (
       inputText.startsWith("/") &&
@@ -755,21 +816,23 @@ export function Prompt(props: PromptProps) {
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
 
-      sdk.client.session.command({
-        sessionID,
-        command: command.slice(1),
-        arguments: args,
-        agent: local.agent.current().name,
-        model: `${selectedModel.providerID}/${selectedModel.modelID}`,
-        messageID,
-        variant,
-        parts: nonTextParts
-          .filter((x) => x.type === "file")
-          .map((x) => ({
-            id: PartID.ascending(),
-            ...x,
-          })),
-      })
+      sdk.client.session
+        .command({
+          sessionID,
+          command: command.slice(1),
+          arguments: args,
+          agent: local.agent.current().name,
+          model: `${selectedModel.providerID}/${selectedModel.modelID}`,
+          messageID,
+          variant,
+          parts: nonTextParts
+            .filter((x) => x.type === "file")
+            .map((x) => ({
+              id: PartID.ascending(),
+              ...x,
+            })),
+        })
+        .catch(onSendFailed)
     } else {
       sdk.client.session
         .prompt({
@@ -788,7 +851,7 @@ export function Prompt(props: PromptProps) {
             ...nonTextParts.map(assign),
           ],
         })
-        .catch(() => {})
+        .catch(onSendFailed)
     }
     history.append({
       ...store.prompt,

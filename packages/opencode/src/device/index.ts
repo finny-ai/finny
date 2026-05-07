@@ -52,6 +52,16 @@ export namespace DeviceProfile {
     return info
   }
 
+  /**
+   * Canonical user ID for this install. This is the ONE source for the value
+   * we hang telemetry and session ownership off of — `Analytics.track` uses
+   * it to populate `interactions.userId`, and the session-sync writer uses it
+   * to populate `sessions.user_id`. Anywhere else that needs "who owns this
+   * row" should call this function rather than rolling its own getter.
+   *
+   * Stable across runs (persisted in `device.json`); first call on a fresh
+   * machine generates a v4 UUID.
+   */
   export async function userId(): Promise<string> {
     const info = await get()
     return info.userId

@@ -13,9 +13,16 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
-import PROMPT_FINNY_BUILD from "./prompt/finny-build.txt"
-import PROMPT_FINNY_RESEARCH from "./prompt/finny-research.txt"
-import PROMPT_FINNY_CHAT from "./prompt/finny-chat.txt"
+import PROMPT_FINNY_BUILD_RAW from "./prompt/finny-build.txt"
+import PROMPT_FINNY_RESEARCH_RAW from "./prompt/finny-research.txt"
+import PROMPT_FINNY_CHAT_RAW from "./prompt/finny-chat.txt"
+import { renderPromptWithSymbols } from "../data/symbols"
+
+// Render `<supported_markets/>` once so every agent prompt and the runtime
+// market-data tools share one symbol registry — see packages/opencode/src/data/symbols.ts.
+const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
+const PROMPT_FINNY_RESEARCH = renderPromptWithSymbols(PROMPT_FINNY_RESEARCH_RAW)
+const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -107,6 +114,35 @@ export namespace Agent {
 
           const user = Permission.fromConfig(cfg.permission ?? {})
 
+          // Finny is a strategy builder, NOT a coding agent. The build /
+          // research / chat agents must not read, edit, search, or shell out
+          // against the user's local codebase — algorithms live in Convex
+          // (via finny_algorithm_save / _get / _list / _versions / _export)
+          // and never touch arbitrary filesystem paths. This sandbox is
+          // applied AFTER `defaults` (which is permissive) and BEFORE `user`
+          // (so the user can still override per-rule via .config if they
+          // really want to).
+          const finnyFileSystemSandbox = Permission.fromConfig({
+            read: "deny",
+            edit: "deny",
+            glob: "deny",
+            grep: "deny",
+            list: "deny",
+            bash: "deny",
+            external_directory: "deny",
+            // `websearch` is denied so the runtime matches what the prompts
+            // already advertise ("there is no websearch tool"). Without this,
+            // websearch was registered + allowed by the default `*: allow`
+            // and the model would intermittently call it, breaking when no
+            // search-API key was configured.
+            websearch: "deny",
+            // `webfetch` stays allowed — useful for grounding decisions in
+            // a known news/docs URL the user provided.
+            // `task` (subagent spawn), `todowrite`, `skill`, and the
+            // finny_* tools have their own permission keys and are not
+            // restricted here.
+          })
+
           const agents: Record<string, Info> = {
             build: {
               name: "build",
@@ -116,6 +152,7 @@ export namespace Agent {
               prompt: PROMPT_FINNY_BUILD,
               permission: Permission.merge(
                 defaults,
+                finnyFileSystemSandbox,
                 Permission.fromConfig({
                   question: "allow",
                   plan_enter: "allow",
@@ -124,6 +161,11 @@ export namespace Agent {
               ),
               mode: "primary",
               native: true,
+              // Sized for: scaffold + write/save (with up-to-3 validation retries)
+              // + backtest + walk-forward + a couple of tweak/re-run cycles +
+              // summary. Without an explicit cap maxSteps defaults to Infinity
+              // and the MAX_STEPS safety net never fires.
+              steps: 25,
             },
             research: {
               name: "research",
@@ -133,9 +175,12 @@ export namespace Agent {
               prompt: PROMPT_FINNY_RESEARCH,
               permission: Permission.merge(
                 defaults,
+                finnyFileSystemSandbox,
                 Permission.fromConfig({
                   question: "allow",
                   plan_exit: "allow",
+                  // Research mode is allowed to write its plan markdown files
+                  // — a narrow exception to the sandbox above.
                   external_directory: {
                     [path.join(Global.Path.data, "plans", "*")]: "allow",
                   },
@@ -150,6 +195,9 @@ export namespace Agent {
               ),
               mode: "primary",
               native: true,
+              // Research asks → reads → proposes plan; light tool use compared
+              // to build.
+              steps: 15,
             },
             chat: {
               name: "chat",
@@ -159,6 +207,7 @@ export namespace Agent {
               prompt: PROMPT_FINNY_CHAT,
               permission: Permission.merge(
                 defaults,
+                finnyFileSystemSandbox,
                 Permission.fromConfig({
                   question: "allow",
                   edit: "deny",
@@ -167,6 +216,9 @@ export namespace Agent {
               ),
               mode: "primary",
               native: true,
+              // Conversational; allows a few quote/history calls if grounding
+              // an answer in real prices.
+              steps: 8,
             },
             general: {
               name: "general",
