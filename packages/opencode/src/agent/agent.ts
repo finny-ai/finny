@@ -231,6 +231,7 @@ export namespace Agent {
               prompt: PROMPT_FINNY_PORTFOLIO_BUILDER,
               permission: Permission.merge(
                 defaults,
+                finnyFileSystemSandbox,
                 Permission.fromConfig({
                   question: "allow",
                   edit: "deny",

@@ -62,7 +62,7 @@ Strict markdown:
 ## Equities (60%)
 | Ticker | Name | Sector | Region | Weight | $ | Rationale |
 |---|---|---|---|---:|---:|---|
-| VFV.TO | Vanguard S&P 500 (CAD-hedged) | Broad | US | 25% | 6,250 | core US large-cap |
+| VFV.TO | Vanguard S&P 500 (CAD, unhedged) | Broad | US | 25% | 6,250 | core US large-cap |
 | ... | ... | ... | ... | ... | ... | ... |
 
 ## Fixed Income (30%)
@@ -98,6 +98,7 @@ After delivering the plan, **always** ask:
 If the user agrees, call the **finny_portfolio_backtest** tool with:
 - `holdings`: array of `{ ticker, weight }` pulled from your plan (use yfinance-compatible symbols — `BTC-USD` not `BTC/USD`)
 - `capital`: the user's funds (numeric)
+- `currency`: the user's currency (`USD`, `CAD`, or `EUR`) — MUST match the intake so output formatting isn't misleading
 - `duration`: usually `"5y"` unless the user asks otherwise
 - `rebalance`: `"monthly"` by default
 

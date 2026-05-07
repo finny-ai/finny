@@ -5,6 +5,7 @@ import path from "path"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Process } from "@/util/process"
+import { ensurePythonEnv } from "@/python/env"
 
 const parameters = z.object({
   holdings: z
@@ -31,19 +32,20 @@ const parameters = z.object({
     .enum(["none", "monthly", "quarterly", "yearly"])
     .default("monthly")
     .describe("Rebalancing cadence. 'none' = pure buy-and-hold."),
+  currency: z
+    .enum(["USD", "CAD", "EUR"])
+    .default("USD")
+    .describe("ISO currency for `capital` and output formatting. Default 'USD'."),
 })
 
 const PORTFOLIO_BACKTEST_PY = String.raw`
-import sys, json, argparse, math, subprocess
-from pathlib import Path
-
-try:
-    import yfinance as yf
-    import pandas as pd
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "yfinance", "pandas"])
-    import yfinance as yf
-    import pandas as pd
+# yfinance + pandas are guaranteed to be installed by the managed venv before
+# this script runs (see ensurePythonEnv call in portfolio-backtest.ts). No
+# subprocess pip install fallback — that path was broken on PEP 668 / no-pip
+# Linux and could pollute stdout.
+import sys, json, argparse, math
+import yfinance as yf
+import pandas as pd
 
 p = argparse.ArgumentParser()
 p.add_argument("--config", required=True)
@@ -97,15 +99,20 @@ init_px = px.iloc[0]
 shares = (capital * w) / init_px
 cash = 0.0
 
-# Determine rebalance dates.
+# Determine rebalance dates. Threshold must be strictly AFTER \`date\` so the
+# day right after a period boundary doesn't trigger an immediate second
+# rebalance. \`offset(1)\` advances forward: when \`date\` is already at a
+# period end, it jumps to the FOLLOWING period end (so candidate > date).
 def next_threshold(date, kind):
     if kind == "monthly":
-        return (date.replace(day=1) + pd.offsets.MonthEnd(1)).normalize()
-    if kind == "quarterly":
-        return (date + pd.offsets.QuarterEnd(0)).normalize()
-    if kind == "yearly":
-        return (date + pd.offsets.YearEnd(0)).normalize()
-    return None
+        offset = pd.offsets.MonthEnd(1)
+    elif kind == "quarterly":
+        offset = pd.offsets.QuarterEnd(1)
+    elif kind == "yearly":
+        offset = pd.offsets.YearEnd(1)
+    else:
+        return None
+    return (pd.Timestamp(date) + offset).normalize()
 
 equity_curve = []
 last_pivot = px.index[0]
@@ -230,8 +237,17 @@ function fmtPct(x: number): string {
   return `${(x * 100).toFixed(2)}%`
 }
 
-function fmtUsd(x: number): string {
-  return `$${x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+function fmtMoney(x: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(x)
+  } catch {
+    return `${currency} ${x.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+  }
 }
 
 export const PortfolioBacktestTool = Tool.define(
@@ -260,19 +276,18 @@ export const PortfolioBacktestTool = Tool.define(
 
         const { start, end } = computeDateRange(params.duration)
 
-        let pythonCmd = "python3"
+        let pythonCmd: string
         try {
-          await Process.run(["python3", "--version"])
-        } catch {
-          try {
-            await Process.run(["python", "--version"])
-            pythonCmd = "python"
-          } catch {
-            return {
-              title: "Portfolio backtest failed",
-              output: "Python 3 not found. Install Python 3 (e.g. brew install python3) and try again.",
-              metadata: {},
-            }
+          const env = await ensurePythonEnv([
+            { spec: "yfinance", importCheck: "yfinance" },
+            { spec: "pandas", importCheck: "pandas" },
+          ])
+          pythonCmd = env.python
+        } catch (e: any) {
+          return {
+            title: "Python env failed",
+            output: e?.message ?? "Failed to set up the managed Python environment.",
+            metadata: { error: "python_env" },
           }
         }
 
@@ -301,6 +316,7 @@ export const PortfolioBacktestTool = Tool.define(
             cwd: tmpDir,
             nothrow: true,
             timeout: 120_000,
+            abort: ctx.abort,
           })
 
           if (result.code !== 0) {
@@ -333,12 +349,13 @@ export const PortfolioBacktestTool = Tool.define(
             }
           }
 
+          const ccy = params.currency
           const lines: string[] = []
           lines.push(`Portfolio Backtest — ${parsed.start} → ${parsed.end} (${parsed.window_days} days)`)
           lines.push(`Rebalance: ${parsed.rebalance}`)
           lines.push("")
-          lines.push(`Starting Capital: ${fmtUsd(parsed.starting_capital)}`)
-          lines.push(`Ending Equity:    ${fmtUsd(parsed.ending_equity)}`)
+          lines.push(`Starting Capital: ${fmtMoney(parsed.starting_capital, ccy)}`)
+          lines.push(`Ending Equity:    ${fmtMoney(parsed.ending_equity, ccy)}`)
           lines.push(`Total Return:     ${fmtPct(parsed.total_return)}`)
           lines.push(`CAGR:             ${fmtPct(parsed.cagr)}`)
           lines.push(`Annualized Vol:   ${fmtPct(parsed.annualized_volatility)}`)
@@ -353,7 +370,7 @@ export const PortfolioBacktestTool = Tool.define(
           for (const c of parsed.contributions ?? []) {
             lines.push(
               `  ${c.ticker.padEnd(10)} w=${(c.weight * 100).toFixed(1)}%  ` +
-                `ret=${fmtPct(c.asset_return).padStart(8)}  pnl=${fmtUsd(c.pnl_dollars)}`,
+                `ret=${fmtPct(c.asset_return).padStart(8)}  pnl=${fmtMoney(c.pnl_dollars, ccy)}`,
             )
           }
 
