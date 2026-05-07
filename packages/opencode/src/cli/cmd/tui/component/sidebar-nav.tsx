@@ -6,7 +6,7 @@ import open from "open"
 import { useToast } from "../ui/toast"
 import { Plan } from "@/plan"
 
-const FEEDBACK_URL = "https://www.finnyai.tech/help"
+const DISCORD_URL = "https://discord.gg/Y68pqQju8"
 
 type NavAction =
   | { kind: "route"; type: Route["type"] }
@@ -31,7 +31,7 @@ const UPGRADE_URL = "https://finnyai.tech/pro"
 const UPGRADE_ITEM: NavItem = { icon: ">>>", label: "Upgrade", action: { kind: "external", url: UPGRADE_URL } }
 
 const BOTTOM_ITEMS: NavItem[] = [
-  { icon: "@@@", label: "Feedback", action: { kind: "external", url: FEEDBACK_URL } },
+  { icon: "@@@", label: "Discord", action: { kind: "external", url: DISCORD_URL } },
   { icon: "***", label: "Settings", action: { kind: "route", type: "settings" } },
 ]
 

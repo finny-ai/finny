@@ -8,6 +8,10 @@
     ".": "./src/index.ts",
     "./*": "./src/*.ts"
   },
+  "files": [
+    "src",
+    ".env.example"
+  ],
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
