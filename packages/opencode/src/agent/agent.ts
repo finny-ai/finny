@@ -16,6 +16,7 @@ import PROMPT_TITLE from "./prompt/title.txt"
 import PROMPT_FINNY_BUILD_RAW from "./prompt/finny-build.txt"
 import PROMPT_FINNY_RESEARCH_RAW from "./prompt/finny-research.txt"
 import PROMPT_FINNY_CHAT_RAW from "./prompt/finny-chat.txt"
+import PROMPT_FINNY_PORTFOLIO_BUILDER_RAW from "./prompt/finny-portfolio-builder.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 
 // Render `<supported_markets/>` once so every agent prompt and the runtime
@@ -23,6 +24,7 @@ import { renderPromptWithSymbols } from "../data/symbols"
 const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
 const PROMPT_FINNY_RESEARCH = renderPromptWithSymbols(PROMPT_FINNY_RESEARCH_RAW)
 const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
+const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@/global"
@@ -219,6 +221,28 @@ export namespace Agent {
               // Conversational; allows a few quote/history calls if grounding
               // an answer in real prices.
               steps: 8,
+            },
+            portfolio_builder: {
+              name: "portfolio_builder",
+              description:
+                "Portfolio Builder. Designs a diversified investment plan (stocks/ETFs/crypto/bonds) sized to your funds, horizon, and risk. TFSA-aware. Recommendation only — does not execute trades.",
+              color: "#eab308",
+              options: {},
+              prompt: PROMPT_FINNY_PORTFOLIO_BUILDER,
+              permission: Permission.merge(
+                defaults,
+                finnyFileSystemSandbox,
+                user,
+                Permission.fromConfig({
+                  question: "allow",
+                  edit: "deny",
+                  write: "deny",
+                  patch: "deny",
+                }),
+              ),
+              mode: "primary",
+              native: true,
+              hidden: true,
             },
             general: {
               name: "general",

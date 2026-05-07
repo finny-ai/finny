@@ -1,9 +1,10 @@
-import { createMemo, createSignal, For, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { BacktestRunner } from "@/backtest/runner"
 import { Algorithm } from "@/algorithm"
 import { parseConfig } from "@/algorithm/strategy-params"
 import { useTheme } from "../context/theme"
+import { useRouteData } from "../context/route"
 import { useAlgorithms } from "../context/algorithms"
 import { useBacktestHistory } from "../context/backtest-history"
 import { useLiveRuns } from "../context/live-runs"
@@ -30,13 +31,20 @@ export function Algorithms() {
   const liveRuns = useLiveRuns()
   const dialog = useDialog()
   const toast = useToast()
-  const [selectedId, setSelectedId] = createSignal<string | undefined>(undefined)
+  const routeData = useRouteData("algorithms")
+  const [selectedId, setSelectedId] = createSignal<string | undefined>(routeData.algorithmId)
   const [tier, setTier] = createSignal<Plan.Tier>("free")
 
   // Always refetch on route mount so newly-built algos show up.
   onMount(async () => {
     algos.refetch()
     setTier(await Plan.getTier())
+  })
+
+  // If the route is updated with a new algorithmId (e.g. clicked from Home's
+  // Recent algorithms card), honor it.
+  createEffect(() => {
+    if (routeData.algorithmId) setSelectedId(routeData.algorithmId)
   })
 
   const guessSymbolForAlgo = (algo: Algorithm.Info): string => {

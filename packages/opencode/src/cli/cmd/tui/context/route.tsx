@@ -5,6 +5,7 @@ import type { PromptInfo } from "../component/prompt/history"
 export type HomeRoute = {
   type: "home"
   initialPrompt?: PromptInfo
+  autoSubmit?: boolean
 }
 
 export type SessionRoute = {
@@ -19,9 +20,10 @@ export type PluginRoute = {
   data?: Record<string, unknown>
 }
 
-export type AlgorithmsRoute = { type: "algorithms" }
+export type AlgorithmsRoute = { type: "algorithms"; algorithmId?: string }
 export type BacktestsRoute = { type: "backtests" }
 export type PortfolioRoute = { type: "portfolio" }
+export type PortfolioBuilderRoute = { type: "portfolio-builder" }
 export type SessionsRoute = { type: "sessions" }
 export type SettingsTab = "appearance" | "model" | "providers" | "mcp" | "agents" | "paper-trading" | "skills" | "pro"
 export type SettingsRoute = { type: "settings"; tab?: SettingsTab }
@@ -33,6 +35,7 @@ export type Route =
   | AlgorithmsRoute
   | BacktestsRoute
   | PortfolioRoute
+  | PortfolioBuilderRoute
   | SessionsRoute
   | SettingsRoute
 
@@ -67,6 +70,9 @@ export const { use: useRoute, provider: RouteProvider } = createSimpleContext({
       clearInitialPrompt() {
         if ((store as any).initialPrompt !== undefined) {
           setStore("initialPrompt" as any, undefined)
+        }
+        if ((store as any).autoSubmit !== undefined) {
+          setStore("autoSubmit" as any, undefined)
         }
       },
     }
