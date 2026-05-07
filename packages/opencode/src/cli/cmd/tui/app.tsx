@@ -48,6 +48,7 @@ import { Session } from "@tui/routes/session"
 import { Algorithms } from "@tui/routes/algorithms"
 import { Backtests } from "@tui/routes/backtests"
 import { Portfolio } from "@tui/routes/portfolio"
+import { PortfolioBuilder } from "@tui/routes/portfolio-builder"
 import { Sessions } from "@tui/routes/sessions"
 import { Settings } from "@tui/routes/settings"
 import { Shell } from "@tui/component/shell"
@@ -410,6 +411,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       algorithms: "Finny | Algorithms",
       backtests: "Finny | Backtests",
       portfolio: "Finny | Portfolio",
+      "portfolio-builder": "Finny | Portfolio Builder",
       sessions: "Finny | Sessions",
       settings: "Finny | Settings",
     }
@@ -1148,6 +1150,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             </Match>
             <Match when={route.data.type === "portfolio"}>
               <Portfolio />
+            </Match>
+            <Match when={route.data.type === "portfolio-builder"}>
+              <PortfolioBuilder />
             </Match>
             <Match when={route.data.type === "sessions"}>
               <Sessions />

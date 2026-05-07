@@ -57,10 +57,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return agents()
         },
         current() {
-          return agents().find((x) => x.name === agentStore.current) ?? agents()[0]
+          return (
+            sync.data.agent.find((x) => x.name === agentStore.current && x.mode !== "subagent") ?? agents()[0]
+          )
         },
         set(name: string) {
-          if (!agents().some((x) => x.name === name))
+          if (!sync.data.agent.some((x) => x.name === name && x.mode !== "subagent"))
             return toast.show({
               variant: "warning",
               message: `Agent not found: ${name}`,

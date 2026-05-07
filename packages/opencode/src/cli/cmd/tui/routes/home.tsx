@@ -77,16 +77,30 @@ export function Home() {
   // AND on every subsequent navigation. After applying we CLEAR the field
   // from the route store so it's strictly a one-shot signal: navigating
   // back to home (or off to session) won't re-fill the input with stale
-  // template text.
+  // template text. If autoSubmit is set (e.g. Portfolio Builder), defer
+  // the clear until sync + model are ready so we can submit it.
   createEffect(() => {
     const r = ref()
     if (!r) return
     const ip = route.initialPrompt
     if (!ip) return
     const key = ip.input + "|" + (ip.parts?.length ?? 0)
-    if (key === lastAppliedInitialPrompt) return
-    lastAppliedInitialPrompt = key
-    r.set(ip)
+    if (key !== lastAppliedInitialPrompt) {
+      lastAppliedInitialPrompt = key
+      r.set(ip)
+    }
+    if (route.autoSubmit) {
+      if (sent) return
+      if (!sync.ready || !local.model.ready) return
+      if (r.current.input !== ip.input) return
+      sent = true
+      r.submit()
+      setTimeout(() => {
+        if (r) r.reset()
+      }, 100)
+      routeCtx.clearInitialPrompt()
+      return
+    }
     routeCtx.clearInitialPrompt()
   })
 

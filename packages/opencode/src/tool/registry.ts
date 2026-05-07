@@ -22,6 +22,7 @@ import { BacktestWalkforwardTool } from "./backtest-walkforward"
 import { BacktestSweepTool } from "./backtest-sweep"
 import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
+import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -150,6 +151,7 @@ export namespace ToolRegistry {
       const backtestsweep = yield* BacktestSweepTool
       const quote = yield* QuoteTool
       const pricehistory = yield* PriceHistoryTool
+      const portfoliobacktest = yield* PortfolioBacktestTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -241,6 +243,7 @@ export namespace ToolRegistry {
             backtestsweep: Tool.init(backtestsweep),
             quote: Tool.init(quote),
             pricehistory: Tool.init(pricehistory),
+            portfoliobacktest: Tool.init(portfoliobacktest),
           })
 
           return {
@@ -275,6 +278,7 @@ export namespace ToolRegistry {
               tool.backtestsweep,
               tool.quote,
               tool.pricehistory,
+              tool.portfoliobacktest,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],
