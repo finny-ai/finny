@@ -116,13 +116,13 @@ export namespace Python {
    * pays a 30-60s venv-create + pip-install once.
    *
    * Concurrent calls in the same process (e.g. quote / history / backtest
-   * tools firing in parallel during a single agent turn) are coalesced via
-   * the `inflight` Map keyed by the install target. Without this, two cold
-   * callers would race through `createVenv` and `pipInstall` against the
-   * same directory, occasionally corrupting the env or producing flaky
-   * "module not found" errors. Cross-process locking (e.g. when multiple
-   * finny instances run concurrently) is intentionally not handled here —
-   * callers in that scenario should retry or run `Python.reset()`.
+   * tools firing in parallel during a single agent turn) are serialized per
+   * ENV_DIR. Without this, two cold callers could race through `createVenv`
+   * and `pipInstall` against the same directory, occasionally corrupting the
+   * env or producing flaky "module not found" errors. Cross-process locking
+   * (e.g. when multiple finny instances run concurrently) is intentionally
+   * not handled here — callers in that scenario should retry or run
+   * `Python.reset()`.
    */
   const inflight = new Map<string, Promise<Environment>>()
 
@@ -130,11 +130,14 @@ export namespace Python {
     packages: PackageRequirement[],
     onProgress: ProgressCallback = () => {},
   ): Promise<Environment> {
-    // Stable key over the requested packages so independent callers asking
-    // for the same set share a single in-flight promise.
-    const key = packages.map((p) => p.spec).sort().join("|")
-    const existing = inflight.get(key)
-    if (existing) return existing
+    // One lock per ENV_DIR so different package sets cannot race writes to
+    // the same virtualenv.
+    const key = ENV_DIR
+    while (true) {
+      const existing = inflight.get(key)
+      if (!existing) break
+      await existing
+    }
 
     const promise = (async () => {
       if (!(await exists(PY_BIN))) {
@@ -149,7 +152,7 @@ export namespace Python {
       }
       return { python: PY_BIN, pip: PIP_BIN, envDir: ENV_DIR }
     })().finally(() => {
-      inflight.delete(key)
+      if (inflight.get(key) === promise) inflight.delete(key)
     })
 
     inflight.set(key, promise)
