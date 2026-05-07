@@ -18,6 +18,10 @@ import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
 import { BacktestWalkforwardTool } from "./backtest-walkforward"
 import { BacktestSweepTool } from "./backtest-sweep"
+import { MonitorSnapshotTool } from "./monitor-snapshot"
+import { ScheduleSubagentTool } from "./schedule-subagent"
+import { ListSubagentsTool } from "./list-subagents"
+import { StopSubagentTool } from "./stop-subagent"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -142,6 +146,10 @@ export namespace ToolRegistry {
       const backtesthistory = yield* BacktestHistoryTool
       const backtestwalkforward = yield* BacktestWalkforwardTool
       const backtestsweep = yield* BacktestSweepTool
+      const monitorsnapshot = yield* MonitorSnapshotTool
+      const schedulesubagent = yield* ScheduleSubagentTool
+      const listsubagents = yield* ListSubagentsTool
+      const stopsubagent = yield* StopSubagentTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -229,6 +237,10 @@ export namespace ToolRegistry {
             backtesthistory: Tool.init(backtesthistory),
             backtestwalkforward: Tool.init(backtestwalkforward),
             backtestsweep: Tool.init(backtestsweep),
+            monitorsnapshot: Tool.init(monitorsnapshot),
+            schedulesubagent: Tool.init(schedulesubagent),
+            listsubagents: Tool.init(listsubagents),
+            stopsubagent: Tool.init(stopsubagent),
           })
 
           return {
@@ -259,6 +271,10 @@ export namespace ToolRegistry {
               tool.backtesthistory,
               tool.backtestwalkforward,
               tool.backtestsweep,
+              tool.monitorsnapshot,
+              tool.schedulesubagent,
+              tool.listsubagents,
+              tool.stopsubagent,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

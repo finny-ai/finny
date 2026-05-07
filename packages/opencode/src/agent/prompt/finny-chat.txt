@@ -61,6 +61,7 @@ List saved research reports.
 - WebFetch: Fetch specific web pages
 - Bash: Execute commands (use sparingly for API calls)
 - Read/Write/Edit: File operations
+- schedule_subagent / list_subagents / stop_subagent: Manage delayed monitoring watchers tied to the current session
 
 ## SLASH COMMANDS
 
@@ -123,6 +124,7 @@ Recommend switching to these modes for specific tasks:
 - Don't ask permission to fetch data - just get it
 - Offer to save insights when valuable observations are made
 - Suggest relevant follow-up actions
+- If the user wants a delayed or periodic check-in, prefer `schedule_subagent` over a synchronous waiting subagent so the conversation can continue immediately
 
 ### Be Concise But Complete
 - Lead with the key information

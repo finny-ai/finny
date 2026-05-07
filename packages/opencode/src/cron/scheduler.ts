@@ -6,6 +6,7 @@ import { Notify } from "./notify"
 import { PromptRunner } from "./prompt-runner"
 import { ulid } from "ulid"
 import { Job } from "./job"
+import { Inject } from "./inject"
 
 export namespace Scheduler {
   const log = Log.create({ service: "cron.scheduler" })
@@ -18,6 +19,7 @@ export namespace Scheduler {
   export function start() {
     if (timer) return
     log.info("scheduler.start")
+    void bootSweep().catch((e) => log.error("scheduler.boot-sweep.error", { e: String(e) }))
     void tick().catch((e) => log.error("scheduler.tick.error", { e: String(e) }))
     timer = setInterval(() => {
       void tick().catch((e) => log.error("scheduler.tick.error", { e: String(e) }))
@@ -28,6 +30,15 @@ export namespace Scheduler {
     if (timer) clearInterval(timer)
     timer = undefined
     log.info("scheduler.stop")
+  }
+
+  async function bootSweep() {
+    const jobs = await CronStorage.list()
+    for (const job of jobs) {
+      if (job.durable || !job.parentSessionID) continue
+      await CronStorage.remove(job.id)
+      log.info("scheduler.boot-sweep.removed", { jobId: job.id })
+    }
   }
 
   async function tick() {
@@ -62,7 +73,11 @@ export namespace Scheduler {
     let status: CronStorage.RunRecord["status"] = "ok"
     let note: string | undefined
     try {
-      if (job.kind === "check") {
+      if (job.expiresAt && job.expiresAt <= startedAt) {
+        await CronStorage.update(job.id, { enabled: false })
+        status = "skipped"
+        note = "expired"
+      } else if (job.kind === "check") {
         if (Check.withinCooldown(job, startedAt)) {
           status = "skipped"
           note = "within cooldown"
@@ -81,13 +96,25 @@ export namespace Scheduler {
       } else if (job.kind === "prompt") {
         const result = await PromptRunner.run(job)
         if (result.ok && result.text) {
-          status = "fired"
-          note = "prompt completed"
-          await Notify.send({
-            title: job.notification.title || job.name,
-            body: (job.notification.body || result.text).slice(0, 240),
-          })
-          await CronStorage.update(job.id, { lastFiredAt: startedAt })
+          const text = result.text.trim()
+          if (text === "No change.") {
+            status = "ok"
+            note = "watcher found no material change"
+          } else {
+            status = "fired"
+            note = "prompt completed"
+            if (job.parentSessionID) {
+              await Inject.post(job.parentSessionID, formatFinding(job, text), {
+                title: job.notification.title || job.name,
+              })
+            } else {
+              await Notify.send({
+                title: job.notification.title || job.name,
+                body: (job.notification.body || text).slice(0, 240),
+              })
+            }
+            await CronStorage.update(job.id, { lastFiredAt: startedAt })
+          }
         } else {
           status = "error"
           note = result.error || "prompt failed"
@@ -129,5 +156,9 @@ export namespace Scheduler {
     await CronStorage.appendRun(record)
     log.info("scheduler.run", { jobId: job.id, status, ms: record.durationMs })
     return record
+  }
+
+  function formatFinding(job: Job.Schema, text: string) {
+    return [`[watcher: ${job.name}]`, text].join("\n\n")
   }
 }

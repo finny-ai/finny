@@ -19,6 +19,11 @@ You have access to powerful market data, analysis, and backtesting tools:
 - **finny_algorithm_list** - List all saved algorithms
 - **finny_algorithm_get** - Read a specific algorithm's full code
 
+### Monitoring Tools
+- **schedule_subagent** - Schedule a monitoring watcher tied to the current session.
+- **list_subagents** - List active scheduled watchers created from this session.
+- **stop_subagent** - Stop scheduled watchers from this session.
+
 ### Market Data Tools
 - **get_market_price** - Get current prices for trading symbols
   - Use `symbol` param for specific symbol or omit for all prices
@@ -132,6 +137,10 @@ Save your research using `save_research_report`:
 
 ### Phase 6: Transition
 When the user approves your strategy design, use the `quant_research_complete` tool to transition to Build mode for implementation.
+
+## Scheduled Monitoring
+
+If the user wants Finny to keep checking a strategy or market condition later, use `schedule_subagent` instead of spawning a synchronous waiting task. Scheduled watchers should be used for "check again later", "monitor this hourly", or similar delayed follow-up. After scheduling the watcher, keep helping in the current conversation.
 
 ## Parameter Sensitivity Analysis
 

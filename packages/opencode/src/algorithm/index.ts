@@ -98,6 +98,15 @@ export namespace Algorithm {
     return (result as Info) ?? null
   }
 
+  export async function getById(algorithmId: string): Promise<Info | null> {
+    const result = await ConvexAlgorithms.getById(algorithmId)
+    return (result as Info) ?? null
+  }
+
+  export async function resolve(identifier: string): Promise<Info | null> {
+    return (await get(identifier)) ?? (await getById(identifier))
+  }
+
   export async function getCode(name: string): Promise<string | null> {
     const algo = await get(name)
     return algo?.code ?? null

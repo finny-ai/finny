@@ -4,6 +4,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import z from "zod"
+import { makeRuntime } from "@/effect/run-service"
 
 export namespace SessionStatus {
   export const Info = z
@@ -85,4 +86,14 @@ export namespace SessionStatus {
   )
 
   export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+
+  const { runPromise } = makeRuntime(Service, defaultLayer)
+
+  export async function get(sessionID: SessionID) {
+    return runPromise((svc) => svc.get(SessionID.make(sessionID)))
+  }
+
+  export async function list() {
+    return runPromise((svc) => svc.list())
+  }
 }
