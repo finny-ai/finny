@@ -59,6 +59,7 @@ capital = float(cfg["capital"])
 start = cfg["start"]
 end = cfg["end"]
 rebalance = cfg["rebalance"]
+target_ccy = (cfg.get("currency") or "USD").upper()
 
 tickers = [h["ticker"] for h in holdings]
 weights = {h["ticker"]: float(h["weight"]) for h in holdings}
@@ -89,6 +90,69 @@ if not present:
 px = px[present].dropna()
 if len(px) < 2:
     print(json.dumps({"ok": False, "error": "Not enough overlapping price history."}))
+    sys.exit(0)
+
+# --- FX conversion --------------------------------------------------------
+# yfinance returns prices in each security's listing currency (VFV.TO is CAD,
+# VOO is USD, BTC-USD is USD). The portfolio math here assumes a single
+# currency for capital + prices, so any non-target series must be converted
+# before computing shares/equity. Without this, mixed-currency portfolios
+# (the canonical TFSA case mixing US + Canadian listings) would produce
+# unit-mismatched equity curves.
+def detect_currency(t):
+    try:
+        fi = yf.Ticker(t).fast_info
+        ccy = getattr(fi, "currency", None)
+        if not ccy and hasattr(fi, "get"):
+            ccy = fi.get("currency")
+        if ccy:
+            return str(ccy).upper()
+    except Exception:
+        pass
+    try:
+        info = yf.Ticker(t).info or {}
+        ccy = info.get("currency")
+        if ccy:
+            return str(ccy).upper()
+    except Exception:
+        pass
+    return "USD"
+
+ticker_ccy = {t: detect_currency(t) for t in present}
+fx_needed = sorted({c for c in ticker_ccy.values() if c != target_ccy})
+fx_series = {}
+fx_failures = []
+for src in fx_needed:
+    pair = f"{src}{target_ccy}=X"
+    try:
+        fx = yf.download(pair, start=start, end=end, progress=False, auto_adjust=True)
+        if fx is None or fx.empty:
+            fx_failures.append(src)
+            continue
+        col = "Close" if "Close" in fx.columns else "Adj Close"
+        s = fx[col]
+        if isinstance(s, pd.DataFrame):
+            s = s.iloc[:, 0]
+        fx_series[src] = s.reindex(px.index).ffill().bfill()
+    except Exception:
+        fx_failures.append(src)
+
+if fx_failures:
+    print(json.dumps({
+        "ok": False,
+        "error": f"Could not fetch FX rates to convert into {target_ccy}: {fx_failures}. Use a target currency that yfinance has rates for, or restrict the portfolio to that currency.",
+    }))
+    sys.exit(0)
+
+for t in present:
+    src = ticker_ccy[t]
+    if src != target_ccy:
+        px[t] = px[t] * fx_series[src]
+
+# After FX, drop any rows where conversion left NaNs.
+px = px.dropna()
+if len(px) < 2:
+    print(json.dumps({"ok": False, "error": "Not enough overlapping data after FX conversion."}))
     sys.exit(0)
 
 w = pd.Series({t: weights[t] for t in present})
@@ -136,18 +200,25 @@ days = max(1, (px.index[-1] - px.index[0]).days)
 years = days / 365.25
 cagr = (final / capital) ** (1.0 / years) - 1.0 if years > 0 and final > 0 else 0.0
 
-# Daily returns from equity curve.
+# Per-period returns from equity curve.
 ec_vals = list(ec.values)
 rets = []
 for i in range(1, len(ec_vals)):
     if ec_vals[i - 1] > 0:
         rets.append((ec_vals[i] - ec_vals[i - 1]) / ec_vals[i - 1])
+# Annualization factor must match the actual sampling frequency of the index.
+# Hardcoding 252 understates vol/Sharpe when the portfolio includes 7d/week
+# instruments (crypto) and the index spans ~365 obs/year. Derive empirically
+# from the observed span so equity-only ≈ 252, crypto-only ≈ 365, mixed sits
+# between.
+span_days = max(1, (px.index[-1] - px.index[0]).days)
+periods_per_year = (len(rets) / span_days) * 365.25 if span_days > 0 else 252.0
 if len(rets) > 1:
     mean_r = sum(rets) / len(rets)
     var_r = sum((r - mean_r) ** 2 for r in rets) / (len(rets) - 1)
     std_r = math.sqrt(var_r)
-    ann_vol = std_r * math.sqrt(252)
-    ann_sharpe = (mean_r * 252) / ann_vol if ann_vol > 0 else 0.0
+    ann_vol = std_r * math.sqrt(periods_per_year)
+    ann_sharpe = (mean_r * periods_per_year) / ann_vol if ann_vol > 0 else 0.0
 else:
     ann_vol = 0.0
     ann_sharpe = 0.0
@@ -184,6 +255,7 @@ contributions.sort(key=lambda c: c["pnl_dollars"], reverse=True)
 
 result = {
     "ok": True,
+    "currency": target_ccy,
     "starting_capital": capital,
     "ending_equity": final,
     "total_return": total_return,
@@ -191,11 +263,14 @@ result = {
     "annualized_volatility": ann_vol,
     "sharpe_ratio": ann_sharpe,
     "max_drawdown": max_dd,
+    "annualization_periods_per_year": round(periods_per_year, 2),
     "rebalance": rebalance,
     "window_days": days,
     "start": str(px.index[0].date()),
     "end": str(px.index[-1].date()),
     "missing_tickers": missing,
+    "ticker_currencies": ticker_ccy,
+    "fx_converted": [t for t in present if ticker_ccy[t] != target_ccy],
     "best": contributions[0] if contributions else None,
     "worst": contributions[-1] if contributions else None,
     "contributions": contributions,
@@ -206,7 +281,7 @@ print(json.dumps(result))
 
 function computeDateRange(duration: string): { start: string; end: string } {
   const end = new Date()
-  const start = new Date()
+  const start = new Date(end)
   const m = /^(\d+)([dwmy])$/.exec(duration.trim().toLowerCase())
   if (m) {
     const n = parseInt(m[1], 10)
@@ -218,13 +293,18 @@ function computeDateRange(duration: string): { start: string; end: string } {
         start.setDate(start.getDate() - n * 7)
         break
       case "m":
+        // setDate(1) BEFORE subtracting months so a Mar-31 anchor doesn't
+        // become Mar-3 ("Feb 31" rolls forward to Mar 3 in JS Date math).
+        start.setDate(1)
         start.setMonth(start.getMonth() - n)
         break
       case "y":
+        start.setDate(1)
         start.setFullYear(start.getFullYear() - n)
         break
     }
   } else {
+    start.setDate(1)
     start.setFullYear(start.getFullYear() - 5)
   }
   return {
@@ -273,6 +353,20 @@ export const PortfolioBacktestTool = Tool.define(
             metadata: {},
           }
         }
+        // Reject inputs that don't sum to ~1.0. The Python script renormalizes
+        // anyway, but silent rescaling makes results surprising to the caller
+        // (a model passing [0.3, 0.4, 0.5] would get a 1.2x-scaled portfolio
+        // back without any signal). 0.02 tolerance covers float rounding.
+        if (Math.abs(totalWeight - 1) > 0.02) {
+          return {
+            title: "Portfolio backtest failed",
+            output:
+              `Holdings weights must sum to ~1.0, got ${totalWeight.toFixed(3)}. ` +
+              `Pass normalized weights (each as a fraction of the total portfolio) ` +
+              `instead of relying on implicit rescaling.`,
+            metadata: { error: "weights_not_normalized", total: totalWeight },
+          }
+        }
 
         const { start, end } = computeDateRange(params.duration)
 
@@ -306,6 +400,7 @@ export const PortfolioBacktestTool = Tool.define(
                 start,
                 end,
                 rebalance: params.rebalance,
+                currency: params.currency,
               },
               null,
               2,
@@ -352,15 +447,22 @@ export const PortfolioBacktestTool = Tool.define(
           const ccy = params.currency
           const lines: string[] = []
           lines.push(`Portfolio Backtest — ${parsed.start} → ${parsed.end} (${parsed.window_days} days)`)
-          lines.push(`Rebalance: ${parsed.rebalance}`)
+          lines.push(`Currency: ${ccy} · Rebalance: ${parsed.rebalance}`)
           lines.push("")
           lines.push(`Starting Capital: ${fmtMoney(parsed.starting_capital, ccy)}`)
           lines.push(`Ending Equity:    ${fmtMoney(parsed.ending_equity, ccy)}`)
           lines.push(`Total Return:     ${fmtPct(parsed.total_return)}`)
           lines.push(`CAGR:             ${fmtPct(parsed.cagr)}`)
-          lines.push(`Annualized Vol:   ${fmtPct(parsed.annualized_volatility)}`)
+          lines.push(
+            `Annualized Vol:   ${fmtPct(parsed.annualized_volatility)} ` +
+              `(annualizing at ~${(parsed.annualization_periods_per_year ?? 252).toFixed(0)} obs/yr)`,
+          )
           lines.push(`Sharpe (rf=0):    ${parsed.sharpe_ratio.toFixed(2)}`)
           lines.push(`Max Drawdown:     ${fmtPct(parsed.max_drawdown)}`)
+          if (parsed.fx_converted && parsed.fx_converted.length > 0) {
+            lines.push("")
+            lines.push(`FX-converted to ${ccy}: ${parsed.fx_converted.join(", ")}`)
+          }
           if (parsed.missing_tickers && parsed.missing_tickers.length > 0) {
             lines.push("")
             lines.push(`⚠ Missing data for: ${parsed.missing_tickers.join(", ")} — weights renormalized.`)

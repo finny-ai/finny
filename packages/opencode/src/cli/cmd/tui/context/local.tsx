@@ -80,16 +80,18 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           })
         },
         color(name: string) {
-          const index = visibleAgents().findIndex((x) => x.name === name)
-          if (index === -1) return colors()[0]
-          const agent = visibleAgents()[index]
-
-          if (agent?.color) {
-            const color = agent.color
+          // Direct name lookup against ALL agents (including hidden ones like
+          // portfolio_builder) so their configured `color` always renders.
+          // Visible-list cycling-palette is only the fallback for agents that
+          // didn't set an explicit color.
+          const direct = sync.data.agent.find((x) => x.name === name)
+          if (direct?.color) {
+            const color = direct.color
             if (color.startsWith("#")) return RGBA.fromHex(color)
-            // already validated by config, just satisfying TS here
             return theme[color as keyof typeof theme] as RGBA
           }
+          const index = visibleAgents().findIndex((x) => x.name === name)
+          if (index === -1) return colors()[0]
           return colors()[index % colors().length]
         },
       }

@@ -96,9 +96,9 @@ After delivering the plan, **always** ask:
 > Want me to backtest this portfolio over the last 5 years with monthly rebalancing? It'll show you historical CAGR, max drawdown, and Sharpe.
 
 If the user agrees, call the **finny_portfolio_backtest** tool with:
-- `holdings`: array of `{ ticker, weight }` pulled from your plan (use yfinance-compatible symbols — `BTC-USD` not `BTC/USD`)
+- `holdings`: array of `{ ticker, weight }` pulled from your plan (use yfinance-compatible symbols — `BTC-USD` not `BTC/USD`). **Weights MUST sum to 1.0** (within ±0.02). The tool rejects unnormalized inputs — don't expect implicit rescaling.
 - `capital`: the user's funds (numeric)
-- `currency`: the user's currency (`USD`, `CAD`, or `EUR`) — MUST match the intake so output formatting isn't misleading
+- `currency`: the user's currency (`USD`, `CAD`, or `EUR`). The tool auto-FX-converts non-matching listings (e.g. VOO priced in USD into a CAD portfolio) before computing equity, so mixing US + Canadian tickers is fine.
 - `duration`: usually `"5y"` unless the user asks otherwise
 - `rebalance`: `"monthly"` by default
 
