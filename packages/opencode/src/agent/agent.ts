@@ -232,13 +232,13 @@ export namespace Agent {
               permission: Permission.merge(
                 defaults,
                 finnyFileSystemSandbox,
+                user,
                 Permission.fromConfig({
                   question: "allow",
                   edit: "deny",
                   write: "deny",
                   patch: "deny",
                 }),
-                user,
               ),
               mode: "primary",
               native: true,
