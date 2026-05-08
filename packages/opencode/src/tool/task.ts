@@ -9,11 +9,33 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "../config/config"
 import { Effect } from "effect"
 import { Log } from "@/util/log"
+import { Inject } from "@/cron/inject"
+import { TaskState } from "@/task/state"
+import { BackgroundTaskBlockedError } from "@/task/error"
+import { Permission } from "@/permission"
+import type { ModelID, ProviderID } from "@/provider/schema"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): void
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<MessageV2.WithParts>
+  promptAsync(
+    input: SessionPrompt.PromptInput,
+    lifecycle: {
+      onError(error: unknown): Promise<void> | void
+      onResult(result: MessageV2.WithParts): Promise<void> | void
+    },
+  ): Effect.Effect<void>
+}
+
+type Metadata = {
+  sessionId: SessionID
+  model: {
+    modelID: ModelID
+    providerID: ProviderID
+  }
+  mode: "foreground" | "background"
+  status?: TaskState.Status
 }
 
 const id = "task"
@@ -29,9 +51,10 @@ const parameters = z.object({
     )
     .optional(),
   command: z.string().describe("The command that triggered this task").optional(),
+  mode: z.enum(["foreground", "background"]).default("foreground").optional(),
 })
 
-export const TaskTool = Tool.define(
+export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service | Config.Service | Session.Service>(
   id,
   Effect.gen(function* () {
     const agent = yield* Agent.Service
@@ -40,6 +63,7 @@ export const TaskTool = Tool.define(
 
     const run = Effect.fn("TaskTool.execute")(function* (params: z.infer<typeof parameters>, ctx: Tool.Context) {
       const cfg = yield* config.get()
+      const log = Log.create({ service: "tool.task" })
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -60,6 +84,7 @@ export const TaskTool = Tool.define(
 
       const canTask = next.permission.some((rule) => rule.permission === id)
       const canTodo = next.permission.some((rule) => rule.permission === "todowrite")
+      const mode = params.mode ?? "foreground"
 
       const taskID = params.task_id
       const session = taskID
@@ -110,6 +135,7 @@ export const TaskTool = Tool.define(
         metadata: {
           sessionId: nextSession.id,
           model,
+          mode,
         },
       })
 
@@ -117,6 +143,15 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const messageID = MessageID.ascending()
+      const backgroundPrompt = [
+        "<system-reminder>",
+        "You are running as a background subagent.",
+        "Do not ask the user direct questions and do not wait for approvals.",
+        'If you need clarification, permission, or a denied tool blocks progress, stop and reply with one concise line that starts with `BLOCKED:`.',
+        "</system-reminder>",
+        "",
+        params.prompt,
+      ].join("\n")
 
       function cancel() {
         ops.cancel(nextSession.id)
@@ -128,8 +163,9 @@ export const TaskTool = Tool.define(
         }),
         () =>
           Effect.gen(function* () {
-            const parts = yield* ops.resolvePromptParts(params.prompt)
-            const result = yield* ops.prompt({
+            const promptText = mode === "background" ? backgroundPrompt : params.prompt
+            const parts = yield* ops.resolvePromptParts(promptText)
+            const promptInput: SessionPrompt.PromptInput = {
               messageID,
               sessionID: nextSession.id,
               model: {
@@ -140,16 +176,146 @@ export const TaskTool = Tool.define(
               tools: {
                 ...(canTodo ? {} : { todowrite: false }),
                 ...(canTask ? {} : { task: false }),
+                ...(mode === "background" ? { question: false } : {}),
                 ...Object.fromEntries((cfg.experimental?.primary_tools ?? []).map((item) => [item, false])),
               },
               parts,
-            })
+              ...(mode === "background" ? { background: { disallowInteraction: true } } : {}),
+            }
+
+            if (mode === "background") {
+              const existing = params.task_id ? yield* Effect.promise(() => TaskState.get(nextSession.id)) : undefined
+              if (existing?.status === TaskState.Status.running) {
+                return yield* Effect.fail(
+                  new Error(`Task ${nextSession.id} is already running. Wait for it to finish before resuming.`),
+                )
+              }
+
+              yield* Effect.promise(() =>
+                TaskState.upsert({
+                  id: nextSession.id,
+                  parentSessionID: ctx.sessionID,
+                  description: params.description,
+                  subagentType: params.subagent_type,
+                  mode,
+                  status: TaskState.Status.queued,
+                }),
+              )
+              yield* Effect.promise(() => TaskState.markRunning(nextSession.id))
+
+              yield* ops.promptAsync(promptInput, {
+                onResult: async (result) => {
+                  const text = result.parts.findLast((item) => item.type === "text")?.text?.trim() ?? ""
+                  if (text.startsWith("BLOCKED:")) {
+                    const reason = text.slice("BLOCKED:".length).trim() || "Background task requested attention."
+                    const state = await TaskState.finalizeActive(nextSession.id, {
+                      status: TaskState.Status.blocked,
+                      resultSummary: reason,
+                    })
+                    if (state?.status === TaskState.Status.blocked) {
+                      await Inject.post(
+                        ctx.sessionID,
+                        Inject.formatTaskBlocked({
+                          description: params.description,
+                          reason,
+                        }),
+                        { title: `Background task blocked: ${params.description}` },
+                      )
+                    }
+                    return
+                  }
+
+                  const state = await TaskState.finalizeActive(nextSession.id, {
+                    status: TaskState.Status.completed,
+                    resultSummary: text,
+                  })
+                  if (state?.status === TaskState.Status.completed) {
+                    await Inject.post(
+                      ctx.sessionID,
+                      Inject.formatTaskCompleted({
+                        description: params.description,
+                        text,
+                      }),
+                      { title: `Background task completed: ${params.description}` },
+                    )
+                  }
+                },
+                onError: async (error) => {
+                  const current = await TaskState.get(nextSession.id)
+                  if (!current || TaskState.isTerminal(current.status)) return
+
+                  if (
+                    error instanceof BackgroundTaskBlockedError ||
+                    error instanceof Permission.DeniedError ||
+                    error instanceof Permission.CorrectedError ||
+                    error instanceof Permission.RejectedError
+                  ) {
+                    const reason = error.message || "Background task needs parent attention."
+                    const state = await TaskState.finalizeActive(nextSession.id, {
+                      status: TaskState.Status.blocked,
+                      resultSummary: reason,
+                    })
+                    if (state?.status === TaskState.Status.blocked) {
+                      await Inject.post(
+                        ctx.sessionID,
+                        Inject.formatTaskBlocked({
+                          description: params.description,
+                          reason,
+                        }),
+                        { title: `Background task blocked: ${params.description}` },
+                      )
+                    }
+                    return
+                  }
+
+                  const errText = error instanceof Error ? error.message : String(error)
+                  const state = await TaskState.finalizeActive(nextSession.id, {
+                    status: TaskState.Status.failed,
+                    lastError: errText,
+                    resultSummary: errText,
+                  })
+                  if (state?.status === TaskState.Status.failed) {
+                    await Inject.post(
+                      ctx.sessionID,
+                      Inject.formatTaskFailed({
+                        description: params.description,
+                        error: errText,
+                      }),
+                      { title: `Background task failed: ${params.description}` },
+                    )
+                  }
+                  log.warn("task.background.failed", {
+                    taskID: nextSession.id,
+                    parentSessionID: ctx.sessionID,
+                    error: errText,
+                  })
+                },
+              })
+
+              return {
+                title: params.description,
+                metadata: {
+                  sessionId: nextSession.id,
+                  model,
+                  mode,
+                  status: TaskState.Status.running,
+                },
+                output: [
+                  `task_id: ${nextSession.id} (for resuming to continue this task if needed)`,
+                  `mode: ${mode}`,
+                  `status: ${TaskState.Status.running}`,
+                ].join("\n"),
+              }
+            }
+
+            const result = yield* ops.prompt(promptInput)
 
             return {
               title: params.description,
               metadata: {
                 sessionId: nextSession.id,
                 model,
+                mode,
               },
               output: [
                 `task_id: ${nextSession.id} (for resuming to continue this task if needed)`,

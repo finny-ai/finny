@@ -84,6 +84,24 @@ export namespace Inject {
     })
   }
 
+  export function formatTaskCompleted(input: { description: string; text: string }) {
+    return [
+      `[background task completed: ${input.description}]`,
+      "",
+      "<task_result>",
+      input.text,
+      "</task_result>",
+    ].join("\n")
+  }
+
+  export function formatTaskBlocked(input: { description: string; reason: string }) {
+    return [`[background task blocked: ${input.description}]`, "", input.reason].join("\n")
+  }
+
+  export function formatTaskFailed(input: { description: string; error: string }) {
+    return [`[background task failed: ${input.description}]`, "", input.error].join("\n")
+  }
+
   export async function flush(sessionID: string): Promise<void> {
     if (flushing.has(sessionID)) return
     flushing.add(sessionID)

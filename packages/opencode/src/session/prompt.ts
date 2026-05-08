@@ -49,6 +49,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
+import { BackgroundTaskBlockedError } from "@/task/error"
+import { LocalContext } from "@/util/local-context"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -66,6 +68,7 @@ const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested struc
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
   const elog = EffectLogger.create({ service: "session.prompt" })
+  const promptMode = LocalContext.create<{ background?: { disallowInteraction?: boolean } }>("session.prompt.mode")
 
   export interface Interface {
     readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
@@ -383,14 +386,32 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               }
             }),
           ask: (req) =>
-            permission
-              .ask({
-                ...req,
-                sessionID: input.session.id,
-                tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-                ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
-              })
-              .pipe(Effect.orDie),
+            Effect.gen(function* () {
+              const ruleset = Permission.merge(input.agent.permission, input.session.permission ?? [])
+              let background = false
+              try {
+                background = !!promptMode.use().background?.disallowInteraction
+              } catch {}
+              if (background) {
+                for (const pattern of req.patterns) {
+                  const rule = Permission.evaluate(req.permission, pattern, ruleset)
+                  if (rule.action === "allow") continue
+                  const reason =
+                    rule.action === "deny"
+                      ? `BLOCKED: permission denied for ${req.permission} (${pattern}).`
+                      : `BLOCKED: background task needs approval for ${req.permission} (${pattern}).`
+                  return yield* Effect.fail(new BackgroundTaskBlockedError(reason))
+                }
+              }
+
+              return yield* permission
+                .ask({
+                  ...req,
+                  sessionID: input.session.id,
+                  tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+                  ruleset,
+                })
+            }).pipe(Effect.orDie),
         })
 
         for (const item of yield* registry.tools({
@@ -1660,6 +1681,21 @@ NOTE: At any point in time through this workflow you should feel free to ask the
         cancel: (sessionID) => run.fork(cancel(sessionID)),
         resolvePromptParts: (template) => resolvePromptParts(template),
         prompt: (input) => prompt(input),
+        promptAsync: (input, lifecycle) =>
+          Effect.sync(() => {
+            promptMode.provide({ background: input.background }, () => {
+              run.fork(
+                prompt(input).pipe(
+                  Effect.tap((result) => Effect.promise(() => Promise.resolve(lifecycle.onResult(result)))),
+                  Effect.catchCause((cause) =>
+                    Effect.promise(() => Promise.resolve(lifecycle.onError(Cause.squash(cause)))).pipe(
+                      Effect.andThen(Effect.void),
+                    ),
+                  ),
+                ),
+              )
+            })
+          }),
       }
 
       return Service.of({
@@ -1725,6 +1761,11 @@ NOTE: At any point in time through this workflow you should feel free to ask the
     format: MessageV2.Format.optional(),
     system: z.string().optional(),
     variant: z.string().optional(),
+    background: z
+      .object({
+        disallowInteraction: z.boolean().optional(),
+      })
+      .optional(),
     parts: z.array(
       z.discriminatedUnion("type", [
         MessageV2.TextPart.omit({

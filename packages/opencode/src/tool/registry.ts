@@ -7,6 +7,9 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { ListTasksTool } from "./list-tasks"
+import { TaskStatusTool } from "./task-status"
+import { StopTaskTool } from "./stop-task"
 import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
@@ -124,6 +127,9 @@ export namespace ToolRegistry {
       const read = yield* ReadTool
       const question = yield* QuestionTool
       const todo = yield* TodoWriteTool
+      const listtasks = yield* ListTasksTool
+      const taskstatus = yield* TaskStatusTool
+      const stoptask = yield* StopTaskTool
       const lsptool = yield* LspTool
       const plan = yield* PlanExitTool
       const webfetch = yield* WebFetchTool
@@ -220,6 +226,9 @@ export namespace ToolRegistry {
             task: Tool.init(task),
             fetch: Tool.init(webfetch),
             todo: Tool.init(todo),
+            listtasks: Tool.init(listtasks),
+            taskstatus: Tool.init(taskstatus),
+            stoptask: Tool.init(stoptask),
             search: Tool.init(websearch),
             code: Tool.init(codesearch),
             skill: Tool.init(skilltool),
@@ -257,6 +266,9 @@ export namespace ToolRegistry {
               tool.task,
               tool.fetch,
               tool.todo,
+              tool.listtasks,
+              tool.taskstatus,
+              tool.stoptask,
               tool.search,
               tool.code,
               tool.skill,
