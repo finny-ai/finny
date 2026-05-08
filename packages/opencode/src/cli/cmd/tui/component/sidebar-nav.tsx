@@ -6,7 +6,7 @@ import open from "open"
 import { useToast } from "../ui/toast"
 import { Plan } from "@/plan"
 
-const FEEDBACK_URL = "https://www.finnyai.tech/help"
+const DISCORD_URL = "https://discord.gg/Y68pqQju8"
 
 type NavAction =
   | { kind: "route"; type: Route["type"] }
@@ -31,7 +31,7 @@ const UPGRADE_URL = "https://finnyai.tech/pro"
 const UPGRADE_ITEM: NavItem = { icon: ">>>", label: "Upgrade", action: { kind: "external", url: UPGRADE_URL } }
 
 const BOTTOM_ITEMS: NavItem[] = [
-  { icon: "@@@", label: "Feedback", action: { kind: "external", url: FEEDBACK_URL } },
+  { icon: "@@@", label: "Discord", action: { kind: "external", url: DISCORD_URL } },
   { icon: "***", label: "Settings", action: { kind: "route", type: "settings" } },
 ]
 
@@ -114,12 +114,14 @@ export function SidebarNav() {
       border={["right"]}
       borderColor={theme.border}
     >
-      {/* Brand header */}
+      {/* Brand header — click FINNY to open Portfolio Builder */}
       <box paddingLeft={3} paddingRight={3} paddingTop={2} paddingBottom={2} flexShrink={0}>
         <box flexDirection="row" gap={1}>
-          <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-            FINNY
-          </text>
+          <box flexShrink={0} onMouseUp={() => route.navigate({ type: "portfolio-builder" })}>
+            <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+              FINNY
+            </text>
+          </box>
           <Show when={tier() === "pro"}>
             <text fg="#5fa5fa" attributes={TextAttributes.BOLD}>
               PRO
@@ -131,7 +133,7 @@ export function SidebarNav() {
             </text>
           </Show>
         </box>
-        <text fg={theme.textMuted}>trading agent</text>
+        <text fg={theme.textMuted} selectable={false}>trading agent</text>
       </box>
 
       <box flexDirection="column" flexShrink={0} paddingTop={1}>

@@ -33,12 +33,14 @@ import { DialogMcp } from "@tui/component/dialog-mcp"
 import { DialogStatus } from "@tui/component/dialog-status"
 import { DialogThemeList } from "@tui/component/dialog-theme-list"
 import { DialogHelp } from "./ui/dialog-help"
+import { DialogExamples } from "./ui/dialog-examples"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
 import { Analytics } from "@/analytics/tracker"
+import { Classify } from "@/analytics/classify"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -46,6 +48,7 @@ import { Session } from "@tui/routes/session"
 import { Algorithms } from "@tui/routes/algorithms"
 import { Backtests } from "@tui/routes/backtests"
 import { Portfolio } from "@tui/routes/portfolio"
+import { PortfolioBuilder } from "@tui/routes/portfolio-builder"
 import { Sessions } from "@tui/routes/sessions"
 import { Settings } from "@tui/routes/settings"
 import { Shell } from "@tui/component/shell"
@@ -408,6 +411,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       algorithms: "Finny | Algorithms",
       backtests: "Finny | Backtests",
       portfolio: "Finny | Portfolio",
+      "portfolio-builder": "Finny | Portfolio Builder",
       sessions: "Finny | Sessions",
       settings: "Finny | Settings",
     }
@@ -761,7 +765,24 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "help",
       },
       onSelect: () => {
+        dialog.setSize("large")
         dialog.replace(() => <DialogHelp />)
+      },
+      category: "System",
+    },
+    {
+      // /examples opens the strategy template picker — 7 built-in templates
+      // (momentum / mean-reversion / breakout / dca / golden-cross / scalping
+      // / custom) that map to finny_algorithm_scaffold. Distinct from /help,
+      // which is the broader welcome / capability card.
+      title: "Strategy templates",
+      value: "examples.show",
+      slash: {
+        name: "examples",
+      },
+      onSelect: () => {
+        dialog.setSize("large")
+        dialog.replace(() => <DialogExamples />)
       },
       category: "System",
     },
@@ -992,14 +1013,43 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     const message = errorMessage(error)
 
     try {
-      // Only the error name (a stable identifier) — never the message. Many
-      // error messages in this codebase embed user-controlled prompt text
-      // and local file paths (e.g. PROMPT_TOO_LARGE includes filenames).
+      // Privacy guarantee: NEVER include the error `message` field — it
+      // routinely embeds user-controlled prompt text and local file paths
+      // (e.g. PROMPT_TOO_LARGE includes filenames). What we DO record:
+      //   - `name`: bucketed against the discriminated union in message-v2
+      //     (APIError / AbortedError / OutputLengthError / ContextOverflowError
+      //     / AuthError / StructuredOutputError / Unknown), unknowns → "other".
+      //   - `category`: coarser bucket so dashboards can group "anything API"
+      //     vs "anything auth" without enumerating every name.
+      //   - `providerID` / `statusCode`: only for APIError, and providerID is
+      //     run through the Classify allowlist so custom plugins → "custom".
+      const e = error as any
+      const name = Classify.error(e?.name)
+      const category =
+        name === "APIError"
+          ? "api"
+          : name === "AuthError"
+            ? "auth"
+            : name === "AbortedError"
+              ? "abort"
+              : name === "ContextOverflowError"
+                ? "context"
+                : name === "OutputLengthError"
+                  ? "output_length"
+                  : name === "StructuredOutputError"
+                    ? "output_format"
+                    : "other"
+      const isApi = name === "APIError"
       Analytics.track({
         eventType: "error",
         eventName: "error.surfaced",
         sessionId: (evt.properties as any).sessionID,
-        metadata: { name: (error as any)?.name },
+        metadata: {
+          name,
+          category,
+          providerID: isApi ? Classify.provider(e?.data?.providerID ?? e?.providerID) : undefined,
+          statusCode: isApi ? (e?.data?.statusCode ?? e?.statusCode) : undefined,
+        },
       })
     } catch {}
 
@@ -1100,6 +1150,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
             </Match>
             <Match when={route.data.type === "portfolio"}>
               <Portfolio />
+            </Match>
+            <Match when={route.data.type === "portfolio-builder"}>
+              <PortfolioBuilder />
             </Match>
             <Match when={route.data.type === "sessions"}>
               <Sessions />

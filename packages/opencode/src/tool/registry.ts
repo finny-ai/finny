@@ -17,6 +17,8 @@ import { AlgorithmGetTool } from "./algorithm-get"
 import { AlgorithmSetParamsTool } from "./algorithm-set-params"
 import { AlgorithmValidateTool } from "./algorithm-validate"
 import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
+import { AlgorithmVersionsTool } from "./algorithm-versions"
+import { AlgorithmExportTool } from "./algorithm-export"
 import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
 import { BacktestWalkforwardTool } from "./backtest-walkforward"
@@ -25,6 +27,10 @@ import { MonitorSnapshotTool } from "./monitor-snapshot"
 import { ScheduleSubagentTool } from "./schedule-subagent"
 import { ListSubagentsTool } from "./list-subagents"
 import { StopSubagentTool } from "./stop-subagent"
+import { QuoteTool } from "./quote"
+import { PriceHistoryTool } from "./price-history"
+import { PortfolioBacktestTool } from "./portfolio-backtest"
+import { DiscordReadTool } from "./discord"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -148,6 +154,8 @@ export namespace ToolRegistry {
       const algosetparams = yield* AlgorithmSetParamsTool
       const algovalidate = yield* AlgorithmValidateTool
       const algoscaffold = yield* AlgorithmScaffoldTool
+      const algoversions = yield* AlgorithmVersionsTool
+      const algoexport = yield* AlgorithmExportTool
       const backtestrun = yield* BacktestRunTool
       const backtesthistory = yield* BacktestHistoryTool
       const backtestwalkforward = yield* BacktestWalkforwardTool
@@ -156,6 +164,10 @@ export namespace ToolRegistry {
       const schedulesubagent = yield* ScheduleSubagentTool
       const listsubagents = yield* ListSubagentsTool
       const stopsubagent = yield* StopSubagentTool
+      const quote = yield* QuoteTool
+      const pricehistory = yield* PriceHistoryTool
+      const portfoliobacktest = yield* PortfolioBacktestTool
+      const discordread = yield* DiscordReadTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -242,6 +254,8 @@ export namespace ToolRegistry {
             algosetparams: Tool.init(algosetparams),
             algovalidate: Tool.init(algovalidate),
             algoscaffold: Tool.init(algoscaffold),
+            algoversions: Tool.init(algoversions),
+            algoexport: Tool.init(algoexport),
             backtestrun: Tool.init(backtestrun),
             backtesthistory: Tool.init(backtesthistory),
             backtestwalkforward: Tool.init(backtestwalkforward),
@@ -250,6 +264,10 @@ export namespace ToolRegistry {
             schedulesubagent: Tool.init(schedulesubagent),
             listsubagents: Tool.init(listsubagents),
             stopsubagent: Tool.init(stopsubagent),
+            quote: Tool.init(quote),
+            pricehistory: Tool.init(pricehistory),
+            portfoliobacktest: Tool.init(portfoliobacktest),
+            discordread: Tool.init(discordread),
           })
 
           return {
@@ -279,6 +297,8 @@ export namespace ToolRegistry {
               tool.algosetparams,
               tool.algovalidate,
               tool.algoscaffold,
+              tool.algoversions,
+              tool.algoexport,
               tool.backtestrun,
               tool.backtesthistory,
               tool.backtestwalkforward,
@@ -287,6 +307,10 @@ export namespace ToolRegistry {
               tool.schedulesubagent,
               tool.listsubagents,
               tool.stopsubagent,
+              tool.quote,
+              tool.pricehistory,
+              tool.portfoliobacktest,
+              tool.discordread,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],

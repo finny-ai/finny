@@ -34,7 +34,9 @@ export function RecentAlgosCard() {
                 flexDirection="row"
                 paddingLeft={1}
                 paddingRight={1}
-                onMouseUp={() => route.navigate({ type: "algorithms" })}
+                onMouseUp={() =>
+                  route.navigate({ type: "algorithms", algorithmId: algo.algorithmId })
+                }
               >
                 <box flexGrow={1} flexDirection="column" minWidth={0}>
                   <text fg={theme.text} attributes={TextAttributes.BOLD}>

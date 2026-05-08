@@ -27,19 +27,48 @@ import { lazy } from "../../util/lazy"
 import { Bus } from "../../bus"
 import { NamedError } from "@opencode-ai/util/error"
 import { Analytics } from "../../analytics/tracker"
+import { Classify } from "../../analytics/classify"
 
 const log = Log.create({ service: "server" })
 
-// `mode` is a fixed string union (closed enum), not user data, so it stays.
-// We deliberately omit the model identifier: provider/model IDs can come
-// from plugins or custom config and would leak that surface.
-function trackAgentRun(sessionID: string, mode: "prompt" | "prompt_async" | "command") {
+// Fired ONCE per assistant turn, AFTER the model has finished responding so we
+// have real signal: model, provider, finish reason, token counts, duration,
+// cost. Privacy: provider/model/agent strings are run through `Classify` so
+// user-defined plugin identifiers are bucketed as "custom" and never leak.
+// Errored runs do not call this — `error.surfaced` covers that path.
+function trackAgentRunCompleted(
+  sessionID: string,
+  mode: "prompt" | "prompt_async" | "command",
+  result: { info?: { role?: string; [k: string]: any } } | undefined,
+) {
   try {
+    const info = result?.info
+    if (!info || info.role !== "assistant") return
+    const providerID = Classify.provider(info.providerID)
+    const modelID = Classify.model(info.providerID, info.modelID)
+    const created = info.time?.created
+    const completed = info.time?.completed
+    const durationMs = typeof created === "number" && typeof completed === "number" ? completed - created : undefined
     Analytics.track({
       eventType: "agent",
       eventName: "agent.run",
       sessionId: sessionID,
-      metadata: { mode },
+      metadata: {
+        mode,
+        agent: Classify.agent(info.agent),
+        providerID,
+        modelID,
+        finishReason: info.finish ?? "unknown",
+        durationMs,
+        tokensInput: info.tokens?.input,
+        tokensOutput: info.tokens?.output,
+        tokensReasoning: info.tokens?.reasoning,
+        tokensCacheRead: info.tokens?.cache?.read,
+        tokensCacheWrite: info.tokens?.cache?.write,
+        tokensTotal: info.tokens?.total,
+        cost: info.cost,
+        hadError: !!info.error,
+      },
     })
   } catch {}
 }
@@ -863,8 +892,8 @@ export const SessionRoutes = lazy(() =>
         return stream(c, async (stream) => {
           const sessionID = c.req.valid("param").sessionID
           const body = c.req.valid("json")
-          trackAgentRun(sessionID, "prompt")
           const msg = await SessionPrompt.prompt({ ...body, sessionID })
+          trackAgentRunCompleted(sessionID, "prompt", msg as any)
           stream.write(JSON.stringify(msg))
         })
       },
@@ -893,14 +922,17 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
-        trackAgentRun(sessionID, "prompt_async")
-        SessionPrompt.prompt({ ...body, sessionID }).catch((err) => {
-          log.error("prompt_async failed", { sessionID, error: err })
-          Bus.publish(Session.Event.Error, {
-            sessionID,
-            error: new NamedError.Unknown({ message: err instanceof Error ? err.message : String(err) }).toObject(),
+        SessionPrompt.prompt({ ...body, sessionID })
+          .then((msg) => {
+            trackAgentRunCompleted(sessionID, "prompt_async", msg as any)
           })
-        })
+          .catch((err) => {
+            log.error("prompt_async failed", { sessionID, error: err })
+            Bus.publish(Session.Event.Error, {
+              sessionID,
+              error: new NamedError.Unknown({ message: err instanceof Error ? err.message : String(err) }).toObject(),
+            })
+          })
 
         return c.body(null, 204)
       },
@@ -938,8 +970,8 @@ export const SessionRoutes = lazy(() =>
       async (c) => {
         const sessionID = c.req.valid("param").sessionID
         const body = c.req.valid("json")
-        trackAgentRun(sessionID, "command")
         const msg = await SessionPrompt.command({ ...body, sessionID })
+        trackAgentRunCompleted(sessionID, "command", msg as any)
         return c.json(msg)
       },
     )

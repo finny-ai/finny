@@ -161,7 +161,12 @@ export default defineSchema({
     time_created: v.number(),
     time_updated: v.number(),
   })
+    // One row PER VERSION. `algorithmId` is the lineage id (shared across
+    // versions), `version` is the monotonically-increasing integer within
+    // that lineage. `getByName`/`listByUser` collapse to the latest version
+    // per algorithmId; `listVersions` walks the whole lineage.
     .index("by_algorithmId", ["algorithmId"])
+    .index("by_algorithmId_version", ["algorithmId", "version"])
     .index("by_userId", ["userId"])
     .index("by_userId_name", ["userId", "name"]),
 

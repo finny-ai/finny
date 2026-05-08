@@ -4,6 +4,8 @@ import path from "path"
 import { Process } from "@/util/process"
 import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "./broker-py"
+import { ensurePythonEnv } from "@/python/env"
+import { resolveSymbol } from "@/data/symbols"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -34,7 +36,42 @@ export namespace BacktestRunner {
     profitFactor: number
   }
 
-  export type RunResult = { ok: true; results: Results } | { ok: false; error: string }
+  /** Stable error codes surfaced from {@link run}. UI/telemetry can branch on these. */
+  export type ErrorKind =
+    | "unknown_symbol"
+    | "empty_window"
+    | "network"
+    | "python_env"
+    | "config_invalid"
+    | "results_unparseable"
+    | "internal"
+
+  export type RunResult =
+    | { ok: true; results: Results }
+    | { ok: false; error: string; kind: ErrorKind; suggestions?: string[] }
+
+  export class UnknownSymbolError extends Error {
+    readonly input: string
+    readonly suggestions: string[]
+    constructor(input: string, suggestions: string[]) {
+      super(
+        `Unknown symbol "${input}".` +
+          (suggestions.length ? ` Try one of: ${suggestions.join(", ")}.` : ""),
+      )
+      this.name = "UnknownSymbolError"
+      this.input = input
+      this.suggestions = suggestions
+    }
+  }
+
+  /**
+   * Top-8 first-class suggestions to surface when a symbol can't be resolved
+   * at all. The full curated list is much longer now (50+) but listing all of
+   * them in an error message is just noise. Resolution is permissive — any
+   * plausible ticker passes — so this only fires on true garbage like
+   * empty strings or non-ASCII junk.
+   */
+  const SUPPORTED_CANONICAL = ["BTC/USD", "ETH/USD", "SOL/USD", "AAPL", "NVDA", "TSLA", "SPY", "QQQ"]
 
   const DURATION_MONTHS: Record<string, number> = {
     "1m": 1,
@@ -99,22 +136,37 @@ export namespace BacktestRunner {
   }
 
   function makeFetchDataScript(symbol: string, start: string, end: string, interval: string, csvPath: string): string {
+    // Sentinels parsed by classifyFetchError() — keep prefix and field order stable.
     return `
-import subprocess, sys
+import sys
 
 try:
-    import yfinance
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "yfinance", "-q"])
-    import yfinance
-
-import yfinance as yf
+    import yfinance as yf
+except ImportError as e:
+    print(f"__FINNY_FETCH_ERROR__: python_env: yfinance import failed: {e}", file=sys.stderr)
+    sys.exit(2)
 
 ticker = yf.Ticker("${symbol}")
-df = ticker.history(start="${start}", end="${end}", interval="${interval}")
+try:
+    df = ticker.history(start="${start}", end="${end}", interval="${interval}")
+except Exception as e:
+    msg = str(e).lower()
+    if "404" in msg or "delisted" in msg or "not found" in msg:
+        print(f"__FINNY_FETCH_ERROR__: unknown_symbol: ${symbol}: {e}", file=sys.stderr)
+        sys.exit(3)
+    if "timeout" in msg or "connection" in msg or "network" in msg or "max retries" in msg:
+        print(f"__FINNY_FETCH_ERROR__: network: ${symbol}: {e}", file=sys.stderr)
+        sys.exit(4)
+    # Unknown exception class -- emit "internal" instead of misclassifying
+    # as network. classifyFetchError on the TS side maps the kind into the
+    # user-visible message; "network" implied a connectivity issue we do
+    # not actually know about.
+    print(f"__FINNY_FETCH_ERROR__: internal: ${symbol}: {e}", file=sys.stderr)
+    sys.exit(6)
+
 if df.empty:
-    print("ERROR: No market data found for ${symbol}", file=sys.stderr)
-    sys.exit(1)
+    print(f"__FINNY_FETCH_ERROR__: empty_window: ${symbol}: no bars between ${start} and ${end} at ${interval}", file=sys.stderr)
+    sys.exit(5)
 
 df = df.reset_index()
 # Normalize column names for the backtest harness
@@ -331,13 +383,70 @@ print(f"profit_factor: {profit_factor}")
     return /^[A-Z][A-Z0-9]{0,4}$/.test(token)
   }
 
+  /**
+   * Canonicalize any user-supplied symbol shape (BTC, btc, BTC-USD, BTC/USD,
+   * BTCUSD, BTCUSDT) into the canonical form Finny uses internally
+   * ("BTC/USD" for crypto, "AAPL" for equities). Mirrors the Python
+   * {@link AlpacaBroker.normalize_symbol} so the broker (Python) and the
+   * backtest data fetch (TS) can never disagree on format.
+   *
+   * Throws {@link UnknownSymbolError} when input cannot be coerced into any
+   * plausible ticker shape — empty strings, garbage tokens, etc.
+   */
+  export function normalizeSymbol(input: string): string {
+    const raw = (input ?? "").trim()
+    if (!raw) throw new UnknownSymbolError(input ?? "", SUPPORTED_CANONICAL)
+
+    // Registry hit (BTC, BTC-USD, BTC/USD, BTCUSD, BTCUSDT, AAPL, …).
+    const supported = resolveSymbol(raw)
+    if (supported) return supported.canonical
+
+    const upper = raw.toUpperCase().replace(/\s+/g, "")
+
+    // Pair forms with explicit separator: BASE/QUOTE or BASE-QUOTE.
+    const sep = upper.match(/^([A-Z][A-Z0-9]{0,5})[-/](USD|USDT|USDC)$/)
+    if (sep) return `${sep[1]}/USD`
+
+    // Glued pair: BTCUSDT, BTCUSD, BTCUSDC.
+    const glued = upper.match(/^([A-Z][A-Z0-9]{0,5})(USDT|USDC|USD)$/)
+    if (glued) return `${glued[1]}/USD`
+
+    // Bare crypto base from the wider universe (XRP, DOGE, …).
+    if (CRYPTO_BASES.has(upper)) return `${upper}/USD`
+
+    // Bare equity ticker.
+    if (looksLikeTicker(upper)) return upper
+
+    throw new UnknownSymbolError(raw, SUPPORTED_CANONICAL)
+  }
+
+  /** Stderr-sentinel parser — see makeFetchDataScript for emit contract. */
+  export function classifyFetchError(stderr: string): { kind: ErrorKind; detail: string } {
+    const m = stderr.match(/__FINNY_FETCH_ERROR__:\s*(\w+):\s*([\s\S]*)/)
+    if (m) {
+      const kind = m[1] as ErrorKind
+      return { kind, detail: m[2].trim() }
+    }
+    const lower = stderr.toLowerCase()
+    if (lower.includes("externally-managed-environment") || lower.includes("no module named")) {
+      return { kind: "python_env", detail: stderr.trim() }
+    }
+    if (lower.includes("404") || lower.includes("delisted") || lower.includes("symbol may be delisted") || lower.includes("no data found")) {
+      return { kind: "unknown_symbol", detail: stderr.trim() }
+    }
+    if (lower.includes("timeout") || lower.includes("connection") || lower.includes("network")) {
+      return { kind: "network", detail: stderr.trim() }
+    }
+    return { kind: "internal", detail: stderr.trim() || "unknown error" }
+  }
+
   function detectSymbol(algorithm: Algorithm.Info): string {
     // 1. Try the strategy code for an explicit SYMBOL = "..." or "symbol": "..."
     const code = algorithm.code || ""
     const m1 = code.match(/SYMBOL\s*=\s*["']([^"']+)["']/)
-    if (m1) return m1[1]
+    if (m1) return safeNormalize(m1[1])
     const m2 = code.match(/["']symbol["']\s*:\s*["']([^"']+)["']/)
-    if (m2) return m2[1]
+    if (m2) return safeNormalize(m2[1])
 
     // 2. Tokenize the algorithm name and pick the first ticker-shaped token that
     //    isn't a known strategy/indicator/version word. This handles any equity
@@ -349,13 +458,29 @@ print(f"profit_factor: {profit_factor}")
       if (!token) continue
       if (NAME_STOPWORDS.has(token)) continue
       if (!looksLikeTicker(token)) continue
-      // Crypto base? Auto-append the USD quote so yfinance fetches the pair.
-      if (CRYPTO_BASES.has(token)) return `${token}/USD`
-      return token
+      try {
+        return normalizeSymbol(token)
+      } catch {
+        continue
+      }
     }
 
     // 3. Fall back to crypto default.
     return "BTC/USD"
+  }
+
+  /**
+   * Best-effort normalize: returns the canonical form when the input parses,
+   * otherwise the trimmed original. Used inside detectSymbol where an
+   * unrecognized declaration should still be visible to the rest of the run
+   * (so the error attribution path classifies it cleanly).
+   */
+  function safeNormalize(input: string): string {
+    try {
+      return normalizeSymbol(input)
+    } catch {
+      return (input ?? "").trim()
+    }
   }
 
   export function classifyAssetClass(algorithm: Algorithm.Info): "crypto" | "equity" | "unknown" {
@@ -428,10 +553,30 @@ print(f"profit_factor: {profit_factor}")
       try {
         config = JSON.parse(algorithmConfig)
       } catch {
-        return { ok: false, error: "Failed to parse algorithm config JSON." }
+        return { ok: false, error: "Failed to parse algorithm config JSON.", kind: "config_invalid" }
       }
       config.risk = config.risk ?? {}
       config.risk.starting_equity_usd = parseFloat(capital)
+
+      // Canonicalize the configured symbol up front so a mismatch between
+      // strategy code (e.g. "BTCUSDT") and the data layer (yfinance "BTC-USD")
+      // can never silently produce empty data — and so failures at this layer
+      // get an `unknown_symbol` attribution instead of a generic stderr blob.
+      if (config.symbol) {
+        try {
+          config.symbol = normalizeSymbol(String(config.symbol))
+        } catch (e) {
+          if (e instanceof UnknownSymbolError) {
+            return {
+              ok: false,
+              error: e.message,
+              kind: "unknown_symbol",
+              suggestions: e.suggestions,
+            }
+          }
+          throw e
+        }
+      }
 
       if (configOverrides) {
         for (const [k, v] of Object.entries(configOverrides)) {
@@ -442,6 +587,21 @@ print(f"profit_factor: {profit_factor}")
           } else {
             config[k] = v
           }
+        }
+      }
+
+      // Re-normalize symbol AFTER overrides — an override could reintroduce a
+      // non-canonical form (e.g. param sweep passing "btcusdt") and undo the
+      // canonicalization above. Cheap to redo; expensive when symbol drift
+      // produces empty yfinance results downstream.
+      if (config.symbol) {
+        try {
+          config.symbol = normalizeSymbol(String(config.symbol))
+        } catch (e) {
+          if (e instanceof UnknownSymbolError) {
+            return { ok: false, error: e.message, kind: "unknown_symbol", suggestions: e.suggestions }
+          }
+          throw e
         }
       }
 
@@ -459,56 +619,76 @@ print(f"profit_factor: {profit_factor}")
       const fetchScript = makeFetchDataScript(symbol, start, end, yfinanceInterval, csvPath)
       await fs.writeFile(path.join(tmpDir, "_fetch_data.py"), fetchScript)
 
-      // Check python3 exists
-      let pythonCmd = "python3"
+      // Use the managed venv. yfinance is installed once, lazily, on first use.
+      let pythonCmd: string
       try {
-        await Process.run(["python3", "--version"])
-      } catch {
-        try {
-          await Process.run(["python", "--version"])
-          pythonCmd = "python"
-        } catch {
-          return { ok: false, error: "Python not found. Install Python 3 to run backtests." }
+        const env = await ensurePythonEnv([{ spec: "yfinance", importCheck: "yfinance" }])
+        pythonCmd = env.python
+      } catch (e: any) {
+        return {
+          ok: false,
+          error: e?.message ?? "Failed to set up the managed Python environment.",
+          kind: "python_env",
         }
       }
 
-      // Fetch market data
+      // Fetch market data — wall-clock cap so a stalled yfinance pull can't
+      // hang the tool executor indefinitely. 2 minutes is generous for a
+      // single fetch; healthy ones complete in under 5 seconds.
       const fetchResult = await Process.run([pythonCmd, "_fetch_data.py"], {
         cwd: tmpDir,
         nothrow: true,
+        timeout: 120_000,
       })
 
       if (fetchResult.code !== 0) {
         const stderr = fetchResult.stderr.toString().trim()
-        if (stderr.includes("No market data found")) {
-          return { ok: false, error: `No market data found for ${symbol} in the requested period.` }
+        const { kind, detail } = classifyFetchError(stderr)
+        const human =
+          kind === "unknown_symbol"
+            ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
+              `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
+            : kind === "empty_window"
+              ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${yfinanceInterval}. Try a wider duration or a coarser interval.`
+              : kind === "network"
+                ? `Backtest failed (network): could not reach the market data provider. ${detail}`
+                : kind === "python_env"
+                  ? `Backtest failed (python_env): ${detail}`
+                  : `Backtest failed: ${detail || "unknown error"}`
+        return {
+          ok: false,
+          error: human,
+          kind,
+          suggestions: kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
         }
-        return { ok: false, error: `Failed to download market data: ${stderr || "unknown error"}` }
       }
 
-      // Run backtest
+      // Run backtest — generous wall-clock cap (5 min) for full history runs
+      // with many bars. If a strategy infinite-loops on bad logic, this stops
+      // the session from being held hostage.
       const backtestResult = await Process.run(
         [pythonCmd, "backtest.py", "--csv", csvPath, "--config", "config.json", "--interval", interval, "--capital", capital],
         {
           cwd: tmpDir,
           nothrow: true,
+          timeout: 300_000,
         },
       )
 
       if (backtestResult.code !== 0) {
         const stderr = backtestResult.stderr.toString().trim()
-        return { ok: false, error: `Backtest failed: ${stderr || "unknown error"}` }
+        return { ok: false, error: `Backtest failed: ${stderr || "unknown error"}`, kind: "internal" }
       }
 
       const stdout = backtestResult.stdout.toString()
       const results = parseResults(stdout)
       if (!results) {
-        return { ok: false, error: "Failed to parse backtest results from output." }
+        return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
 
       return { ok: true, results }
     } catch (e: any) {
-      return { ok: false, error: e?.message ?? "Unexpected error running backtest." }
+      return { ok: false, error: e?.message ?? "Unexpected error running backtest.", kind: "internal" }
     } finally {
       if (tmpDir) {
         await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
