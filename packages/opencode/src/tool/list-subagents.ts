@@ -1,7 +1,7 @@
 import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
-import { CronStorage } from "../cron"
+import { CronStorage, Schedule, WatcherState } from "../cron"
 
 const parameters = z.object({})
 
@@ -22,20 +22,28 @@ export const ListSubagentsTool = Tool.define(
 
         const jobs = (await CronStorage.list())
           .filter((job) => job.parentSessionID === ctx.sessionID)
-          .map((job) => ({
-            id: job.id,
-            name: job.name,
-            kind: job.kind,
-            enabled: job.enabled,
-            schedule: job.scheduleSource,
-            timezone: job.timezone,
-            recurring: job.recurring,
-            durable: job.durable,
-            lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
-            lastFiredAt: job.lastFiredAt ? new Date(job.lastFiredAt).toISOString() : null,
-            failureCount: job.failureCount,
-            expiresAt: job.expiresAt ? new Date(job.expiresAt).toISOString() : null,
-          }))
+          .map((job) => {
+            const state = WatcherState.get(job.id)
+            return {
+              id: job.id,
+              name: job.name,
+              kind: job.kind,
+              enabled: job.enabled,
+              schedule: job.scheduleSource,
+              timezone: job.timezone,
+              recurring: job.recurring,
+              durable: job.durable,
+              estimatedRunsPerHour: Schedule.estimateRunsPerHour(job.schedule),
+              lastRunAt: job.lastRunAt ? new Date(job.lastRunAt).toISOString() : null,
+              lastFiredAt: job.lastFiredAt ? new Date(job.lastFiredAt).toISOString() : null,
+              lastSnapshotAt: state?.lastSnapshotAt ? new Date(state.lastSnapshotAt).toISOString() : null,
+              lastMaterialAt: state?.lastMaterialAt ? new Date(state.lastMaterialAt).toISOString() : null,
+              pendingDelivery: state?.pendingStatus === WatcherState.PendingStatus.pending,
+              lastDeliveryError: state?.lastDeliveryError ?? null,
+              failureCount: job.failureCount,
+              expiresAt: job.expiresAt ? new Date(job.expiresAt).toISOString() : null,
+            }
+          })
 
         return {
           title: jobs.length === 0 ? "No scheduled watchers" : `${jobs.length} scheduled watcher${jobs.length === 1 ? "" : "s"}`,
