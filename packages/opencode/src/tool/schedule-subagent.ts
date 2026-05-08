@@ -3,9 +3,11 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { parseConfig } from "../algorithm/strategy-params"
-import { CronStorage, Schedule, Job } from "../cron"
+import { CronStorage, Schedule, Job, WatcherState } from "../cron"
 
 const RECURRING_TTL_MS = 7 * 24 * 60 * 60 * 1000
+const SOFT_RUNS_PER_HOUR = 20
+const HARD_RUNS_PER_HOUR = 30
 
 const parameters = z.object({
   algorithm: z.string().describe("Saved algorithm name or algorithmId to monitor."),
@@ -83,6 +85,27 @@ export const ScheduleSubagentTool = Tool.define(
 
         const timezone = params.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York")
         const parsed = Schedule.parse(params.cron, timezone)
+        const estimatedRunsPerHour = Schedule.estimateRunsPerHour(parsed.cron)
+        const existingSessionRuns = (await CronStorage.list())
+          .filter((job) => job.parentSessionID === ctx.sessionID && job.enabled)
+          .reduce((sum, job) => sum + Schedule.estimateRunsPerHour(job.schedule), 0)
+        const sessionEstimatedRunsPerHour = existingSessionRuns + estimatedRunsPerHour
+        if (sessionEstimatedRunsPerHour > HARD_RUNS_PER_HOUR) {
+          return {
+            title: "Watcher schedule blocked",
+            output: JSON.stringify(
+              {
+                created: false,
+                reason: `This schedule would raise the session to ${sessionEstimatedRunsPerHour.toFixed(2)} estimated watcher runs/hour, above the hard cap of ${HARD_RUNS_PER_HOUR}.`,
+                estimatedRunsPerHour,
+                sessionEstimatedRunsPerHour,
+              },
+              null,
+              2,
+            ),
+            metadata: { created: false, jobID: null, algorithmId: null },
+          }
+        }
         const algorithm = await Algorithm.resolve(params.algorithm)
         if (!algorithm) {
           return {
@@ -118,6 +141,16 @@ export const ScheduleSubagentTool = Tool.define(
         }
 
         const job = await CronStorage.create(input)
+        WatcherState.upsert({
+          jobID: job.id,
+          parentSessionID: ctx.sessionID,
+          algorithmID: algorithm.algorithmId,
+          algorithmName: algorithm.name,
+        })
+        const warning =
+          sessionEstimatedRunsPerHour > SOFT_RUNS_PER_HOUR
+            ? `Warning: this session is now estimated at ${sessionEstimatedRunsPerHour.toFixed(2)} watcher runs/hour.`
+            : undefined
         return {
           title: `Scheduled watcher for ${algorithm.name}`,
           output: JSON.stringify(
@@ -131,6 +164,9 @@ export const ScheduleSubagentTool = Tool.define(
               recurring: job.recurring,
               durable: job.durable,
               expiresAt: job.expiresAt ? new Date(job.expiresAt).toISOString() : null,
+              estimatedRunsPerHour,
+              sessionEstimatedRunsPerHour,
+              warning,
             },
             null,
             2,

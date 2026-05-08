@@ -6,6 +6,7 @@ import { SessionID } from "@/session/schema"
 import { Server } from "../server/server"
 import { Notify } from "./notify"
 import { Log } from "../util/log"
+import { WatcherState } from "./watcher-state"
 
 export namespace Inject {
   const log = Log.create({ service: "cron.inject" })
@@ -15,6 +16,7 @@ export namespace Inject {
     text: string
     enqueuedAt: number
     title?: string
+    pendingJobID?: string
   }
 
   const queue = new Map<string, PendingEntry[]>()
@@ -35,6 +37,9 @@ export namespace Inject {
       if (event.properties.status.type !== "idle") return
       void flush(event.properties.sessionID).catch((err) => {
         log.warn("inject.flush.failed", { sessionID: event.properties.sessionID, err: String(err) })
+      })
+      void retryPending(event.properties.sessionID).catch((err) => {
+        log.warn("inject.retry-pending.failed", { sessionID: event.properties.sessionID, err: String(err) })
       })
     })
   }
@@ -75,6 +80,7 @@ export namespace Inject {
       variant: target.variant,
       parts: [{ type: "text", text: entry.text }],
     })
+    if (entry.pendingJobID) WatcherState.markDelivered(entry.pendingJobID)
   }
 
   async function fallback(entry: PendingEntry) {
@@ -82,6 +88,7 @@ export namespace Inject {
       title: entry.title || "Finny watcher",
       body: entry.text.slice(0, 240),
     })
+    if (entry.pendingJobID) WatcherState.markNotified(entry.pendingJobID)
   }
 
   export function formatTaskCompleted(input: { description: string; text: string }) {
@@ -105,6 +112,7 @@ export namespace Inject {
   export async function flush(sessionID: string): Promise<void> {
     if (flushing.has(sessionID)) return
     flushing.add(sessionID)
+    let delivering: PendingEntry | undefined
     try {
       dropExpired(sessionID)
       const pending = queue.get(sessionID)
@@ -121,28 +129,30 @@ export namespace Inject {
       if (status.type !== "idle") return
 
       const current = queue.get(sessionID)
-      const next = current?.shift()
-      if (!next) {
+      delivering = current?.shift()
+      if (!delivering) {
         queue.delete(sessionID)
         return
       }
       if (current && current.length === 0) queue.delete(sessionID)
       else if (current) queue.set(sessionID, current)
 
-      await deliver(sessionID, next)
+      await deliver(sessionID, delivering)
     } catch (err) {
+      if (delivering?.pendingJobID) WatcherState.markDeliveryError(delivering.pendingJobID, String(err).slice(0, 250))
       log.warn("inject.flush.delivery-failed", { sessionID, err: String(err) })
     } finally {
       flushing.delete(sessionID)
     }
   }
 
-  export async function post(sessionID: string, text: string, options?: { title?: string }) {
+  export async function post(sessionID: string, text: string, options?: { title?: string; pendingJobID?: string }) {
     ensureSubscription()
     const entry: PendingEntry = {
       text,
       enqueuedAt: Date.now(),
       title: options?.title,
+      pendingJobID: options?.pendingJobID,
     }
 
     const session = await Session.get(SessionID.make(sessionID)).catch(() => undefined)
@@ -157,10 +167,23 @@ export namespace Inject {
         await deliver(sessionID, entry)
         return
       } catch (err) {
+        if (entry.pendingJobID) WatcherState.markDeliveryError(entry.pendingJobID, String(err).slice(0, 250))
         log.warn("inject.post.immediate-failed", { sessionID, err: String(err) })
       }
     }
 
     queueEntry(sessionID, entry)
+  }
+
+  export async function retryPending(sessionID?: string) {
+    ensureSubscription()
+    const pending = WatcherState.listPending().filter((item) => !sessionID || item.parentSessionID === sessionID)
+    for (const item of pending) {
+      if (!item.pendingFinding) continue
+      await post(item.parentSessionID, item.pendingFinding, {
+        pendingJobID: item.jobID,
+        title: item.algorithmName ? `Watcher: ${item.algorithmName}` : "Finny watcher",
+      })
+    }
   }
 }

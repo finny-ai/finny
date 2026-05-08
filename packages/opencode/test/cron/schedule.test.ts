@@ -105,3 +105,19 @@ describe("Schedule.matches", () => {
     expect(Schedule.matches("* * *", new Date(), "UTC")).toBe(false)
   })
 })
+
+describe("Schedule.estimateRunsPerHour", () => {
+  test("estimates common every-minute cadences", () => {
+    expect(Schedule.estimateRunsPerHour("*/15 * * * *")).toBe(4)
+    expect(Schedule.estimateRunsPerHour("0 * * * *")).toBe(1)
+    expect(Schedule.estimateRunsPerHour("*/5 * * * *")).toBe(12)
+  })
+
+  test("scales restricted hour windows", () => {
+    expect(Schedule.estimateRunsPerHour("0 9-16 * * 1-5")).toBeCloseTo((8 * 5) / (24 * 7))
+  })
+
+  test("malformed cron estimates as zero", () => {
+    expect(Schedule.estimateRunsPerHour("not a cron")).toBe(0)
+  })
+})
