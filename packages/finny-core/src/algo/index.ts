@@ -1,0 +1,198 @@
+import fs from "node:fs/promises"
+import path from "node:path"
+import YAML from "yaml"
+import {
+  ARCHIVE_DIR,
+  BACKTEST_FILE,
+  Backtest,
+  CURRENT_FILE,
+  DECISIONS_FILE,
+  MISSION_FILE,
+  MissionFrontmatter,
+  NOTES_FILE,
+  PREFS_FILE,
+  STRATEGY_FILE,
+  VERSION_DIR_RE,
+  parseCurrent,
+} from "./schemas"
+import { algoDir, algosRoot, discoverAlgos, discoverVersions, versionDir } from "./paths"
+
+export * from "./schemas"
+export * from "./paths"
+
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+
+export interface ParsedMission {
+  frontmatter: MissionFrontmatter
+  body: string
+}
+
+export function parseMission(raw: string): ParsedMission {
+  const m = FRONTMATTER_RE.exec(raw)
+  if (!m) throw new Error("mission.md missing YAML frontmatter (`---` fenced block at start)")
+  const fm = YAML.parse(m[1]!)
+  return { frontmatter: MissionFrontmatter.parse(fm), body: m[2] ?? "" }
+}
+
+export function serializeMission(mission: ParsedMission): string {
+  const fm = YAML.stringify(mission.frontmatter).trimEnd()
+  const body = mission.body.startsWith("\n") ? mission.body : "\n" + mission.body
+  return `---\n${fm}\n---${body}`
+}
+
+export interface AlgoVersion {
+  name: string
+  dir: string
+  strategy(): Promise<string>
+  backtest(): Promise<Backtest | null>
+  notes(): Promise<string | null>
+}
+
+export interface Algo {
+  name: string
+  dir: string
+  mission: ParsedMission
+  current: string
+  versions: string[]
+  decisions(): Promise<string>
+  prefs(): Promise<string>
+  archive(): Promise<string[]>
+  version(name?: string): AlgoVersion
+}
+
+async function readOptional(p: string): Promise<string | null> {
+  try {
+    return await fs.readFile(p, "utf8")
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return null
+    throw err
+  }
+}
+
+function buildVersion(algoRoot: string, version: string): AlgoVersion {
+  if (!VERSION_DIR_RE.test(version)) throw new Error(`invalid version name: ${version}`)
+  const dir = path.join(algoRoot, version)
+  return {
+    name: version,
+    dir,
+    async strategy() {
+      return await fs.readFile(path.join(dir, STRATEGY_FILE), "utf8")
+    },
+    async backtest() {
+      const raw = await readOptional(path.join(dir, BACKTEST_FILE))
+      if (raw === null) return null
+      return Backtest.parse(JSON.parse(raw))
+    },
+    async notes() {
+      return await readOptional(path.join(dir, NOTES_FILE))
+    },
+  }
+}
+
+export async function loadAlgo(name: string, root: string = algosRoot()): Promise<Algo> {
+  const dir = algoDir(name, root)
+  const missionRaw = await fs.readFile(path.join(dir, MISSION_FILE), "utf8")
+  const mission = parseMission(missionRaw)
+  if (mission.frontmatter.name !== name) {
+    throw new Error(
+      `mission.name (${mission.frontmatter.name}) does not match folder name (${name}) at ${dir}`,
+    )
+  }
+  const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
+  const current = parseCurrent(currentRaw)
+  const versions = await discoverVersions(name, root)
+  return {
+    name,
+    dir,
+    mission,
+    current,
+    versions,
+    async decisions() {
+      return (await readOptional(path.join(dir, DECISIONS_FILE))) ?? ""
+    },
+    async prefs() {
+      return (await readOptional(path.join(dir, PREFS_FILE))) ?? ""
+    },
+    async archive() {
+      try {
+        const entries = await fs.readdir(path.join(dir, ARCHIVE_DIR), { withFileTypes: true })
+        return entries
+          .filter((e) => e.isFile() && /^chat-\d{4}-\d{2}-\d{2}\.md$/.test(e.name))
+          .map((e) => e.name)
+          .sort()
+      } catch (err: any) {
+        if (err?.code === "ENOENT") return []
+        throw err
+      }
+    },
+    version(v?: string) {
+      return buildVersion(dir, v ?? current)
+    },
+  }
+}
+
+export interface AlgoHeader {
+  name: string
+  dir: string
+  mission: ParsedMission
+  current: string
+}
+
+export async function listAlgos(root: string = algosRoot()): Promise<AlgoHeader[]> {
+  const names = await discoverAlgos(root)
+  const out: AlgoHeader[] = []
+  for (const name of names) {
+    const dir = algoDir(name, root)
+    try {
+      const missionRaw = await fs.readFile(path.join(dir, MISSION_FILE), "utf8")
+      const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
+      out.push({
+        name,
+        dir,
+        mission: parseMission(missionRaw),
+        current: parseCurrent(currentRaw),
+      })
+    } catch {
+      // Skip folders that don't conform; let loadAlgo surface the error if directly requested.
+    }
+  }
+  return out
+}
+
+export async function writeAlgo(params: {
+  root?: string
+  mission: ParsedMission
+  current: string
+  decisions?: string
+  prefs?: string
+  versions: Record<
+    string,
+    {
+      strategy: string
+      notes?: string
+      backtest?: Backtest
+    }
+  >
+}): Promise<string> {
+  const root = params.root ?? algosRoot()
+  const name = params.mission.frontmatter.name
+  const dir = algoDir(name, root)
+  await fs.mkdir(dir, { recursive: true })
+  await fs.writeFile(path.join(dir, MISSION_FILE), serializeMission(params.mission), "utf8")
+  await fs.writeFile(path.join(dir, CURRENT_FILE), parseCurrent(params.current) + "\n", "utf8")
+  await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${name}\n`, "utf8")
+  await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${name}\n`, "utf8")
+  for (const [v, content] of Object.entries(params.versions)) {
+    const vdir = versionDir(name, v, root)
+    await fs.mkdir(vdir, { recursive: true })
+    await fs.writeFile(path.join(vdir, STRATEGY_FILE), content.strategy, "utf8")
+    if (content.notes !== undefined) {
+      await fs.writeFile(path.join(vdir, NOTES_FILE), content.notes, "utf8")
+    }
+    if (content.backtest !== undefined) {
+      const parsed = Backtest.parse(content.backtest)
+      await fs.writeFile(path.join(vdir, BACKTEST_FILE), JSON.stringify(parsed, null, 2) + "\n", "utf8")
+    }
+  }
+  return dir
+}

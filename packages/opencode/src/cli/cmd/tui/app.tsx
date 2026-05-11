@@ -39,6 +39,8 @@ import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
+import { DialogExperienceLevel } from "@tui/component/dialog-experience-level"
+import { DialogBeginnerWelcome } from "@tui/component/dialog-beginner-welcome"
 import { Analytics } from "@/analytics/tracker"
 import { Classify } from "@/analytics/classify"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
@@ -526,6 +528,25 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           if (!kv.get("email_capture_status")) {
             kv.set("email_capture_status", "skipped")
           }
+        }).then(() => {
+          // After the email step closes (submit OR skip), ask the experience-
+          // level question once. KV-gated so we never re-prompt. Beginners get
+          // a static welcome screen explaining what Finny is — no model call.
+          if (kv.get("experience_level_status")) return
+          DialogExperienceLevel.show(
+            dialog,
+            (level) => {
+              kv.set("experience_level_status", level)
+              if (level === "beginner") {
+                DialogBeginnerWelcome.show(dialog)
+              }
+            },
+            () => {
+              if (!kv.get("experience_level_status")) {
+                kv.set("experience_level_status", "skipped")
+              }
+            },
+          )
         })
       },
     ),

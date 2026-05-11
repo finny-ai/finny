@@ -8,6 +8,38 @@ import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Plan } from "../plan"
 import { Bus } from "../bus"
 
+// On Windows with no Python installed, the Microsoft Store launcher stub
+// replies to `python`/`python3` with a nonzero exit and a misleading message
+// that gets fed into the syntax checker as a SYNTAX_ERROR diagnostic. The
+// agent then burns its full retry budget regenerating code that was never
+// the problem. Detect those signatures up front and surface a clean,
+// user-actionable error instead of looping.
+const PYTHON_MISSING_PATTERNS: RegExp[] = [
+  /Python was not found/i,
+  /is not recognized as an internal or external command/i,
+  /python3?: command not found/i,
+  /(ENOENT.*python|python.*ENOENT)/i,
+  /No such file or directory.*python/i,
+]
+
+export function looksLikePythonMissing(text: string): boolean {
+  if (!text) return false
+  return PYTHON_MISSING_PATTERNS.some((re) => re.test(text))
+}
+
+const PYTHON_MISSING_OUTPUT = [
+  "Python isn't installed on this machine. Finny needs Python to validate",
+  "and run strategies before saving them.",
+  "",
+  "To fix:",
+  "  • macOS:   brew install python3",
+  "  • Windows: install from https://www.python.org/downloads/",
+  "             (do NOT use the Microsoft Store stub launcher)",
+  "  • Linux:   apt install python3   (or your distro's equivalent)",
+  "",
+  "Once Python is on your PATH, run the save again and it'll go through.",
+].join("\n")
+
 /**
  * Count unique algorithm names against the user's saved set. Historical /
  * orphaned rows that share a name don't consume separate cap slots — this
@@ -77,6 +109,33 @@ export const AlgorithmSaveTool = Tool.define(
               code: params.code,
               config: params.config,
             })
+
+            // Environment hard-stop: if the validator failed because Python
+            // isn't on PATH, no amount of retrying will help — the code was
+            // never the problem. Surface a single user-visible error and clear
+            // the retry counter so the next save (after the user installs
+            // Python) starts fresh.
+            if (validation.kind !== "passed") {
+              const probe =
+                validation.kind === "retry"
+                  ? validation.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n")
+                  : validation.report
+              if (looksLikePythonMissing(probe)) {
+                RetryOrchestrator.reset(ctx.sessionID, params.name)
+                return {
+                  result: {
+                    title: "Python isn't installed",
+                    output: PYTHON_MISSING_OUTPUT,
+                    metadata: {
+                      blocked: true,
+                      retry: false,
+                      transient: false,
+                      environmentBlock: "python_not_installed",
+                    },
+                  },
+                }
+              }
+            }
 
             // Validation failed, but we still have budget — tell the agent to rewrite.
             // Marked `transient: true` so the TUI suppresses this from the user.
