@@ -76,6 +76,7 @@
   "dependencies": {
     "@actions/core": "1.11.1",
     "@actions/github": "6.0.1",
+    "@finny-ai/core": "workspace:*",
     "@agentclientprotocol/sdk": "0.16.1",
     "@ai-sdk/amazon-bedrock": "4.0.93",
     "@ai-sdk/anthropic": "3.0.67",

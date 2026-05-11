@@ -39,6 +39,8 @@ import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
+import { DialogExperienceLevel } from "@tui/component/dialog-experience-level"
+import { DialogBeginnerWelcome } from "@tui/component/dialog-beginner-welcome"
 import { Analytics } from "@/analytics/tracker"
 import { Classify } from "@/analytics/classify"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
@@ -525,6 +527,39 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         DialogEmailCapture.show(dialog, () => {
           if (!kv.get("email_capture_status")) {
             kv.set("email_capture_status", "skipped")
+          }
+        })
+      },
+    ),
+  )
+
+  // First-launch experience-level prompt — independent of email capture so
+  // users who opt out of telemetry still get onboarded. Fires once after
+  // sync completes, KV is ready, a provider is configured, and no other
+  // dialog is open. The KV gate ensures we never re-prompt.
+  createEffect(
+    on(
+      () =>
+        sync.status === "complete" &&
+        kv.ready &&
+        sync.data.provider.length > 0 &&
+        dialog.stack.length === 0,
+      (ready) => {
+        if (!ready) return
+        if (kv.get("experience_level_status")) return
+        DialogExperienceLevel.show(
+          dialog,
+          (level) => {
+            kv.set("experience_level_status", level)
+          },
+          () => {
+            if (!kv.get("experience_level_status")) {
+              kv.set("experience_level_status", "skipped")
+            }
+          },
+        ).then((level) => {
+          if (level === "beginner") {
+            DialogBeginnerWelcome.show(dialog)
           }
         })
       },
