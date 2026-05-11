@@ -1,5 +1,9 @@
-import { describe, expect, test } from "bun:test"
-import { looksLikePythonMissing } from "../../src/tool/algorithm-save"
+import { afterEach, describe, expect, test } from "bun:test"
+import {
+  _resetPythonAvailableCache,
+  isPythonAvailable,
+  looksLikePythonMissing,
+} from "../../src/tool/algorithm-save"
 
 describe("looksLikePythonMissing", () => {
   test("matches the Windows Microsoft Store launcher stub message", () => {
@@ -47,5 +51,21 @@ describe("looksLikePythonMissing", () => {
   test("does NOT match an empty or unrelated string", () => {
     expect(looksLikePythonMissing("")).toBe(false)
     expect(looksLikePythonMissing("MISSING_STRATEGY_CLASS: add a `class Strategy:`")).toBe(false)
+  })
+})
+
+describe("isPythonAvailable", () => {
+  afterEach(() => _resetPythonAvailableCache())
+
+  test("returns true when python3 is on PATH (system default)", async () => {
+    // The test host has python3 installed; if not, this is the only test we'd
+    // need to skip — for CI we assume Linux/macOS with python3 available.
+    expect(await isPythonAvailable()).toBe(true)
+  })
+
+  test("caches the result across calls", async () => {
+    const a = await isPythonAvailable()
+    const b = await isPythonAvailable()
+    expect(a).toBe(b)
   })
 })

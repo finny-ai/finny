@@ -7,6 +7,7 @@ import { Validate } from "../algorithm/validate"
 import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Plan } from "../plan"
 import { Bus } from "../bus"
+import { Process } from "../util/process"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -25,6 +26,50 @@ const PYTHON_MISSING_PATTERNS: RegExp[] = [
 export function looksLikePythonMissing(text: string): boolean {
   if (!text) return false
   return PYTHON_MISSING_PATTERNS.some((re) => re.test(text))
+}
+
+// Direct availability probe. `Validate.checkSyntax` swallows clean ENOENT
+// (silent return null) so a user with no Python at all can pass validation
+// and reach `Algorithm.save` with code that will fail at backtest time.
+// Probing here closes that gap — and catches the Windows stub case before
+// it ever pollutes the diagnostic stream. Result is cached for the process
+// because Python availability won't change mid-session.
+let pythonAvailableCache: Promise<boolean> | null = null
+
+export async function isPythonAvailable(): Promise<boolean> {
+  if (pythonAvailableCache !== null) return pythonAvailableCache
+  pythonAvailableCache = (async () => {
+    try {
+      const proc = Process.spawn(["python3", "--version"], {
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: 5000,
+      })
+      const stderrChunks: Buffer[] = []
+      proc.stderr!.on("data", (c: Buffer) => stderrChunks.push(c))
+      const exitCode = await proc.exited
+      if (exitCode === 0) return true
+      const stderr = Buffer.concat(stderrChunks).toString()
+      // Some platforms (Windows Store stub) launch but exit nonzero with the
+      // canonical "not installed" message — also count those as unavailable.
+      if (looksLikePythonMissing(stderr)) return false
+      // Other nonzero exits (corrupt install, permission error, etc.) — be
+      // conservative and treat as available so we don't false-positive.
+      return true
+    } catch (err: any) {
+      const msg = String(err?.message ?? err)
+      if (looksLikePythonMissing(msg)) return false
+      // Any other spawn error (EACCES, etc.) — be conservative.
+      return true
+    }
+  })()
+  return pythonAvailableCache
+}
+
+// Exposed so tests can reset the per-process cache between cases.
+export function _resetPythonAvailableCache(): void {
+  pythonAvailableCache = null
 }
 
 const PYTHON_MISSING_OUTPUT = [
@@ -100,6 +145,24 @@ export const AlgorithmSaveTool = Tool.define(
               always: ["*"],
               metadata: {},
             })
+
+            // Environment hard-stop #1: Python isn't installed at all. Probe
+            // before validation so we don't let a clean ENOENT slip through
+            // `Validate.checkSyntax`'s silent-skip branch and reach save.
+            if (!(await isPythonAvailable())) {
+              return {
+                result: {
+                  title: "Python isn't installed",
+                  output: PYTHON_MISSING_OUTPUT,
+                  metadata: {
+                    blocked: true,
+                    retry: false,
+                    transient: false,
+                    environmentBlock: "python_not_installed",
+                  },
+                },
+              }
+            }
 
             // Run validation through the retry orchestrator so the attempt counter,
             // transient flagging, and max-retry handling all live in one place.

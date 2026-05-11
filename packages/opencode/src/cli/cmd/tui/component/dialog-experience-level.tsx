@@ -38,15 +38,22 @@ export function DialogExperienceLevel(props: DialogExperienceLevelProps) {
     }
   }
 
+  const OPTION_COUNT = 2
   useKeyboard((evt) => {
     if (busy()) return
-    if (evt.name === "tab" || evt.name === "down" || evt.name === "right") {
-      setFocusIdx((i) => (i + 1) % 2)
+    if (evt.name === "tab") {
+      const dir = evt.shift ? -1 : 1
+      setFocusIdx((i) => (i + dir + OPTION_COUNT) % OPTION_COUNT)
+      evt.preventDefault?.()
+      return
+    }
+    if (evt.name === "down" || evt.name === "right") {
+      setFocusIdx((i) => (i + 1) % OPTION_COUNT)
       evt.preventDefault?.()
       return
     }
     if (evt.name === "up" || evt.name === "left") {
-      setFocusIdx((i) => (i + 1) % 2)
+      setFocusIdx((i) => (i - 1 + OPTION_COUNT) % OPTION_COUNT)
       evt.preventDefault?.()
       return
     }

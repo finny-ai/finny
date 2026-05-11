@@ -1,7 +1,7 @@
-import { RGBA, TextAttributes } from "@opentui/core"
+import { TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createSignal, onMount } from "solid-js"
-import { selectedForeground, useTheme } from "@tui/context/theme"
+import { onMount } from "solid-js"
+import { useTheme } from "@tui/context/theme"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 
 // Static, no-model first conversation rendered for beginner users right after
@@ -23,8 +23,8 @@ const STATIC_REPLY = [
   "  3. Come back when you can describe a strategy in 2–3 sentences,",
   "     e.g. \"buy SPY when 50d SMA > 200d, sell on crossover\".",
   "",
-  "We're not going anywhere. You can still chat with Finny right now if",
-  "you'd like — chat mode is your default.",
+  "We're not going anywhere. Chat mode is your default — you can ask",
+  "questions right now if you'd like.",
 ]
 
 export type DialogBeginnerWelcomeProps = {
@@ -34,8 +34,6 @@ export type DialogBeginnerWelcomeProps = {
 export function DialogBeginnerWelcome(props: DialogBeginnerWelcomeProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
-  const fg = selectedForeground(theme)
-  const [focusIdx, setFocusIdx] = createSignal(0)
 
   const close = () => {
     props.onClose?.()
@@ -43,36 +41,12 @@ export function DialogBeginnerWelcome(props: DialogBeginnerWelcomeProps) {
   }
 
   useKeyboard((evt) => {
-    if (evt.name === "tab" || evt.name === "left" || evt.name === "right") {
-      setFocusIdx((i) => (i + 1) % 2)
-      evt.preventDefault?.()
-      return
-    }
-    if (evt.name === "return" || evt.name === "escape") {
-      close()
-    }
+    if (evt.name === "return" || evt.name === "escape") close()
   })
 
   onMount(() => {
     dialog.setSize("large")
   })
-
-  const Btn = (p: { label: string; index: number; onClick: () => void }) => (
-    <box
-      paddingLeft={2}
-      paddingRight={2}
-      backgroundColor={focusIdx() === p.index ? theme.primary : RGBA.fromInts(0, 0, 0, 0)}
-      onMouseOver={() => setFocusIdx(p.index)}
-      onMouseUp={p.onClick}
-    >
-      <text
-        fg={focusIdx() === p.index ? fg : theme.text}
-        attributes={focusIdx() === p.index ? TextAttributes.BOLD : undefined}
-      >
-        {p.label}
-      </text>
-    </box>
-  )
 
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
@@ -93,9 +67,19 @@ export function DialogBeginnerWelcome(props: DialogBeginnerWelcomeProps) {
       </box>
 
       <box flexDirection="row" justifyContent="flex-end" gap={1} paddingBottom={1}>
-        <Btn label="got it" index={0} onClick={close} />
-        <Btn label="open chat anyway" index={1} onClick={close} />
+        <box
+          paddingLeft={2}
+          paddingRight={2}
+          backgroundColor={theme.primary}
+          onMouseUp={close}
+        >
+          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            got it
+          </text>
+        </box>
       </box>
+
+      <text fg={theme.textMuted}>enter or esc to close</text>
     </box>
   )
 }

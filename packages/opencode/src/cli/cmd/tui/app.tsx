@@ -528,26 +528,39 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           if (!kv.get("email_capture_status")) {
             kv.set("email_capture_status", "skipped")
           }
-        }).then(() => {
-          // After the email step closes (submit OR skip), ask the experience-
-          // level question once. KV-gated so we never re-prompt. Beginners get
-          // a static welcome screen explaining what Finny is — no model call.
-          if (kv.get("experience_level_status")) return
-          DialogExperienceLevel.show(
-            dialog,
-            (level) => {
-              kv.set("experience_level_status", level)
-              if (level === "beginner") {
-                DialogBeginnerWelcome.show(dialog)
-              }
-            },
-            () => {
-              if (!kv.get("experience_level_status")) {
-                kv.set("experience_level_status", "skipped")
-              }
-            },
-          )
         })
+      },
+    ),
+  )
+
+  // First-launch experience-level prompt — independent of email capture so
+  // users who opt out of telemetry still get onboarded. Fires once after
+  // sync completes, KV is ready, a provider is configured, and no other
+  // dialog is open. The KV gate ensures we never re-prompt.
+  createEffect(
+    on(
+      () =>
+        sync.status === "complete" &&
+        kv.ready &&
+        sync.data.provider.length > 0 &&
+        dialog.stack.length === 0,
+      (ready) => {
+        if (!ready) return
+        if (kv.get("experience_level_status")) return
+        DialogExperienceLevel.show(
+          dialog,
+          (level) => {
+            kv.set("experience_level_status", level)
+            if (level === "beginner") {
+              DialogBeginnerWelcome.show(dialog)
+            }
+          },
+          () => {
+            if (!kv.get("experience_level_status")) {
+              kv.set("experience_level_status", "skipped")
+            }
+          },
+        )
       },
     ),
   )
