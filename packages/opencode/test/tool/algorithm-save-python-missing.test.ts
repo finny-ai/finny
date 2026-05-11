@@ -57,10 +57,13 @@ describe("looksLikePythonMissing", () => {
 describe("isPythonAvailable", () => {
   afterEach(() => _resetPythonAvailableCache())
 
-  test("returns true when python3 is on PATH (system default)", async () => {
-    // The test host has python3 installed; if not, this is the only test we'd
-    // need to skip — for CI we assume Linux/macOS with python3 available.
-    expect(await isPythonAvailable()).toBe(true)
+  test("returns a boolean result without throwing", async () => {
+    // Don't assert true/false — the answer depends on whether the test host
+    // has python3 / python on PATH, which varies (Linux/macOS dev boxes have
+    // it, minimal Windows CI runners may not). What we DO want to guarantee
+    // is that the probe runs to completion and returns a boolean — no
+    // unhandled rejection from the spawn, no thrown error.
+    expect(typeof (await isPythonAvailable())).toBe("boolean")
   })
 
   test("caches the result across calls", async () => {

@@ -36,33 +36,53 @@ export function looksLikePythonMissing(text: string): boolean {
 // because Python availability won't change mid-session.
 let pythonAvailableCache: Promise<boolean> | null = null
 
+// Each spawn is wrapped in an AbortSignal.timeout so a hanging Windows stub
+// or misbehaving wrapper script can't block the save flow. `Process.spawn`'s
+// `timeout` option is just for SIGKILL escalation after SIGTERM — the abort
+// signal is what enforces the actual wall-clock cap.
+const PROBE_TIMEOUT_MS = 5000
+
+// Try a single interpreter name. Returns true if it exits cleanly, false if
+// it's clearly missing (Windows stub message or spawn ENOENT), and null if
+// we can't tell (any other nonzero exit, weird spawn error) — null means
+// "fall back to the next candidate; if all return null, treat as available
+// to avoid false-positives on corrupt installs."
+async function probePython(cmd: string): Promise<boolean | null> {
+  try {
+    const proc = Process.spawn([cmd, "--version"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      abort: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      timeout: PROBE_TIMEOUT_MS,
+    })
+    const stderrChunks: Buffer[] = []
+    proc.stderr!.on("data", (c: Buffer) => stderrChunks.push(c))
+    const exitCode = await proc.exited
+    if (exitCode === 0) return true
+    const stderr = Buffer.concat(stderrChunks).toString()
+    if (looksLikePythonMissing(stderr)) return false
+    return null
+  } catch (err: any) {
+    const msg = String(err?.message ?? err)
+    if (looksLikePythonMissing(msg)) return false
+    return null
+  }
+}
+
 export async function isPythonAvailable(): Promise<boolean> {
   if (pythonAvailableCache !== null) return pythonAvailableCache
   pythonAvailableCache = (async () => {
-    try {
-      const proc = Process.spawn(["python3", "--version"], {
-        stdin: "ignore",
-        stdout: "pipe",
-        stderr: "pipe",
-        timeout: 5000,
-      })
-      const stderrChunks: Buffer[] = []
-      proc.stderr!.on("data", (c: Buffer) => stderrChunks.push(c))
-      const exitCode = await proc.exited
-      if (exitCode === 0) return true
-      const stderr = Buffer.concat(stderrChunks).toString()
-      // Some platforms (Windows Store stub) launch but exit nonzero with the
-      // canonical "not installed" message — also count those as unavailable.
-      if (looksLikePythonMissing(stderr)) return false
-      // Other nonzero exits (corrupt install, permission error, etc.) — be
-      // conservative and treat as available so we don't false-positive.
-      return true
-    } catch (err: any) {
-      const msg = String(err?.message ?? err)
-      if (looksLikePythonMissing(msg)) return false
-      // Any other spawn error (EACCES, etc.) — be conservative.
-      return true
+    // Try python3, then python. Both have to fail with a clear "missing"
+    // signal before we hard-block — matches the fallback logic in
+    // src/python/env.ts:systemPython() so this probe stays consistent with
+    // how the runtime picks its interpreter.
+    for (const cmd of ["python3", "python"]) {
+      const result = await probePython(cmd)
+      if (result === true) return true
+      if (result === null) return true // conservative: unknown error, don't block
     }
+    return false
   })()
   return pythonAvailableCache
 }
