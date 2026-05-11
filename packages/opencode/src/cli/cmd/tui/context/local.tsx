@@ -11,6 +11,7 @@ import { useToast } from "../ui/toast"
 import { Provider } from "@/provider/provider"
 import { useArgs } from "./args"
 import { useSDK } from "./sdk"
+import { useKV } from "./kv"
 import { RGBA } from "@opentui/core"
 import { Filesystem } from "@/util/filesystem"
 
@@ -20,6 +21,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const sync = useSync()
     const sdk = useSDK()
     const toast = useToast()
+    const kv = useKV()
 
     function isModelValid(model: { providerID: string; modelID: string }) {
       const provider = sync.data.provider.find((x) => x.id === model.providerID)
@@ -41,6 +43,19 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         current: string
       }>({
         current: agents()[0].name,
+      })
+      // Beginners (chosen during onboarding via DialogExperienceLevel) default
+      // to the chat agent rather than build. KV is the source of truth, but
+      // loads asynchronously — so apply the override once KV is ready, only
+      // if the user hasn't manually picked an agent yet this session.
+      let agentChosenByUser = false
+      createEffect(() => {
+        if (!kv.ready) return
+        if (agentChosenByUser) return
+        if (kv.get("experience_level_status") !== "beginner") return
+        const chat = agents().find((x) => x.name === "chat")
+        if (!chat) return
+        setAgentStore("current", chat.name)
       })
       const { theme } = useTheme()
       const colors = createMemo(() => [
@@ -68,9 +83,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
               message: `Agent not found: ${name}`,
               duration: 3000,
             })
+          agentChosenByUser = true
           setAgentStore("current", name)
         },
         move(direction: 1 | -1) {
+          agentChosenByUser = true
           batch(() => {
             let next = agents().findIndex((x) => x.name === agentStore.current) + direction
             if (next < 0) next = agents().length - 1

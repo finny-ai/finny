@@ -31,3 +31,7 @@ logs/
 tsconfig.tsbuildinfo
 
 .env.local
+
+# Claude Code per-developer state — permission allowlists, local commands, etc.
+.claude/settings.local.json
+.claude/commands/

@@ -7,6 +7,104 @@ import { Validate } from "../algorithm/validate"
 import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Plan } from "../plan"
 import { Bus } from "../bus"
+import { Process } from "../util/process"
+
+// On Windows with no Python installed, the Microsoft Store launcher stub
+// replies to `python`/`python3` with a nonzero exit and a misleading message
+// that gets fed into the syntax checker as a SYNTAX_ERROR diagnostic. The
+// agent then burns its full retry budget regenerating code that was never
+// the problem. Detect those signatures up front and surface a clean,
+// user-actionable error instead of looping.
+const PYTHON_MISSING_PATTERNS: RegExp[] = [
+  /Python was not found/i,
+  /is not recognized as an internal or external command/i,
+  /python3?: command not found/i,
+  /(ENOENT.*python|python.*ENOENT)/i,
+  /No such file or directory.*python/i,
+]
+
+export function looksLikePythonMissing(text: string): boolean {
+  if (!text) return false
+  return PYTHON_MISSING_PATTERNS.some((re) => re.test(text))
+}
+
+// Direct availability probe. `Validate.checkSyntax` swallows clean ENOENT
+// (silent return null) so a user with no Python at all can pass validation
+// and reach `Algorithm.save` with code that will fail at backtest time.
+// Probing here closes that gap — and catches the Windows stub case before
+// it ever pollutes the diagnostic stream. Result is cached for the process
+// because Python availability won't change mid-session.
+let pythonAvailableCache: Promise<boolean> | null = null
+
+// Each spawn is wrapped in an AbortSignal.timeout so a hanging Windows stub
+// or misbehaving wrapper script can't block the save flow. `Process.spawn`'s
+// `timeout` option is just for SIGKILL escalation after SIGTERM — the abort
+// signal is what enforces the actual wall-clock cap.
+const PROBE_TIMEOUT_MS = 5000
+
+// Try a single interpreter name. Returns true if it exits cleanly, false if
+// it's clearly missing (Windows stub message or spawn ENOENT), and null if
+// we can't tell (any other nonzero exit, weird spawn error) — null means
+// "fall back to the next candidate; if all return null, treat as available
+// to avoid false-positives on corrupt installs."
+async function probePython(cmd: string): Promise<boolean | null> {
+  try {
+    const proc = Process.spawn([cmd, "--version"], {
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      abort: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+      timeout: PROBE_TIMEOUT_MS,
+    })
+    const stderrChunks: Buffer[] = []
+    proc.stderr!.on("data", (c: Buffer) => stderrChunks.push(c))
+    const exitCode = await proc.exited
+    if (exitCode === 0) return true
+    const stderr = Buffer.concat(stderrChunks).toString()
+    if (looksLikePythonMissing(stderr)) return false
+    return null
+  } catch (err: any) {
+    const msg = String(err?.message ?? err)
+    if (looksLikePythonMissing(msg)) return false
+    return null
+  }
+}
+
+export async function isPythonAvailable(): Promise<boolean> {
+  if (pythonAvailableCache !== null) return pythonAvailableCache
+  pythonAvailableCache = (async () => {
+    // Try python3, then python. Both have to fail with a clear "missing"
+    // signal before we hard-block — matches the fallback logic in
+    // src/python/env.ts:systemPython() so this probe stays consistent with
+    // how the runtime picks its interpreter.
+    let unknownSeen = false
+    for (const cmd of ["python3", "python"]) {
+      const result = await probePython(cmd)
+      if (result === true) return true
+      if (result === null) unknownSeen = true
+    }
+    return unknownSeen
+  })()
+  return pythonAvailableCache
+}
+
+// Exposed so tests can reset the per-process cache between cases.
+export function _resetPythonAvailableCache(): void {
+  pythonAvailableCache = null
+}
+
+const PYTHON_MISSING_OUTPUT = [
+  "Python isn't installed on this machine. Finny needs Python to validate",
+  "and run strategies before saving them.",
+  "",
+  "To fix:",
+  "  • macOS:   brew install python3",
+  "  • Windows: install from https://www.python.org/downloads/",
+  "             (do NOT use the Microsoft Store stub launcher)",
+  "  • Linux:   apt install python3   (or your distro's equivalent)",
+  "",
+  "Once Python is on your PATH, run the save again and it'll go through.",
+].join("\n")
 
 /**
  * Count unique algorithm names against the user's saved set. Historical /
@@ -69,6 +167,25 @@ export const AlgorithmSaveTool = Tool.define(
               metadata: {},
             })
 
+            // Environment hard-stop #1: Python isn't installed at all. Probe
+            // before validation so we don't let a clean ENOENT slip through
+            // `Validate.checkSyntax`'s silent-skip branch and reach save.
+            if (!(await isPythonAvailable())) {
+              RetryOrchestrator.reset(ctx.sessionID, params.name)
+              return {
+                result: {
+                  title: "Python isn't installed",
+                  output: PYTHON_MISSING_OUTPUT,
+                  metadata: {
+                    blocked: true,
+                    retry: false,
+                    transient: false,
+                    environmentBlock: "python_not_installed",
+                  },
+                },
+              }
+            }
+
             // Run validation through the retry orchestrator so the attempt counter,
             // transient flagging, and max-retry handling all live in one place.
             const validation = await RetryOrchestrator.attempt({
@@ -77,6 +194,33 @@ export const AlgorithmSaveTool = Tool.define(
               code: params.code,
               config: params.config,
             })
+
+            // Environment hard-stop: if the validator failed because Python
+            // isn't on PATH, no amount of retrying will help — the code was
+            // never the problem. Surface a single user-visible error and clear
+            // the retry counter so the next save (after the user installs
+            // Python) starts fresh.
+            if (validation.kind !== "passed") {
+              const probe =
+                validation.kind === "retry"
+                  ? validation.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n")
+                  : validation.report
+              if (looksLikePythonMissing(probe)) {
+                RetryOrchestrator.reset(ctx.sessionID, params.name)
+                return {
+                  result: {
+                    title: "Python isn't installed",
+                    output: PYTHON_MISSING_OUTPUT,
+                    metadata: {
+                      blocked: true,
+                      retry: false,
+                      transient: false,
+                      environmentBlock: "python_not_installed",
+                    },
+                  },
+                }
+              }
+            }
 
             // Validation failed, but we still have budget — tell the agent to rewrite.
             // Marked `transient: true` so the TUI suppresses this from the user.

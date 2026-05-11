@@ -6,15 +6,20 @@
   "license": "PolyForm-Noncommercial-1.0.0",
   "exports": {
     ".": "./src/index.ts",
+    "./algo": "./src/algo/index.ts",
+    "./prefs": "./src/prefs/index.ts",
     "./*": "./src/*.ts"
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "bun test"
   },
   "dependencies": {
     "@finny-ai/integrations": "workspace:*",
     "@finny-ai/registry": "workspace:*",
-    "@opencode-ai/plugin": "workspace:*"
+    "@opencode-ai/plugin": "workspace:*",
+    "yaml": "catalog:",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@types/bun": "catalog:",
