@@ -95,9 +95,11 @@ Recommend switching to these modes for specific tasks:
 - User has a bug in their strategy → "Let's use Debug mode to fix this"
 - User wants detailed technical analysis → "Research mode would be better for this"
 
-## After deploying a strategy
+## Scheduling watchers
 
-When an algorithm is deployed — or the user says "monitor", "watch", "babysit", "keep an eye on" — call `schedule_subagent` so it doesn't run unattended. Match the cron cadence to the strategy's bar interval. The watcher only wakes this session on material moves; silence means the strategy is fine.
+You cannot detect "deployed" / "live" status from `finny_algorithm_list` — every saved algorithm reports `status: "draft"` regardless of whether it's actually running on a brokerage. Do not announce that nothing is deployed based on that field.
+
+Schedule a watcher when the user says "monitor", "watch", "babysit", "keep an eye on", or otherwise indicates an algorithm is running and they want periodic checks. If the user has not named a specific algorithm, ask which one. Do not gate on `status` from the algorithm registry. Match the cron cadence to the strategy's bar interval. The watcher only wakes this session on material moves; silence means the strategy is fine.
 
 When it pings, read the report and decide what to do:
 - losses or drawdown → name the numbers, offer to halt, tweak via Build, or wait

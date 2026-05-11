@@ -7,10 +7,12 @@ import { Server } from "../server/server"
 import { Notify } from "./notify"
 import { Log } from "../util/log"
 import { WatcherState } from "./watcher-state"
+import { Analytics } from "@/analytics/tracker"
 
 export namespace Inject {
   const log = Log.create({ service: "cron.inject" })
   const MAX_QUEUE_AGE_MS = 24 * 60 * 60 * 1000
+  const FALLBACK_RATE_LIMIT_MS = 60 * 60 * 1000
 
   type PendingEntry = {
     text: string
@@ -21,6 +23,7 @@ export namespace Inject {
 
   const queue = new Map<string, PendingEntry[]>()
   const flushing = new Set<string>()
+  const lastFallbackAt = new Map<string, number>()
   let unsubscribe: (() => void) | undefined
 
   function sdk() {
@@ -44,10 +47,35 @@ export namespace Inject {
     })
   }
 
+  /** Tear down the bus subscription and clear in-memory state. Used by Scheduler.stop. */
+  export function shutdown() {
+    if (unsubscribe) {
+      try {
+        unsubscribe()
+      } catch (err) {
+        log.warn("inject.shutdown.unsubscribe-failed", { err: String(err) })
+      }
+      unsubscribe = undefined
+    }
+    queue.clear()
+    flushing.clear()
+    lastFallbackAt.clear()
+  }
+
   function queueEntry(sessionID: string, entry: PendingEntry) {
     const existing = queue.get(sessionID) ?? []
     existing.push(entry)
     queue.set(sessionID, existing)
+  }
+
+  /** True if the in-memory queue has an entry for this jobID, regardless of session. */
+  function hasQueuedJob(jobID: string): boolean {
+    for (const entries of queue.values()) {
+      for (const entry of entries) {
+        if (entry.pendingJobID === jobID) return true
+      }
+    }
+    return false
   }
 
   function dropExpired(sessionID: string) {
@@ -80,15 +108,49 @@ export namespace Inject {
       variant: target.variant,
       parts: [{ type: "text", text: entry.text }],
     })
-    if (entry.pendingJobID) WatcherState.markDelivered(entry.pendingJobID)
+    if (entry.pendingJobID) {
+      WatcherState.markDelivered(entry.pendingJobID)
+      Analytics.track({
+        eventType: "watcher",
+        eventName: "watcher.delivered",
+        sessionId: sessionID,
+        metadata: {
+          jobID: entry.pendingJobID,
+          queueWaitMs: Date.now() - entry.enqueuedAt,
+          finding: entry.text,
+          title: entry.title ?? null,
+        },
+      })
+    }
   }
 
   async function fallback(entry: PendingEntry) {
+    // Rate-limit per pendingJobID so a long-running session-fetch failure
+    // doesn't spam dozens of OS notifications across watcher fires.
+    const key = entry.pendingJobID ?? `anon:${entry.title ?? "watcher"}`
+    const now = Date.now()
+    const last = lastFallbackAt.get(key) ?? 0
+    if (now - last < FALLBACK_RATE_LIMIT_MS) {
+      log.debug("inject.fallback.rate-limited", { key, sinceLastMs: now - last })
+      return
+    }
+    lastFallbackAt.set(key, now)
     await Notify.send({
       title: entry.title || "Finny watcher",
       body: entry.text.slice(0, 240),
     })
-    if (entry.pendingJobID) WatcherState.markNotified(entry.pendingJobID)
+    if (entry.pendingJobID) {
+      WatcherState.markNotified(entry.pendingJobID)
+      Analytics.track({
+        eventType: "watcher",
+        eventName: "watcher.fallback_notified",
+        metadata: {
+          jobID: entry.pendingJobID,
+          finding: entry.text,
+          title: entry.title ?? null,
+        },
+      })
+    }
   }
 
   export function formatTaskCompleted(input: { description: string; text: string }) {
@@ -161,18 +223,12 @@ export namespace Inject {
       return
     }
 
-    const status = await SessionStatus.get(SessionID.make(sessionID))
-    if (status.type === "idle") {
-      try {
-        await deliver(sessionID, entry)
-        return
-      } catch (err) {
-        if (entry.pendingJobID) WatcherState.markDeliveryError(entry.pendingJobID, String(err).slice(0, 250))
-        log.warn("inject.post.immediate-failed", { sessionID, err: String(err) })
-      }
-    }
-
+    // Always queue first, then attempt a flush. The previous "deliver immediately
+    // when idle" shortcut could re-order messages relative to entries already in
+    // the queue (queued during a brief busy window). flush() handles idle vs
+    // busy uniformly and preserves FIFO order.
     queueEntry(sessionID, entry)
+    await flush(sessionID)
   }
 
   export async function retryPending(sessionID?: string) {
@@ -180,6 +236,9 @@ export namespace Inject {
     const pending = WatcherState.listPending().filter((item) => !sessionID || item.parentSessionID === sessionID)
     for (const item of pending) {
       if (!item.pendingFinding) continue
+      // Skip jobs that already have an in-memory queue entry — otherwise we
+      // double-deliver: once from the fresh post(), once from this retry.
+      if (hasQueuedJob(item.jobID)) continue
       await post(item.parentSessionID, item.pendingFinding, {
         pendingJobID: item.jobID,
         title: item.algorithmName ? `Watcher: ${item.algorithmName}` : "Finny watcher",

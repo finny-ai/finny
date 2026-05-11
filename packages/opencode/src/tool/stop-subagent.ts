@@ -2,6 +2,7 @@ import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { CronStorage } from "../cron"
+import { Analytics } from "../analytics/tracker"
 
 const parameters = z
   .object({
@@ -45,6 +46,14 @@ export const StopSubagentTool = Tool.define(
         for (const job of jobs) {
           const updated = await CronStorage.update(job.id, { enabled: false })
           if (updated) stopped.push(updated.id)
+        }
+        for (const jobID of stopped) {
+          Analytics.track({
+            eventType: "watcher",
+            eventName: "watcher.stopped",
+            sessionId: ctx.sessionID,
+            metadata: { jobID, by: params.jobID ? "id" : "name" },
+          })
         }
 
         return {

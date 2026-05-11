@@ -151,15 +151,27 @@ export namespace WatcherState {
     return get(jobID)
   }
 
+  /**
+   * Mark a finding as pending delivery. If a prior undelivered finding exists
+   * for the same job (status === "pending"), the new finding is appended rather
+   * than replaced — losing a finding silently because two ticks fired before
+   * the first delivered would violate the design's "findings survive a restart"
+   * guarantee. Status `delivered`/`notified` is treated as terminal and overwritten.
+   */
   export function markPending(jobID: string, text: string): Info | undefined {
     const now = Date.now()
+    const current = get(jobID)
+    const merged =
+      current?.pendingStatus === PendingStatus.pending && current?.pendingFinding
+        ? `${current.pendingFinding}\n\n---\n\n${text}`
+        : text
     Database.use((db) =>
       db
         .update(WatcherStateTable)
         .set({
-          pending_finding: text,
+          pending_finding: merged,
           pending_status: PendingStatus.pending,
-          pending_created_at: now,
+          pending_created_at: current?.pendingCreatedAt ?? now,
           pending_delivered_at: null,
           last_delivery_error: null,
           time_updated: now,

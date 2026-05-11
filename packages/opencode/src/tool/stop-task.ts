@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { TaskState } from "@/task/state"
 import { SessionPrompt } from "@/session/prompt"
+import { Analytics } from "@/analytics/tracker"
 
 const parameters = z.object({
   task_id: z.string().describe("Background task id to cancel."),
@@ -56,6 +57,12 @@ export const StopTaskTool = Tool.define<typeof parameters, Metadata, never>(
 
         await SessionPrompt.cancel(task.id)
         const cancelled = await TaskState.cancel(task.id)
+        Analytics.track({
+          eventType: "task",
+          eventName: "task.background.cancelled",
+          sessionId: ctx.sessionID,
+          metadata: { taskId: task.id, priorStatus: task.status },
+        })
 
         return {
           title: "Task cancelled",

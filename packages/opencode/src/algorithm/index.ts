@@ -148,6 +148,13 @@ export namespace Algorithm {
   }
 
   export async function resolve(identifier: string): Promise<Info | null> {
+    // Algorithm IDs are ULIDs (26 chars, Crockford base32). Names are user-chosen
+    // and almost never match that shape. Pick the right lookup on the first try
+    // instead of two Convex round-trips per resolve call.
+    const looksLikeULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(identifier)
+    if (looksLikeULID) {
+      return (await getById(identifier)) ?? (await get(identifier))
+    }
     return (await get(identifier)) ?? (await getById(identifier))
   }
 

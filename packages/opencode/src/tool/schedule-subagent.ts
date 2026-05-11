@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { parseConfig } from "../algorithm/strategy-params"
 import { CronStorage, Schedule, Job, WatcherState } from "../cron"
+import { Analytics } from "../analytics/tracker"
 
 const RECURRING_TTL_MS = 7 * 24 * 60 * 60 * 1000
 const SOFT_RUNS_PER_HOUR = 20
@@ -91,6 +92,17 @@ export const ScheduleSubagentTool = Tool.define(
           .reduce((sum, job) => sum + Schedule.estimateRunsPerHour(job.schedule), 0)
         const sessionEstimatedRunsPerHour = existingSessionRuns + estimatedRunsPerHour
         if (sessionEstimatedRunsPerHour > HARD_RUNS_PER_HOUR) {
+          Analytics.track({
+            eventType: "watcher",
+            eventName: "watcher.schedule.blocked",
+            sessionId: ctx.sessionID,
+            metadata: {
+              reason: "hard_runs_per_hour_exceeded",
+              estimatedRunsPerHour,
+              sessionEstimatedRunsPerHour,
+              hardCap: HARD_RUNS_PER_HOUR,
+            },
+          })
           return {
             title: "Watcher schedule blocked",
             output: JSON.stringify(
@@ -146,6 +158,28 @@ export const ScheduleSubagentTool = Tool.define(
           parentSessionID: ctx.sessionID,
           algorithmID: algorithm.algorithmId,
           algorithmName: algorithm.name,
+        })
+        const cfgForTrack = parseConfig(algorithm.config)
+        Analytics.track({
+          eventType: "watcher",
+          eventName: "watcher.scheduled",
+          sessionId: ctx.sessionID,
+          metadata: {
+            jobID: job.id,
+            algorithmId: algorithm.algorithmId,
+            algorithmName: algorithm.name,
+            symbol: cfgForTrack.symbol ?? null,
+            brokerage: cfgForTrack.brokerage ?? null,
+            interval: cfgForTrack.interval ?? null,
+            schedule: job.scheduleSource,
+            normalizedCron: parsed.cron,
+            timezone: parsed.timezone,
+            recurring: params.recurring,
+            durable: params.durable,
+            estimatedRunsPerHour,
+            sessionEstimatedRunsPerHour,
+            notes: params.notes ?? null,
+          },
         })
         const warning =
           sessionEstimatedRunsPerHour > SOFT_RUNS_PER_HOUR

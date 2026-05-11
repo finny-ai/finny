@@ -52,4 +52,29 @@ describe("WatcherState", () => {
   test("missing watcher state is safe for old jobs", () => {
     expect(WatcherState.get(`missing_${crypto.randomUUID()}`)).toBeUndefined()
   })
+
+  test("markPending appends instead of clobbering when a prior pending finding is still undelivered", () => {
+    const jobID = `job_${crypto.randomUUID()}`
+    WatcherState.upsert({ jobID, parentSessionID: "ses_parent", algorithmName: "double-tick" })
+    WatcherState.markPending(jobID, "first finding")
+    WatcherState.markPending(jobID, "second finding")
+
+    const state = WatcherState.get(jobID)
+    expect(state?.pendingStatus).toBe(WatcherState.PendingStatus.pending)
+    expect(state?.pendingFinding).toContain("first finding")
+    expect(state?.pendingFinding).toContain("second finding")
+    expect(state?.pendingFinding).toContain("---")
+  })
+
+  test("markPending overwrites a delivered finding (terminal state, safe to replace)", () => {
+    const jobID = `job_${crypto.randomUUID()}`
+    WatcherState.upsert({ jobID, parentSessionID: "ses_parent", algorithmName: "post-delivery" })
+    WatcherState.markPending(jobID, "first finding")
+    WatcherState.markDelivered(jobID)
+    WatcherState.markPending(jobID, "next finding")
+
+    const state = WatcherState.get(jobID)
+    expect(state?.pendingFinding).toBe("next finding")
+    expect(state?.pendingFinding).not.toContain("first finding")
+  })
 })

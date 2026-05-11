@@ -13,13 +13,6 @@ export namespace WatcherEvaluator {
     | { kind: "run"; note: string }
     | { kind: "unavailable"; note: string }
 
-  function parseLine(text: string, key: string) {
-    const match = new RegExp(`^- ${key}:\\s*(.+)$`, "m").exec(text)
-    const value = match?.[1]?.trim()
-    if (!value || value === "unknown") return undefined
-    return value
-  }
-
   function pctChange(current?: number, previous?: number) {
     if (current === undefined || previous === undefined || previous === 0) return 0
     return Math.abs(((current - previous) / previous) * 100)
@@ -38,16 +31,19 @@ export namespace WatcherEvaluator {
       return { kind: "run", note: "not a session watcher" }
     }
 
-    const state =
-      WatcherState.get(job.id) ??
-      WatcherState.upsert({
-        jobID: job.id,
-        parentSessionID: job.parentSessionID,
-        algorithmID: parseLine(job.prompt.text, "algorithmId"),
-        algorithmName: parseLine(job.prompt.text, "name"),
-      })
+    // The watcher_state row is upserted at schedule_subagent time with the
+    // canonical algorithmID/Name. If it's missing we cannot trust prompt-text
+    // parsing as a fallback (formatting drift would silently auto-pause the
+    // watcher), so report unavailable and let the failure path handle it.
+    const state = WatcherState.get(job.id)
+    if (!state) {
+      return { kind: "unavailable", note: "watcher state missing — re-create the watcher" }
+    }
 
-    if (/^Notes:\s*(?!none\s*$).+/m.test(job.prompt.text)) {
+    // Notes flag the user supplied at schedule time always force a full LLM
+    // run. Use a multi-line-tolerant test so newlines in notes don't make it
+    // look like the literal string "none".
+    if (/^Notes:\s*(?!none\s*$)[\s\S]+/m.test(job.prompt.text)) {
       return { kind: "run", note: "watcher has notes" }
     }
 

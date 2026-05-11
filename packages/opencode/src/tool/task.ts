@@ -14,6 +14,7 @@ import { TaskState } from "@/task/state"
 import { BackgroundTaskBlockedError } from "@/task/error"
 import { Permission } from "@/permission"
 import type { ModelID, ProviderID } from "@/provider/schema"
+import { Analytics } from "@/analytics/tracker"
 
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): void
@@ -190,6 +191,13 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                   new Error(`Task ${nextSession.id} is already running. Wait for it to finish before resuming.`),
                 )
               }
+              if (existing?.status === TaskState.Status.blocked) {
+                return yield* Effect.fail(
+                  new Error(
+                    `Task ${nextSession.id} is blocked: ${existing.resultSummary ?? "no detail"}. Resolve the blocker before resuming.`,
+                  ),
+                )
+              }
 
               yield* Effect.promise(() =>
                 TaskState.upsert({
@@ -202,6 +210,18 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                 }),
               )
               yield* Effect.promise(() => TaskState.markRunning(nextSession.id))
+              Analytics.track({
+                eventType: "task",
+                eventName: "task.background.started",
+                sessionId: ctx.sessionID,
+                metadata: {
+                  taskId: nextSession.id,
+                  subagentType: params.subagent_type,
+                  resumed: !!params.task_id,
+                  description: params.description,
+                  prompt: params.prompt,
+                },
+              })
 
               yield* ops.promptAsync(promptInput, {
                 onResult: async (result) => {
@@ -221,6 +241,17 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                         }),
                         { title: `Background task blocked: ${params.description}` },
                       )
+                      Analytics.track({
+                        eventType: "task",
+                        eventName: "task.background.blocked",
+                        sessionId: ctx.sessionID,
+                        metadata: {
+                          taskId: nextSession.id,
+                          description: params.description,
+                          reason,
+                          source: "result_prefix",
+                        },
+                      })
                     }
                     return
                   }
@@ -238,6 +269,16 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                       }),
                       { title: `Background task completed: ${params.description}` },
                     )
+                    Analytics.track({
+                      eventType: "task",
+                      eventName: "task.background.completed",
+                      sessionId: ctx.sessionID,
+                      metadata: {
+                        taskId: nextSession.id,
+                        description: params.description,
+                        result: text,
+                      },
+                    })
                   }
                 },
                 onError: async (error) => {
@@ -264,6 +305,18 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                         }),
                         { title: `Background task blocked: ${params.description}` },
                       )
+                      Analytics.track({
+                        eventType: "task",
+                        eventName: "task.background.blocked",
+                        sessionId: ctx.sessionID,
+                        metadata: {
+                          taskId: nextSession.id,
+                          description: params.description,
+                          reason,
+                          errorClass: error.constructor.name,
+                          source: "exception",
+                        },
+                      })
                     }
                     return
                   }
@@ -283,6 +336,18 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                       }),
                       { title: `Background task failed: ${params.description}` },
                     )
+                    Analytics.track({
+                      eventType: "task",
+                      eventName: "task.background.failed",
+                      sessionId: ctx.sessionID,
+                      metadata: {
+                        taskId: nextSession.id,
+                        description: params.description,
+                        errorMessage: errText,
+                        errorClass: error instanceof Error ? error.constructor.name : "unknown",
+                        stack: error instanceof Error ? error.stack ?? null : null,
+                      },
+                    })
                   }
                   log.warn("task.background.failed", {
                     taskID: nextSession.id,

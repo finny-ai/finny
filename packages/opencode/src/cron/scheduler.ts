@@ -10,6 +10,9 @@ import { Inject } from "./inject"
 import { Flock } from "@/util/flock"
 import { WatcherEvaluator } from "./watcher-evaluator"
 import { WatcherState } from "./watcher-state"
+import { Session } from "@/session"
+import { SessionID } from "@/session/schema"
+import { Analytics } from "@/analytics/tracker"
 
 export namespace Scheduler {
   const log = Log.create({ service: "cron.scheduler" })
@@ -19,22 +22,47 @@ export namespace Scheduler {
 
   let timer: ReturnType<typeof setInterval> | undefined
   let owner: Flock.Lease | undefined
+  let acquiring = false
   let running = false
 
   export function start() {
-    if (timer || owner) return
+    if (timer) return
     log.info("scheduler.start")
+    attemptOwnership()
+    timer = setInterval(() => {
+      if (!owner) {
+        attemptOwnership()
+        return
+      }
+      void tick().catch((e) => log.error("scheduler.tick.error", { e: String(e) }))
+    }, TICK_MS)
+  }
+
+  function attemptOwnership() {
+    if (acquiring || owner) return
+    acquiring = true
     void Flock.acquire(LOCK_KEY, { timeoutMs: 1, baseDelayMs: 1, maxDelayMs: 1, staleMs: TICK_MS * 3 })
       .then((lease) => {
+        acquiring = false
+        if (!timer) {
+          // start() returned a lease but stop() ran while we were acquiring; release immediately.
+          void lease.release().catch(() => {})
+          return
+        }
         owner = lease
+        log.info("scheduler.acquired-ownership")
+        Analytics.track({
+          eventType: "scheduler",
+          eventName: "scheduler.ownership_acquired",
+        })
         void bootSweep().catch((e) => log.error("scheduler.boot-sweep.error", { e: String(e) }))
         void Inject.retryPending().catch((e) => log.error("scheduler.retry-pending.error", { e: String(e) }))
         void tick().catch((e) => log.error("scheduler.tick.error", { e: String(e) }))
-        timer = setInterval(() => {
-          void tick().catch((e) => log.error("scheduler.tick.error", { e: String(e) }))
-        }, TICK_MS)
       })
-      .catch((e) => log.info("scheduler.no-ownership", { e: String(e) }))
+      .catch((e) => {
+        acquiring = false
+        log.debug("scheduler.no-ownership", { e: String(e) })
+      })
   }
 
   export function stop() {
@@ -43,6 +71,7 @@ export namespace Scheduler {
     const current = owner
     owner = undefined
     void current?.release().catch((e) => log.warn("scheduler.release.failed", { e: String(e) }))
+    Inject.shutdown()
     log.info("scheduler.stop")
   }
 
@@ -50,12 +79,26 @@ export namespace Scheduler {
     return !!timer
   }
 
+  /** Test-only — exposes the ownership retry path without waiting on setInterval. */
+  export async function __forceAcquireOwnership() {
+    attemptOwnership()
+    // attemptOwnership is fire-and-forget; await microtasks until either owner is set or acquiring clears.
+    while (acquiring) await new Promise((r) => setTimeout(r, 5))
+    return !!owner
+  }
+
   async function bootSweep() {
     const jobs = await CronStorage.list()
     for (const job of jobs) {
       if (job.durable || !job.parentSessionID) continue
+      // Only sweep jobs whose parent session is actually gone. Sessions persist
+      // across TUI restarts, so a parent-tied job is still meaningful as long
+      // as the session exists — silently nuking otherwise loses watchers the
+      // user expects to keep.
+      const stillExists = await Session.get(SessionID.make(job.parentSessionID)).catch(() => undefined)
+      if (stillExists) continue
       await CronStorage.remove(job.id)
-      log.info("scheduler.boot-sweep.removed", { jobId: job.id })
+      log.info("scheduler.boot-sweep.removed", { jobId: job.id, parentSessionID: job.parentSessionID })
     }
   }
 
@@ -95,6 +138,12 @@ export namespace Scheduler {
         await CronStorage.update(job.id, { enabled: false })
         status = "skipped"
         note = "expired"
+        Analytics.track({
+          eventType: "watcher",
+          eventName: "watcher.expired",
+          sessionId: job.parentSessionID,
+          metadata: { jobID: job.id, ageMs: startedAt - (job.expiresAt - 7 * 24 * 60 * 60 * 1000) },
+        })
       } else if (job.kind === "check") {
         if (Check.withinCooldown(job, startedAt)) {
           status = "skipped"
@@ -131,6 +180,12 @@ export namespace Scheduler {
             await Notify.send({
               title: "Finny job auto-paused",
               body: `"${job.name}" was disabled after ${FAILURE_LIMIT} consecutive failures.`,
+            })
+            Analytics.track({
+              eventType: "watcher",
+              eventName: "watcher.auto_paused",
+              sessionId: job.parentSessionID,
+              metadata: { jobID: job.id, failureCount, lastError: note },
             })
           }
         }
@@ -173,6 +228,17 @@ export namespace Scheduler {
               })
             }
             await CronStorage.update(job.id, { lastFiredAt: startedAt })
+            Analytics.track({
+              eventType: "watcher",
+              eventName: "watcher.fired_material",
+              sessionId: job.parentSessionID,
+              metadata: {
+                jobID: job.id,
+                jobName: job.name,
+                finding: text,
+                durationMs: Date.now() - startedAt,
+              },
+            })
           }
         } else {
           status = "error"
@@ -192,6 +258,12 @@ export namespace Scheduler {
           body: `"${job.name}" was disabled after ${FAILURE_LIMIT} consecutive failures.`,
         })
         log.warn("scheduler.autopaused", { jobId: job.id })
+        Analytics.track({
+          eventType: "watcher",
+          eventName: "watcher.auto_paused",
+          sessionId: job.parentSessionID,
+          metadata: { jobID: job.id, failureCount: (job.failureCount ?? 0) + 1, lastError: note },
+        })
       }
     } catch (err) {
       status = "error"
