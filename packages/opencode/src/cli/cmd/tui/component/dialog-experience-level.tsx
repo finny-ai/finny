@@ -26,8 +26,8 @@ export function DialogExperienceLevel(props: DialogExperienceLevelProps) {
     try {
       await setExperienceLevel(level)
       props.onSelect?.(level)
-      props.onClose?.()
       dialog.clear()
+      props.onClose?.()
     } catch (e: any) {
       toast.show({
         variant: "error",

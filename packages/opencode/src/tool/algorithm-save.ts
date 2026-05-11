@@ -77,12 +77,13 @@ export async function isPythonAvailable(): Promise<boolean> {
     // signal before we hard-block — matches the fallback logic in
     // src/python/env.ts:systemPython() so this probe stays consistent with
     // how the runtime picks its interpreter.
+    let unknownSeen = false
     for (const cmd of ["python3", "python"]) {
       const result = await probePython(cmd)
       if (result === true) return true
-      if (result === null) return true // conservative: unknown error, don't block
+      if (result === null) unknownSeen = true
     }
-    return false
+    return unknownSeen
   })()
   return pythonAvailableCache
 }
@@ -170,6 +171,7 @@ export const AlgorithmSaveTool = Tool.define(
             // before validation so we don't let a clean ENOENT slip through
             // `Validate.checkSyntax`'s silent-skip branch and reach save.
             if (!(await isPythonAvailable())) {
+              RetryOrchestrator.reset(ctx.sessionID, params.name)
               return {
                 result: {
                   title: "Python isn't installed",

@@ -551,16 +551,17 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
           dialog,
           (level) => {
             kv.set("experience_level_status", level)
-            if (level === "beginner") {
-              DialogBeginnerWelcome.show(dialog)
-            }
           },
           () => {
             if (!kv.get("experience_level_status")) {
               kv.set("experience_level_status", "skipped")
             }
           },
-        )
+        ).then((level) => {
+          if (level === "beginner") {
+            DialogBeginnerWelcome.show(dialog)
+          }
+        })
       },
     ),
   )
