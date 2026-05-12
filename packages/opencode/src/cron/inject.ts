@@ -1,4 +1,5 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { Effect } from "effect"
 import { Bus } from "@/bus"
 import { SessionStatus } from "@/session/status"
 import { Session } from "@/session"
@@ -8,6 +9,7 @@ import { Notify } from "./notify"
 import { Log } from "../util/log"
 import { WatcherState } from "./watcher-state"
 import { Analytics } from "@/analytics/tracker"
+import { AppRuntime } from "@/effect/app-runtime"
 
 export namespace Inject {
   const log = Log.create({ service: "cron.inject" })
@@ -24,12 +26,13 @@ export namespace Inject {
   const queue = new Map<string, PendingEntry[]>()
   const flushing = new Set<string>()
   const lastFallbackAt = new Map<string, number>()
-  // Track session status locally from bus events instead of querying
-  // `SessionStatus.get`, which builds an isolated runtime+InstanceState
-  // separate from the app runtime and would always read "idle".
-  // Unknown sessions default to idle (matches SessionStatus.get's own default).
+  // Local cache of session status, kept in sync with bus events. Seeded once
+  // from the app runtime on first ensureSubscription so we don't treat a
+  // pre-existing busy session as idle. Unknown sessions after seeding default
+  // to idle (matches SessionStatus's own default).
   const sessionStatus = new Map<string, SessionStatus.Info>()
   let unsubscribe: (() => void) | undefined
+  let seedPromise: Promise<void> | undefined
 
   function sdk() {
     const fetchFn = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -41,10 +44,11 @@ export namespace Inject {
 
   function ensureSubscription() {
     if (unsubscribe) return
+    // Subscribe FIRST so we don't miss events that fire between the seed query
+    // and us being ready to listen. Any keys the subscription writes will be
+    // preserved by the merge step inside seedStatus.
     unsubscribe = Bus.subscribe(SessionStatus.Event.Status, (event) => {
       const { sessionID, status } = event.properties
-      // Keep the local status map in sync with every event so `flush` can read
-      // it without needing a runtime.
       if (status.type === "idle") sessionStatus.delete(sessionID)
       else sessionStatus.set(sessionID, status)
 
@@ -56,9 +60,36 @@ export namespace Inject {
         log.warn("inject.retry-pending.failed", { sessionID, err: String(err) })
       })
     })
+    // Fire-and-forget; pending deliveries will await this via getStatus.
+    seedPromise = seedStatus().catch((err) => {
+      log.warn("inject.seed.failed", { err: String(err) })
+    })
   }
 
-  function getStatus(sessionID: string): SessionStatus.Info {
+  async function seedStatus() {
+    const snapshot = await AppRuntime.runPromise(
+      Effect.gen(function* () {
+        const svc = yield* SessionStatus.Service
+        return yield* svc.list()
+      }),
+    )
+    // Subscription writes win — they reflect events that arrived AFTER the
+    // snapshot was taken, so they're fresher. Only seed keys we haven't yet
+    // observed from the bus.
+    for (const [sid, status] of snapshot) {
+      if (!sessionStatus.has(sid)) sessionStatus.set(sid, status)
+    }
+  }
+
+  /**
+   * Read current status. Awaits the initial seed to avoid the cold-start race
+   * where an unknown session is treated as idle before we've snapshotted the
+   * real state. After seeding completes, unknown sessions default to idle —
+   * any session created after seed would have emitted a status event we'd
+   * have caught via the subscription.
+   */
+  async function getStatus(sessionID: string): Promise<SessionStatus.Info> {
+    if (seedPromise) await seedPromise
     return sessionStatus.get(sessionID) ?? { type: "idle" }
   }
 
@@ -76,6 +107,27 @@ export namespace Inject {
     flushing.clear()
     lastFallbackAt.clear()
     sessionStatus.clear()
+    seedPromise = undefined
+  }
+
+  /**
+   * Resolve a session, distinguishing "session not found" (returns null)
+   * from "transient lookup error" (returns the error). Callers should treat
+   * `{ kind: "missing" }` as terminal (fallback) and `{ kind: "error" }` as
+   * retryable (keep queue intact).
+   */
+  async function resolveSession(sessionID: string): Promise<
+    | { kind: "ok"; session: Awaited<ReturnType<typeof Session.get>> }
+    | { kind: "missing" }
+    | { kind: "error"; err: unknown }
+  > {
+    try {
+      const session = await Session.get(SessionID.make(sessionID))
+      if (!session) return { kind: "missing" }
+      return { kind: "ok", session }
+    } catch (err) {
+      return { kind: "error", err }
+    }
   }
 
   function queueEntry(sessionID: string, entry: PendingEntry) {
@@ -196,26 +248,38 @@ export namespace Inject {
       const pending = queue.get(sessionID)
       if (!pending?.length) return
 
-      const session = await Session.get(SessionID.make(sessionID)).catch(() => undefined)
-      if (!session) {
+      const resolved = await resolveSession(sessionID)
+      if (resolved.kind === "error") {
+        // Transient lookup failure — keep the queue intact and retry on the
+        // next idle event. Don't fall back to OS notifications: the session
+        // probably still exists, we just couldn't read it.
+        log.warn("inject.flush.session-lookup-failed", { sessionID, err: String(resolved.err) })
+        return
+      }
+      if (resolved.kind === "missing") {
         for (const entry of pending) await fallback(entry)
         queue.delete(sessionID)
         return
       }
 
-      const status = getStatus(sessionID)
+      const status = await getStatus(sessionID)
       if (status.type !== "idle") return
 
       const current = queue.get(sessionID)
-      delivering = current?.shift()
-      if (!delivering) {
+      // Peek the head entry; remove it only AFTER deliver() succeeds. If
+      // deliver throws, the entry stays at the front and the next idle event
+      // will retry it. Task-side injections (no pendingJobID) have no DB
+      // backing for retryPending, so losing them on a transient deliver
+      // failure would be unrecoverable.
+      delivering = current?.[0]
+      if (!current || !delivering) {
         queue.delete(sessionID)
         return
       }
-      if (current && current.length === 0) queue.delete(sessionID)
-      else if (current) queue.set(sessionID, current)
 
       await deliver(sessionID, delivering)
+      current.shift()
+      if (current.length === 0) queue.delete(sessionID)
     } catch (err) {
       if (delivering?.pendingJobID) WatcherState.markDeliveryError(delivering.pendingJobID, String(err).slice(0, 250))
       log.warn("inject.flush.delivery-failed", { sessionID, err: String(err) })
@@ -233,10 +297,16 @@ export namespace Inject {
       pendingJobID: options?.pendingJobID,
     }
 
-    const session = await Session.get(SessionID.make(sessionID)).catch(() => undefined)
-    if (!session) {
+    const resolved = await resolveSession(sessionID)
+    if (resolved.kind === "missing") {
       await fallback(entry)
       return
+    }
+    if (resolved.kind === "error") {
+      // Transient lookup failure — enqueue anyway so the next idle event
+      // can retry delivery. Better to hold the finding than to fall back to
+      // OS notifications on a momentary read error.
+      log.warn("inject.post.session-lookup-failed", { sessionID, err: String(resolved.err) })
     }
 
     // Always queue first, then attempt a flush. The previous "deliver immediately
