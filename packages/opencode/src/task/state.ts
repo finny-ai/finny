@@ -153,7 +153,11 @@ export namespace TaskState {
 
   export async function finalizeActive(
     id: SessionID | string,
-    input: { status: Extract<Status, "blocked" | "completed" | "failed" | "cancelled">; resultSummary?: string; lastError?: string },
+    input: {
+      status: Extract<Status, "blocked" | "completed" | "failed" | "cancelled">
+      resultSummary?: string | null
+      lastError?: string | null
+    },
   ): Promise<Info | undefined> {
     let next: Info | undefined
     Database.transaction((db) => {
@@ -165,12 +169,15 @@ export namespace TaskState {
         return
       }
       const now = Date.now()
+      // Use `in` to distinguish "field omitted" (leave existing value) from
+      // "explicit null" (clear it). `lastError: undefined` previously left
+      // stale errors in place after cancellation.
       db.update(TaskRunTable)
         .set({
           status: input.status,
           finished_at: now,
-          ...(input.resultSummary !== undefined ? { result_summary: input.resultSummary } : {}),
-          ...(input.lastError !== undefined ? { last_error: input.lastError } : {}),
+          ...("resultSummary" in input ? { result_summary: input.resultSummary ?? null } : {}),
+          ...("lastError" in input ? { last_error: input.lastError ?? null } : {}),
           time_updated: now,
         })
         .where(eq(TaskRunTable.id, id as SessionID))
@@ -181,15 +188,39 @@ export namespace TaskState {
     return next
   }
 
+  /**
+   * Compare-and-set transition to running. The select+update happens inside a
+   * single transaction so a concurrent finalizeActive cannot land a terminal
+   * status between our read and our write.
+   */
   export async function markRunning(id: SessionID | string): Promise<Info | undefined> {
-    const current = await get(id)
-    if (!current || current.status === Status.running) return current
-    if (isTerminal(current.status)) return current
-    return update(id, { status: Status.running, startedAt: current.startedAt ?? Date.now(), finishedAt: undefined })
+    let next: Info | undefined
+    Database.transaction((db) => {
+      const row = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
+      if (!row) return
+      const current = rowToInfo(row)
+      if (current.status === Status.running || isTerminal(current.status)) {
+        next = current
+        return
+      }
+      const now = Date.now()
+      db.update(TaskRunTable)
+        .set({
+          status: Status.running,
+          started_at: current.startedAt ?? now,
+          finished_at: null,
+          time_updated: now,
+        })
+        .where(eq(TaskRunTable.id, id as SessionID))
+        .run()
+      const updated = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
+      next = updated ? rowToInfo(updated) : undefined
+    })
+    return next
   }
 
   export async function cancel(id: SessionID | string): Promise<Info | undefined> {
-    return finalizeActive(id, { status: Status.cancelled, lastError: undefined })
+    return finalizeActive(id, { status: Status.cancelled, lastError: null })
   }
 
   export async function listRunningByParent(parentSessionID: SessionID | string): Promise<Info[]> {

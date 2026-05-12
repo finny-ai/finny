@@ -9,8 +9,8 @@ const parameters = z
     jobID: z.string().optional().describe("Exact watcher job id to stop."),
     name: z.string().optional().describe("Exact watcher job name to stop."),
   })
-  .refine((value) => !!value.jobID || !!value.name, {
-    message: "Provide either jobID or name.",
+  .refine((value) => Boolean(value.jobID) !== Boolean(value.name), {
+    message: "Provide exactly one of jobID or name.",
   })
 
 export const StopSubagentTool = Tool.define(

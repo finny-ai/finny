@@ -6,7 +6,10 @@ import { Timestamps } from "@/storage/schema.sql"
 export const TaskRunTable = sqliteTable(
   "task_run",
   {
-    id: text().$type<SessionID>().primaryKey(),
+    id: text()
+      .$type<SessionID>()
+      .primaryKey()
+      .references(() => SessionTable.id, { onDelete: "cascade" }),
     parent_session_id: text()
       .$type<SessionID>()
       .notNull()

@@ -24,6 +24,11 @@ export namespace Inject {
   const queue = new Map<string, PendingEntry[]>()
   const flushing = new Set<string>()
   const lastFallbackAt = new Map<string, number>()
+  // Track session status locally from bus events instead of querying
+  // `SessionStatus.get`, which builds an isolated runtime+InstanceState
+  // separate from the app runtime and would always read "idle".
+  // Unknown sessions default to idle (matches SessionStatus.get's own default).
+  const sessionStatus = new Map<string, SessionStatus.Info>()
   let unsubscribe: (() => void) | undefined
 
   function sdk() {
@@ -37,14 +42,24 @@ export namespace Inject {
   function ensureSubscription() {
     if (unsubscribe) return
     unsubscribe = Bus.subscribe(SessionStatus.Event.Status, (event) => {
-      if (event.properties.status.type !== "idle") return
-      void flush(event.properties.sessionID).catch((err) => {
-        log.warn("inject.flush.failed", { sessionID: event.properties.sessionID, err: String(err) })
+      const { sessionID, status } = event.properties
+      // Keep the local status map in sync with every event so `flush` can read
+      // it without needing a runtime.
+      if (status.type === "idle") sessionStatus.delete(sessionID)
+      else sessionStatus.set(sessionID, status)
+
+      if (status.type !== "idle") return
+      void flush(sessionID).catch((err) => {
+        log.warn("inject.flush.failed", { sessionID, err: String(err) })
       })
-      void retryPending(event.properties.sessionID).catch((err) => {
-        log.warn("inject.retry-pending.failed", { sessionID: event.properties.sessionID, err: String(err) })
+      void retryPending(sessionID).catch((err) => {
+        log.warn("inject.retry-pending.failed", { sessionID, err: String(err) })
       })
     })
+  }
+
+  function getStatus(sessionID: string): SessionStatus.Info {
+    return sessionStatus.get(sessionID) ?? { type: "idle" }
   }
 
   /** Tear down the bus subscription and clear in-memory state. Used by Scheduler.stop. */
@@ -60,6 +75,7 @@ export namespace Inject {
     queue.clear()
     flushing.clear()
     lastFallbackAt.clear()
+    sessionStatus.clear()
   }
 
   function queueEntry(sessionID: string, entry: PendingEntry) {
@@ -187,7 +203,7 @@ export namespace Inject {
         return
       }
 
-      const status = await SessionStatus.get(SessionID.make(sessionID))
+      const status = getStatus(sessionID)
       if (status.type !== "idle") return
 
       const current = queue.get(sessionID)

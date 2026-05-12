@@ -143,16 +143,24 @@ export namespace Algorithm {
   }
 
   export async function getById(algorithmId: string): Promise<Info | null> {
-    const result = await ConvexAlgorithms.getById(algorithmId)
-    return (result as Info) ?? null
+    const result = (await ConvexAlgorithms.getById(algorithmId)) as Info | null | undefined
+    if (!result) return null
+    // The backend `getById` query filters only by algorithmId — anyone with a
+    // valid ID could read another user's algorithm. Enforce tenant scoping at
+    // this boundary by dropping results that don't belong to the caller.
+    const userId = await DeviceProfile.userId()
+    const ownerId = (result as Info & { userId?: string }).userId
+    if (ownerId && ownerId !== userId) return null
+    return result
   }
 
   export async function resolve(identifier: string): Promise<Info | null> {
-    // Algorithm IDs are ULIDs (26 chars, Crockford base32). Names are user-chosen
-    // and almost never match that shape. Pick the right lookup on the first try
-    // instead of two Convex round-trips per resolve call.
+    // Algorithm IDs are UUIDv4 from crypto.randomUUID() (new saves) or ULIDs
+    // (legacy rows). Pick the right Convex lookup on the first try to avoid
+    // two round-trips on every watcher fire.
+    const looksLikeUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identifier)
     const looksLikeULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(identifier)
-    if (looksLikeULID) {
+    if (looksLikeUUID || looksLikeULID) {
       return (await getById(identifier)) ?? (await get(identifier))
     }
     return (await get(identifier)) ?? (await getById(identifier))

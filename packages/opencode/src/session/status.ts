@@ -4,7 +4,6 @@ import { InstanceState } from "@/effect/instance-state"
 import { SessionID } from "./schema"
 import { Effect, Layer, Context } from "effect"
 import z from "zod"
-import { makeRuntime } from "@/effect/run-service"
 
 export namespace SessionStatus {
   export const Info = z
@@ -87,13 +86,10 @@ export namespace SessionStatus {
 
   export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
 
-  const { runPromise } = makeRuntime(Service, defaultLayer)
-
-  export async function get(sessionID: SessionID) {
-    return runPromise((svc) => svc.get(SessionID.make(sessionID)))
-  }
-
-  export async function list() {
-    return runPromise((svc) => svc.list())
-  }
+  // Note: no static get()/list() exports here. Earlier versions provided them
+  // via `makeRuntime(Service, defaultLayer)`, but that built a separate
+  // ManagedRuntime with its own InstanceState — the Map it read was not the
+  // one the app runtime mutated, so reads were always empty. Consumers that
+  // need session status outside an Effect context (e.g. cron Inject) should
+  // subscribe to `Event.Status` on the bus and maintain a local cache instead.
 }

@@ -57,6 +57,25 @@ export const StopTaskTool = Tool.define<typeof parameters, Metadata, never>(
 
         await SessionPrompt.cancel(task.id)
         const cancelled = await TaskState.cancel(task.id)
+        // TaskState.cancel can return undefined if the row vanished between
+        // the get() above and the transaction (rare but possible on concurrent
+        // session-delete). Don't claim success or emit a cancelled analytics
+        // event in that case — surface the actual latest state instead.
+        if (!cancelled) {
+          const latest = await TaskState.get(task.id)
+          return {
+            title: "Task cancellation not confirmed",
+            output: JSON.stringify(
+              {
+                task_id: task.id,
+                status: latest?.status ?? task.status,
+              },
+              null,
+              2,
+            ),
+            metadata: { found: true, status: latest?.status ?? task.status, cancelled: false },
+          }
+        }
         Analytics.track({
           eventType: "task",
           eventName: "task.background.cancelled",
@@ -69,12 +88,12 @@ export const StopTaskTool = Tool.define<typeof parameters, Metadata, never>(
           output: JSON.stringify(
             {
               task_id: task.id,
-              status: cancelled?.status ?? TaskState.Status.cancelled,
+              status: cancelled.status,
             },
             null,
             2,
           ),
-          metadata: { found: true, status: cancelled?.status ?? TaskState.Status.cancelled, cancelled: true },
+          metadata: { found: true, status: cancelled.status, cancelled: true },
         }
       }),
   }),
