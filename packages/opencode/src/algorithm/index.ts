@@ -142,6 +142,30 @@ export namespace Algorithm {
     return (result as Info) ?? null
   }
 
+  export async function getById(algorithmId: string): Promise<Info | null> {
+    const result = (await ConvexAlgorithms.getById(algorithmId)) as Info | null | undefined
+    if (!result) return null
+    // The backend `getById` query filters only by algorithmId — anyone with a
+    // valid ID could read another user's algorithm. Enforce tenant scoping at
+    // this boundary by dropping results that don't belong to the caller.
+    const userId = await DeviceProfile.userId()
+    const ownerId = (result as Info & { userId?: string }).userId
+    if (ownerId && ownerId !== userId) return null
+    return result
+  }
+
+  export async function resolve(identifier: string): Promise<Info | null> {
+    // Algorithm IDs are UUIDv4 from crypto.randomUUID() (new saves) or ULIDs
+    // (legacy rows). Pick the right Convex lookup on the first try to avoid
+    // two round-trips on every watcher fire.
+    const looksLikeUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identifier)
+    const looksLikeULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(identifier)
+    if (looksLikeUUID || looksLikeULID) {
+      return (await getById(identifier)) ?? (await get(identifier))
+    }
+    return (await get(identifier)) ?? (await getById(identifier))
+  }
+
   export async function getCode(name: string): Promise<string | null> {
     const algo = await get(name)
     return algo?.code ?? null

@@ -13,6 +13,7 @@ import { writeHeapSnapshot } from "node:v8"
 import { Heap } from "@/cli/heap"
 import { Analytics } from "@/analytics/tracker"
 import { SessionSync } from "@/analytics/session-sync"
+import { Scheduler } from "@/cron"
 
 // Boot-time telemetry — fires once per worker process. Best signal that the
 // user actually launched the TUI (vs. CLI subcommands that exit immediately).
@@ -39,6 +40,7 @@ await Log.init({
 })
 
 Heap.start()
+Scheduler.start()
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {
@@ -107,6 +109,7 @@ export const rpc = {
     // beforeExit nor SIGTERM fire reliably inside Bun workers when the
     // main thread calls worker.terminate(), so we have to do it here.
     await Analytics.drain(1500).catch(() => {})
+    Scheduler.stop()
 
     await Instance.disposeAll()
     if (server) await server.stop(true)

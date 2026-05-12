@@ -31,6 +31,16 @@ export namespace AlpacaData {
     }
   }
 
+  /**
+   * Build a trading-API URL by joining the credential endpoint with a versioned
+   * path. Tolerates user-pasted endpoints that already include a trailing slash
+   * or `/v2` suffix, which would otherwise produce `/v2/v2/account` and 404.
+   */
+  export function tradingURL(endpoint: string, versionedPath: string): string {
+    const cleaned = endpoint.replace(/\/+$/, "").replace(/\/v\d+$/i, "")
+    return cleaned + (versionedPath.startsWith("/") ? versionedPath : "/" + versionedPath)
+  }
+
   async function get<T>(url: string, creds: Creds): Promise<T> {
     const res = await fetch(url, { headers: headers(creds), signal: AbortSignal.timeout(10_000) })
     if (!res.ok) {
@@ -122,7 +132,7 @@ export namespace AlpacaData {
     const creds = await pickAccount()
     if (!creds) return null
     type Resp = { cash?: string; equity?: string; last_equity?: string }
-    const data = await get<Resp>(`${creds.endpoint}/v2/account`, creds)
+    const data = await get<Resp>(tradingURL(creds.endpoint, "/v2/account"), creds)
     const cash = parseFloat(data.cash ?? "")
     const equity = parseFloat(data.equity ?? "")
     const lastEquity = parseFloat(data.last_equity ?? "")
@@ -136,7 +146,7 @@ export namespace AlpacaData {
   export async function position(symbol: string): Promise<number | null> {
     const creds = await pickAccount()
     if (!creds) return null
-    const url = `${creds.endpoint}/v2/positions/${encodeURIComponent(symbol.toUpperCase())}`
+    const url = tradingURL(creds.endpoint, `/v2/positions/${encodeURIComponent(symbol.toUpperCase())}`)
     const res = await fetch(url, { headers: headers(creds), signal: AbortSignal.timeout(10_000) })
     if (res.status === 404) return 0
     if (!res.ok) {

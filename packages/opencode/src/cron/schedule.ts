@@ -108,6 +108,28 @@ export namespace Schedule {
     }
   }
 
+  export function estimateRunsPerHour(cron: string): number {
+    const fields = cron.split(/\s+/)
+    if (fields.length !== 5) return 0
+    const ranges: [number, number][] = [
+      [0, 59],
+      [0, 23],
+      [1, 31],
+      [1, 12],
+      [0, 6],
+    ]
+    try {
+      const minutes = parseField(fields[0]!, ranges[0]![0], ranges[0]![1])
+      const hours = parseField(fields[1]!, ranges[1]![0], ranges[1]![1])
+      const days = parseField(fields[2]!, ranges[2]![0], ranges[2]![1])
+      const months = parseField(fields[3]!, ranges[3]![0], ranges[3]![1])
+      const weekdays = parseField(fields[4]!, ranges[4]![0], ranges[4]![1])
+      return (minutes.size * hours.size * Math.min(1, days.size / 31) * Math.min(1, months.size / 12) * Math.min(1, weekdays.size / 7)) / 24
+    } catch {
+      return 0
+    }
+  }
+
   function parts_in_tz(date: Date, timezone: string) {
     const fmt = new Intl.DateTimeFormat("en-US", {
       timeZone: timezone,

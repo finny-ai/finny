@@ -7,6 +7,9 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { ListTasksTool } from "./list-tasks"
+import { TaskStatusTool } from "./task-status"
+import { StopTaskTool } from "./stop-task"
 import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
@@ -20,6 +23,10 @@ import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
 import { BacktestWalkforwardTool } from "./backtest-walkforward"
 import { BacktestSweepTool } from "./backtest-sweep"
+import { MonitorSnapshotTool } from "./monitor-snapshot"
+import { ScheduleSubagentTool } from "./schedule-subagent"
+import { ListSubagentsTool } from "./list-subagents"
+import { StopSubagentTool } from "./stop-subagent"
 import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
@@ -126,6 +133,9 @@ export namespace ToolRegistry {
       const read = yield* ReadTool
       const question = yield* QuestionTool
       const todo = yield* TodoWriteTool
+      const listtasks = yield* ListTasksTool
+      const taskstatus = yield* TaskStatusTool
+      const stoptask = yield* StopTaskTool
       const lsptool = yield* LspTool
       const plan = yield* PlanExitTool
       const webfetch = yield* WebFetchTool
@@ -150,6 +160,10 @@ export namespace ToolRegistry {
       const backtesthistory = yield* BacktestHistoryTool
       const backtestwalkforward = yield* BacktestWalkforwardTool
       const backtestsweep = yield* BacktestSweepTool
+      const monitorsnapshot = yield* MonitorSnapshotTool
+      const schedulesubagent = yield* ScheduleSubagentTool
+      const listsubagents = yield* ListSubagentsTool
+      const stopsubagent = yield* StopSubagentTool
       const quote = yield* QuoteTool
       const pricehistory = yield* PriceHistoryTool
       const portfoliobacktest = yield* PortfolioBacktestTool
@@ -224,6 +238,9 @@ export namespace ToolRegistry {
             task: Tool.init(task),
             fetch: Tool.init(webfetch),
             todo: Tool.init(todo),
+            listtasks: Tool.init(listtasks),
+            taskstatus: Tool.init(taskstatus),
+            stoptask: Tool.init(stoptask),
             search: Tool.init(websearch),
             code: Tool.init(codesearch),
             skill: Tool.init(skilltool),
@@ -243,6 +260,10 @@ export namespace ToolRegistry {
             backtesthistory: Tool.init(backtesthistory),
             backtestwalkforward: Tool.init(backtestwalkforward),
             backtestsweep: Tool.init(backtestsweep),
+            monitorsnapshot: Tool.init(monitorsnapshot),
+            schedulesubagent: Tool.init(schedulesubagent),
+            listsubagents: Tool.init(listsubagents),
+            stopsubagent: Tool.init(stopsubagent),
             quote: Tool.init(quote),
             pricehistory: Tool.init(pricehistory),
             portfoliobacktest: Tool.init(portfoliobacktest),
@@ -263,6 +284,9 @@ export namespace ToolRegistry {
               tool.task,
               tool.fetch,
               tool.todo,
+              tool.listtasks,
+              tool.taskstatus,
+              tool.stoptask,
               tool.search,
               tool.code,
               tool.skill,
@@ -279,6 +303,10 @@ export namespace ToolRegistry {
               tool.backtesthistory,
               tool.backtestwalkforward,
               tool.backtestsweep,
+              tool.monitorsnapshot,
+              tool.schedulesubagent,
+              tool.listsubagents,
+              tool.stopsubagent,
               tool.quote,
               tool.pricehistory,
               tool.portfoliobacktest,

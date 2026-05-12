@@ -85,4 +85,11 @@ export namespace SessionStatus {
   )
 
   export const defaultLayer = layer.pipe(Layer.provide(Bus.layer))
+
+  // Note: no static get()/list() exports here. Earlier versions provided them
+  // via `makeRuntime(Service, defaultLayer)`, but that built a separate
+  // ManagedRuntime with its own InstanceState — the Map it read was not the
+  // one the app runtime mutated, so reads were always empty. Consumers that
+  // need session status outside an Effect context (e.g. cron Inject) should
+  // subscribe to `Event.Status` on the bus and maintain a local cache instead.
 }

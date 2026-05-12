@@ -12,6 +12,7 @@ import { ModelID, ProviderID } from "../../src/provider/schema"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "../../src/tool/truncate"
 import { ToolRegistry } from "../../src/tool/registry"
+import { TaskState } from "../../src/task/state"
 import { provideTmpdirInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 
@@ -64,7 +65,17 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
   return { chat, assistant }
 })
 
-function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void; text?: string }): TaskPromptOps {
+function stubOps(opts?: {
+  onPrompt?: (input: SessionPrompt.PromptInput) => void
+  onPromptAsync?: (
+    input: SessionPrompt.PromptInput,
+    lifecycle: {
+      onError(error: unknown): Promise<void> | void
+      onResult(result: MessageV2.WithParts): Promise<void> | void
+    },
+  ) => void
+  text?: string
+}): TaskPromptOps {
   return {
     cancel() {},
     resolvePromptParts: (template) => Effect.succeed([{ type: "text" as const, text: template }]),
@@ -72,6 +83,10 @@ function stubOps(opts?: { onPrompt?: (input: SessionPrompt.PromptInput) => void;
       Effect.sync(() => {
         opts?.onPrompt?.(input)
         return reply(input, opts?.text ?? "done")
+      }),
+    promptAsync: (input, lifecycle) =>
+      Effect.sync(() => {
+        opts?.onPromptAsync?.(input, lifecycle)
       }),
   }
 }
@@ -382,6 +397,98 @@ describe("tool.task", () => {
           },
         },
       },
+    ),
+  )
+
+  it.live("execute starts a background task immediately and persists running state", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
+        const promptOps = stubOps({
+          onPromptAsync: (input) => {
+            seen = input
+          },
+        })
+
+        const result = yield* def.execute(
+          {
+            description: "inspect bug",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+            mode: "background",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const state = yield* Effect.promise(() => TaskState.get(result.metadata.sessionId))
+        expect(result.output).toContain(`task_id: ${result.metadata.sessionId}`)
+        expect(result.output).toContain("mode: background")
+        expect(result.output).toContain("status: running")
+        expect(state?.status).toBe(TaskState.Status.running)
+        expect(state?.parentSessionID).toBe(chat.id)
+        expect(seen?.background?.disallowInteraction).toBe(true)
+        expect(seen?.tools?.question).toBe(false)
+      }),
+    ),
+  )
+
+  it.live("execute rejects resuming a background task that is already running", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const { chat, assistant } = yield* seed()
+        const sessions = yield* Session.Service
+        const child = yield* sessions.create({ parentID: chat.id, title: "Running child" })
+        yield* Effect.promise(() =>
+          TaskState.upsert({
+            id: child.id,
+            parentSessionID: chat.id,
+            description: "inspect bug",
+            subagentType: "general",
+            mode: "background",
+            status: TaskState.Status.running,
+            startedAt: Date.now(),
+          }),
+        )
+
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+
+        const exit = yield* def
+          .execute(
+            {
+              description: "inspect bug",
+              prompt: "look into the cache key path",
+              subagent_type: "general",
+              task_id: child.id,
+              mode: "background",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          .pipe(Effect.exit)
+
+        expect(exit._tag).toBe("Failure")
+      }),
     ),
   )
 })
