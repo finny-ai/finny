@@ -155,7 +155,10 @@ def make_broker(kind: str, run_id: str):
         from finny_broker import IBKRBroker
         account_id = os.environ.get("IBKR_ACCOUNT_ID")
         host = os.environ.get("IBKR_HOST", "127.0.0.1")
-        port_str = os.environ.get("IBKR_PORT", "7497")
+        mode = os.environ.get("IBKR_MODE", "paper").lower()
+        if mode not in ("paper", "live"):
+            raise RuntimeError(f"IBKR_MODE must be 'paper' or 'live', got {mode!r}")
+        port_str = os.environ.get("IBKR_PORT", "7496" if mode == "live" else "7497")
         client_id_str = os.environ.get("IBKR_CLIENT_ID")
         if not account_id:
             raise RuntimeError("Missing IBKR_ACCOUNT_ID — add an IBKR account in Settings → Brokerages.")
@@ -170,7 +173,6 @@ def make_broker(kind: str, run_id: str):
                 raise RuntimeError(f"IBKR_CLIENT_ID must be an integer, got {client_id_str!r}")
         else:
             client_id = _default_ibkr_client_id(run_id)
-        mode = os.environ.get("IBKR_MODE", "paper").lower()
         broker = IBKRBroker(account_id=account_id, host=host, port=port, client_id=client_id)
         return broker, f"IBKR {'paper' if mode != 'live' else 'LIVE'}"
     raise RuntimeError(f"Unknown broker kind: {kind}")
