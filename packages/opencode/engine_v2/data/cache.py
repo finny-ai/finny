@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import sys
 import tempfile
 
@@ -38,13 +39,41 @@ def default_cache_root() -> Path:
     return Path(os.path.expanduser("~/.finny/cache"))
 
 
+_SAFE_SYM_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
 def _safe_symbol(symbol: str) -> str:
-    return symbol.replace("/", "_").replace(":", "_")
+    """Sanitize a market symbol for use as a single filesystem path
+    component. Whitelist [A-Za-z0-9._-]; reject anything that could escape
+    the cache subtree (".", "..", empty)."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("symbol must be a non-empty string")
+    cleaned = _SAFE_SYM_RE.sub("_", symbol.strip()).lstrip(".-")
+    if cleaned in {"", ".", ".."}:
+        raise ValueError(f"symbol {symbol!r} sanitizes to unsafe path component")
+    return cleaned
 
 
-def _partition_path(root: Path, provider: str, symbol: str, interval: str, year: int) -> Path:
+def _partition_dir(root: Path, provider: str, symbol: str, interval: str) -> Path:
+    return root / provider / _safe_symbol(symbol) / interval
+
+
+def _existing_partition(d: Path, year: int) -> Optional[Path]:
+    """Return the path to an existing partition file for `year`, preferring
+    parquet over csv. Format-agnostic so a switch in pyarrow availability
+    between runs doesn't silently miss cached data."""
+    for ext in (".parquet", ".csv"):
+        p = d / f"{year}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _write_partition_path(d: Path, year: int) -> Path:
+    """Path the current process writes new partitions to (extension picked
+    by pyarrow availability)."""
     ext = ".parquet" if _HAVE_PARQUET else ".csv"
-    return root / provider / _safe_symbol(symbol) / interval / f"{year}{ext}"
+    return d / f"{year}{ext}"
 
 
 @contextlib.contextmanager
@@ -122,12 +151,15 @@ def load_range(
     end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
     years = list(range(int(start.year), int(end.year) + 1))
     frames = []
+    d = _partition_dir(cfg.root, cfg.provider, symbol, interval)
     for y in years:
-        path = _partition_path(cfg.root, cfg.provider, symbol, interval, y)
-        df = _read_partition(path)
+        existing = _existing_partition(d, y)
+        df = _read_partition(existing) if existing else None
         if df is None or df.empty:
-            with _flock(path):
-                df = _read_partition(path)
+            write_path = _write_partition_path(d, y)
+            with _flock(write_path):
+                existing = _existing_partition(d, y)
+                df = _read_partition(existing) if existing else None
                 if df is None or df.empty:
                     y_start = pd.Timestamp(f"{y}-01-01", tz="UTC")
                     y_end = pd.Timestamp(f"{y + 1}-01-01", tz="UTC")
@@ -142,7 +174,7 @@ def load_range(
                         )
                         df = pd.DataFrame()
                     if not df.empty:
-                        _atomic_write(path, df)
+                        _atomic_write(write_path, df)
         if df is not None and not df.empty:
             frames.append(df)
     if not frames:

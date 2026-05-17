@@ -28,10 +28,11 @@ def expected_step(interval: str) -> pd.Timedelta:
         n = int(s.replace("min", "").replace("m", "") or "1")
         return pd.Timedelta(minutes=n)
     if s.endswith("h"):
-        n = int(s[:-1])
+        # Allow bare "h" → 1 hour, mirroring the minute branch.
+        n = int(s[:-1]) if len(s) > 1 else 1
         return pd.Timedelta(hours=n)
     if s.endswith("d"):
-        n = int(s[:-1])
+        n = int(s[:-1]) if len(s) > 1 else 1
         return pd.Timedelta(days=n)
     return pd.Timedelta(minutes=1)
 
