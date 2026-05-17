@@ -4,8 +4,10 @@ import z from "zod"
 import { ConvexAlgorithms } from "../storage/convex/algorithms"
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
+import type { BrokerKind } from "@/live/brokers"
 
 const log = Log.create({ service: "algorithm" })
+const BrokerKindSchema = z.enum(["alpaca", "binance", "ibkr"])
 
 export namespace Algorithm {
   export const Info = z.object({
@@ -20,6 +22,7 @@ export namespace Algorithm {
     config: z.string().optional(),
     backtestCode: z.string().optional(),
     localPath: z.string().optional(),
+    brokerKind: BrokerKindSchema.optional(),
     time_created: z.number(),
     time_updated: z.number(),
   })
@@ -59,6 +62,7 @@ export namespace Algorithm {
     config?: string
     backtestCode?: string
     localPath?: string
+    brokerKind?: BrokerKind
     saveMode: SaveMode
   }
 
@@ -121,6 +125,9 @@ export namespace Algorithm {
       config: input.config,
       backtestCode: input.backtestCode,
       localPath: input.localPath,
+      // If the caller didn't supply a brokerKind on a version-bump, inherit
+      // it from the prior version so the lineage stays consistently tagged.
+      brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
       time_created,
       time_updated: now,
     })) as Info

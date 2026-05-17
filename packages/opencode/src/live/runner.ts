@@ -115,30 +115,66 @@ export namespace LiveRunner {
     if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500)
   }
 
-  const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback
+  const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback, zlib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from finny_broker import load_strategy, emit, log_err
 
 
-def make_broker(kind: str):
+def _default_ibkr_client_id(run_id: str) -> int:
+    if not run_id or run_id == "unknown":
+        return 1
+    return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
+
+
+def make_broker(kind: str, run_id: str):
     if kind == "alpaca":
         from finny_broker import AlpacaBroker
         key_id = os.environ.get("ALPACA_API_KEY_ID")
         secret = os.environ.get("ALPACA_API_SECRET_KEY")
         if not key_id or not secret:
             raise RuntimeError("Missing ALPACA_API_KEY_ID or ALPACA_API_SECRET_KEY")
-        paper = os.environ.get("ALPACA_PAPER", "1") not in ("0", "false", "False")
-        return AlpacaBroker(key_id=key_id, secret=secret, paper=paper), "Alpaca paper" if paper else "Alpaca LIVE"
+        # ALPACA_MODE is the canonical env var emitted by alpacaSpec.envVars().
+        # 'paper' (default) or 'live'.
+        paper = os.environ.get("ALPACA_MODE", "paper").lower() != "live"
+        endpoint = os.environ.get("ALPACA_ENDPOINT")
+        return AlpacaBroker(key_id=key_id, secret=secret, paper=paper, endpoint=endpoint), "Alpaca paper" if paper else "Alpaca LIVE"
     if kind == "binance":
         from finny_broker import BinanceBroker
         api_key = os.environ.get("BINANCE_API_KEY")
         secret = os.environ.get("BINANCE_API_SECRET")
         if not api_key or not secret:
             raise RuntimeError("Missing BINANCE_API_KEY or BINANCE_API_SECRET")
-        testnet = os.environ.get("BINANCE_TESTNET", "1") not in ("0", "false", "False")
-        return BinanceBroker(api_key=api_key, secret=secret, testnet=testnet), "Binance testnet" if testnet else "Binance LIVE"
+        # BINANCE_MODE is the canonical env var; BINANCE_TESTNET is the legacy
+        # 0/1 flag still emitted by the spec for backwards compat.
+        testnet = os.environ.get("BINANCE_MODE", "testnet").lower() != "live"
+        endpoint = os.environ.get("BINANCE_ENDPOINT")
+        return BinanceBroker(api_key=api_key, secret=secret, testnet=testnet, endpoint=endpoint), "Binance testnet" if testnet else "Binance LIVE"
+    if kind == "ibkr":
+        from finny_broker import IBKRBroker
+        account_id = os.environ.get("IBKR_ACCOUNT_ID")
+        host = os.environ.get("IBKR_HOST", "127.0.0.1")
+        mode = os.environ.get("IBKR_MODE", "paper").lower()
+        if mode not in ("paper", "live"):
+            raise RuntimeError(f"IBKR_MODE must be 'paper' or 'live', got {mode!r}")
+        port_str = os.environ.get("IBKR_PORT", "7496" if mode == "live" else "7497")
+        client_id_str = os.environ.get("IBKR_CLIENT_ID")
+        if not account_id:
+            raise RuntimeError("Missing IBKR_ACCOUNT_ID — add an IBKR account in Settings → Brokerages.")
+        try:
+            port = int(port_str)
+        except ValueError:
+            raise RuntimeError(f"IBKR_PORT must be an integer, got {port_str!r}")
+        if client_id_str:
+            try:
+                client_id = int(client_id_str)
+            except ValueError:
+                raise RuntimeError(f"IBKR_CLIENT_ID must be an integer, got {client_id_str!r}")
+        else:
+            client_id = _default_ibkr_client_id(run_id)
+        broker = IBKRBroker(account_id=account_id, host=host, port=port, client_id=client_id)
+        return broker, f"IBKR {'paper' if mode != 'live' else 'LIVE'}"
     raise RuntimeError(f"Unknown broker kind: {kind}")
 
 
@@ -159,7 +195,7 @@ def main():
     poll_seconds = poll_map.get(interval, 60)
 
     try:
-        broker, broker_label = make_broker(broker_kind)
+        broker, broker_label = make_broker(broker_kind, run_id)
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)

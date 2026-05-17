@@ -1,6 +1,7 @@
 // Shared Python broker source used by both the backtest runner (SimBroker)
-// and the live runner (AlpacaBroker). Strategies only see the common `Broker`
-// interface so the same code runs against simulated and real brokers.
+// and the live runner (AlpacaBroker / BinanceBroker / IBKRBroker). Strategies
+// only see the common `Broker` interface so the same code runs against
+// simulated and real brokers.
 export const FINNY_BROKER_PY = String.raw`"""
 finny_broker — unified broker abstraction for Finny strategies.
 
@@ -249,17 +250,28 @@ class SimBroker(Broker):
 class AlpacaBroker(Broker):
     """Live broker backed by alpaca-py. Used by the live runner."""
 
-    def __init__(self, key_id: str, secret: str, paper: bool = True):
+    def __init__(self, key_id: str, secret: str, paper: bool = True, endpoint: Optional[str] = None):
         try:
             from alpaca.trading.client import TradingClient
             from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
         except ImportError as e:
             raise RuntimeError(
                 f"alpaca-py import failed ({e}). The managed Python env may be missing "
-                f"a transitive dep. Try resetting it from Settings → Paper Trading."
+                f"a transitive dep. Try resetting it from Settings → Brokerages."
             ) from e
 
-        self._trading = TradingClient(api_key=key_id, secret_key=secret, paper=paper)
+        trading_kwargs = {"api_key": key_id, "secret_key": secret, "paper": paper}
+        if endpoint:
+            trading_kwargs["url_override"] = endpoint.rstrip("/")
+        try:
+            self._trading = TradingClient(**trading_kwargs)
+        except TypeError as e:
+            if endpoint:
+                raise RuntimeError(
+                    "alpaca-py TradingClient does not support the configured endpoint override. "
+                    "Upgrade alpaca-py or clear the custom Alpaca endpoint in Settings → Brokerages."
+                ) from e
+            raise
         self._stock_data = StockHistoricalDataClient(api_key=key_id, secret_key=secret)
         self._crypto_data = CryptoHistoricalDataClient()
         self._last_price: Dict[str, float] = {}
@@ -443,13 +455,13 @@ class BinanceBroker(Broker):
 
     KNOWN_QUOTES = ("USDT", "USDC", "BUSD", "USD", "BTC", "ETH")
 
-    def __init__(self, api_key: str, secret: str, testnet: bool = True):
+    def __init__(self, api_key: str, secret: str, testnet: bool = True, endpoint: Optional[str] = None):
         try:
             import ccxt  # type: ignore
         except ImportError as e:
             raise RuntimeError(
                 f"ccxt import failed ({e}). The managed Python env may be missing "
-                f"a transitive dep. Try resetting it from Settings → Paper Trading."
+                f"a transitive dep. Try resetting it from Settings → Brokerages."
             ) from e
 
         self._ccxt = ccxt
@@ -461,7 +473,25 @@ class BinanceBroker(Broker):
         })
         if testnet:
             self._exchange.set_sandbox_mode(True)
+        if endpoint:
+            self._apply_endpoint(endpoint)
         self._last_price: Dict[str, float] = {}
+
+    def _apply_endpoint(self, endpoint: str) -> None:
+        base = endpoint.rstrip("/")
+        if base.endswith("/api/v3"):
+            spot_base = base
+        elif base.endswith("/api"):
+            spot_base = f"{base}/v3"
+        else:
+            spot_base = f"{base}/api/v3"
+
+        api_urls = self._exchange.urls.get("api")
+        if isinstance(api_urls, dict):
+            api_urls["public"] = spot_base
+            api_urls["private"] = spot_base
+        else:
+            self._exchange.urls["api"] = spot_base
 
     @staticmethod
     def is_crypto(symbol: str) -> bool:
@@ -586,6 +616,529 @@ class BinanceBroker(Broker):
             status=f"rejected: {reason}",
             ts=datetime.now(timezone.utc).isoformat(),
         )
+
+
+class IBKRBroker(Broker):
+    """Live broker backed by ib_insync, talking to TWS or IB Gateway on localhost.
+
+    Setup expected from the user (one-time per machine):
+      1. Run TWS or IB Gateway, log in (paper or live credentials).
+      2. File → Global Configuration → API → Settings:
+         - Enable ActiveX and Socket Clients
+         - Socket port = 7497 (paper) or 7496 (live)
+         - Uncheck "Read-Only API"
+      3. Keep TWS open while strategies run. TWS auto-logs-out once every ~24h
+         and the user has to re-login in the TWS window — this class will
+         attempt automatic reconnects with exponential backoff once TWS is
+         reachable again, so the algo recovers without manual restart.
+    """
+
+    # Tags from accountSummary() that we care about. Pulled once per call
+    # rather than subscribed because our strategy callbacks are bar-paced.
+    _CASH_TAG = "TotalCashValue"
+    _EQUITY_TAG = "NetLiquidation"
+
+    # IBKR pacing: max ~60 historical-data requests / 10 min / identifier.
+    # At strategy cadence (1 fetch per bar interval) we're nowhere near it.
+    _INTERVAL_TO_BARSIZE = {
+        "1min":  ("1 min",   "120 S"),
+        "5min":  ("5 mins",  "600 S"),
+        "15min": ("15 mins", "1800 S"),
+        "30min": ("30 mins", "3600 S"),
+        "1h":    ("1 hour",  "7200 S"),
+        "4h":    ("4 hours", "1 D"),
+        "1d":    ("1 day",   "2 D"),
+    }
+
+    # Most futures need an explicit exchange — SMART routing is equities-only.
+    # Mapping covers the common contracts US retail trades; for anything
+    # outside this list the user should switch to a specific contract syntax
+    # and the runtime will fail loud with IBKR's "ambiguous contract" error.
+    _FUTURES_EXCHANGES = {
+        "ES":  "CME",   "MES": "CME",     # S&P 500
+        "NQ":  "CME",   "MNQ": "CME",     # NASDAQ-100
+        "RTY": "CME",   "M2K": "CME",     # Russell 2000
+        "YM":  "CBOT",  "MYM": "CBOT",    # Dow
+        "CL":  "NYMEX", "MCL": "NYMEX",   # Crude oil
+        "NG":  "NYMEX",                   # Natural gas
+        "GC":  "COMEX", "MGC": "COMEX",   # Gold
+        "SI":  "COMEX", "SIL": "COMEX",   # Silver
+        "HG":  "COMEX",                   # Copper
+        "ZB":  "CBOT",  "ZN":  "CBOT",    # Treasury futures
+        "ZF":  "CBOT",  "ZT":  "CBOT",
+        "ZC":  "CBOT",  "ZS":  "CBOT", "ZW": "CBOT",  # Grains
+        "6E":  "CME",   "6J":  "CME",  "6B": "CME",   # Currency futures
+        "6A":  "CME",   "6C":  "CME",
+        "BTC": "CME",   "MBT": "CME",     # Bitcoin futures
+        "ETH": "CME",   "MET": "CME",     # Ether futures
+    }
+
+    # Equity options always trade as 100-multiplier contracts on US exchanges
+    # we care about. Used for sizing default-cash buys.
+    _OPTION_MULTIPLIER = 100
+
+    def __init__(self, account_id: str, host: str = "127.0.0.1", port: int = 7497, client_id: int = 1):
+        try:
+            # nest_asyncio lets ib_insync's event loop coexist with whatever
+            # event loop the surrounding worker may have started (notably
+            # Jupyter / pytest-asyncio). Cheap to install; no-op if unused.
+            import nest_asyncio  # type: ignore
+            nest_asyncio.apply()
+        except ImportError:
+            pass
+
+        try:
+            from ib_insync import IB
+        except ImportError as e:
+            raise RuntimeError(
+                f"ib_insync import failed ({e}). The managed Python env may be missing "
+                f"a transitive dep. Try resetting it from Settings → Brokerages."
+            ) from e
+
+        self._account = account_id
+        self._host = host
+        self._port = port
+        self._client_id = client_id
+        self._ib = IB()
+
+        # Flag flipped during deliberate teardown so the disconnect handler
+        # doesn't fight a planned shutdown.
+        self._shutting_down = False
+
+        # Symbol -> qualified Contract. Qualification is a round-trip to TWS,
+        # so we cache.
+        self._contracts: Dict[str, Any] = {}
+        # Symbol -> Ticker subscription. Once subscribed, ticks flow into the
+        # Ticker object continuously; we just read .marketPrice() / .last.
+        # Re-subscribed after auto-reconnect because TWS-side subscriptions
+        # die with the socket.
+        self._tickers: Dict[str, Any] = {}
+        self._last_price: Dict[str, float] = {}
+
+        self._connect_or_raise()
+
+        # Surface IBKR-side errors as log lines for visibility. errorEvent
+        # signature in ib_insync is (reqId, errorCode, errorString, contract).
+        # Codes 2104/2106/2158 are "Market data farm connection is OK" status
+        # heartbeats — filter those out so the log isn't noisy.
+        def _on_error(reqId, code, message, contract):
+            if code in (2104, 2106, 2107, 2108, 2158):
+                return
+            log_err(f"[IBKRBroker] IBKR error {code}: {message}")
+        self._ib.errorEvent += _on_error
+
+        # Auto-reconnect with exponential backoff on socket loss. Capped at
+        # 5 attempts so a stuck TWS doesn't infinite-loop us.
+        def _on_disconnected():
+            if self._shutting_down:
+                return
+            log_err("[IBKRBroker] TWS disconnected — attempting reconnect")
+            delay = 1.0
+            for attempt in range(1, 6):
+                try:
+                    # ib.sleep yields the event loop, so backoff doesn't block
+                    # the asyncio reactor.
+                    self._ib.sleep(delay)
+                    self._ib.connect(
+                        self._host, self._port,
+                        clientId=self._client_id, readonly=False, timeout=10,
+                    )
+                    log_err(f"[IBKRBroker] reconnected on attempt {attempt}")
+                    self._resubscribe_tickers()
+                    return
+                except Exception as e:
+                    log_err(f"[IBKRBroker] reconnect attempt {attempt}/5 failed: {e}")
+                    delay *= 2
+            log_err("[IBKRBroker] gave up reconnecting after 5 attempts — strategy will fail on next broker call")
+        self._ib.disconnectedEvent += _on_disconnected
+
+    def _connect_or_raise(self):
+        try:
+            self._ib.connect(
+                self._host, self._port,
+                clientId=self._client_id, readonly=False, timeout=10,
+            )
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not connect to TWS at {self._host}:{self._port} (clientId={self._client_id}). "
+                f"Is TWS or IB Gateway running with API enabled? "
+                f"File → Global Configuration → API → Settings → 'Enable ActiveX and Socket Clients'. "
+                f"Underlying error: {e}"
+            ) from e
+
+    def _resubscribe_tickers(self):
+        """After a reconnect, the old Ticker objects are dead. Subscribe
+        again for every symbol we were watching, preserving the cache."""
+        old_symbols = list(self._tickers.keys())
+        self._tickers.clear()
+        # Contract qualifications also need to refresh (conId is per-session
+        # in some cases; safest to re-qualify rather than trust the cache).
+        self._contracts.clear()
+        for sym in old_symbols:
+            try:
+                self._ticker(sym)
+            except Exception as e:
+                log_err(f"[IBKRBroker] failed to re-subscribe {sym}: {e}")
+
+    def close(self):
+        """Best-effort clean shutdown. The live runner calls this on exit."""
+        self._shutting_down = True
+        try:
+            self._ib.disconnect()
+        except Exception:
+            pass
+
+    # --- symbol / contract helpers ---
+
+    # Pattern matches: SPY/20260619/500C or AAPL/20260117/175.5P
+    import re as _re
+    _OPTION_RE = _re.compile(r"^([A-Z]{1,6})/(\d{8})/(\d+(?:\.\d+)?)([CP])$")
+    # Future specific contract: ES/202612
+    _FUTURE_RE = _re.compile(r"^([A-Z0-9]{1,5})/(\d{6})$")
+    # Continuous front-month future: ES/CONT
+    _FUTURE_CONT_RE = _re.compile(r"^([A-Z0-9]{1,5})/CONT$")
+    del _re
+
+    @classmethod
+    def is_option(cls, symbol: str) -> bool:
+        return bool(cls._OPTION_RE.match(symbol.upper()))
+
+    @classmethod
+    def is_future(cls, symbol: str) -> bool:
+        u = symbol.upper()
+        return bool(cls._FUTURE_RE.match(u) or cls._FUTURE_CONT_RE.match(u))
+
+    @classmethod
+    def is_crypto(cls, symbol: str) -> bool:
+        # A naked '/' could be option or future — discriminate first.
+        if cls.is_option(symbol) or cls.is_future(symbol):
+            return False
+        u = symbol.upper()
+        return "." in u or "/" in u
+
+    @classmethod
+    def normalize_symbol(cls, symbol: str) -> str:
+        u = symbol.upper()
+        # Options and futures stay as-is (their slashes are structural).
+        # Crypto: accept slash form ("BTC/USD") and normalize to dot form.
+        if cls.is_option(u) or cls.is_future(u):
+            return u
+        return u.replace("/", ".")
+
+    def _futures_exchange(self, symbol_root: str) -> str:
+        ex = self._FUTURES_EXCHANGES.get(symbol_root.upper())
+        if ex is None:
+            raise RuntimeError(
+                f"No default exchange known for futures symbol {symbol_root!r}. "
+                f"Supported: {', '.join(sorted(self._FUTURES_EXCHANGES))}. "
+                f"If you really want to trade this contract, extend "
+                f"IBKRBroker._FUTURES_EXCHANGES in broker-py.ts."
+            )
+        return ex
+
+    def _contract(self, symbol: str):
+        """Resolve a canonical symbol to a qualified ib_insync Contract.
+
+        Branches by instrument type — equity, crypto, option, future, continuous
+        future. Each path constructs the right ib_insync contract class and
+        qualifies it (one round-trip to TWS). Results are cached so repeat calls
+        in the same session are free.
+        """
+        norm = self.normalize_symbol(symbol)
+        cached = self._contracts.get(norm)
+        if cached is not None:
+            return cached
+
+        from ib_insync import Stock, Crypto, Option, Future, ContFuture
+
+        m_opt = self._OPTION_RE.match(norm)
+        m_fut = self._FUTURE_RE.match(norm)
+        m_fut_cont = self._FUTURE_CONT_RE.match(norm)
+
+        if m_opt:
+            underlying, expiry, strike_str, right = m_opt.groups()
+            try:
+                strike = float(strike_str)
+            except ValueError:
+                raise RuntimeError(f"Option strike {strike_str!r} is not a number in symbol {symbol!r}")
+            # SMART works for US equity options. Multiplier=100 is implicit.
+            contract = Option(underlying, expiry, strike, right.upper(), "SMART", currency="USD")
+        elif m_fut:
+            root, expiry = m_fut.groups()
+            exchange = self._futures_exchange(root)
+            contract = Future(root, expiry, exchange, currency="USD")
+        elif m_fut_cont:
+            (root,) = m_fut_cont.groups()
+            exchange = self._futures_exchange(root)
+            # ContFuture auto-rolls to the front month; ideal for backtest-shaped
+            # strategies that don't want to manage contract expiry themselves.
+            contract = ContFuture(root, exchange, currency="USD")
+        elif self.is_crypto(norm):
+            base, _, quote = norm.partition(".")
+            if not base or not quote:
+                raise RuntimeError(f"Crypto symbol {symbol!r} must be in BASE.QUOTE form (e.g. BTC.USD)")
+            contract = Crypto(base, "PAXOS", quote or "USD")
+        else:
+            contract = Stock(norm, "SMART", "USD")
+
+        qualified = self._ib.qualifyContracts(contract)
+        if not qualified or not qualified[0].conId:
+            raise RuntimeError(
+                f"IBKR could not resolve symbol {symbol!r}. Check spelling, expiry "
+                f"(weekly vs monthly), strike, and that your TWS subscription "
+                f"covers this market."
+            )
+        self._contracts[norm] = qualified[0]
+        return qualified[0]
+
+    # --- market data ---
+
+    def _ticker(self, symbol: str):
+        """Return a live Ticker for the symbol; subscribe on first request."""
+        norm = self.normalize_symbol(symbol)
+        existing = self._tickers.get(norm)
+        if existing is not None:
+            return existing
+        contract = self._contract(symbol)
+        # '' = default tick types (last/bid/ask/volume). snapshot=False keeps
+        # the subscription alive so subsequent reads are instant.
+        ticker = self._ib.reqMktData(contract, "", False, False)
+        # First request needs a moment for the initial tick to arrive.
+        self._ib.sleep(1.0)
+        self._tickers[norm] = ticker
+        return ticker
+
+    def price(self, symbol: str) -> Optional[float]:
+        try:
+            ticker = self._ticker(symbol)
+            # marketPrice() returns the midpoint when both bid/ask are present,
+            # else last, else close. Returns NaN if no data yet — fall back to
+            # the cached last-known price in that case.
+            import math as _math
+            mp = ticker.marketPrice()
+            if mp is not None and not _math.isnan(mp):
+                self._last_price[self.normalize_symbol(symbol)] = float(mp)
+                return float(mp)
+            for attr in ("last", "close", "bid", "ask"):
+                v = getattr(ticker, attr, None)
+                if v is not None and not _math.isnan(v):
+                    self._last_price[self.normalize_symbol(symbol)] = float(v)
+                    return float(v)
+            return self._last_price.get(self.normalize_symbol(symbol))
+        except Exception as e:
+            log_err(f"[IBKRBroker.price] {symbol}: {e}")
+            return self._last_price.get(self.normalize_symbol(symbol))
+
+    def market_is_open(self, symbol: str) -> bool:
+        # Crypto trades ~24/7 on PAXOS. Equities follow standard US hours;
+        # rather than parse tradingHours we just attempt the order and let
+        # TWS reject after-hours — IBKR's rejection messages are clear.
+        if self.is_crypto(symbol):
+            return True
+        # Best-effort: ask TWS for contract details once and read liquidHours.
+        try:
+            details = self._ib.reqContractDetails(self._contract(symbol))
+            if not details:
+                return True
+            now = datetime.now(timezone.utc)
+            # liquidHours is a ';'-separated list of YYYYMMDD:HHmm-YYYYMMDD:HHmm
+            # ranges in the contract's local tz. For a robust check we'd parse
+            # those; for now we trust TWS to reject if closed.
+            return True
+        except Exception:
+            return True
+
+    def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent completed bar for symbol at interval.
+
+        Backed by ib.reqHistoricalData. We request a small window (2x the
+        bar size, give or take) so the call is fast and well under IBKR's
+        ~60-requests-per-10-min pacing cap — the live runner calls this
+        once per bar interval, so we're nowhere near saturating.
+        """
+        params = self._INTERVAL_TO_BARSIZE.get(interval)
+        if params is None:
+            log_err(f"[IBKRBroker.fetch_bar] unsupported interval {interval!r}")
+            return None
+        bar_size, duration = params
+
+        contract = self._contract(symbol)
+        # PAXOS crypto bars stream on AGGTRADES; equities on TRADES. Anything
+        # else and IBKR returns an empty result.
+        what_to_show = "AGGTRADES" if self.is_crypto(symbol) else "TRADES"
+        # useRTH=False so after-hours equity bars also come through (live algos
+        # may want to see the pre-/post-market action even if they don't
+        # actually trade then).
+        try:
+            bars = self._ib.reqHistoricalData(
+                contract,
+                endDateTime="",          # '' = up to now
+                durationStr=duration,
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=False,
+                formatDate=2,            # epoch seconds (avoids tz parsing)
+                keepUpToDate=False,
+            )
+        except Exception as e:
+            log_err(f"[IBKRBroker.fetch_bar] {symbol} {interval}: {e}")
+            return None
+
+        if not bars:
+            return None
+        latest = bars[-1]
+        # ib_insync gives us a BarData with .date as a datetime when
+        # formatDate=1 or as an int epoch when formatDate=2. Normalize to ISO.
+        ts = latest.date
+        if isinstance(ts, (int, float)):
+            ts_iso = datetime.fromtimestamp(float(ts), tz=timezone.utc).isoformat()
+        elif hasattr(ts, "isoformat"):
+            ts_iso = ts.isoformat()
+        else:
+            ts_iso = str(ts)
+        return {
+            "timestamp": ts_iso,
+            "open": float(latest.open),
+            "high": float(latest.high),
+            "low": float(latest.low),
+            "close": float(latest.close),
+            "volume": float(latest.volume),
+        }
+
+    # --- account state ---
+
+    def _account_summary(self) -> Dict[str, float]:
+        out: Dict[str, float] = {}
+        try:
+            for v in self._ib.accountSummary(self._account):
+                if v.currency in ("", "USD") and v.tag in (self._CASH_TAG, self._EQUITY_TAG):
+                    try:
+                        out[v.tag] = float(v.value)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as e:
+            log_err(f"[IBKRBroker._account_summary] {e}")
+        return out
+
+    def cash(self) -> float:
+        return self._account_summary().get(self._CASH_TAG, 0.0)
+
+    def equity(self) -> float:
+        return self._account_summary().get(self._EQUITY_TAG, 0.0)
+
+    def position(self, symbol: str) -> float:
+        try:
+            contract = self._contract(symbol)
+            for p in self._ib.positions(self._account):
+                if p.contract.conId == contract.conId:
+                    return float(p.position)
+        except Exception as e:
+            log_err(f"[IBKRBroker.position] {symbol}: {e}")
+        return 0.0
+
+    # --- order placement ---
+
+    def _place_market_order(self, symbol: str, side: str, qty: float) -> OrderRecord:
+        import math as _math
+        from ib_insync import MarketOrder
+        contract = self._contract(symbol)
+        # IBKR rejects fractional shares on equities, options (always int
+        # contracts), and futures (always int contracts). Crypto is the only
+        # fractional-allowed case.
+        if not self.is_crypto(symbol):
+            qty = int(_math.floor(abs(qty)))
+        if qty <= 0:
+            return OrderRecord(
+                order_id="rejected",
+                symbol=symbol,
+                side=side.lower(),
+                qty=0,
+                price=0.0,
+                status="rejected: qty <= 0 after flooring",
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
+        order = MarketOrder(side, qty, account=self._account)
+        trade = self._ib.placeOrder(contract, order)
+        # Give TWS a beat to ack. The Trade object is mutated in place as
+        # status updates arrive, so this short wait usually catches the
+        # 'Submitted' transition; fills may take longer and remain visible
+        # through subsequent position() calls.
+        self._ib.sleep(0.5)
+        status = trade.orderStatus.status or "Submitted"
+        filled_price = trade.orderStatus.avgFillPrice or self.price(symbol) or 0.0
+        return OrderRecord(
+            order_id=str(trade.order.orderId),
+            symbol=symbol,
+            side=side.lower(),
+            qty=float(qty),
+            price=float(filled_price),
+            status=status,
+            ts=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def _per_unit_cost(self, symbol: str, price: float) -> float:
+        """How much cash one unit of symbol consumes for sizing math.
+
+        - Equity / crypto: 1 share/coin = price.
+        - Option: 1 contract = price * 100 (standard equity option multiplier).
+        - Future: undefined here — futures use margin and have to be sized
+          explicitly. Caller refuses default-cash sizing in that branch.
+        """
+        if self.is_option(symbol):
+            return price * self._OPTION_MULTIPLIER
+        return price
+
+    def buy(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+        # Futures use margin not cash — default sizing is unsafe. Force explicit qty.
+        if self.is_future(symbol) and qty is None:
+            return OrderRecord(
+                order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
+                status="rejected: futures require explicit qty (margin-based; cannot size from cash)",
+                ts=datetime.now(timezone.utc).isoformat(),
+            )
+
+        if qty is None and notional is None:
+            # Default: spend all available cash. For options, divide by
+            # (price * 100) so we're not buying 100x the contracts we think.
+            px = self.price(symbol) or 0.0
+            if px <= 0:
+                return OrderRecord(
+                    order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
+                    status="rejected: no price", ts=datetime.now(timezone.utc).isoformat(),
+                )
+            per_unit = self._per_unit_cost(symbol, px)
+            qty = self.cash() / per_unit if per_unit > 0 else 0
+        elif qty is None:
+            px = self.price(symbol) or 0.0
+            if px <= 0:
+                return OrderRecord(
+                    order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
+                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(),
+                )
+            per_unit = self._per_unit_cost(symbol, px)
+            qty = (notional or 0.0) / per_unit if per_unit > 0 else 0
+        return self._place_market_order(symbol, "BUY", float(qty))
+
+    def sell(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+        if qty is None and notional is None:
+            # Default: close the entire position (works for any instrument
+            # type — position() already returns contracts for options/futures).
+            qty = self.position(symbol)
+            if qty <= 0:
+                return OrderRecord(
+                    order_id="rejected", symbol=symbol, side="sell", qty=0, price=0.0,
+                    status="rejected: no position to close", ts=datetime.now(timezone.utc).isoformat(),
+                )
+        elif qty is None:
+            px = self.price(symbol) or 0.0
+            if px <= 0:
+                return OrderRecord(
+                    order_id="rejected", symbol=symbol, side="sell", qty=0, price=0.0,
+                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(),
+                )
+            per_unit = self._per_unit_cost(symbol, px)
+            qty = (notional or 0.0) / per_unit if per_unit > 0 else 0
+        return self._place_market_order(symbol, "SELL", float(qty))
 
 
 class StrategyAdapter:

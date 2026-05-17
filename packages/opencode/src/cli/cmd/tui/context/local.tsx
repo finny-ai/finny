@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
@@ -14,6 +14,8 @@ import { useSDK } from "./sdk"
 import { useKV } from "./kv"
 import { RGBA } from "@opentui/core"
 import { Filesystem } from "@/util/filesystem"
+import { BrokerRegistry, type BrokerKind } from "@/live/brokers"
+import fs from "fs"
 
 export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
   name: "Local",
@@ -388,6 +390,109 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }
     })
 
+    const brokerage = iife(() => {
+      const [brokerageStore, setBrokerageStore] = createStore<{
+        ready: boolean
+        current: BrokerKind | null
+        recent: BrokerKind[]
+      }>({
+        ready: false,
+        current: null,
+        recent: [],
+      })
+
+      const filePath = path.join(Global.Path.state, "brokerage.json")
+      const state = { pending: false }
+
+      function isValidKind(value: unknown): value is BrokerKind {
+        if (typeof value !== "string") return false
+        return BrokerRegistry.specs().some((s) => s.kind === value)
+      }
+
+      function save() {
+        if (!brokerageStore.ready) {
+          state.pending = true
+          return
+        }
+        state.pending = false
+        Filesystem.writeJson(filePath, {
+          current: brokerageStore.current,
+          recent: brokerageStore.recent,
+        })
+      }
+
+      async function refreshFromFile() {
+        try {
+          const x: any = await Filesystem.readJson(filePath)
+          batch(() => {
+            const next = isValidKind(x?.current) ? x.current : null
+            if (next !== brokerageStore.current) setBrokerageStore("current", next)
+            if (Array.isArray(x?.recent)) {
+              setBrokerageStore("recent", x.recent.filter(isValidKind))
+            }
+          })
+        } catch {
+          // File missing or unreadable — leave store untouched.
+        }
+      }
+
+      refreshFromFile().finally(() => {
+        setBrokerageStore("ready", true)
+        if (state.pending) save()
+      })
+
+      // The `finny_brokerage_switch` tool writes to this file from the agent
+      // process. fs.watchFile polls (1s interval) so external writes propagate
+      // back into the TUI store without needing a Bus/IPC channel. Polling
+      // beats fs.watch here because the latter is unreliable across platforms
+      // and fires multiple events per write on macOS.
+      const handleBrokerageFileChange = () => {
+        void refreshFromFile()
+      }
+      fs.watchFile(filePath, { interval: 1000 }, handleBrokerageFileChange)
+      onCleanup(() => fs.unwatchFile(filePath, handleBrokerageFileChange))
+
+      return {
+        current() {
+          return brokerageStore.current
+        },
+        get ready() {
+          return brokerageStore.ready
+        },
+        recent() {
+          return brokerageStore.recent
+        },
+        spec() {
+          const kind = brokerageStore.current
+          if (!kind) return undefined
+          try {
+            return BrokerRegistry.getSpec(kind)
+          } catch {
+            return undefined
+          }
+        },
+        set(kind: BrokerKind | null) {
+          batch(() => {
+            if (kind !== null && !isValidKind(kind)) {
+              toast.show({
+                message: `Unknown brokerage: ${kind}`,
+                variant: "warning",
+                duration: 3000,
+              })
+              return
+            }
+            setBrokerageStore("current", kind)
+            if (kind) {
+              const next = uniqueBy([kind, ...brokerageStore.recent], (x) => x)
+              if (next.length > 10) next.pop()
+              setBrokerageStore("recent", next)
+            }
+            save()
+          })
+        },
+      }
+    })
+
     const mcp = {
       isEnabled(name: string) {
         const status = sync.data.mcp[name]
@@ -427,6 +532,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       model,
       agent,
       mcp,
+      brokerage,
     }
     return result
   },

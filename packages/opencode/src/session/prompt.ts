@@ -51,6 +51,8 @@ import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { SessionRunState } from "./run-state"
 import { BackgroundTaskBlockedError } from "@/task/error"
 import { LocalContext } from "@/util/local-context"
+import { BrokerRegistry } from "@/live/brokers"
+import { readActiveBrokerKind } from "@/live/brokers/active"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -64,6 +66,13 @@ IMPORTANT:
 - This tool provides your final answer - no further actions are taken after calling it`
 
 const STRUCTURED_OUTPUT_SYSTEM_PROMPT = `IMPORTANT: The user has requested structured output. You MUST use the StructuredOutput tool to provide your final response. Do NOT respond with plain text - you MUST call the StructuredOutput tool with your answer formatted according to the schema.`
+
+async function readActiveBrokerageFragment(): Promise<{ kind: string; fragment: string } | null> {
+  const kind = await readActiveBrokerKind()
+  if (!kind) return null
+  const spec = BrokerRegistry.getSpec(kind)
+  return { kind: spec.kind, fragment: spec.promptFragment }
+}
 
 export namespace SessionPrompt {
   const log = Log.create({ service: "session.prompt" })
@@ -1496,6 +1505,12 @@ NOTE: At any point in time through this workflow you should feel free to ask the
               const system = [...env, ...(skills ? [skills] : []), ...instructions]
               const format = lastUser.format ?? { type: "text" as const }
               if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+              const brokerage = yield* Effect.promise(() => readActiveBrokerageFragment())
+              if (brokerage) {
+                // The fragment carries its own `## Active brokerage: <name>`
+                // header — don't double-wrap.
+                system.push(brokerage.fragment)
+              }
               const result = yield* handle.process({
                 user: lastUser,
                 agent,

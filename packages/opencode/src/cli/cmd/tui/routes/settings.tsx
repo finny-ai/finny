@@ -16,7 +16,7 @@ import { SettingsPanelPro } from "../component/settings-panel-pro"
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
-  { id: "paper-trading", label: "Paper Trading" },
+  { id: "paper-trading", label: "Brokerages" },
   { id: "mcp", label: "MCP" },
   { id: "skills", label: "Skills" },
   { id: "pro", label: "Plan" },
@@ -77,7 +77,7 @@ export function Settings() {
       <RouteHeader
         icon={ROUTE_ICONS.settings as unknown as string[]}
         title="Settings"
-        subtitle="Appearance, MCP, skills, paper trading, plan"
+        subtitle="Appearance, MCP, skills, brokerages, plan"
       />
 
       <box

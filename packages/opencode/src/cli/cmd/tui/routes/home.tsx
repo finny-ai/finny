@@ -16,6 +16,7 @@ import { GettingStartedCard } from "../component/card-getting-started"
 import { PortfolioCard } from "../component/card-portfolio"
 import { ModelCapsule } from "../component/model-capsule"
 import { ProviderCapsule } from "../component/provider-capsule"
+import { BrokerageCapsule } from "../component/brokerage-capsule"
 
 const FIRST_RUN_KEY = "home_getting_started_seen"
 
@@ -164,7 +165,7 @@ export function Home() {
           </TuiPluginRuntime.Slot>
         </box>
 
-        {/* Model + Provider picker capsules (left-aligned, hug prompt) */}
+        {/* Model + Provider + Brokerage picker capsules (left-aligned, hug prompt) */}
         <box
           width="100%"
           maxWidth={90}
@@ -177,6 +178,7 @@ export function Home() {
         >
           <ModelCapsule />
           <ProviderCapsule />
+          <BrokerageCapsule />
         </box>
 
         <box height={1} minHeight={0} flexShrink={0} />

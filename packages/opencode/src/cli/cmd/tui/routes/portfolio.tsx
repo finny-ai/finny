@@ -76,7 +76,7 @@ export function Portfolio() {
       <RouteHeader
         icon={ROUTE_ICONS.portfolio as unknown as string[]}
         title="Portfolio"
-        subtitle="Paper trading positions across your connected brokerages"
+        subtitle="Positions across your connected brokerages"
         right={
           <box
             paddingLeft={2}

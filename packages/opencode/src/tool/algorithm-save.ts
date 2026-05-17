@@ -8,6 +8,7 @@ import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Plan } from "../plan"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
+import { readActiveBrokerKind } from "../live/brokers/active"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -289,6 +290,12 @@ export const AlgorithmSaveTool = Tool.define(
               }
             }
 
+            // The agent never sees brokerKind — the user's per-session pick
+            // (set via the TUI Brokerage capsule and persisted to
+            // brokerage.json) is read here so every saved algo is permanently
+            // stamped with the brokerage it was generated against.
+            const activeBrokerKind = await readActiveBrokerKind()
+
             let algo
             try {
               algo = await Algorithm.save({
@@ -299,6 +306,7 @@ export const AlgorithmSaveTool = Tool.define(
                 config: params.config,
                 backtestCode: params.backtestCode,
                 localPath: params.localPath,
+                brokerKind: activeBrokerKind ?? undefined,
                 saveMode: params.saveMode,
               })
             } catch (err) {

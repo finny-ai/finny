@@ -264,7 +264,7 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
                 </box>
                 <Show when={row.supports && accountsForRow().length === 0}>
                   <text fg={theme.warning}>
-                    No {row.spec.displayName} accounts. Settings → Paper Trading.
+                    No {row.spec.displayName} accounts. Settings → Brokerages.
                   </text>
                 </Show>
                 <Show when={row.supports && accountsForRow().length === 1}>

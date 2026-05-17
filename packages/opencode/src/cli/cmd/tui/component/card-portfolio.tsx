@@ -47,7 +47,7 @@ export function PortfolioCard() {
             <box flexGrow={1} alignItems="center" justifyContent="center" gap={1}>
               <text fg={theme.textMuted}>No portfolio connected</text>
               <text fg={theme.textMuted}>
-                Click to set up paper trading.
+                Click to connect a brokerage.
               </text>
             </box>
           }
