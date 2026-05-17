@@ -76,6 +76,11 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
   // Track whether we own the `/algo` command. If a user already defined
   // one in their opencode config, leave it alone and do not intercept it.
   let ownsAlgoCommand = false
+  // Capture the compaction target at `experimental.session.compacting` time
+  // so the `session.compacted` event writes to the SAME algo even if the
+  // user runs `/algo use <other>` (or `/algo clear`) mid-compaction.
+  // Re-reading getActiveAlgo() on the post-event would race.
+  const compactionTargets = new Map<string, { algo: string; current: string }>()
 
   return {
     /**
@@ -119,11 +124,12 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
      * Absolute paths intentionally omitted from context to avoid leaking
      * local user/environment identifiers to the model.
      */
-    "experimental.session.compacting": async (_event, output) => {
+    "experimental.session.compacting": async (event, output) => {
       const active = await getActiveAlgo()
       if (!active) return
       try {
         const ctx = await buildCompactionContext(active)
+        compactionTargets.set(event.sessionID, { algo: active, current: ctx.current })
         output.context.push(
           `# Active Finny algo: ${ctx.algo}`,
           `Current version: ${ctx.current}`,
@@ -154,10 +160,12 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
       if (evt.event.type !== "session.compacted") return
       const sessionID = (evt.event as any).properties?.sessionID
       if (typeof sessionID !== "string") return
-      const active = await getActiveAlgo()
-      if (!active) return
+      // Use the snapshot captured at compacting time, not whatever
+      // getActiveAlgo() returns NOW — the user may have switched algos.
+      const target = compactionTargets.get(sessionID)
+      compactionTargets.delete(sessionID)
+      if (!target) return
       try {
-        const ctx = await buildCompactionContext(active)
         const res = await client.session.messages({ path: { id: sessionID } as any })
         const messages = ((res as any)?.data ?? []) as any[]
         // Compaction emits the latest assistant message with summary: true.
@@ -177,14 +185,14 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
           log.warn("compaction summary has no text content", { sessionID })
           return
         }
-        const file = await appendCompactionSummary(active, {
-          active_version: ctx.current,
+        const file = await appendCompactionSummary(target.algo, {
+          active_version: target.current,
           body: summary,
         })
-        log.info("appended compaction summary to memory.md", { file, algo: active })
+        log.info("appended compaction summary to memory.md", { file, algo: target.algo })
       } catch (err) {
         log.warn("failed to append compaction summary to memory.md", {
-          algo: active,
+          algo: target.algo,
           err: err instanceof Error ? err.message : String(err),
         })
       }
