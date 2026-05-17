@@ -38,10 +38,11 @@ export function Dialog(
       }}
       width={dimensions().width}
       height={dimensions().height}
+      flexDirection="column"
+      justifyContent="center"
       alignItems="center"
       position="absolute"
       zIndex={3000}
-      paddingTop={dimensions().height / 4}
       left={0}
       top={0}
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}

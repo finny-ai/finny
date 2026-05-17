@@ -62,7 +62,7 @@ export function SettingsPanelPaperTrading() {
     <box flexGrow={1} flexDirection="row" gap={2} minHeight={0}>
       {/* Brokerage list */}
       <box width={36} flexShrink={0} minHeight={0}>
-        <Card title=" Paper trading ">
+        <Card title=" Brokerages ">
           <box flexDirection="column" gap={2}>
             <For each={allSpecs}>
               {(spec) => {

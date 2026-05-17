@@ -19,6 +19,7 @@ import { AlgorithmValidateTool } from "./algorithm-validate"
 import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { AlgorithmVersionsTool } from "./algorithm-versions"
 import { AlgorithmExportTool } from "./algorithm-export"
+import { BrokerageSwitchTool } from "./brokerage-switch"
 import { BacktestRunTool } from "./backtest-run"
 import { BacktestHistoryTool } from "./backtest-history"
 import { BacktestWalkforwardTool } from "./backtest-walkforward"
@@ -156,6 +157,7 @@ export namespace ToolRegistry {
       const algoscaffold = yield* AlgorithmScaffoldTool
       const algoversions = yield* AlgorithmVersionsTool
       const algoexport = yield* AlgorithmExportTool
+      const brokerageswitch = yield* BrokerageSwitchTool
       const backtestrun = yield* BacktestRunTool
       const backtesthistory = yield* BacktestHistoryTool
       const backtestwalkforward = yield* BacktestWalkforwardTool
@@ -256,6 +258,7 @@ export namespace ToolRegistry {
             algoscaffold: Tool.init(algoscaffold),
             algoversions: Tool.init(algoversions),
             algoexport: Tool.init(algoexport),
+            brokerageswitch: Tool.init(brokerageswitch),
             backtestrun: Tool.init(backtestrun),
             backtesthistory: Tool.init(backtesthistory),
             backtestwalkforward: Tool.init(backtestwalkforward),
@@ -299,6 +302,7 @@ export namespace ToolRegistry {
               tool.algoscaffold,
               tool.algoversions,
               tool.algoexport,
+              tool.brokerageswitch,
               tool.backtestrun,
               tool.backtesthistory,
               tool.backtestwalkforward,

@@ -1,10 +1,11 @@
 import { createSignal, For } from "solid-js"
 import { TextAttributes, MouseEvent } from "@opentui/core"
+import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { useDialog, type DialogContext } from "../ui/dialog"
-import { BrokerRegistry, type BrokerKind, type BrokerSpec } from "@/live/brokers"
+import { BrokerRegistry, type BrokerKind, type BrokerMode, type BrokerSpec } from "@/live/brokers"
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
 
@@ -18,9 +19,15 @@ function shortHost(url: string): string {
 
 type Fields = Record<string, string>
 
-function emptyFields(spec: BrokerSpec): Fields {
+function initialFields(spec: BrokerSpec): Fields {
   const out: Fields = {}
   for (const f of spec.credentialFields) out[f.name] = f.default ?? ""
+  // If the spec exposes mode-aware endpoints, seed the endpoint field from
+  // the default mode so the value visible in the form matches the mode the
+  // user is about to save under.
+  if (spec.endpointForMode && out.mode) {
+    out.endpoint = spec.endpointForMode(out.mode as BrokerMode) || out.endpoint
+  }
   return out
 }
 
@@ -35,6 +42,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const sdk = useSDK()
   const toast = useToast()
   const dialog = useDialog()
+  const dimensions = useTerminalDimensions()
 
   const allSpecs = BrokerRegistry.specs()
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(
@@ -42,16 +50,35 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   )
   const activeSpec = () => BrokerRegistry.getSpec(activeKind())
 
-  const [fields, setFields] = createSignal<Fields>(emptyFields(activeSpec()))
+  const [fields, setFields] = createSignal<Fields>(initialFields(activeSpec()))
   const [busy, setBusy] = createSignal(false)
+  // Tracks whether the user has manually edited the endpoint. While untouched,
+  // toggling mode auto-syncs the endpoint to the mode's canonical URL. Once
+  // edited, we leave the user's value alone.
+  const [endpointTouched, setEndpointTouched] = createSignal(false)
 
   const switchBroker = (kind: BrokerKind) => {
     setActiveKind(kind)
-    setFields(emptyFields(BrokerRegistry.getSpec(kind)))
+    setFields(initialFields(BrokerRegistry.getSpec(kind)))
+    setEndpointTouched(false)
   }
 
   const setField = (name: string, value: string) => {
-    setFields({ ...fields(), [name]: value })
+    setFields((prev) => {
+      const next = { ...prev, [name]: value }
+      // When the user picks paper/live/testnet, replace the endpoint with the
+      // mode's canonical URL — unless they've already typed a custom one.
+      if (name === "mode") {
+        const spec = activeSpec()
+        if (spec.endpointForMode && !endpointTouched()) {
+          next.endpoint = spec.endpointForMode(value as BrokerMode)
+        }
+      }
+      if (name === "endpoint") {
+        setEndpointTouched(true)
+      }
+      return next
+    })
   }
 
   const cancel = () => {
@@ -59,12 +86,34 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
     dialog.clear()
   }
 
+  // Cap scrollable area at ~45% of terminal height so even on small windows
+  // the fixed footer (Save / cancel buttons) stays in view.
+  const scrollMaxHeight = () => Math.max(6, Math.floor(dimensions().height * 0.45))
+
+  let scrollRef: any
+
+  useKeyboard((evt) => {
+    if (!scrollRef) return
+    // Only handle scroll keys when nothing is focused for text entry — without
+    // this gate, typing in the secret field would scroll the form.
+    if (evt.name === "up" || (evt.ctrl && evt.name === "p")) {
+      scrollRef.scrollBy?.(-1)
+    } else if (evt.name === "down" || (evt.ctrl && evt.name === "n")) {
+      scrollRef.scrollBy?.(1)
+    } else if (evt.name === "pageup") {
+      scrollRef.scrollBy?.(-10)
+    } else if (evt.name === "pagedown") {
+      scrollRef.scrollBy?.(10)
+    }
+  })
+
   const save = async () => {
     if (busy()) return
     const spec = activeSpec()
     const f = fields()
     const label = (f.label ?? "").trim()
     const keyId = (f.keyId ?? "").trim()
+    const requiresSecret = spec.credentialFields.some((c) => c.name === "secret")
     const secret = (f.secret ?? "").trim()
     const endpoint = (f.endpoint ?? spec.defaultEndpoint).trim() || spec.defaultEndpoint
 
@@ -72,8 +121,12 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       toast.show({ message: "Label is required", variant: "warning", duration: 3000 })
       return
     }
-    if (!keyId || !secret) {
-      toast.show({ message: "Both API key and secret are required", variant: "warning", duration: 3000 })
+    if (!keyId) {
+      toast.show({ message: "Account / Key ID is required", variant: "warning", duration: 3000 })
+      return
+    }
+    if (requiresSecret && !secret) {
+      toast.show({ message: "Secret is required", variant: "warning", duration: 3000 })
       return
     }
 
@@ -88,15 +141,24 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       if (spec.credentialFields.some((c) => c.name === "endpoint")) {
         metadata.endpoint = endpoint
       }
+      if (spec.credentialFields.some((c) => c.name === "mode")) {
+        const modeField = spec.credentialFields.find((c) => c.name === "mode")
+        metadata.mode = (f.mode ?? modeField?.default ?? "paper").trim() || "paper"
+      }
       const result = await sdk.client.auth.set({
         providerID,
-        auth: { type: "api", key: secret, metadata },
+        // Brokerages without an API secret (e.g. IBKR, where the Client Portal
+        // Gateway maintains the session via browser login) still need an `api`
+        // entry in the auth store so listAccounts can find them — store an
+        // empty key in that case.
+        auth: { type: "api", key: requiresSecret ? secret : "", metadata },
       })
       if ((result as any)?.error) {
         throw new Error((result as any).error?.message ?? "auth.set returned an error")
       }
+      const modeSuffix = metadata.mode ? ` (${metadata.mode})` : ""
       toast.show({
-        message: `✓ ${spec.displayName} account "${label}" saved`,
+        message: `✓ ${spec.displayName}${modeSuffix} account "${label}" saved`,
         variant: "info",
         duration: 5000,
       })
@@ -110,7 +172,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   }
 
   const Label = (p: { text: string }) => <text fg={theme.textMuted}>{p.text}</text>
-  const InputBox = (p: { onInput: (v: string) => void }) => (
+  const InputBox = (p: { value: string; onInput: (v: string) => void }) => (
     <box
       backgroundColor={theme.backgroundElement}
       paddingLeft={1}
@@ -119,6 +181,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       flexShrink={0}
     >
       <input
+        value={p.value}
         onInput={(v: string) => p.onInput(v)}
         onMouseDown={(r: MouseEvent) => r.target?.focus()}
         focusedBackgroundColor={theme.backgroundElement}
@@ -133,39 +196,77 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
 
   return (
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
+      {/* Fixed header */}
       <box flexDirection="row" justifyContent="space-between">
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
-          Add paper trading account
+          Add brokerage account
         </text>
         <text fg={theme.textMuted} onMouseUp={cancel}>
           esc
         </text>
       </box>
 
+      {/* Fixed brokerage tabs */}
       <box paddingTop={1}>
         <text fg={theme.textMuted}>Brokerage</text>
       </box>
       <SegmentedControl options={tabOptions()} value={activeKind()} onChange={switchBroker} />
 
-      <box paddingTop={1} flexDirection="row" gap={1}>
-        <text fg={theme.textMuted}>Get keys at</text>
-        <Link href={activeSpec().docsUrl} fg={theme.primary}>
-          {shortHost(activeSpec().docsUrl)}
-        </Link>
-      </box>
+      {/* Scrollable form body — credential fields plus docs link */}
+      <scrollbox
+        ref={(r: any) => (scrollRef = r)}
+        maxHeight={scrollMaxHeight()}
+        scrollbarOptions={{ visible: true }}
+      >
+        <box flexDirection="column" gap={1}>
+          <box paddingTop={1} flexDirection="row" gap={1}>
+            <text fg={theme.textMuted}>Get keys at</text>
+            <Link href={activeSpec().docsUrl} fg={theme.primary}>
+              {shortHost(activeSpec().docsUrl)}
+            </Link>
+          </box>
 
-      <For each={activeSpec().credentialFields}>
-        {(field) => (
-          <>
-            <box paddingTop={1}>
-              <Label text={field.label + (field.secret ? " (secret)" : "")} />
-            </box>
-            <InputBox onInput={(v) => setField(field.name, v)} />
-          </>
-        )}
-      </For>
+          <For each={activeSpec().credentialFields}>
+            {(field) => (
+              <>
+                <box paddingTop={1}>
+                  <Label text={field.label + (field.secret ? " (secret)" : "")} />
+                </box>
+                {field.choices && field.choices.length > 0 ? (
+                  <SegmentedControl
+                    options={field.choices.map((c) => ({ value: c, label: c }))}
+                    value={fields()[field.name] || field.default || field.choices[0]}
+                    onChange={(v) => setField(field.name, v)}
+                  />
+                ) : (
+                  <InputBox value={fields()[field.name] ?? ""} onInput={(v) => setField(field.name, v)} />
+                )}
+              </>
+            )}
+          </For>
 
-      <box paddingTop={2} flexDirection="row" gap={2}>
+          <box
+            paddingTop={1}
+            paddingLeft={2}
+            paddingRight={2}
+            paddingBottom={1}
+            border={["left"]}
+            borderColor={theme.info}
+            flexDirection="column"
+            gap={0}
+          >
+            <text fg={theme.info} attributes={TextAttributes.BOLD}>
+              Local-only
+            </text>
+            <text fg={theme.textMuted}>
+              Keys are saved at ~/.local/share/finny/auth.json (0600 perms). Finny servers never see them.
+            </text>
+          </box>
+        </box>
+      </scrollbox>
+
+      {/* Fixed footer — Save button is always visible regardless of scroll. */}
+      <box paddingTop={1} flexDirection="row" gap={2}>
         <box
           paddingLeft={2}
           paddingRight={2}
@@ -179,24 +280,8 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
         <box paddingLeft={2} paddingRight={2} onMouseUp={cancel}>
           <text fg={theme.textMuted}>cancel</text>
         </box>
-      </box>
-
-      <box
-        paddingTop={1}
-        paddingLeft={2}
-        paddingRight={2}
-        paddingBottom={1}
-        border={["left"]}
-        borderColor={theme.info}
-        flexDirection="column"
-        gap={0}
-      >
-        <text fg={theme.info} attributes={TextAttributes.BOLD}>
-          Local-only
-        </text>
-        <text fg={theme.textMuted}>
-          Keys are saved at ~/.local/share/finny/auth.json (0600 perms). Finny servers never see them.
-        </text>
+        <box flexGrow={1} />
+        <text fg={theme.textMuted}>↑↓ scroll</text>
       </box>
     </box>
   )

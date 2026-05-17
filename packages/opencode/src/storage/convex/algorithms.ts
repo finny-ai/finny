@@ -16,6 +16,7 @@ export namespace ConvexAlgorithms {
     config?: string
     backtestCode?: string
     localPath?: string
+    brokerKind?: string
     time_created: number
     time_updated: number
   }) {

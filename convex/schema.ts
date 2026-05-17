@@ -158,6 +158,7 @@ export default defineSchema({
     config: v.optional(v.string()),
     backtestCode: v.optional(v.string()),
     localPath: v.optional(v.string()),
+    brokerKind: v.optional(v.string()),
     time_created: v.number(),
     time_updated: v.number(),
   })
