@@ -38,7 +38,10 @@ class MCResult:
 
 
 def _equity_from_pnls(pnls: np.ndarray, starting: float) -> np.ndarray:
-    return starting + np.cumsum(pnls)
+    # Anchor the curve at `starting` so the first bar's drawdown / return
+    # is measured against the actual entry equity, not the post-first-trade
+    # equity. Length is len(pnls) + 1.
+    return np.concatenate(([starting], starting + np.cumsum(pnls)))
 
 
 def trade_shuffle(
@@ -104,7 +107,9 @@ def block_bootstrap(
             for j in range(blen):
                 out[i + j] = bar_returns[(start + j) % n]
             i += blen
-        eq = starting_equity * np.cumprod(1.0 + out)
+        # Prepend starting_equity so DD measures the full path including
+        # any first-bar adverse move.
+        eq = np.concatenate(([starting_equity], starting_equity * np.cumprod(1.0 + out)))
         finals[p] = eq[-1]
         dds[p] = DD.max_drawdown(eq)
         sharpes[p] = RAT.sharpe(out, bars_per_year=bars_per_year)

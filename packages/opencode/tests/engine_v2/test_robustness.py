@@ -59,6 +59,18 @@ def test_regime_classification_three_buckets():
     assert (labels == 2).sum() > 0   # high_vol bars
 
 
+def test_mc_equity_curve_includes_starting_point():
+    """First-trade adverse moves should show up in max_dd. Without the
+    starting-equity anchor, a single big-loss-first path would compute
+    DD against the post-loss equity = 0."""
+    pnls = np.array([-100.0, 200.0])   # big loss first, recover
+    out = trade_shuffle(pnls, 1000.0, 252.0, n_paths=50, seed=1)
+    # Worst-case (loss-first) path: equity 1000 -> 900 -> 1100, DD = -10%
+    # If the curve didn't include the starting point, DD would be 0 for
+    # that path (only one bar after the loss).
+    assert out.max_dd_p99 < -0.05
+
+
 def test_monte_carlo_zero_paths_returns_safely():
     out = trade_shuffle(np.array([1.0, -1.0]), 1000.0, 252.0, n_paths=0, seed=1)
     assert out.n_paths == 0

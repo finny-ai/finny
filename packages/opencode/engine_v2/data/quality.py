@@ -39,6 +39,9 @@ def expected_step(interval: str) -> pd.Timedelta:
 def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto") -> QualityReport:
     if df.empty:
         return QualityReport(0, 0.0, 0, 0, 0, 0, 0, ["empty input"])
+    # Sort by timestamp first — gap/coverage/outlier math is sequential and
+    # silently distorted by unsorted input.
+    df = df.sort_values("timestamp").reset_index(drop=True)
     ts = pd.to_datetime(df["timestamp"], utc=True)
     o, h, low, c = df["open"].to_numpy(), df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
     v = df["volume"].to_numpy()

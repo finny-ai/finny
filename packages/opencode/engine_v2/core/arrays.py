@@ -64,10 +64,10 @@ def from_dataframe(df: pd.DataFrame, symbol: str, atr_period: int = 14) -> BarAr
         ts = pd.to_datetime(df.index, utc=True).astype("datetime64[ns, UTC]").astype("int64").to_numpy()
     o = df["open"].to_numpy(dtype=np.float64)
     h = df["high"].to_numpy(dtype=np.float64)
-    l = df["low"].to_numpy(dtype=np.float64)
+    low = df["low"].to_numpy(dtype=np.float64)
     c = df["close"].to_numpy(dtype=np.float64)
     v = df["volume"].to_numpy(dtype=np.float64)
-    return BarArrays(symbol=symbol, ts=ts, open=o, high=h, low=l, close=c, volume=v, atr=_atr(h, l, c, atr_period))
+    return BarArrays(symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v, atr=_atr(h, low, c, atr_period))
 
 
 class MarketSnapshot:

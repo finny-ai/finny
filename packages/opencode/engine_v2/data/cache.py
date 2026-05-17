@@ -13,10 +13,14 @@ hundred MB per file, and partial-range fetches only need 1-2 partitions.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import os
 import sys
 import tempfile
+
+try:
+    import fcntl  # POSIX only
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -45,8 +49,15 @@ def _partition_path(root: Path, provider: str, symbol: str, interval: str, year:
 
 @contextlib.contextmanager
 def _flock(path: Path):
+    """Per-key file lock. On POSIX, advisory via fcntl. On Windows (or any
+    platform without fcntl) we fall through without locking — concurrent
+    cache races become possible there, but atomic-rename writes prevent
+    partial-file corruption either way."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
+    if fcntl is None:
+        yield
+        return
     fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)

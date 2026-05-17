@@ -161,14 +161,14 @@ class PortfolioBroker:
         self.account.apply_realized(realized)
         self.account.apply_fee(fee)
         # Surface liquidation as a Fill so process_bar() callers see the
-        # complete bar fill set, not just routed-order fills.
-        liq_fill = Fill(
+        # complete bar fill set, not just routed-order fills. The caller
+        # appends this into bar_fills which is then extended into
+        # self.fills_log — we do NOT append here, to avoid double-counting.
+        return Fill(
             order_id="LIQ", symbol=symbol, side=side, qty=qty, price=fill_px,
             fee=fee, bar_index=i, ts_ns=int(self.market.arrays[symbol].ts[i]),
             tag="LIQUIDATION", is_maker=False, full=True, stop_distance=None,
         )
-        self.fills_log.append(liq_fill)
-        return liq_fill
 
     def _apply_periodic_costs(self, i: int) -> None:
         # Funding for perp-style positions

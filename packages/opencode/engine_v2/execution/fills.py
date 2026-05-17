@@ -93,7 +93,7 @@ def process_orders_for_bar(
         return []
     o = float(ba.open[i])
     h = float(ba.high[i])
-    l = float(ba.low[i])
+    low = float(ba.low[i])
     c = float(ba.close[i])
     v = float(ba.volume[i])
     atr_v = float(ba.atr[i]) if ba.atr is not None else float("nan")
@@ -129,8 +129,8 @@ def process_orders_for_bar(
                 order.stop_price = order.high_water - float(order.trail_amount)
             else:
                 if order.high_water == 0.0:
-                    order.high_water = l
-                order.high_water = min(order.high_water, l) if order.high_water > 0 else l
+                    order.high_water = low
+                order.high_water = min(order.high_water, low) if order.high_water > 0 else low
                 order.stop_price = order.high_water + float(order.trail_amount)
 
         # --- Market ---
@@ -157,9 +157,9 @@ def process_orders_for_bar(
             if order.limit_price is None:
                 raise ValueError(f"limit order {order.id} missing limit_price")
             lp = float(order.limit_price)
-            traded_through = (order.side == "buy" and l < lp) or (order.side == "sell" and h > lp)
+            traded_through = (order.side == "buy" and low < lp) or (order.side == "sell" and h > lp)
             if fill_cfg.mode == "v1_compat":
-                traded_through = (order.side == "buy" and lp >= l) or (order.side == "sell" and lp <= h)
+                traded_through = (order.side == "buy" and lp >= low) or (order.side == "sell" and lp <= h)
             if not traded_through:
                 continue
             base_px = lp
@@ -180,7 +180,7 @@ def process_orders_for_bar(
             if order.stop_price is None:
                 raise ValueError(f"stop-like order {order.id} missing stop_price")
             sp = float(order.stop_price)
-            triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and l <= sp)
+            triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and low <= sp)
             if not triggered:
                 continue
             # Gap-adverse: if open is already past stop, fill at open; else at stop.
@@ -193,7 +193,7 @@ def process_orders_for_bar(
                     raise ValueError(f"stop_limit order {order.id} missing limit_price")
                 lp = float(order.limit_price)
                 # After trigger, behave as marketable limit during this bar
-                if order.side == "buy" and l > lp:
+                if order.side == "buy" and low > lp:
                     continue
                 if order.side == "sell" and h < lp:
                     continue

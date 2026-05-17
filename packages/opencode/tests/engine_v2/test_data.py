@@ -43,6 +43,16 @@ def test_quality_clean_data():
     assert rep.coverage_pct >= 0.99
 
 
+def test_quality_sorts_unsorted_input():
+    df = _toy_df(100)
+    # Shuffle deterministically
+    df = df.sample(frac=1, random_state=0).reset_index(drop=True)
+    rep = analyze(df, "1m", "crypto")
+    # If we hadn't sorted, gap_count would be huge from negative diffs
+    assert rep.gap_count == 0
+    assert rep.coverage_pct >= 0.99
+
+
 def test_quality_detects_gap_and_dupe():
     df = _toy_df(gap_at=50)
     df = pd.concat([df, df.iloc[[10]]], ignore_index=True).sort_values("timestamp")

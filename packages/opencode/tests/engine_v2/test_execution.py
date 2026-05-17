@@ -138,6 +138,39 @@ def test_order_rejects_invalid_inputs():
         Order(id="o1", symbol="X", side="sell", qty=1, order_type="stop")
 
 
+def test_order_rejects_non_finite_inputs():
+    import math
+    import pytest
+    with pytest.raises(ValueError, match="finite"):
+        Order(id="o1", symbol="X", side="buy", qty=float("nan"), order_type="market")
+    with pytest.raises(ValueError, match="finite"):
+        Order(id="o1", symbol="X", side="buy", qty=math.inf, order_type="market")
+    with pytest.raises(ValueError, match="finite limit_price"):
+        Order(id="o1", symbol="X", side="buy", qty=1, order_type="limit", limit_price=float("nan"))
+
+
+def test_liquidation_fill_not_double_counted():
+    ba = _bars(
+        (100, 101, 99, 100, 1e9),
+        (100, 100.5, 99.5, 100, 1e9),
+        (100, 100, 90, 90, 1e9),
+    )
+    snap = MarketSnapshot({"X": ba})
+    acct = Account.new(starting_cash=100_000.0, max_leverage=10.0,
+                       maintenance_margin_pct=0.05)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m")
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=10_000,
+                              order_type="market", tag="entry"))
+    broker.process_bar(0)
+    broker.process_bar(1)
+    broker.process_bar(2)
+    liq_count = sum(1 for f in broker.fills_log if f.tag == "LIQUIDATION")
+    assert liq_count == 1, f"liquidation appended {liq_count} times, expected 1"
+
+
 def test_fillconfig_rejects_bad_inputs():
     import pytest
     with pytest.raises(ValueError, match="participation"):
