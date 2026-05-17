@@ -52,6 +52,10 @@ class FillConfig:
     spread: SpreadConfig = None      # type: ignore[assignment]
 
     def __post_init__(self) -> None:
+        if self.mode not in {"v1_compat", "v2"}:
+            raise ValueError(f"unsupported fill mode: {self.mode!r}")
+        if not (0.0 <= self.participation_pct <= 1.0):
+            raise ValueError(f"participation_pct must be in [0, 1], got {self.participation_pct}")
         if self.slippage is None:
             self.slippage = SlippageConfig()
         if self.spread is None:
@@ -61,7 +65,10 @@ class FillConfig:
 def _fill_qty(qty_remaining: float, bar_volume: float, cfg: FillConfig) -> float:
     if cfg.mode == "v1_compat":
         return qty_remaining
-    if bar_volume <= 0 or cfg.participation_pct >= 1.0:
+    # v2: zero-volume bars produce no fills — respect the participation cap.
+    if bar_volume <= 0:
+        return 0.0
+    if cfg.participation_pct >= 1.0:
         return qty_remaining
     cap = bar_volume * cfg.participation_pct
     return min(qty_remaining, cap)
@@ -109,6 +116,10 @@ def process_orders_for_bar(
             continue
 
         fill_qty_max = _fill_qty(order.qty_remaining, v, fill_cfg)
+        if fill_qty_max <= 0:
+            # Zero-volume bar (or fully throttled by participation cap) — no
+            # fill this bar; remainder carries to the next under the same TTL.
+            continue
         is_maker = order.order_type == "limit"
 
         # Trailing stop: convert trail into a stop_price based on high_water.
@@ -143,7 +154,9 @@ def process_orders_for_bar(
 
         # --- Limit ---
         if order.order_type == "limit":
-            lp = float(order.limit_price or 0.0)
+            if order.limit_price is None:
+                raise ValueError(f"limit order {order.id} missing limit_price")
+            lp = float(order.limit_price)
             traded_through = (order.side == "buy" and l < lp) or (order.side == "sell" and h > lp)
             if fill_cfg.mode == "v1_compat":
                 traded_through = (order.side == "buy" and lp >= l) or (order.side == "sell" and lp <= h)
@@ -164,7 +177,9 @@ def process_orders_for_bar(
 
         # --- Stop (and stop_limit, trailing_stop) ---
         if order.order_type in ("stop", "stop_limit", "trailing_stop"):
-            sp = float(order.stop_price or 0.0)
+            if order.stop_price is None:
+                raise ValueError(f"stop-like order {order.id} missing stop_price")
+            sp = float(order.stop_price)
             triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and l <= sp)
             if not triggered:
                 continue
@@ -174,7 +189,9 @@ def process_orders_for_bar(
             else:
                 trigger_px = min(o, sp)
             if order.order_type == "stop_limit":
-                lp = float(order.limit_price or trigger_px)
+                if order.limit_price is None:
+                    raise ValueError(f"stop_limit order {order.id} missing limit_price")
+                lp = float(order.limit_price)
                 # After trigger, behave as marketable limit during this bar
                 if order.side == "buy" and l > lp:
                     continue
@@ -191,7 +208,7 @@ def process_orders_for_bar(
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,
-                              fee, i, ts_ns, order.tag, False, full,
+                              fee, i, ts_ns, order.tag, is_maker, full,
                               stop_distance=order.stop_distance_hint))
             if full:
                 drop_ids.append(order.id)

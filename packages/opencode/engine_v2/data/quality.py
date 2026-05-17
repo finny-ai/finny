@@ -40,14 +40,14 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto") -> Qua
     if df.empty:
         return QualityReport(0, 0.0, 0, 0, 0, 0, 0, ["empty input"])
     ts = pd.to_datetime(df["timestamp"], utc=True)
-    o, h, l, c = df["open"].to_numpy(), df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
+    o, h, low, c = df["open"].to_numpy(), df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
     v = df["volume"].to_numpy()
 
     # Duplicates
     dupes = int(ts.duplicated().sum())
 
     # OHLC sanity: low ≤ open,close ≤ high
-    ohlc_viol = int(((l > o) | (l > c) | (h < o) | (h < c) | (h < l)).sum())
+    ohlc_viol = int(((low > o) | (low > c) | (h < o) | (h < c) | (h < low)).sum())
 
     # Outliers (>8σ close moves)
     log_ret = np.diff(np.log(np.clip(c, 1e-12, None)))

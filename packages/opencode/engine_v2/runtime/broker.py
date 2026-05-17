@@ -118,7 +118,9 @@ class PortfolioBroker:
                 high = float(ba.high[i])
                 breached = (pos.qty > 0 and low <= liq) or (pos.qty < 0 and high >= liq)
                 if breached:
-                    self._liquidate(sym, liq, i)
+                    liq_fill = self._liquidate(sym, liq, i)
+                    if liq_fill is not None:
+                        bar_fills.append(liq_fill)
 
         # 4. Funding / borrow charges per bar.
         self._apply_periodic_costs(i)
@@ -141,10 +143,10 @@ class PortfolioBroker:
         self.account.apply_realized(realized)
         self.account.apply_fee(f.fee)
 
-    def _liquidate(self, symbol: str, liq_px: float, i: int) -> None:
+    def _liquidate(self, symbol: str, liq_px: float, i: int) -> Optional[Fill]:
         pos = self.book.get(symbol)
         if pos.qty == 0:
-            return
+            return None
         side = "sell" if pos.qty > 0 else "buy"
         qty = abs(pos.qty)
         # Adverse slip on the wrong side: use base bps as worst-case extra.
@@ -158,12 +160,15 @@ class PortfolioBroker:
         )
         self.account.apply_realized(realized)
         self.account.apply_fee(fee)
-        # Also log it as a Fill for diagnostics
-        self.fills_log.append(Fill(
+        # Surface liquidation as a Fill so process_bar() callers see the
+        # complete bar fill set, not just routed-order fills.
+        liq_fill = Fill(
             order_id="LIQ", symbol=symbol, side=side, qty=qty, price=fill_px,
             fee=fee, bar_index=i, ts_ns=int(self.market.arrays[symbol].ts[i]),
             tag="LIQUIDATION", is_maker=False, full=True, stop_distance=None,
-        ))
+        )
+        self.fills_log.append(liq_fill)
+        return liq_fill
 
     def _apply_periodic_costs(self, i: int) -> None:
         # Funding for perp-style positions

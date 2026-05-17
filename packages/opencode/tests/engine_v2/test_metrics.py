@@ -117,6 +117,25 @@ def test_benchmark_alpha_beta_on_correlated_series():
     assert out["alpha_annualized"] > 0   # we injected positive intercept
 
 
+def test_drawdown_ignores_equal_to_peak_runs():
+    # Equity flat at peak then dips — flat region must NOT be counted as a drawdown.
+    eq = np.array([100.0, 100.0, 100.0, 95.0, 100.0, 100.0])
+    periods = DD._all_periods(eq)
+    # Only the 100→95→100 dip should appear, not the flat plateaus.
+    assert len(periods) == 1
+    assert abs(periods[0].depth - (-0.05)) < 1e-9
+
+
+def test_benchmark_handles_constant_strategy_returns():
+    s = np.full(252, 0.001)
+    rng = np.random.default_rng(0)
+    b = rng.standard_normal(252) * 0.01
+    out = B.compute(s, b, bars_per_year=252)
+    assert out is not None
+    assert out["correlation"] == 0.0
+    assert out["r_squared"] == 0.0
+
+
 def test_rolling_sharpe_returns_finite():
     rng = np.random.default_rng(0)
     r = 0.0005 + rng.standard_normal(500) * 0.01

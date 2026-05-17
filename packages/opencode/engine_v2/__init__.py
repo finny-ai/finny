@@ -1,8 +1,7 @@
 """Finny backtesting engine v2.
 
-Replaces backtest.py with a multi-symbol, portfolio-aware, statistically
-robust backtester. See plan at
-~/.claude/plans/rn-the-backtesting-engine-structured-clarke.md
+Multi-symbol, portfolio-aware, statistically robust backtester. Replaces the
+legacy single-file `backtest.py`. CLI entrypoint: `python -m engine_v2.cli`.
 """
 
 __version__ = "2.0.0"

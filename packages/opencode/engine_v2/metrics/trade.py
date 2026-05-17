@@ -57,11 +57,16 @@ def compute(trades: List[ClosedTrade]) -> Dict:
     streak_w, streak_l, max_w, max_l = 0, 0, 0, 0
     for p in pnls:
         if p > 0:
-            streak_w += 1; streak_l = 0; max_w = max(max_w, streak_w)
+            streak_w += 1
+            streak_l = 0
+            max_w = max(max_w, streak_w)
         elif p < 0:
-            streak_l += 1; streak_w = 0; max_l = max(max_l, streak_l)
+            streak_l += 1
+            streak_w = 0
+            max_l = max(max_l, streak_l)
         else:
-            streak_w = streak_l = 0
+            streak_w = 0
+            streak_l = 0
 
     holds = np.array([t.hold_bars for t in trades], dtype=np.int64)
     maes = np.array([t.mae for t in trades], dtype=np.float64)

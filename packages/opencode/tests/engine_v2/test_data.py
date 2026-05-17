@@ -59,7 +59,7 @@ def test_quality_detects_ohlc_violation():
 
 
 def _worker_write_cache(args):
-    root, idx = args
+    root, _idx = args
     cfg = CacheConfig(root=Path(root), provider="test")
     df = _toy_df(50)
 

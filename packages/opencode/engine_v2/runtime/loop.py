@@ -15,6 +15,7 @@ from .broker import PortfolioBroker
 @dataclass
 class LoopResult:
     equity_curve: np.ndarray   # length = n_bars
+    gross_exposure: np.ndarray # length = n_bars — $ notional of all open positions
     diagnostics: List[Dict[str, Any]]
 
 
@@ -25,6 +26,7 @@ def run_loop(
 ) -> LoopResult:
     n = market.n
     equity = np.zeros(n, dtype=np.float64)
+    exposure = np.zeros(n, dtype=np.float64)
     diags: List[Dict[str, Any]] = []
     for i in range(n):
         market.set_index(i)
@@ -34,5 +36,8 @@ def run_loop(
         diag["equity"] = eq
         diag["bar"] = i
         equity[i] = eq
+        # Snapshot gross notional at end of bar (after fills + marks). Used
+        # by metrics.exposure for accurate time-in-market and exposure stats.
+        exposure[i] = broker.book.gross_exposure(broker.account.last_prices)
         diags.append(diag)
-    return LoopResult(equity_curve=equity, diagnostics=diags)
+    return LoopResult(equity_curve=equity, gross_exposure=exposure, diagnostics=diags)

@@ -129,7 +129,10 @@ def assemble(
     trade_block = S.TradeMetrics(**t_metrics)
 
     # Exposure
-    total_years = max(1e-6, (ts_ns[-1] - ts_ns[0]) / (86_400_000_000_000.0 * 365.0))
+    if ts_ns.size >= 2:
+        total_years = max(1e-6, (ts_ns[-1] - ts_ns[0]) / (86_400_000_000_000.0 * 365.0))
+    else:
+        total_years = 1e-6
     ex = M_exposure.compute(equity, exposure_history, broker.fills_log, trades,
                             starting_equity, total_years)
     ex_block = S.ExposureMetrics(**ex)

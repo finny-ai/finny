@@ -45,6 +45,9 @@ def trade_shuffle(
     trade_pnls: np.ndarray, starting_equity: float, bars_per_year: float,
     n_paths: int = 1000, seed: int = 0,
 ) -> MCResult:
+    if n_paths <= 0:
+        return MCResult(0, "trade_shuffle", starting_equity, starting_equity, starting_equity,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     rng = make_rng(seed)
     if trade_pnls.size == 0:
         return MCResult(0, "trade_shuffle", starting_equity, starting_equity, starting_equity,
@@ -77,6 +80,9 @@ def block_bootstrap(
     bar_returns: np.ndarray, starting_equity: float, bars_per_year: float,
     n_paths: int = 1000, block_len: int = 0, seed: int = 0,
 ) -> MCResult:
+    if n_paths <= 0:
+        return MCResult(0, "block_bootstrap", starting_equity, starting_equity, starting_equity,
+                        0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
     rng = make_rng(seed)
     n = bar_returns.size
     if n < 30:

@@ -29,6 +29,8 @@ class BarArrays:
 
 
 def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
+    if period <= 0:
+        raise ValueError(f"ATR period must be > 0, got {period}")
     n = close.shape[0]
     if n == 0:
         return np.zeros(0)
@@ -89,7 +91,10 @@ class MarketSnapshot:
         self._i = 0
 
     def set_index(self, i: int) -> None:
-        self._i = int(i)
+        ii = int(i)
+        if ii < 0 or ii >= self.n:
+            raise IndexError(f"snapshot index out of range: {ii} (n={self.n})")
+        self._i = ii
 
     @property
     def i(self) -> int:

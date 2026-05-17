@@ -22,11 +22,11 @@ from engine_v2.runtime.broker import PortfolioBroker
 def _bars(*ohlcv) -> BarArrays:
     o = np.array([row[0] for row in ohlcv], dtype=np.float64)
     h = np.array([row[1] for row in ohlcv], dtype=np.float64)
-    l = np.array([row[2] for row in ohlcv], dtype=np.float64)
+    lows = np.array([row[2] for row in ohlcv], dtype=np.float64)
     c = np.array([row[3] for row in ohlcv], dtype=np.float64)
     v = np.array([row[4] for row in ohlcv], dtype=np.float64)
     ts = np.arange(len(o), dtype=np.int64) * 60_000_000_000
-    return BarArrays(symbol="X", ts=ts, open=o, high=h, low=l, close=c, volume=v,
+    return BarArrays(symbol="X", ts=ts, open=o, high=h, low=lows, close=c, volume=v,
                      atr=np.full(len(o), 1.0))
 
 
@@ -122,6 +122,58 @@ def test_short_pnl_realized():
     assert len(trades) == 1
     assert trades[0].side == "short"
     assert abs(trades[0].pnl - 200.0) < 1e-9   # (100-80)*10
+
+
+def test_order_rejects_invalid_inputs():
+    import pytest
+    with pytest.raises(ValueError, match="qty"):
+        Order(id="o1", symbol="X", side="buy", qty=0, order_type="market")
+    with pytest.raises(ValueError, match="side"):
+        Order(id="o1", symbol="X", side="long", qty=1, order_type="market")
+    with pytest.raises(ValueError, match="order_type"):
+        Order(id="o1", symbol="X", side="buy", qty=1, order_type="iceberg")
+    with pytest.raises(ValueError, match="limit_price"):
+        Order(id="o1", symbol="X", side="buy", qty=1, order_type="limit")
+    with pytest.raises(ValueError, match="stop_price"):
+        Order(id="o1", symbol="X", side="sell", qty=1, order_type="stop")
+
+
+def test_fillconfig_rejects_bad_inputs():
+    import pytest
+    with pytest.raises(ValueError, match="participation"):
+        FillConfig(mode="v2", participation_pct=1.5)
+    with pytest.raises(ValueError, match="mode"):
+        FillConfig(mode="weird")
+
+
+def test_zero_volume_bar_does_not_fill_in_v2():
+    ba = _bars((100, 101, 99, 100, 1000), (100, 101, 99, 100, 0))
+    broker, snap = _setup(ba, mode="v2", participation=0.10)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=5, order_type="market", tag="t"))
+    broker.process_bar(1)
+    assert len(broker.fills_log) == 0
+
+
+def test_liquidation_fill_returned_from_process_bar():
+    ba = _bars(
+        (100, 101, 99, 100, 1e9),
+        (100, 100.5, 99.5, 100, 1e9),
+        (100, 100, 90, 90, 1e9),
+    )
+    snap = MarketSnapshot({"X": ba})
+    acct = Account.new(starting_cash=100_000.0, max_leverage=10.0,
+                       maintenance_margin_pct=0.05)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m")
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=10_000,
+                              order_type="market", tag="entry"))
+    broker.process_bar(0)
+    broker.process_bar(1)
+    fills = broker.process_bar(2)
+    assert any(f.tag == "LIQUIDATION" for f in fills), \
+        "liquidation fill should appear in process_bar return"
 
 
 def test_intra_bar_liquidation_long():

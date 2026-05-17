@@ -20,10 +20,9 @@ def commission(notional: float, is_maker: bool, cfg: CostConfig) -> float:
 
 
 def funding_charge(notional: float, cfg: CostConfig) -> float:
-    """Per-funding-interval funding. Sign convention: positive funding rate
-    charges longs and pays shorts; here we return the absolute charge — the
-    caller decides the sign based on position direction."""
-    return notional * (cfg.funding_rate_bps_per_interval / 10_000.0)
+    """Per-funding-interval funding. Returns the absolute charge; caller
+    decides the sign based on position direction."""
+    return abs(notional) * (cfg.funding_rate_bps_per_interval / 10_000.0)
 
 
 def borrow_charge_per_bar(notional: float, cfg: CostConfig, bars_per_year: float) -> float:

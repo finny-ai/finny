@@ -15,6 +15,7 @@ from __future__ import annotations
 import contextlib
 import fcntl
 import os
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -79,7 +80,8 @@ def _read_partition(path: Path) -> Optional[pd.DataFrame]:
         if _HAVE_PARQUET and path.suffix == ".parquet":
             return pd.read_parquet(path)
         return pd.read_csv(path, parse_dates=["timestamp"])
-    except Exception:
+    except Exception as e:
+        print(f"__FINNY_CACHE_WARN__: read_failed: {path}: {e}", file=sys.stderr)
         return None
 
 
@@ -101,9 +103,12 @@ def load_range(
     end: pd.Timestamp,
     fetch_fn: Callable[[str, str], pd.DataFrame],
 ) -> pd.DataFrame:
-    """Cache-first range load. `fetch_fn(start, end)` is the cold-path
+    """Cache-first range load. `start` and `end` must be UTC-aware (naive
+    timestamps will be assumed UTC). `fetch_fn(start, end)` is the cold-path
     provider call (only invoked for missing year partitions). Stitches results
     and filters to [start, end)."""
+    start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+    end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
     years = list(range(int(start.year), int(end.year) + 1))
     frames = []
     for y in years:
@@ -119,7 +124,11 @@ def load_range(
                     e = min(y_end, end + pd.Timedelta(days=1))
                     try:
                         df = fetch_fn(s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d"))
-                    except Exception:
+                    except Exception as fetch_err:
+                        print(
+                            f"__FINNY_CACHE_WARN__: fetch_failed: {symbol} {interval} {y}: {fetch_err}",
+                            file=sys.stderr,
+                        )
                         df = pd.DataFrame()
                     if not df.empty:
                         _atomic_write(path, df)

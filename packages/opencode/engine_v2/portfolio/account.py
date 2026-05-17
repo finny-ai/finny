@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
+
+if TYPE_CHECKING:
+    from .positions import Position
 
 
 @dataclass
@@ -38,7 +41,7 @@ class Account:
         for k, v in prices.items():
             self.last_prices[k] = float(v)
 
-    def equity(self, positions: Dict[str, "Position"]) -> float:  # type: ignore[name-defined]
+    def equity(self, positions: Dict[str, Position]) -> float:
         unrealized = 0.0
         for sym, pos in positions.items():
             if pos.qty == 0:
@@ -47,7 +50,7 @@ class Account:
             unrealized += pos.qty * (px - pos.avg_price)
         return self.cash + unrealized
 
-    def gross_notional(self, positions: Dict[str, "Position"]) -> float:  # type: ignore[name-defined]
+    def gross_notional(self, positions: Dict[str, Position]) -> float:
         n = 0.0
         for sym, pos in positions.items():
             if pos.qty == 0:
@@ -56,7 +59,7 @@ class Account:
             n += abs(pos.qty) * px
         return n
 
-    def free_margin(self, positions: Dict[str, "Position"]) -> float:  # type: ignore[name-defined]
+    def free_margin(self, positions: Dict[str, Position]) -> float:
         return self.equity(positions) * self.max_leverage - self.gross_notional(positions)
 
     def can_open(self, notional: float, positions: Dict[str, "Position"]) -> bool:  # type: ignore[name-defined]

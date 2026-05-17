@@ -38,9 +38,9 @@ def _all_periods(equity: np.ndarray) -> List[DrawdownPeriod]:
     trough_val = peak
     for i in range(1, n):
         v = equity[i]
-        if v > peak:
+        if v >= peak:
+            # New high (or matched) — recovers any open drawdown, then resets peak.
             if in_dd:
-                # closed drawdown — recovered
                 depth = float(trough_val / peak - 1.0)
                 out.append(DrawdownPeriod(peak_idx, trough_idx, i, depth, trough_idx - peak_idx,
                                           i - trough_idx))
@@ -50,6 +50,7 @@ def _all_periods(equity: np.ndarray) -> List[DrawdownPeriod]:
             trough_val = v
             trough_idx = i
         else:
+            # v < peak — genuine drawdown bar.
             if not in_dd:
                 in_dd = True
                 trough_val = v

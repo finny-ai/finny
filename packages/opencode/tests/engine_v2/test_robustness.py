@@ -59,6 +59,11 @@ def test_regime_classification_three_buckets():
     assert (labels == 2).sum() > 0   # high_vol bars
 
 
+def test_monte_carlo_zero_paths_returns_safely():
+    out = trade_shuffle(np.array([1.0, -1.0]), 1000.0, 252.0, n_paths=0, seed=1)
+    assert out.n_paths == 0
+
+
 def test_walk_forward_decay_flag():
     ts = np.arange(1000, dtype=np.int64) * 86_400_000_000_000
 

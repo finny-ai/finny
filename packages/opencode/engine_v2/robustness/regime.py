@@ -70,16 +70,20 @@ def breakdown(
     out: List[Regime] = []
     names = {0: "low_vol", 1: "mid_vol", 2: "high_vol"}
     total_n = int((bar_labels >= 0).sum())
+    # Per-bar returns, aligned to bars 1..n-1 (bar 0 has no prior return).
+    all_ret = (equity[1:] - equity[:-1]) / np.clip(equity[:-1], 1e-12, None)
     for label_id, name in names.items():
         mask = bar_labels == label_id
         n = int(mask.sum())
+        pct = float(n / total_n) if total_n else 0.0
         if n < 5:
-            out.append(Regime(name, n, 0.0, 0.0, 0.0, 0.0, 0, 0.0))
+            out.append(Regime(name, n, pct, 0.0, 0.0, 0.0, 0, 0.0))
             continue
-        seg_eq = equity[mask]
-        seg_ret = (seg_eq[1:] - seg_eq[:-1]) / np.clip(seg_eq[:-1], 1e-12, None) if seg_eq.size > 1 else np.zeros(0)
-        total = float(seg_eq[-1] / seg_eq[0] - 1.0) if seg_eq.size > 1 and seg_eq[0] > 0 else 0.0
+        # Use returns from bars actually in this regime — no cross-regime leak.
+        seg_ret = all_ret[mask[1:]]
+        total = float(np.prod(1.0 + seg_ret) - 1.0) if seg_ret.size else 0.0
         sharpe = RAT.sharpe(seg_ret, bars_per_year=bars_per_year)
+        seg_eq = np.cumprod(1.0 + seg_ret) if seg_ret.size else np.ones(1)
         mdd = DD.max_drawdown(seg_eq)
         regime_trades = [t for t in trades
                          if 0 <= np.searchsorted(ts_ns, t.entry_ts_ns) < bar_labels.size
@@ -87,7 +91,7 @@ def breakdown(
         nt = len(regime_trades)
         wr = float(sum(1 for t in regime_trades if t.pnl > 0) / nt) if nt else 0.0
         out.append(Regime(
-            regime=name, n_bars=n, pct_of_window=float(n / total_n) if total_n else 0.0,
+            regime=name, n_bars=n, pct_of_window=pct,
             total_return=total, sharpe=sharpe, max_drawdown=mdd,
             n_trades=nt, win_rate=wr,
         ))

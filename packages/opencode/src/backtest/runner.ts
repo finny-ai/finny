@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { Process } from "@/util/process"
 import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "./broker-py"
@@ -488,8 +489,10 @@ sys.exit(subprocess.call(cmd, cwd=ENGINE_V2_ROOT))
       // Copy engine_v2/ into the tmpdir so the shim can `python -m engine_v2.cli`.
       // Source path is resolved relative to this file's directory at build time
       // (must ship alongside in the bundle).
+      // fileURLToPath() correctly handles Windows drive letters and
+      // percent-decoding; new URL().pathname does neither.
       const ENGINE_V2_SRC = path.resolve(
-        path.dirname(new URL(import.meta.url).pathname),
+        path.dirname(fileURLToPath(import.meta.url)),
         "..", "..", "engine_v2",
       )
       try {

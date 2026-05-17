@@ -37,8 +37,10 @@ from engine_v2.runtime.loop import run_loop
 def _load_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
-    if "timestamp" not in df.columns:
-        raise SystemExit("CSV missing 'timestamp' column")
+    required = {"timestamp", "open", "high", "low", "close", "volume"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise SystemExit(f"CSV missing required columns: {missing}")
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
     keep = ["timestamp", "open", "high", "low", "close", "volume"]
@@ -83,14 +85,6 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str) -> 
         ),
     )
     return PortfolioBroker(snap, account, costs, fill_cfg, interval=interval)
-
-
-def _track_exposure(snap: MarketSnapshot, equity: np.ndarray, broker: PortfolioBroker) -> np.ndarray:
-    # Conservative proxy: 1 when any position open at end of bar, 0 otherwise.
-    # The runtime loop doesn't currently snapshot per-bar; track via positions
-    # at end. For now we approximate from equity history and ending positions.
-    n = equity.size
-    return np.where(equity != equity[0] if n else False, 1.0, 0.0)
 
 
 def _run_strategy(broker: PortfolioBroker, snap: MarketSnapshot,
@@ -144,8 +138,10 @@ def main() -> None:
     # Match v1 — resample to interval (CSV may be at different resolution).
     try:
         df = _resample(df, args.interval)
-    except Exception:
-        pass
+    except ValueError as e:
+        raise SystemExit(f"Invalid interval {args.interval!r}: {e}") from e
+    except Exception as e:
+        raise SystemExit(f"Failed to resample CSV at interval {args.interval!r}: {e}") from e
     if df.empty:
         raise SystemExit("No bars after resampling")
 
@@ -167,7 +163,7 @@ def main() -> None:
                           Path(args.strategy), Path(args.config), symbol)
     result = run_loop(broker, snap, lambda: strat.on_bar())
     equity = result.equity_curve
-    exposure_hist = _track_exposure(snap, equity, broker)
+    exposure_hist = result.gross_exposure
 
     # Monte-Carlo
     mc = None

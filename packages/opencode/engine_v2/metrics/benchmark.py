@@ -26,7 +26,12 @@ def compute(
     alpha_per_bar = float(s.mean() - beta * b.mean())
     alpha_annual = float(alpha_per_bar * bars_per_year)
 
-    corr = float(np.corrcoef(s, b)[0, 1])
+    # corrcoef returns NaN if either series is constant — emit deterministic 0.
+    std_s = float(s.std(ddof=0))
+    if std_s <= 1e-12:
+        corr = 0.0
+    else:
+        corr = float(np.corrcoef(s, b)[0, 1])
     r_squared = float(corr ** 2)
 
     diff = s - b
