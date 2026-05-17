@@ -1,6 +1,8 @@
 import { mutation, query } from "./_generated/server"
 import { v } from "convex/values"
 
+const brokerKind = v.union(v.literal("alpaca"), v.literal("binance"), v.literal("ibkr"))
+
 // One row per VERSION. `algorithmId` is the lineage id (shared across all
 // versions); `version` is the monotonic integer within that lineage.
 //
@@ -21,7 +23,7 @@ export const insertVersion = mutation({
     config: v.optional(v.string()),
     backtestCode: v.optional(v.string()),
     localPath: v.optional(v.string()),
-    brokerKind: v.optional(v.string()),
+    brokerKind: v.optional(brokerKind),
     time_created: v.number(),
     time_updated: v.number(),
   },

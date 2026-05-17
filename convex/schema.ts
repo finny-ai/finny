@@ -1,6 +1,8 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
+const brokerKind = v.union(v.literal("alpaca"), v.literal("binance"), v.literal("ibkr"))
+
 export default defineSchema({
   projects: defineTable({
     id: v.string(),
@@ -158,7 +160,7 @@ export default defineSchema({
     config: v.optional(v.string()),
     backtestCode: v.optional(v.string()),
     localPath: v.optional(v.string()),
-    brokerKind: v.optional(v.string()),
+    brokerKind: v.optional(brokerKind),
     time_created: v.number(),
     time_updated: v.number(),
   })

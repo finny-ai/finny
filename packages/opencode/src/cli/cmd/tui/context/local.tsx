@@ -1,5 +1,5 @@
 import { createStore } from "solid-js/store"
-import { batch, createEffect, createMemo } from "solid-js"
+import { batch, createEffect, createMemo, onCleanup } from "solid-js"
 import { useSync } from "@tui/context/sync"
 import { useTheme } from "@tui/context/theme"
 import { uniqueBy } from "remeda"
@@ -446,9 +446,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       // back into the TUI store without needing a Bus/IPC channel. Polling
       // beats fs.watch here because the latter is unreliable across platforms
       // and fires multiple events per write on macOS.
-      fs.watchFile(filePath, { interval: 1000 }, () => {
+      const handleBrokerageFileChange = () => {
         void refreshFromFile()
-      })
+      }
+      fs.watchFile(filePath, { interval: 1000 }, handleBrokerageFileChange)
+      onCleanup(() => fs.unwatchFile(filePath, handleBrokerageFileChange))
 
       return {
         current() {

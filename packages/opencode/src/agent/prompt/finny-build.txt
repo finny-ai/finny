@@ -334,7 +334,7 @@ When the user's request CAN'T fit the active brokerage but WOULD fit another one
 1. **Announce first.** Before the tool call, tell the user in chat why you're switching. Example: *"AAPL is a US equity; your brokerage is Binance which is crypto-only. I'll switch to Alpaca and build there."* The user must never see the switch happen silently.
 2. **Only switch when the user's intent is clear.** "Build me an AAPL strategy" + Binance active = obvious mismatch, switch. Borderline cases (user asks for "a strategy" without specifying an asset) — ask, don't switch.
 3. **The tool refuses if the user has no account on the target brokerage.** If it returns `switched: false` with reason `no_account`, do NOT proceed with the build. Tell the user to add an account via Settings → Brokerages, and stop.
-4. **Don't switch to dodge a refusal.** If the request fits NO brokerage (options, futures, FX, non-US equities), refuse outright — don't switch hoping the other broker handles it.
+4. **Don't switch to dodge a refusal.** If the request fits NO brokerage (FX spot, mutual funds, non-US equities/options/futures), refuse outright — don't switch hoping the other broker handles it. Options and futures can fit IBKR; switch there only when the user has a connected IBKR account and the intent is clear.
 5. **The next system-prompt rebuild picks up the new brokerage automatically.** You don't need to do anything else — just continue with the build and the symbol/asset rules for the new brokerage will be in effect for your next response.
 
 ### Legacy interface (still works but discouraged)

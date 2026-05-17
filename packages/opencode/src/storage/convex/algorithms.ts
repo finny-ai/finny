@@ -1,5 +1,6 @@
 import { convexClient } from "../convex-client"
 import { api } from "../../../../../convex/_generated/api"
+import type { BrokerKind } from "@/live/brokers"
 
 export namespace ConvexAlgorithms {
   // `version` is intentionally NOT in the args — Convex assigns it atomically
@@ -16,7 +17,7 @@ export namespace ConvexAlgorithms {
     config?: string
     backtestCode?: string
     localPath?: string
-    brokerKind?: string
+    brokerKind?: BrokerKind
     time_created: number
     time_updated: number
   }) {

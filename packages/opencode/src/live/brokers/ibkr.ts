@@ -17,7 +17,8 @@ const CRYPTO_BASES = new Set([
   "XRP", "LTC", "BCH", "UNI", "AAVE", "SHIB",
 ])
 
-const KNOWN_QUOTES = ["USDT", "USDC", "USD"]
+const KNOWN_CRYPTO_QUOTES = ["USDT", "USDC", "USD"]
+const IBKR_CRYPTO_QUOTE = "USD"
 
 // Option: <UNDERLYING>/<YYYYMMDD>/<STRIKE>[CP]  e.g. SPY/20260619/500C, AAPL/20260117/175.5P
 const OPTION_RE = /^([A-Z]{1,6})\/(\d{8})\/(\d+(?:\.\d+)?)([CP])$/i
@@ -46,12 +47,12 @@ function splitCanonical(canonical: string): { base: string; quote: string | null
     // Strict validation: must be a recognized crypto pair. Without this,
     // malformed option-shaped strings (e.g. AAA/INVALID/500C) that fail the
     // strict option regex fall through and get misclassified as crypto.
-    if (quote && !KNOWN_QUOTES.includes(quote) && !CRYPTO_BASES.has(base)) {
+    if (quote && !KNOWN_CRYPTO_QUOTES.includes(quote) && !CRYPTO_BASES.has(base)) {
       return null
     }
     return { base, quote: quote || null }
   }
-  for (const q of KNOWN_QUOTES) {
+  for (const q of KNOWN_CRYPTO_QUOTES) {
     if (u.endsWith(q) && u.length > q.length) {
       return { base: u.slice(0, u.length - q.length), quote: q }
     }
@@ -86,7 +87,7 @@ export const ibkrSpec: BrokerSpec = {
     { spec: "ib_insync>=0.9.86", importCheck: "ib_insync" },
     { spec: "nest_asyncio>=1.5", importCheck: "nest_asyncio" },
   ],
-  assetClasses: ["equity", "crypto"],
+  assetClasses: ["equity", "crypto", "option", "future"],
   staticTakerFee: 0.0005,
   defaultEndpoint: DEFAULT_ENDPOINT,
   docsUrl: "https://interactivebrokers.github.io/tws-api/",
@@ -135,20 +136,15 @@ export const ibkrSpec: BrokerSpec = {
     if (isOption(u) || isFuture(u)) return u
     const split = splitCanonical(canonical)
     if (split) {
-      const quote = split.quote && KNOWN_QUOTES.includes(split.quote) ? split.quote : "USD"
-      return `${split.base}.${quote}`
+      return `${split.base}.${IBKR_CRYPTO_QUOTE}`
     }
     if (/^[A-Z]{1,5}$/.test(u)) return u
     return u
   },
   detectAssetClass(canonical) {
     const u = canonical.toUpperCase()
-    // Options + futures are equity-derivatives; bucket them as "equity" so
-    // existing compareForSymbol routing (which only knows equity/crypto)
-    // surfaces IBKR as the supporting broker. Alpaca/Binance specs' own
-    // detectAssetClass returns null for these strings, so they correctly
-    // appear as unsupported on those brokers.
-    if (isOption(u) || isFuture(u)) return "equity"
+    if (isOption(u)) return "option"
+    if (isFuture(u)) return "future"
     if (splitCanonical(canonical)) return "crypto"
     if (/^[A-Z]{1,5}$/.test(u)) return "equity"
     return null

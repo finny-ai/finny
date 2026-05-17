@@ -1,5 +1,5 @@
 export type BrokerKind = "alpaca" | "binance" | "ibkr"
-export type AssetClass = "equity" | "crypto"
+export type AssetClass = "equity" | "crypto" | "option" | "future"
 export type BrokerMode = "paper" | "testnet" | "live"
 
 export interface BrokerAccount {

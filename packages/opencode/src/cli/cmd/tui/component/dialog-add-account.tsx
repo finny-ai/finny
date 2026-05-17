@@ -1,6 +1,6 @@
 import { createSignal, For } from "solid-js"
 import { TextAttributes, MouseEvent } from "@opentui/core"
-import { useKeyboard, useTerminalDimensions } from "@opentui/solid"
+import { useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
@@ -43,6 +43,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const toast = useToast()
   const dialog = useDialog()
   const dimensions = useTerminalDimensions()
+  const renderer = useRenderer()
 
   const allSpecs = BrokerRegistry.specs()
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(
@@ -91,11 +92,16 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const scrollMaxHeight = () => Math.max(6, Math.floor(dimensions().height * 0.45))
 
   let scrollRef: any
+  const inputRefs = new Set<any>()
+  const isTextInputFocused = () => {
+    const focused = renderer.currentFocusedRenderable
+    return !!focused && inputRefs.has(focused)
+  }
 
   useKeyboard((evt) => {
     if (!scrollRef) return
-    // Only handle scroll keys when nothing is focused for text entry — without
-    // this gate, typing in the secret field would scroll the form.
+    if (isTextInputFocused()) return
+    let handled = true
     if (evt.name === "up" || (evt.ctrl && evt.name === "p")) {
       scrollRef.scrollBy?.(-1)
     } else if (evt.name === "down" || (evt.ctrl && evt.name === "n")) {
@@ -104,6 +110,12 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       scrollRef.scrollBy?.(-10)
     } else if (evt.name === "pagedown") {
       scrollRef.scrollBy?.(10)
+    } else {
+      handled = false
+    }
+    if (handled) {
+      evt.preventDefault()
+      evt.stopPropagation()
     }
   })
 
@@ -181,6 +193,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       flexShrink={0}
     >
       <input
+        ref={(r: any) => inputRefs.add(r)}
         value={p.value}
         onInput={(v: string) => p.onInput(v)}
         onMouseDown={(r: MouseEvent) => r.target?.focus()}

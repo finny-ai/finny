@@ -8,12 +8,23 @@ import { Filesystem } from "@/util/filesystem"
 
 const BROKERAGE_STATE_FILE = path.join(Global.Path.state, "brokerage.json")
 
+function isRegisteredBrokerKind(value: string): value is BrokerKind {
+  return BrokerRegistry.specs().some((s) => s.kind === value)
+}
+
 const parameters = z.object({
   kind: z
-    .enum(["alpaca", "binance", "ibkr"])
+    .string()
+    .trim()
+    .refine(isRegisteredBrokerKind, {
+      message: `Brokerage must be one of: ${BrokerRegistry.specs()
+        .map((s) => s.kind)
+        .join(", ")}`,
+    })
     .describe("Brokerage to switch to. Must be one of the registered BrokerKinds."),
   reason: z
     .string()
+    .trim()
     .min(1)
     .describe(
       "One sentence the user will see explaining why you're switching. Example: " +
@@ -29,7 +40,7 @@ const DESCRIPTION = [
   "2. The target brokerage must already have at least one connected account. If `listAccounts(target)` is empty, this tool refuses — and you must instead tell the user to add an account via Settings → Brokerages.",
   "3. Announce the switch in chat BEFORE calling. The user should never see the brokerage change without knowing why.",
   "4. After a successful switch, proceed with the build. The agent's next system-prompt rebuild will see the new brokerage's symbol convention / asset rules automatically — no extra step.",
-  "5. Do NOT call this just to silence a refusal. If the user genuinely wants to trade something the current brokerage doesn't support and a different brokerage does, switch. If no brokerage supports the request (e.g. options), refuse outright.",
+  "5. Do NOT call this just to silence a refusal. If the user genuinely wants to trade something the current brokerage doesn't support and a different brokerage does, switch. If no brokerage supports the request (e.g. FX spot or non-US instruments), refuse outright.",
   "",
   "On success the tool returns the new brokerage's displayName. The TUI Brokerage capsule updates within ~1s.",
 ].join("\n")
@@ -48,11 +59,7 @@ export const BrokerageSwitchTool = Tool.define(
           metadata: { kind: input.kind, reason: input.reason },
         })
 
-        const target = input.kind as BrokerKind
-        // Validate against the live registry rather than just the zod enum so
-        // a future BrokerKind addition without updating the enum is caught
-        // here instead of producing a bogus brokerage.json `current` value.
-        const spec = BrokerRegistry.specs().find((s) => s.kind === target)
+        const spec = BrokerRegistry.specs().find((s) => s.kind === input.kind)
         if (!spec) {
           return {
             title: "Unknown brokerage",
@@ -62,6 +69,7 @@ export const BrokerageSwitchTool = Tool.define(
             metadata: { switched: false, kind: input.kind },
           }
         }
+        const target = spec.kind
 
         const accounts = await BrokerRegistry.listAccounts(target)
         if (accounts.length === 0) {
