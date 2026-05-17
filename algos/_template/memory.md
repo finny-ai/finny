@@ -14,5 +14,8 @@ Format of each block:
 - active version: vNN
 - since last compaction: <one-paragraph summary of decisions, data
   fetched, backtests run, dead ends>
-- open threads: <what the agent was mid-investigation on>
+- open threads:
+  - <thread 1>
+  - <thread 2>
+  - (or "  - (none)" when nothing is in flight)
 -->

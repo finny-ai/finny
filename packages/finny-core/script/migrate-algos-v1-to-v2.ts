@@ -64,8 +64,8 @@ async function migrateAlgo(root: string, name: string, dry: boolean): Promise<Ch
     if (!entry.isDirectory()) continue
     if (NEW_VERSION_RE.test(entry.name)) continue
     if (OLD_VERSION_RE.test(entry.name)) {
-      const padded = padVersion(entry.name)
-      if (padded !== entry.name) renames.push([entry.name, padded])
+      const target = padVersion(entry.name)
+      if (target !== entry.name) renames.push([entry.name, target])
     }
   }
   for (const [from, to] of renames) {
@@ -77,15 +77,27 @@ async function migrateAlgo(root: string, name: string, dry: boolean): Promise<Ch
     await exec(`rename ${from}/ -> ${to}/`, () => fs.rename(fromAbs, toAbs))
   }
 
-  // 2. For each (now-padded) version dir, rename notes.md and migrate backtest.json.
-  const refreshed = await fs.readdir(dir, { withFileTypes: true })
-  for (const entry of refreshed) {
-    if (!entry.isDirectory() || !NEW_VERSION_RE.test(entry.name)) continue
-    const vdir = path.join(dir, entry.name)
+  // 2. For each version dir, rename notes.md and migrate backtest.json.
+  // In dry-run mode the rename above did NOT happen, so we must consult both
+  // the on-disk listing AND the planned-rename map to report all actions.
+  const renameMap = new Map(renames)
+  const onDisk = await fs.readdir(dir, { withFileTypes: true })
+  const versionsToVisit = new Map<string, string>() // <effective padded name> -> <actual dir name>
+  for (const entry of onDisk) {
+    if (!entry.isDirectory()) continue
+    if (NEW_VERSION_RE.test(entry.name)) {
+      versionsToVisit.set(entry.name, entry.name)
+    } else if (renameMap.has(entry.name)) {
+      // In dry-run, the rename hasn't happened; still report what would migrate.
+      versionsToVisit.set(renameMap.get(entry.name)!, entry.name)
+    }
+  }
+  for (const [padded, actual] of versionsToVisit) {
+    const vdir = path.join(dir, actual)
     const notes = path.join(vdir, OLD_NOTES)
     const reasoning = path.join(vdir, NEW_REASONING)
     if ((await exists(notes)) && !(await exists(reasoning))) {
-      await exec(`rename ${entry.name}/${OLD_NOTES} -> ${entry.name}/${NEW_REASONING}`, () =>
+      await exec(`rename ${padded}/${OLD_NOTES} -> ${padded}/${NEW_REASONING}`, () =>
         fs.rename(notes, reasoning),
       )
     }
@@ -96,7 +108,7 @@ async function migrateAlgo(root: string, name: string, dry: boolean): Promise<Ch
       try {
         parsed = JSON.parse(raw)
       } catch {
-        actions.push(`! ${entry.name}/backtest.json: invalid JSON, skipped`)
+        actions.push(`! ${padded}/backtest.json: invalid JSON, skipped`)
         continue
       }
       let changed = false
@@ -109,7 +121,7 @@ async function migrateAlgo(root: string, name: string, dry: boolean): Promise<Ch
         changed = true
       }
       if (changed) {
-        await exec(`bump ${entry.name}/backtest.json (schema_version, version)`, () =>
+        await exec(`bump ${padded}/backtest.json (schema_version, version)`, () =>
           fs.writeFile(btPath, JSON.stringify(parsed, null, 2) + "\n", "utf8"),
         )
       }
@@ -141,12 +153,14 @@ async function migrateAlgo(root: string, name: string, dry: boolean): Promise<Ch
     }
   }
 
-  // 6. mission.md schema_version: 1 -> 2.
+  // 6. mission.md schema_version: 1 -> 2 (frontmatter only — never touch body).
   const missionPath = path.join(dir, "mission.md")
   if (await exists(missionPath)) {
     const raw = await fs.readFile(missionPath, "utf8")
-    if (/^schema_version:\s*1\b/m.test(raw)) {
-      const next = raw.replace(/^schema_version:\s*1\b/m, "schema_version: 2")
+    const fmMatch = /^---\r?\n([\s\S]*?)\r?\n---/.exec(raw)
+    if (fmMatch && /^schema_version:\s*1\b/m.test(fmMatch[1]!)) {
+      const newFm = fmMatch[1]!.replace(/^schema_version:\s*1\b/m, "schema_version: 2")
+      const next = raw.slice(0, fmMatch.index) + "---\n" + newFm + "\n---" + raw.slice(fmMatch.index + fmMatch[0].length)
       await exec("mission.md: schema_version 1 -> 2", () => fs.writeFile(missionPath, next, "utf8"))
     }
   }
@@ -161,7 +175,12 @@ async function main() {
   for (let i = 0; i < args.length; i++) {
     const a = args[i]
     if (a === "--root") {
-      root = args[++i]!
+      const next = args[i + 1]
+      if (!next || next.startsWith("-")) {
+        throw new Error("--root requires a non-flag path value")
+      }
+      root = next
+      i++
     } else if (a === "--dry-run") {
       dry = true
     } else if (a === "--help" || a === "-h") {

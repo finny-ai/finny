@@ -193,7 +193,19 @@ export async function writeAlgo(params: {
   await fs.writeFile(path.join(dir, MISSION_FILE), serializeMission(params.mission), "utf8")
   await fs.writeFile(path.join(dir, CURRENT_FILE), parseCurrent(params.current) + "\n", "utf8")
   await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${name}\n`, "utf8")
-  await fs.writeFile(path.join(dir, MEMORY_FILE), params.memory ?? DEFAULT_MEMORY_SEED(name), "utf8")
+  // memory.md is append-only. Only seed it on first creation, or overwrite
+  // when an explicit `memory` arg is provided. Never clobber existing history.
+  const memoryPath = path.join(dir, MEMORY_FILE)
+  if (params.memory !== undefined) {
+    await fs.writeFile(memoryPath, params.memory, "utf8")
+  } else {
+    try {
+      await fs.stat(memoryPath)
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err
+      await fs.writeFile(memoryPath, DEFAULT_MEMORY_SEED(name), "utf8")
+    }
+  }
   await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${name}\n`, "utf8")
   for (const sub of DATA_SUBDIRS) {
     await fs.mkdir(path.join(dir, sub), { recursive: true })

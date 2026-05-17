@@ -90,3 +90,28 @@ export async function appendMemoryEntry(
 
 /** Exposed for tests. */
 export const _renderEntry = renderEntry
+
+/**
+ * Append a free-form compaction summary block to memory.md. Use this when
+ * the source is opencode's compaction model output (which has its own
+ * structure — ## Goal, ## Instructions, etc.) and we want to preserve it
+ * verbatim rather than squeeze it into the structured `MemoryEntry` shape.
+ */
+export async function appendCompactionSummary(
+  algoName: string,
+  input: { active_version: string; body: string; date?: string },
+  root: string = algosRoot(),
+): Promise<string> {
+  const dir = algoDir(algoName, root)
+  const file = path.join(dir, MEMORY_FILE)
+  const date = input.date ?? isoDate()
+  const block = [
+    ``,
+    `## ${date} — compaction (${input.active_version})`,
+    ``,
+    input.body.trim(),
+    ``,
+  ].join("\n")
+  await fs.appendFile(file, block, "utf8")
+  return file
+}

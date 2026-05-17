@@ -46,8 +46,9 @@ strategy stub, and grow the rest of the folder as the algo matures.
   keeps lexicographic sort correct past `v09`.
 - `backtest.json` is not created until a backtest runs. All eight metric
   fields are required (`null` is acceptable for genuinely unmeasurable).
-- `.archive/` chat transcripts are never deleted. Compaction (a future
-  agent) produces a derived view in `memory.md`; the source stays here.
+- `.archive/` chat transcripts are never deleted. The compaction flow
+  (see `finny-memory` plugin) produces a derived view in `memory.md`;
+  the source stays here.
 
 ## memory.md vs decisions.md
 

@@ -1,8 +1,6 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
-import { tool } from "@opencode-ai/plugin"
-import { z } from "zod"
 import {
-  appendMemoryEntry,
+  appendCompactionSummary,
   buildCompactionContext,
   clearActiveAlgo,
   discoverAlgos,
@@ -21,22 +19,8 @@ const ALGO_COMMAND_TEMPLATE = [
   "$ARGUMENTS",
 ].join("\n")
 
-const COMPACTION_PROMPT = [
-  "You are compacting a Finny strategy-development session.",
-  "",
-  "Goal: produce a single concise summary the next session can pick up cold.",
-  "",
-  "Required output: call the `finny_record_memory` tool exactly ONCE at the end with:",
-  "  - active_version: the version string from the CURRENT pointer in the algo context",
-  "  - summary: 3-6 sentences covering decisions made, data fetched, backtests run, dead ends explored",
-  "  - open_threads: array of in-flight investigation items the next session should resume",
-  "",
-  "Do not narrate. Do not include code. Just the tool call.",
-].join("\n")
-
 /**
- * Parse `/algo use <name>` / `/algo clear` / `/algo list` from the raw
- * arguments string. Returns a structured action or an error message.
+ * Parse `/algo use <name>` / `/algo clear` / `/algo list` / `/algo status`.
  */
 type AlgoAction =
   | { kind: "use"; name: string }
@@ -74,7 +58,7 @@ async function handleAlgoCommand(raw: string): Promise<string> {
       return "✓ cleared active algo"
     case "list": {
       const names = await discoverAlgos()
-      if (names.length === 0) return "(no algos found under ~/.local/share/finny/algos/)"
+      if (names.length === 0) return "(no algos found)"
       const current = await getActiveAlgo()
       return names.map((n) => (n === current ? `* ${n}` : `  ${n}`)).join("\n")
     }
@@ -87,59 +71,70 @@ async function handleAlgoCommand(raw: string): Promise<string> {
   }
 }
 
-export async function FinnyMemoryPlugin(_input: PluginInput): Promise<Hooks> {
+export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
+  const client = input.client
+  // Track whether we own the `/algo` command. If a user already defined
+  // one in their opencode config, leave it alone and do not intercept it.
+  let ownsAlgoCommand = false
+
   return {
     /**
-     * Register `/algo` so the TUI slash-menu surfaces it. The template is
-     * a no-op placeholder; the real work happens in command.execute.before.
+     * Inject `/algo` into the slash menu only if no user-defined command
+     * already exists. Tracks ownership so command.execute.before below
+     * doesn't hijack a user-defined `/algo`.
      */
     async config(cfg) {
-      const commands = (cfg as any).command ?? {}
+      const commands: Record<string, any> = (cfg as any).command ?? {}
       if (!commands[COMMAND_NAME]) {
         commands[COMMAND_NAME] = {
           template: ALGO_COMMAND_TEMPLATE,
           description: "Manage the active Finny algo (use|clear|list|status)",
         }
         ;(cfg as any).command = commands
+        ownsAlgoCommand = true
       }
     },
 
     /**
-     * Intercept `/algo` execution. Run the side effect (setActiveAlgo,
-     * etc.) and replace the LLM-bound parts with a single text part
-     * containing the result. The LLM still runs (we can't suppress it
-     * without deeper opencode surgery) but with a tiny prompt that elicits
-     * a short ack at worst.
+     * Intercept `/algo` execution and replace the LLM-bound parts with the
+     * subcommand result. The hook receives `output` with a `parts` array
+     * that the caller (session/prompt.ts) holds by reference; we must
+     * MUTATE it in place — reassigning `output.parts` would not be visible
+     * downstream.
      */
-    "command.execute.before": async (input, output) => {
-      if (input.command !== COMMAND_NAME) return
-      const result = await handleAlgoCommand(input.arguments)
-      output.parts = [{ type: "text", text: result } as any]
+    "command.execute.before": async (event, output) => {
+      if (event.command !== COMMAND_NAME) return
+      if (!ownsAlgoCommand) return
+      const result = await handleAlgoCommand(event.arguments)
+      const replacement = { type: "text", text: result } as any
+      output.parts.splice(0, output.parts.length, replacement)
     },
 
     /**
-     * Before /compact: read the active algo, inject mission/CURRENT/
-     * reasoning into the compaction context, and override the prompt to
-     * instruct the model to call `finny_record_memory`.
+     * Before /compact: append mission + CURRENT + reasoning to the
+     * compaction context. We deliberately do NOT override `output.prompt`
+     * — opencode's compaction code uses `prompt ?? [defaultPrompt, ...context]`,
+     * so overriding the prompt would discard everything we pushed.
+     *
+     * Absolute paths intentionally omitted from context to avoid leaking
+     * local user/environment identifiers to the model.
      */
-    "experimental.session.compacting": async (_input, output) => {
+    "experimental.session.compacting": async (_event, output) => {
       const active = await getActiveAlgo()
       if (!active) return
       try {
         const ctx = await buildCompactionContext(active)
         output.context.push(
           `# Active Finny algo: ${ctx.algo}`,
-          `Located at: ${ctx.algoDir}`,
           `Current version: ${ctx.current}`,
           ``,
           `## mission.md`,
-          ctx.mission,
+          ctx.mission.trim(),
           ``,
           ...(ctx.reasoning
-            ? [`## ${ctx.current}/reasoning.md`, ctx.reasoning]
-            : [`(no reasoning.md for ${ctx.current} yet)`]),
+            ? [`## ${ctx.current}/reasoning.md`, ctx.reasoning.trim(), ``]
+            : [`(no reasoning.md for ${ctx.current} yet)`, ``]),
         )
-        output.prompt = COMPACTION_PROMPT
       } catch (err) {
         log.warn("failed to build compaction context, falling back to default", {
           algo: active,
@@ -149,33 +144,50 @@ export async function FinnyMemoryPlugin(_input: PluginInput): Promise<Hooks> {
     },
 
     /**
-     * Tool the compaction agent calls to append a dated block to
-     * `<algo>/memory.md`. Globally registered (prompt-gated to compaction).
+     * After /compact succeeds, fetch the compaction summary message and
+     * append it verbatim to <algo>/memory.md. Using the event hook is the
+     * only way to record memory — the compaction agent runs with
+     * `tools: {}` (see src/session/compaction.ts), so a plugin-registered
+     * tool would be unreachable from that path.
      */
-    tool: {
-      finny_record_memory: tool({
-        description:
-          "Append a dated compaction summary to the active Finny algo's memory.md. Call ONCE at the end of compaction.",
-        args: {
-          active_version: tool.schema
-            .string()
-            .regex(/^v(?:0[1-9]|[1-9][0-9])$/, "active_version must be vNN (e.g. v01, v02)"),
-          summary: tool.schema.string().min(1),
-          open_threads: tool.schema.array(tool.schema.string()).default([]),
-        },
-        async execute(args) {
-          const active = await getActiveAlgo()
-          if (!active) {
-            return "no active Finny algo; memory not recorded"
-          }
-          const file = await appendMemoryEntry(active, {
-            active_version: args.active_version,
-            summary: args.summary,
-            open_threads: args.open_threads,
-          })
-          return `appended compaction block to ${file}`
-        },
-      }),
+    async event(evt) {
+      if (evt.event.type !== "session.compacted") return
+      const sessionID = (evt.event as any).properties?.sessionID
+      if (typeof sessionID !== "string") return
+      const active = await getActiveAlgo()
+      if (!active) return
+      try {
+        const ctx = await buildCompactionContext(active)
+        const res = await client.session.messages({ path: { id: sessionID } as any })
+        const messages = ((res as any)?.data ?? []) as any[]
+        // Compaction emits the latest assistant message with summary: true.
+        const compactionMsg = [...messages]
+          .reverse()
+          .find((m) => m?.info?.role === "assistant" && m?.info?.summary === true)
+        if (!compactionMsg) {
+          log.warn("session.compacted fired but no summary message found", { sessionID })
+          return
+        }
+        const summary = (compactionMsg.parts ?? [])
+          .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+          .map((p: any) => p.text as string)
+          .join("\n\n")
+          .trim()
+        if (!summary) {
+          log.warn("compaction summary has no text content", { sessionID })
+          return
+        }
+        const file = await appendCompactionSummary(active, {
+          active_version: ctx.current,
+          body: summary,
+        })
+        log.info("appended compaction summary to memory.md", { file, algo: active })
+      } catch (err) {
+        log.warn("failed to append compaction summary to memory.md", {
+          algo: active,
+          err: err instanceof Error ? err.message : String(err),
+        })
+      }
     },
   }
 }
