@@ -6,6 +6,7 @@ import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSymbol } from "@/data/symbols"
+import { EngineV2 } from "./results"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -34,6 +35,13 @@ export namespace BacktestRunner {
     totalTrades: number
     winRate: number
     profitFactor: number
+    /**
+     * Full engine_v2 result blob. Present when the run completed via the v2
+     * engine (the default). Carries all the new metric blocks, trades, MC,
+     * walk-forward, regimes, etc. Consumers that want depth should read this
+     * instead of the legacy flat fields above.
+     */
+    v2?: EngineV2.Results
   }
 
   /** Stable error codes surfaced from {@link run}. UI/telemetry can branch on these. */
@@ -204,23 +212,48 @@ print(f"Downloaded {len(df)} rows")
 `
   }
 
-  function parseResults(stdout: string): Results | null {
+  /**
+   * Parse engine_v2 results.json (preferred — emits the full result blob)
+   * with a fallback to the legacy line-format stdout. The line format stays
+   * supported so any external strategy that ships its own backtest.py keeps
+   * working without modification.
+   */
+  async function parseResults(stdout: string, tmpDir: string): Promise<Results | null> {
+    const jsonPath = path.join(tmpDir, "results.json")
+    try {
+      const raw = await fs.readFile(jsonPath, "utf8")
+      const v2 = JSON.parse(raw) as EngineV2.Results
+      const major = parseInt((v2.schema_version || "0").split(".")[0], 10)
+      if (major === EngineV2.SCHEMA_VERSION_MAJOR) {
+        return {
+          totalReturn: v2.total_return,
+          maxDrawdown: v2.max_drawdown,
+          annualizedVolatility: v2.ann_vol,
+          sharpeRatio: v2.ann_sharpe,
+          endingEquity: v2.ending_equity,
+          totalTrades: v2.total_trades,
+          winRate: v2.win_rate,
+          profitFactor: v2.profit_factor,
+          v2,
+        }
+      }
+      // Schema major mismatch — fall through to line parse; emit a marker so
+      // telemetry can see this happened.
+      console.warn(`[backtest] results.json schema ${v2.schema_version} not v${EngineV2.SCHEMA_VERSION_MAJOR}; falling back to line parse`)
+    } catch {
+      // No JSON — strategy probably ran via a legacy embedded backtest.py
+    }
+
     const lines = stdout.split("\n")
     const metrics: Record<string, number> = {}
-
     for (const line of lines) {
       const match = line.match(/^([\w_]+):\s*([-\d.eE+inf]+)/)
       if (match) {
-        const key = match[1]
         const val = parseFloat(match[2])
-        if (isFinite(val)) {
-          metrics[key] = val
-        }
+        if (isFinite(val)) metrics[match[1]] = val
       }
     }
-
     if (!("ending_equity" in metrics)) return null
-
     return {
       totalReturn: metrics["total_return"] ?? 0,
       maxDrawdown: metrics["max_drawdown"] ?? 0,
@@ -233,121 +266,23 @@ print(f"Downloaded {len(df)} rows")
     }
   }
 
-  const DEFAULT_BACKTEST_PY = String.raw`import sys, json, csv, argparse, math
+  /**
+   * Default backtest.py shim used when an algorithm doesn't ship its own
+   * runner. Delegates to engine_v2 via `python -m engine_v2.cli` so we have
+   * exactly one engine in the universe. Algorithms that supply their own
+   * `backtestCode` keep working unmodified (they bypass this shim entirely).
+   */
+  const DEFAULT_BACKTEST_PY = String.raw`import os, sys, subprocess
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from finny_broker import SimBroker, load_strategy
+ENGINE_V2_ROOT = Path(os.environ.get("FINNY_ENGINE_V2_ROOT", str(Path(__file__).parent)))
+if str(ENGINE_V2_ROOT) not in sys.path:
+    sys.path.insert(0, str(ENGINE_V2_ROOT))
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--csv", required=True)
-parser.add_argument("--config", required=True)
-parser.add_argument("--interval", required=True)
-parser.add_argument("--capital", required=True)
-args = parser.parse_args()
-
-with open(args.config) as f:
-    config = json.load(f)
-
-symbol = config.get("symbol", "UNKNOWN")
-capital = float(args.capital)
-broker = SimBroker(starting_cash=capital)
-
-strategy_path = Path(__file__).parent / "strategy.py"
-strategy_params = config.get("params") if isinstance(config.get("params"), dict) else {}
-try:
-    step = load_strategy(strategy_path, broker, params=strategy_params)
-except Exception as e:
-    print(f"ERROR loading strategy: {e}", file=sys.stderr)
-    sys.exit(2)
-
-bar_count = 0
-last_close = 0.0
-
-with open(args.csv) as f:
-    reader = csv.DictReader(f)
-    for row in reader:
-        try:
-            bar = {
-                "timestamp": row["timestamp"],
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": float(row["volume"]),
-                "symbol": symbol,
-            }
-        except (KeyError, ValueError):
-            continue
-        bar_count += 1
-        last_close = bar["close"]
-
-        broker.set_price(symbol, bar["open"])
-
-        try:
-            step(symbol, bar)
-        except Exception as e:
-            print(f"[backtest] Strategy raised: {e}", file=sys.stderr)
-
-        broker.set_price(symbol, bar["close"])
-        broker.mark_to_market()
-
-# Liquidate any remaining position at the last close to surface realized PnL.
-if last_close > 0 and broker.position(symbol) > 0:
-    broker.sell(symbol)
-    broker.mark_to_market()
-
-starting = broker.starting_cash
-ending = broker.cash() + sum(broker.position(s) * (broker.price(s) or 0) for s in [symbol])
-total_return = (ending - starting) / starting if starting > 0 else 0.0
-
-curve = broker.equity_curve
-peak = curve[0] if curve else starting
-max_dd = 0.0
-for e in curve:
-    if e > peak:
-        peak = e
-    if peak > 0:
-        dd = (peak - e) / peak
-        if dd > max_dd:
-            max_dd = dd
-
-rets = []
-for i in range(1, len(curve)):
-    if curve[i - 1] > 0:
-        rets.append((curve[i] - curve[i - 1]) / curve[i - 1])
-
-if len(rets) > 1:
-    mean_ret = sum(rets) / len(rets)
-    var_r = sum((r - mean_ret) ** 2 for r in rets) / (len(rets) - 1)
-    std_r = math.sqrt(var_r)
-    interval_map = {"1min": 252 * 390, "5min": 252 * 78, "15min": 252 * 26, "30min": 252 * 13,
-                    "1h": 252 * 6.5, "4h": 252 * 1.6, "1d": 252}
-    ppy = interval_map.get(args.interval, 252)
-    ann_vol = std_r * math.sqrt(ppy)
-    ann_sharpe = (mean_ret * ppy) / ann_vol if ann_vol > 0 else 0.0
-else:
-    ann_vol = 0.0
-    ann_sharpe = 0.0
-
-pnls = broker.trade_pnls
-total_trades = len(pnls)
-wins = [p for p in pnls if p > 0]
-losses = [p for p in pnls if p <= 0]
-win_rate = len(wins) / total_trades if total_trades > 0 else 0.0
-gross_profit = sum(wins)
-gross_loss = abs(sum(losses))
-profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (0.0 if gross_profit == 0 else 999.0)
-
-print(f"total_return: {total_return}")
-print(f"max_drawdown: {max_dd}")
-print(f"ann_vol: {ann_vol}")
-print(f"ann_sharpe: {ann_sharpe}")
-print(f"ending_equity: {ending}")
-print(f"total_trades: {total_trades}")
-print(f"win_rate: {win_rate}")
-print(f"profit_factor: {profit_factor}")
+cmd = [sys.executable, "-m", "engine_v2.cli", *sys.argv[1:], "--out", str(Path(__file__).parent)]
+sys.exit(subprocess.call(cmd, cwd=ENGINE_V2_ROOT))
 `
+
 
   // Tokens commonly seen in algo names that are NOT tickers. Anything else that
   // looks like a ticker shape (2-5 alnum chars) is treated as a candidate symbol.
@@ -539,14 +474,33 @@ print(f"profit_factor: {profit_factor}")
     try {
       tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-backtest-"))
 
-      // Write finny_broker.py — shared broker abstraction used by strategies
+      // Write finny_broker.py — kept as a thin v1-compat shim for any
+      // algorithm whose `backtestCode` still imports it. New runs prefer
+      // engine_v2 via the DEFAULT_BACKTEST_PY shim below.
       await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_BROKER_PY)
 
       // Write strategy.py
       await fs.writeFile(path.join(tmpDir, "strategy.py"), algorithm.code)
 
-      // Write backtest.py (real or synthesized)
+      // Write backtest.py (user-supplied or DEFAULT shim → engine_v2.cli)
       await fs.writeFile(path.join(tmpDir, "backtest.py"), backtestCode)
+
+      // Copy engine_v2/ into the tmpdir so the shim can `python -m engine_v2.cli`.
+      // Source path is resolved relative to this file's directory at build time
+      // (must ship alongside in the bundle).
+      const ENGINE_V2_SRC = path.resolve(
+        path.dirname(new URL(import.meta.url).pathname),
+        "..", "..", "engine_v2",
+      )
+      try {
+        await fs.cp(ENGINE_V2_SRC, path.join(tmpDir, "engine_v2"), { recursive: true })
+      } catch (e: any) {
+        return {
+          ok: false,
+          error: `engine_v2 source not found at ${ENGINE_V2_SRC}. The Finny package layout is broken: ${e?.message ?? e}`,
+          kind: "internal",
+        }
+      }
 
       // Parse and patch config with user's capital
       let config: any
@@ -622,7 +576,11 @@ print(f"profit_factor: {profit_factor}")
       // Use the managed venv. yfinance is installed once, lazily, on first use.
       let pythonCmd: string
       try {
-        const env = await ensurePythonEnv([{ spec: "yfinance", importCheck: "yfinance" }])
+        const env = await ensurePythonEnv([
+          { spec: "yfinance", importCheck: "yfinance" },
+          { spec: "scipy", importCheck: "scipy" },
+          { spec: "pyarrow", importCheck: "pyarrow" },
+        ])
         pythonCmd = env.python
       } catch (e: any) {
         return {
@@ -681,7 +639,7 @@ print(f"profit_factor: {profit_factor}")
       }
 
       const stdout = backtestResult.stdout.toString()
-      const results = parseResults(stdout)
+      const results = await parseResults(stdout, tmpDir!)
       if (!results) {
         return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
