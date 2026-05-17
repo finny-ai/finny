@@ -1,0 +1,186 @@
+"""Parquet (or CSV fallback) cache for OHLCV under ~/.finny/cache/.
+
+Layout: <root>/<provider>/<symbol-safe>/<interval>/<year>.parquet
+
+Concurrency: writes go through tempfile + os.replace (atomic). A per-key
+fcntl.flock prevents two processes from racing on the same file. Reads
+tolerate missing/partial cache (fall through to provider).
+
+Year-based partition: a 5-year intraday-minute series stays under a few
+hundred MB per file, and partial-range fetches only need 1-2 partitions.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import os
+import re
+import sys
+import tempfile
+
+try:
+    import fcntl  # POSIX only
+except ImportError:
+    fcntl = None  # type: ignore[assignment]
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Optional
+
+import pandas as pd
+
+try:
+    import pyarrow  # noqa: F401
+    _HAVE_PARQUET = True
+except ImportError:
+    _HAVE_PARQUET = False
+
+
+def default_cache_root() -> Path:
+    return Path(os.path.expanduser("~/.finny/cache"))
+
+
+_SAFE_SYM_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _safe_symbol(symbol: str) -> str:
+    """Sanitize a market symbol for use as a single filesystem path
+    component. Whitelist [A-Za-z0-9._-]; reject anything that could escape
+    the cache subtree (".", "..", empty)."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        raise ValueError("symbol must be a non-empty string")
+    cleaned = _SAFE_SYM_RE.sub("_", symbol.strip()).lstrip(".-")
+    if cleaned in {"", ".", ".."}:
+        raise ValueError(f"symbol {symbol!r} sanitizes to unsafe path component")
+    return cleaned
+
+
+def _partition_dir(root: Path, provider: str, symbol: str, interval: str) -> Path:
+    return root / provider / _safe_symbol(symbol) / interval
+
+
+def _existing_partition(d: Path, year: int) -> Optional[Path]:
+    """Return the path to an existing partition file for `year`, preferring
+    parquet over csv. Format-agnostic so a switch in pyarrow availability
+    between runs doesn't silently miss cached data."""
+    for ext in (".parquet", ".csv"):
+        p = d / f"{year}{ext}"
+        if p.exists():
+            return p
+    return None
+
+
+def _write_partition_path(d: Path, year: int) -> Path:
+    """Path the current process writes new partitions to (extension picked
+    by pyarrow availability)."""
+    ext = ".parquet" if _HAVE_PARQUET else ".csv"
+    return d / f"{year}{ext}"
+
+
+@contextlib.contextmanager
+def _flock(path: Path):
+    """Per-key file lock. On POSIX, advisory via fcntl. On Windows (or any
+    platform without fcntl) we fall through without locking — concurrent
+    cache races become possible there, but atomic-rename writes prevent
+    partial-file corruption either way."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    if fcntl is None:
+        yield
+        return
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _atomic_write(path: Path, df: pd.DataFrame) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", dir=str(path.parent))
+    os.close(fd)
+    tmp_path = Path(tmp)
+    try:
+        if _HAVE_PARQUET:
+            df.to_parquet(tmp_path, index=False)
+        else:
+            df.to_csv(tmp_path, index=False)
+        os.replace(tmp_path, path)
+    except Exception:
+        with contextlib.suppress(FileNotFoundError):
+            tmp_path.unlink()
+        raise
+
+
+def _read_partition(path: Path) -> Optional[pd.DataFrame]:
+    if not path.exists():
+        return None
+    try:
+        if _HAVE_PARQUET and path.suffix == ".parquet":
+            return pd.read_parquet(path)
+        return pd.read_csv(path, parse_dates=["timestamp"])
+    except Exception as e:
+        print(f"__FINNY_CACHE_WARN__: read_failed: {path}: {e}", file=sys.stderr)
+        return None
+
+
+@dataclass
+class CacheConfig:
+    root: Path = None  # type: ignore[assignment]
+    provider: str = "yfinance"
+
+    def __post_init__(self) -> None:
+        if self.root is None:
+            self.root = default_cache_root()
+
+
+def load_range(
+    cfg: CacheConfig,
+    symbol: str,
+    interval: str,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    fetch_fn: Callable[[str, str], pd.DataFrame],
+) -> pd.DataFrame:
+    """Cache-first range load. `start` and `end` must be UTC-aware (naive
+    timestamps will be assumed UTC). `fetch_fn(start, end)` is the cold-path
+    provider call (only invoked for missing year partitions). Stitches results
+    and filters to [start, end)."""
+    start = start.tz_localize("UTC") if start.tzinfo is None else start.tz_convert("UTC")
+    end = end.tz_localize("UTC") if end.tzinfo is None else end.tz_convert("UTC")
+    years = list(range(int(start.year), int(end.year) + 1))
+    frames = []
+    d = _partition_dir(cfg.root, cfg.provider, symbol, interval)
+    for y in years:
+        existing = _existing_partition(d, y)
+        df = _read_partition(existing) if existing else None
+        if df is None or df.empty:
+            write_path = _write_partition_path(d, y)
+            with _flock(write_path):
+                existing = _existing_partition(d, y)
+                df = _read_partition(existing) if existing else None
+                if df is None or df.empty:
+                    y_start = pd.Timestamp(f"{y}-01-01", tz="UTC")
+                    y_end = pd.Timestamp(f"{y + 1}-01-01", tz="UTC")
+                    s = max(y_start, start - pd.Timedelta(days=1))
+                    e = min(y_end, end + pd.Timedelta(days=1))
+                    try:
+                        df = fetch_fn(s.strftime("%Y-%m-%d"), e.strftime("%Y-%m-%d"))
+                    except Exception as fetch_err:
+                        print(
+                            f"__FINNY_CACHE_WARN__: fetch_failed: {symbol} {interval} {y}: {fetch_err}",
+                            file=sys.stderr,
+                        )
+                        df = pd.DataFrame()
+                    if not df.empty:
+                        _atomic_write(write_path, df)
+        if df is not None and not df.empty:
+            frames.append(df)
+    if not frames:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    out = pd.concat(frames, ignore_index=True)
+    out["timestamp"] = pd.to_datetime(out["timestamp"], utc=True)
+    out = out.drop_duplicates(subset=["timestamp"]).sort_values("timestamp")
+    out = out[(out["timestamp"] >= start) & (out["timestamp"] < end)].reset_index(drop=True)
+    return out

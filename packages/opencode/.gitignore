@@ -4,3 +4,8 @@ gen
 app.log
 src/provider/models-snapshot.js
 src/provider/models-snapshot.d.ts
+
+# Python (engine_v2 + tests)
+__pycache__/
+*.pyc
+.pytest_cache/
