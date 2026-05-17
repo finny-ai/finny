@@ -1,4 +1,4 @@
-# v1 notes
+# v01 reasoning
 
 Initial version.
 
