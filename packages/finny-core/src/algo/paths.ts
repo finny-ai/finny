@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import path from "node:path"
 import fs from "node:fs/promises"
-import { ALGO_NAME_RE } from "./schemas"
+import { ALGO_NAME_RE, VERSION_DIR_RE } from "./schemas"
 
 const TEMPLATE_DIR = "_template"
 
@@ -54,8 +54,9 @@ export async function discoverVersions(name: string, root: string = algosRoot())
     if (err?.code === "ENOENT") return []
     throw err
   }
+  // Zero-padded vNN sorts lexicographically.
   return entries
-    .filter((e) => e.isDirectory() && /^v[1-9][0-9]*$/.test(e.name))
+    .filter((e) => e.isDirectory() && VERSION_DIR_RE.test(e.name))
     .map((e) => e.name)
-    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1)))
+    .sort()
 }

@@ -1,5 +1,5 @@
 """
-REPLACE-ME strategy v1.
+REPLACE-ME strategy v01.
 
 Entry:
   - ...

@@ -6,11 +6,13 @@ import {
   BACKTEST_FILE,
   Backtest,
   CURRENT_FILE,
+  DATA_SUBDIRS,
   DECISIONS_FILE,
+  MEMORY_FILE,
   MISSION_FILE,
   MissionFrontmatter,
-  NOTES_FILE,
   PREFS_FILE,
+  REASONING_FILE,
   STRATEGY_FILE,
   VERSION_DIR_RE,
   parseCurrent,
@@ -19,8 +21,13 @@ import { algoDir, algosRoot, discoverAlgos, discoverVersions, versionDir } from 
 
 export * from "./schemas"
 export * from "./paths"
+export * from "./active"
+export * from "./memory"
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+
+const DEFAULT_MEMORY_SEED = (name: string) =>
+  `# Memory: ${name}\n\n<!-- Append-only. Agent writes via finny_record_memory on /compact. Humans: edit decisions.md instead. -->\n`
 
 export interface ParsedMission {
   frontmatter: MissionFrontmatter
@@ -45,7 +52,7 @@ export interface AlgoVersion {
   dir: string
   strategy(): Promise<string>
   backtest(): Promise<Backtest | null>
-  notes(): Promise<string | null>
+  reasoning(): Promise<string | null>
 }
 
 export interface Algo {
@@ -55,6 +62,7 @@ export interface Algo {
   current: string
   versions: string[]
   decisions(): Promise<string>
+  memory(): Promise<string>
   prefs(): Promise<string>
   archive(): Promise<string[]>
   version(name?: string): AlgoVersion
@@ -83,8 +91,8 @@ function buildVersion(algoRoot: string, version: string): AlgoVersion {
       if (raw === null) return null
       return Backtest.parse(JSON.parse(raw))
     },
-    async notes() {
-      return await readOptional(path.join(dir, NOTES_FILE))
+    async reasoning() {
+      return await readOptional(path.join(dir, REASONING_FILE))
     },
   }
 }
@@ -109,6 +117,9 @@ export async function loadAlgo(name: string, root: string = algosRoot()): Promis
     versions,
     async decisions() {
       return (await readOptional(path.join(dir, DECISIONS_FILE))) ?? ""
+    },
+    async memory() {
+      return (await readOptional(path.join(dir, MEMORY_FILE))) ?? ""
     },
     async prefs() {
       return (await readOptional(path.join(dir, PREFS_FILE))) ?? ""
@@ -164,12 +175,13 @@ export async function writeAlgo(params: {
   mission: ParsedMission
   current: string
   decisions?: string
+  memory?: string
   prefs?: string
   versions: Record<
     string,
     {
       strategy: string
-      notes?: string
+      reasoning?: string
       backtest?: Backtest
     }
   >
@@ -181,13 +193,29 @@ export async function writeAlgo(params: {
   await fs.writeFile(path.join(dir, MISSION_FILE), serializeMission(params.mission), "utf8")
   await fs.writeFile(path.join(dir, CURRENT_FILE), parseCurrent(params.current) + "\n", "utf8")
   await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${name}\n`, "utf8")
+  // memory.md is append-only. Only seed it on first creation, or overwrite
+  // when an explicit `memory` arg is provided. Never clobber existing history.
+  const memoryPath = path.join(dir, MEMORY_FILE)
+  if (params.memory !== undefined) {
+    await fs.writeFile(memoryPath, params.memory, "utf8")
+  } else {
+    try {
+      await fs.stat(memoryPath)
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err
+      await fs.writeFile(memoryPath, DEFAULT_MEMORY_SEED(name), "utf8")
+    }
+  }
   await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${name}\n`, "utf8")
+  for (const sub of DATA_SUBDIRS) {
+    await fs.mkdir(path.join(dir, sub), { recursive: true })
+  }
   for (const [v, content] of Object.entries(params.versions)) {
     const vdir = versionDir(name, v, root)
     await fs.mkdir(vdir, { recursive: true })
     await fs.writeFile(path.join(vdir, STRATEGY_FILE), content.strategy, "utf8")
-    if (content.notes !== undefined) {
-      await fs.writeFile(path.join(vdir, NOTES_FILE), content.notes, "utf8")
+    if (content.reasoning !== undefined) {
+      await fs.writeFile(path.join(vdir, REASONING_FILE), content.reasoning, "utf8")
     }
     if (content.backtest !== undefined) {
       const parsed = Backtest.parse(content.backtest)

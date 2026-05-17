@@ -1,5 +1,5 @@
 ---
-schema_version: 1
+schema_version: 2
 name: REPLACE-ME-kebab-case
 status: research
 created: YYYY-MM-DD

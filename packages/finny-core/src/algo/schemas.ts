@@ -1,7 +1,8 @@
 import { z } from "zod"
 
 export const ALGO_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
-export const VERSION_DIR_RE = /^v[1-9][0-9]*$/
+// Zero-padded two digits: v01..v99 (no v00).
+export const VERSION_DIR_RE = /^v(?:0[1-9]|[1-9][0-9])$/
 
 export const AlgoStatus = z.enum(["research", "backtested", "paper", "live", "retired"])
 export type AlgoStatus = z.infer<typeof AlgoStatus>
@@ -23,7 +24,7 @@ export type MissionScope = z.infer<typeof MissionScope>
 
 export const MissionFrontmatter = z
   .object({
-    schema_version: z.literal(1),
+    schema_version: z.literal(2),
     name: z.string().regex(ALGO_NAME_RE, "name must be kebab-case (lowercase, digits, hyphens)"),
     status: AlgoStatus,
     created: IsoDate,
@@ -68,8 +69,8 @@ export const BacktestConfig = z
 
 export const Backtest = z
   .object({
-    schema_version: z.literal(1),
-    version: z.string().regex(VERSION_DIR_RE, "version must be v<N>"),
+    schema_version: z.literal(2),
+    version: z.string().regex(VERSION_DIR_RE, "version must be v01..v99"),
     ran_at: z.string().datetime({ offset: true }),
     period: BacktestPeriod,
     config: BacktestConfig,
@@ -82,16 +83,35 @@ export type Backtest = z.infer<typeof Backtest>
 export const CURRENT_FILE = "CURRENT"
 export const MISSION_FILE = "mission.md"
 export const DECISIONS_FILE = "decisions.md"
+export const MEMORY_FILE = "memory.md"
 export const PREFS_FILE = "prefs.md"
 export const ARCHIVE_DIR = ".archive"
 export const STRATEGY_FILE = "strategy.py"
 export const BACKTEST_FILE = "backtest.json"
-export const NOTES_FILE = "notes.md"
+export const REASONING_FILE = "reasoning.md"
+
+export const DATA_DIR = "data"
+export const DATA_STOCK_DIR = "data/stock"
+export const DATA_CRYPTO_DIR = "data/crypto"
+export const DATA_SEC_DIR = "data/sec"
+export const DATA_NEWS_DIR = "data/news"
+export const DATA_NEWS_HEADLINES_DIR = "data/news/headlines"
+export const DATA_NEWS_BODY_DIR = "data/news/body"
+
+export const DATA_SUBDIRS = [
+  DATA_STOCK_DIR,
+  DATA_CRYPTO_DIR,
+  DATA_SEC_DIR,
+  DATA_NEWS_HEADLINES_DIR,
+  DATA_NEWS_BODY_DIR,
+] as const
+
+export const NEWS_HEADLINES_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/
 
 export function parseCurrent(raw: string): string {
   const trimmed = raw.trim()
   if (!VERSION_DIR_RE.test(trimmed)) {
-    throw new Error(`CURRENT must contain a version name like "v1", got: ${JSON.stringify(raw)}`)
+    throw new Error(`CURRENT must contain a zero-padded version name like "v01", got: ${JSON.stringify(raw)}`)
   }
   return trimmed
 }
