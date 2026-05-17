@@ -250,7 +250,7 @@ class SimBroker(Broker):
 class AlpacaBroker(Broker):
     """Live broker backed by alpaca-py. Used by the live runner."""
 
-    def __init__(self, key_id: str, secret: str, paper: bool = True):
+    def __init__(self, key_id: str, secret: str, paper: bool = True, endpoint: Optional[str] = None):
         try:
             from alpaca.trading.client import TradingClient
             from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
@@ -260,7 +260,18 @@ class AlpacaBroker(Broker):
                 f"a transitive dep. Try resetting it from Settings → Brokerages."
             ) from e
 
-        self._trading = TradingClient(api_key=key_id, secret_key=secret, paper=paper)
+        trading_kwargs = {"api_key": key_id, "secret_key": secret, "paper": paper}
+        if endpoint:
+            trading_kwargs["url_override"] = endpoint.rstrip("/")
+        try:
+            self._trading = TradingClient(**trading_kwargs)
+        except TypeError as e:
+            if endpoint:
+                raise RuntimeError(
+                    "alpaca-py TradingClient does not support the configured endpoint override. "
+                    "Upgrade alpaca-py or clear the custom Alpaca endpoint in Settings → Brokerages."
+                ) from e
+            raise
         self._stock_data = StockHistoricalDataClient(api_key=key_id, secret_key=secret)
         self._crypto_data = CryptoHistoricalDataClient()
         self._last_price: Dict[str, float] = {}
@@ -444,7 +455,7 @@ class BinanceBroker(Broker):
 
     KNOWN_QUOTES = ("USDT", "USDC", "BUSD", "USD", "BTC", "ETH")
 
-    def __init__(self, api_key: str, secret: str, testnet: bool = True):
+    def __init__(self, api_key: str, secret: str, testnet: bool = True, endpoint: Optional[str] = None):
         try:
             import ccxt  # type: ignore
         except ImportError as e:
@@ -462,7 +473,25 @@ class BinanceBroker(Broker):
         })
         if testnet:
             self._exchange.set_sandbox_mode(True)
+        if endpoint:
+            self._apply_endpoint(endpoint)
         self._last_price: Dict[str, float] = {}
+
+    def _apply_endpoint(self, endpoint: str) -> None:
+        base = endpoint.rstrip("/")
+        if base.endswith("/api/v3"):
+            spot_base = base
+        elif base.endswith("/api"):
+            spot_base = f"{base}/v3"
+        else:
+            spot_base = f"{base}/api/v3"
+
+        api_urls = self._exchange.urls.get("api")
+        if isinstance(api_urls, dict):
+            api_urls["public"] = spot_base
+            api_urls["private"] = spot_base
+        else:
+            self._exchange.urls["api"] = spot_base
 
     @staticmethod
     def is_crypto(symbol: str) -> bool:

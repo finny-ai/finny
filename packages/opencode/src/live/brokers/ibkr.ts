@@ -10,7 +10,6 @@ const PAPER_ENDPOINT = "127.0.0.1:7497"
 const LIVE_ENDPOINT = "127.0.0.1:7496"
 const DEFAULT_ENDPOINT = PAPER_ENDPOINT
 const DEFAULT_MODE: BrokerMode = "paper"
-const DEFAULT_CLIENT_ID = "1"
 
 const CRYPTO_BASES = new Set([
   "BTC", "ETH", "SOL", "DOGE", "AVAX", "MATIC", "LINK", "DOT", "ADA",
@@ -160,7 +159,6 @@ export const ibkrSpec: BrokerSpec = {
       IBKR_ACCOUNT_ID: creds.keyId,
       IBKR_HOST: host,
       IBKR_PORT: port,
-      IBKR_CLIENT_ID: DEFAULT_CLIENT_ID,
       IBKR_MODE: mode,
     }
   },
