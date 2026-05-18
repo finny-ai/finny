@@ -28,6 +28,8 @@ class ShapeCBrokerAdapter:
 
     def buy(self, symbol: str, qty: Optional[float] = None,
             notional: Optional[float] = None) -> None:
+        if qty is not None and notional is not None:
+            raise ValueError("buy() accepts qty or notional, not both")
         px = self.price(symbol)
         if px <= 0:
             return
@@ -45,8 +47,13 @@ class ShapeCBrokerAdapter:
 
     def sell(self, symbol: str, qty: Optional[float] = None,
              notional: Optional[float] = None) -> None:
+        if qty is not None and notional is not None:
+            raise ValueError("sell() accepts qty or notional, not both")
         if qty is None and notional is None:
-            qty = abs(self.position(symbol))
+            pos = self.position(symbol)
+            if pos <= 0:
+                return
+            qty = pos
         elif notional is not None:
             px = self.price(symbol)
             if px <= 0:

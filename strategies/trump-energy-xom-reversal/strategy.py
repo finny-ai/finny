@@ -27,14 +27,24 @@ class Strategy:
         self.broker = broker
         p = params or {}
 
-        self.bb_period = p.get("bb_period", 20)
-        self.bb_std_mult = p.get("bb_std_mult", 2.0)
-        self.trend_period = p.get("trend_period", 50)
-        self.atr_period = p.get("atr_period", 14)
-        self.stop_atr_mult = p.get("stop_atr_mult", 2.5)
-        self.max_hold_bars = p.get("max_hold_bars", 12)
-        self.risk_per_trade = p.get("risk_per_trade", 0.02)
-        self.max_position_pct = p.get("max_position_pct", 0.50)
+        self.bb_period = int(p.get("bb_period", 20))
+        self.bb_std_mult = float(p.get("bb_std_mult", 2.0))
+        self.trend_period = int(p.get("trend_period", 50))
+        self.atr_period = int(p.get("atr_period", 14))
+        self.stop_atr_mult = float(p.get("stop_atr_mult", 2.5))
+        self.max_hold_bars = int(p.get("max_hold_bars", 12))
+        self.risk_per_trade = float(p.get("risk_per_trade", 0.02))
+        self.max_position_pct = float(p.get("max_position_pct", 0.50))
+
+        for name, val in [("bb_period", self.bb_period),
+                          ("trend_period", self.trend_period),
+                          ("atr_period", self.atr_period)]:
+            if val < 2:
+                raise ValueError(f"{name} must be >= 2, got {val}")
+        if not (0 < self.risk_per_trade <= 1):
+            raise ValueError(f"risk_per_trade must be in (0, 1], got {self.risk_per_trade}")
+        if not (0 < self.max_position_pct <= 1):
+            raise ValueError(f"max_position_pct must be in (0, 1], got {self.max_position_pct}")
 
         maxlen = max(self.bb_period, self.trend_period, self.atr_period) + 5
         self.closes = deque(maxlen=maxlen)
@@ -112,7 +122,7 @@ class Strategy:
             in_uptrend = open_p > sma_trend
             at_lower_band = open_p <= lower
 
-            if in_uptrend and at_lower_band:
+            if in_uptrend and at_lower_band and open_p > 1e-6:
                 equity = self.broker.equity()
                 stop_distance = atr * self.stop_atr_mult
                 if stop_distance > 1e-6:

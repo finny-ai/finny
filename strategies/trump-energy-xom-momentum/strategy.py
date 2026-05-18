@@ -26,17 +26,27 @@ class Strategy:
         self.broker = broker
         p = params or {}
 
-        self.rsi_period = p.get("rsi_period", 14)
-        self.sma_period = p.get("sma_period", 50)
-        self.atr_period = p.get("atr_period", 14)
-        self.rsi_entry = p.get("rsi_entry", 30.0)
-        self.take_profit_pct = p.get("take_profit_pct", 0.06)
-        self.stop_atr_mult = p.get("stop_atr_mult", 2.0)
-        self.max_hold_bars = p.get("max_hold_bars", 10)
-        self.risk_per_trade = p.get("risk_per_trade", 0.02)
-        self.max_position_pct = p.get("max_position_pct", 0.50)
-        self.min_atr_ratio = p.get("min_atr_ratio", 0.005)
-        self.max_atr_ratio = p.get("max_atr_ratio", 0.10)
+        self.rsi_period = int(p.get("rsi_period", 14))
+        self.sma_period = int(p.get("sma_period", 50))
+        self.atr_period = int(p.get("atr_period", 14))
+        self.rsi_entry = float(p.get("rsi_entry", 30.0))
+        self.take_profit_pct = float(p.get("take_profit_pct", 0.06))
+        self.stop_atr_mult = float(p.get("stop_atr_mult", 2.0))
+        self.max_hold_bars = int(p.get("max_hold_bars", 10))
+        self.risk_per_trade = float(p.get("risk_per_trade", 0.02))
+        self.max_position_pct = float(p.get("max_position_pct", 0.50))
+        self.min_atr_ratio = float(p.get("min_atr_ratio", 0.005))
+        self.max_atr_ratio = float(p.get("max_atr_ratio", 0.10))
+
+        for name, val in [("rsi_period", self.rsi_period),
+                          ("sma_period", self.sma_period),
+                          ("atr_period", self.atr_period)]:
+            if val < 2:
+                raise ValueError(f"{name} must be >= 2, got {val}")
+        if not (0 < self.risk_per_trade <= 1):
+            raise ValueError(f"risk_per_trade must be in (0, 1], got {self.risk_per_trade}")
+        if not (0 < self.max_position_pct <= 1):
+            raise ValueError(f"max_position_pct must be in (0, 1], got {self.max_position_pct}")
 
         maxlen = max(self.sma_period, self.rsi_period, self.atr_period) + 5
         self.closes = deque(maxlen=maxlen)
@@ -116,7 +126,7 @@ class Strategy:
             oversold = rsi < self.rsi_entry
             vol_ok = self.min_atr_ratio <= atr_ratio <= self.max_atr_ratio
 
-            if in_uptrend and oversold and vol_ok:
+            if in_uptrend and oversold and vol_ok and open_p > 1e-6:
                 equity = self.broker.equity()
                 stop_distance = atr * self.stop_atr_mult
                 if stop_distance > 1e-6:
