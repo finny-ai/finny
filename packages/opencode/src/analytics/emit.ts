@@ -9,22 +9,34 @@ const log = Log.create({ service: "analytics-emit" })
 const SENSITIVE_KEYS = new Set(["code", "config", "backtestCode", "reasoning", "error", "stderr"])
 const MAX_STRING_LEN = 256
 
-function sanitizePayload(payload: Record<string, any>): Record<string, any> {
-  const clean: Record<string, any> = {}
-  for (const [k, v] of Object.entries(payload)) {
-    if (SENSITIVE_KEYS.has(k)) {
-      if (typeof v === "string") {
-        clean[`${k}Length`] = v.length
-      }
-      continue
-    }
-    if (typeof v === "string" && v.length > MAX_STRING_LEN) {
-      clean[k] = v.slice(0, MAX_STRING_LEN) + "…"
-    } else {
-      clean[k] = v
-    }
+function sanitizeValue(key: string, value: unknown): unknown {
+  if (SENSITIVE_KEYS.has(key)) {
+    if (typeof value === "string") return { [`${key}Length`]: value.length }
+    return "[redacted]"
   }
-  return clean
+  if (Array.isArray(value)) {
+    return value.map((item, i) => sanitizeValue(String(i), item))
+  }
+  if (typeof value === "object" && value !== null) {
+    const clean: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) {
+      const sanitized = sanitizeValue(k, v)
+      if (SENSITIVE_KEYS.has(k)) {
+        Object.assign(clean, sanitized)
+      } else {
+        clean[k] = sanitized
+      }
+    }
+    return clean
+  }
+  if (typeof value === "string" && value.length > MAX_STRING_LEN) {
+    return value.slice(0, MAX_STRING_LEN) + "…"
+  }
+  return value
+}
+
+function sanitizePayload(payload: Record<string, any>): Record<string, any> {
+  return sanitizeValue("", payload) as Record<string, any>
 }
 
 let deviceIdHash: string | null = null
