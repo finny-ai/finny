@@ -8,16 +8,18 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
+import inspect
 import json
 import sys
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 
 import engine_v2
-from engine_v2.compat.v1_adapter import make_v1_compat
+from engine_v2.compat.shapec_adapter import ShapeCBrokerAdapter
 from engine_v2.core.arrays import MarketSnapshot, from_dataframe
 from engine_v2.core.clock import interval_to_rule_and_bars_per_year
 from engine_v2.core.rng import derive_seed
@@ -88,20 +90,51 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str) -> 
 
 
 def _run_strategy(broker: PortfolioBroker, snap: MarketSnapshot,
-                  strategy_path: Path, config_path: Path, symbol: str):
-    """Load v1 EthTrendBreakout-style strategy via the v1 adapter.
+                  strategy_path: Path, config_path: Path, symbol: str,
+                  params: Any = None) -> Tuple[Any, str]:
+    """Load a strategy from *strategy_path*, auto-detecting its shape.
 
-    Future: support v2-native Strategy ABC. For now this is the path because
-    the in-tree strategy is v1.
+    Returns ``(strategy_instance, shape)`` where *shape* is ``"shapec"`` for
+    the canonical Shape-C contract or ``"v1"`` for legacy EthTrendBreakout.
     """
-    import importlib.util
-    if strategy_path.exists() and strategy_path.name == "strategy.py":
-        # Use the repo-root strategy.py which exposes EthTrendBreakoutStrategy
-        sys.path.insert(0, str(strategy_path.parent))
-        from strategy import EthTrendBreakoutStrategy  # type: ignore
+    if not strategy_path.exists():
+        raise SystemExit(f"Strategy file not found: {strategy_path}")
+
+    spec = importlib.util.spec_from_file_location("_user_strategy", strategy_path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(strategy_path.parent))
+    spec.loader.exec_module(mod)
+
+    # Shape-C: module exposes a ``Strategy`` class whose first __init__
+    # param (after self) is ``broker``.
+    strategy_cls = getattr(mod, "Strategy", None)
+    if strategy_cls is not None:
+        sig = inspect.signature(strategy_cls.__init__)
+        init_params = [p for p in sig.parameters if p != "self"]
+        if init_params and init_params[0] == "broker":
+            adapter = ShapeCBrokerAdapter(broker, snap, symbol)
+            accepts_params = "params" in sig.parameters
+            if accepts_params and params is not None:
+                strat = strategy_cls(adapter, params=params)
+            else:
+                strat = strategy_cls(adapter)
+            return strat, "shapec"
+
+    # v1 fallback: module exposes EthTrendBreakoutStrategy.
+    # Import lazily — v1_adapter's top-level `from strategy import ...` will
+    # fail if the tmpdir's strategy.py is Shape-C (no Broker/MarketData classes).
+    v1_cls = getattr(mod, "EthTrendBreakoutStrategy", None)
+    if v1_cls is not None:
+        from engine_v2.compat.v1_adapter import make_v1_compat
         v1b, v1m = make_v1_compat(snap, broker, symbol)
-        return EthTrendBreakoutStrategy(config_path=str(config_path), broker=v1b, market=v1m)
-    raise SystemExit(f"Strategy not loadable from {strategy_path}")
+        return v1_cls(config_path=str(config_path), broker=v1b, market=v1m), "v1"
+
+    names = [n for n in dir(mod) if not n.startswith("_")]
+    raise SystemExit(
+        f"Cannot load strategy from {strategy_path}. "
+        f"Expected a Shape-C 'Strategy' class or v1 'EthTrendBreakoutStrategy'. "
+        f"Found: {', '.join(names[:10])}"
+    )
 
 
 def main() -> None:
@@ -159,9 +192,29 @@ def main() -> None:
                                                    args.interval)
 
     broker = _build_broker(snap, cfg, args.interval, args.mode)
-    strat = _run_strategy(broker, snap,
-                          Path(args.strategy), Path(args.config), symbol)
-    result = run_loop(broker, snap, lambda: strat.on_bar())
+    params = cfg.get("params", None)
+    strat, shape = _run_strategy(broker, snap,
+                                 Path(args.strategy), Path(args.config),
+                                 symbol, params)
+
+    if shape == "shapec":
+        def shapec_callback():
+            ba = snap.arrays[symbol]
+            i = snap.i
+            bar = {
+                "open": float(ba.open[i]),
+                "high": float(ba.high[i]),
+                "low": float(ba.low[i]),
+                "close": float(ba.close[i]),
+                "volume": float(ba.volume[i]),
+                "timestamp": int(ba.ts[i]),
+                "symbol": symbol,
+            }
+            strat.on_bar(symbol, bar)
+            return {}
+        result = run_loop(broker, snap, shapec_callback)
+    else:
+        result = run_loop(broker, snap, lambda: strat.on_bar())
     equity = result.equity_curve
     exposure_hist = result.gross_exposure
 
