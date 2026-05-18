@@ -32,6 +32,7 @@ import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
+import { ResearchDispatchTool } from "./research-dispatch"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -170,6 +171,7 @@ export namespace ToolRegistry {
       const pricehistory = yield* PriceHistoryTool
       const portfoliobacktest = yield* PortfolioBacktestTool
       const discordread = yield* DiscordReadTool
+      const researchdispatch = yield* ResearchDispatchTool
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -271,6 +273,7 @@ export namespace ToolRegistry {
             pricehistory: Tool.init(pricehistory),
             portfoliobacktest: Tool.init(portfoliobacktest),
             discordread: Tool.init(discordread),
+            researchdispatch: Tool.init(researchdispatch),
           })
 
           return {
@@ -315,6 +318,7 @@ export namespace ToolRegistry {
               tool.pricehistory,
               tool.portfoliobacktest,
               tool.discordread,
+              tool.researchdispatch,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],
