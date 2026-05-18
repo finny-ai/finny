@@ -62,8 +62,8 @@ The researcher writes `data/news/` files to disk, but Research mode accesses fin
 
 Use webfetch to ground analysis in current real-world context — earnings, macro events, regulatory news — that the price/indicator tools alone won't surface.
 
-### Data Extraction (subagent)
-When you need historical data beyond the 500-bar cap of `finny_get_history` — or you want data written to the algo's data/ folder for later backtesting — spawn the `data_extractor` subagent via `task`:
+### Data Extraction (subagent — spawn when a date range is specified)
+When the user specifies a date range or you need historical data beyond the 500-bar cap of `finny_get_history`, you MUST spawn the `data_extractor` subagent via `task` BEFORE proceeding with analysis:
 
 ```
 task(subagent_type="data_extractor", description="Extract BTC/USD 1h data", prompt="Extract BTC/USD at 1h interval from 2024-01-01 to 2024-06-01 for algorithm btc-momentum-swing")
