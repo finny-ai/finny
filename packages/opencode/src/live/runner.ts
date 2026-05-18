@@ -8,6 +8,7 @@ import type { Algorithm } from "@/algorithm"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind } from "./brokers"
+import { emit } from "@/analytics/emit"
 import { Plan } from "@/plan"
 import { requireBrokerTier } from "@/plan/brokers"
 
@@ -467,6 +468,11 @@ if __name__ == "__main__":
         state.stoppedAt = Date.now()
         if (code !== 0) state.error = state.error ?? `Process exited with code ${code}`
         pushLog(state, code === 0 ? "info" : "error", `Process exited (code ${code})`)
+        emit({
+          eventType: "live.stopped",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, reason: code === 0 ? "clean_exit" : `exit_code_${code}` },
+        })
         notify(state)
       })
       .catch((err) => {
@@ -474,6 +480,11 @@ if __name__ == "__main__":
         state.stoppedAt = Date.now()
         state.error = String(err?.message ?? err)
         pushLog(state, "error", state.error)
+        emit({
+          eventType: "live.stopped",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, reason: "crash" },
+        })
         notify(state)
       })
   }
@@ -495,6 +506,11 @@ if __name__ == "__main__":
         if (typeof msg.cash === "number") state.cash = msg.cash
         if (typeof msg.equity === "number") state.equity = msg.equity
         pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval}`)
+        emit({
+          eventType: "live.started",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, symbol: msg.symbol, interval: msg.interval, cash: msg.cash },
+        })
         break
       }
       case "bar": {
@@ -512,12 +528,22 @@ if __name__ == "__main__":
         state.cash = msg.cash
         state.equity = msg.equity
         if (msg.positions) state.positions = { ...msg.positions }
+        emit({
+          eventType: "live.equity_snapshot",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, cash: msg.cash, equity: msg.equity, positions: msg.positions },
+        })
         break
       }
       case "order": {
         state.orders.push(msg as OrderEvent)
         if (state.orders.length > 200) state.orders.splice(0, state.orders.length - 200)
         pushLog(state, "info", `${msg.side} ${msg.qty} ${msg.symbol} @ ${msg.price} (${msg.status})`)
+        emit({
+          eventType: "live.order_fill",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, side: msg.side, qty: msg.qty, symbol: msg.symbol, price: msg.price, status: msg.status },
+        })
         break
       }
       case "log": {
@@ -531,6 +557,11 @@ if __name__ == "__main__":
       }
       case "stop": {
         pushLog(state, "info", `Stop: ${msg.reason ?? "unknown"}`)
+        emit({
+          eventType: "live.stopped",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, reason: msg.reason },
+        })
         break
       }
       default: {
