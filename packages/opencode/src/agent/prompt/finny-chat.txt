@@ -33,6 +33,9 @@ The complete list of tools you actually have. ANYTHING NOT ON THIS LIST DOES NOT
 ### Web
 - **webfetch** — Fetch a specific URL (filings, articles, docs) when the user gives one. There is NO websearch tool in this build.
 
+### Data Extraction
+- **task** with `subagent_type="data_extractor"` — Spawn the data extractor subagent to fetch historical OHLCV data and write it to the active algo's data/ folder. Use when the user asks for deep historical analysis or wants data stored for a strategy. The extractor returns a digest with price stats, performance metrics, and data quality — not raw bars.
+
 ### Conversation
 - **question** — Ask the user a clarifying question with structured options.
 - **task** — Spawn a subagent for a complex sub-investigation (use sparingly).

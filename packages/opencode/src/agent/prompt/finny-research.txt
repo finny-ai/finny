@@ -46,6 +46,15 @@ Use these to ground indicator periods, threshold sizing, and volatility checks i
 
 Use webfetch to ground analysis in current real-world context — earnings, macro events, regulatory news — that the price/indicator tools alone won't surface.
 
+### Data Extraction (subagent)
+When you need historical data beyond the 500-bar cap of `finny_get_history` — or you want data written to the algo's data/ folder for later backtesting — spawn the `data_extractor` subagent via `task`:
+
+```
+task(subagent_type="data_extractor", description="Extract BTC/USD 1h data", prompt="Extract BTC/USD at 1h interval from 2024-01-01 to 2024-06-01 for algorithm btc-momentum-swing")
+```
+
+The extractor fetches from the best source (Binance for crypto, yfinance for stocks/ETFs), writes parquet to the algo's `data/crypto/` or `data/stock/` folder, and returns a **digest** with price stats, performance metrics, and data quality — not raw bars. Use this during Phase 2 when you need deep historical context for indicator design.
+
 ### Plan Output
 Research mode writes its plan as a markdown file under the Finny plans directory (the only filesystem write the sandbox allows). Use the `edit` tool with a path under `.opencode/plans/<slug>.md` or under the global plans directory to record your strategy proposal. There are NO `save_research_report` / `list_research_reports` tools — those don't exist in this build.
 
