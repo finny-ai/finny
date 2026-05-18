@@ -8,6 +8,7 @@ import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSymbol } from "@/data/symbols"
 import { EngineV2 } from "./results"
+import { emit } from "@/analytics/emit"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -638,17 +639,37 @@ sys.exit(subprocess.call(cmd, cwd=ENGINE_V2_ROOT))
 
       if (backtestResult.code !== 0) {
         const stderr = backtestResult.stderr.toString().trim()
+        emit({
+          eventType: "backtest.failed",
+          algorithmId: algorithm.algorithmId,
+          payload: { error: stderr || "unknown error", kind: "internal", duration, interval, capital },
+        })
         return { ok: false, error: `Backtest failed: ${stderr || "unknown error"}`, kind: "internal" }
       }
 
       const stdout = backtestResult.stdout.toString()
       const results = await parseResults(stdout, tmpDir!)
       if (!results) {
+        emit({
+          eventType: "backtest.failed",
+          algorithmId: algorithm.algorithmId,
+          payload: { error: "results_unparseable", kind: "results_unparseable", duration, interval, capital },
+        })
         return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
 
+      emit({
+        eventType: "backtest.completed",
+        algorithmId: algorithm.algorithmId,
+        payload: { results, duration, interval, capital, code: algorithm.code },
+      })
       return { ok: true, results }
     } catch (e: any) {
+      emit({
+        eventType: "backtest.failed",
+        algorithmId: algorithm.algorithmId,
+        payload: { error: e?.message ?? "Unexpected error", kind: "internal", duration, interval, capital },
+      })
       return { ok: false, error: e?.message ?? "Unexpected error running backtest.", kind: "internal" }
     } finally {
       if (tmpDir) {

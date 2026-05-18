@@ -16,7 +16,6 @@ function row(over: Partial<Algorithm.Info>): Algorithm.Info {
     description: over.description,
     config: over.config,
     backtestCode: over.backtestCode,
-    localPath: over.localPath,
     time_created: over.time_created ?? 0,
     time_updated: over.time_updated ?? 0,
     ...over,
