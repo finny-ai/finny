@@ -87,7 +87,7 @@ export const ExtractDataTool = Tool.define(
 
         let algoName = params.algorithm_name
         if (!algoName) {
-          algoName = await getActiveAlgo()
+          algoName = await getActiveAlgo() ?? undefined
           if (!algoName) {
             return {
               title: "No active algorithm",
