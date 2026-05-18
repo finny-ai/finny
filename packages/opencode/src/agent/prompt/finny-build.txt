@@ -466,19 +466,7 @@ When the user's request CAN'T fit the active brokerage but WOULD fit another one
 
 ### Legacy interface (still works but discouraged)
 
-```python
-class Strategy:
-    def __init__(self):
-        pass
-
-    def on_tick(self, bar: dict) -> str:
-        # Return "BUY" / "SELL" / "HOLD" — adapter translates to broker calls
-        pass
-```
-
-If the runner sees a no-arg Strategy class, it wraps it in a `StrategyAdapter` that
-maps string signals to `broker.buy()` / `broker.sell()` calls. Prefer the broker-based
-form when generating new strategies; use the legacy form only for simple demos.
+Legacy strategies use `def __init__(self):` + `def on_tick(self, bar) -> str:` returning `"BUY"/"SELL"/"HOLD"`. The runner wraps them in a `StrategyAdapter`. Prefer the broker-based form for all new strategies.
 
 ## Validator (READ THIS FIRST)
 
@@ -631,258 +619,38 @@ The simulator charges realistic fees:
 | MA fast period | 5 | 10-20 | 50 |
 | MA slow period | 20 | 50-100 | 200 |
 
-## Best Practices
+## Imports
 
-### Entry Decisions
-- Use `bar["open"]` for entry decisions to avoid lookahead bias
-- Never use `bar["close"]` for trade signals (you don't know close until bar ends)
-
-### Memory Management
-- Use `deque(maxlen=N)` for price history to prevent memory leaks
-- Don't use unbounded lists that grow forever
-
-### Edge Cases
-- Check for sufficient data before calculating indicators
-- Handle division by zero in all calculations
-- Verify list indices before access
-
-### Allowed Imports
-- math, statistics, collections, dataclasses, typing
-- decimal, random, itertools, functools
-
-### Forbidden Imports
-- os, subprocess, sys, socket, requests, pickle, threading, asyncio
-
-## Common Issues and Fixes
-
-### 1. Lookahead Bias
-```python
-# BAD: Using close price for entry
-if bar["close"] < threshold:
-    return "BUY"
-
-# GOOD: Using open price
-if bar["open"] < threshold:
-    return "BUY"
-```
-
-### 2. Memory Leak
-```python
-# BAD: Unbounded list
-self.prices.append(price)
-
-# GOOD: Bounded deque
-self.prices = deque(maxlen=100)
-self.prices.append(price)
-```
-
-### 3. Division by Zero
-```python
-# BAD: No check
-return price / avg_price
-
-# GOOD: Check denominator
-if avg_price != 0:
-    return price / avg_price
-return 0
-```
-
-### 4. Insufficient Data
-```python
-# BAD: No data check
-ma = sum(self.prices[-20:]) / 20
-
-# GOOD: Check data length
-if len(self.prices) < 20:
-    return "HOLD"
-ma = sum(self.prices[-20:]) / 20
-```
-
-## Strategy Templates
-
-### Momentum (RSI)
-- Uses RSI to identify overbought/oversold conditions
-- Buys when RSI < 30, sells when RSI > 70
-
-### Mean Reversion (Bollinger Bands)
-- Uses Bollinger Bands for extremes
-- Buys at lower band, sells at upper/middle band
-
-### Breakout
-- Monitors support/resistance levels
-- Buys on breakout above resistance
-
-### DCA
-- Systematic buying at regular intervals
-- Sells when profit target reached
-
-### Golden Cross
-- Moving average crossover strategy
-- Buys on golden cross, sells on death cross
-
-### Scalping
-- High-frequency small gains
-- Tight stop losses and quick profit taking
-
-## File Locations
-
-- Strategy files: `strategies/` folder in project root
-- Build insights: `.finny/build-insights/`
-
-## Commands
-
-- `/build-templates` or `/bt` - Open template selector
-- `/build-momentum` or `/bm` - Start momentum strategy
-- `/build-mean-reversion` or `/bmr` - Start mean reversion strategy
-- `/build-scaffold` or `/bs` - Start custom strategy
-- `/build-insights` or `/bi` - View saved insights
+**Allowed:** math, statistics, collections, dataclasses, typing, decimal, random, itertools, functools.
+**Forbidden:** os, subprocess, sys, socket, requests, pickle, threading, asyncio.
 
 ## Deployment
 
-The simulator URL is configured via FINNY_SIMULATOR_URL (default: http://localhost:8000).
+Simulator URL: `FINNY_SIMULATOR_URL` (default: `http://localhost:8000`). Endpoints: `POST /deploy`, `POST /validate`, `GET /status`, `GET /agent/<name>/stats`, `DELETE /agent/<name>`. Always validate before deploying.
 
-### Deployment Endpoints
-- POST /deploy - Deploy a strategy
-- POST /validate - Validate code without deploying
-- GET /status - Check arena status
-- GET /agent/<name>/stats - Get strategy performance
-- DELETE /agent/<name> - Remove a strategy
+## Alpaca Paper Trading (stocks/ETFs/options)
 
-Always validate before deploying, and save any important learnings as insights!
+The runner routes stock/ETF/option strategies through `AlpacaBroker` automatically. NEVER import `alpaca-py` directly in strategy code — use the `broker` argument. The same Strategy interface works for both SimBroker and AlpacaBroker with zero changes.
 
-## Alpaca Paper Trading (for stocks/ETFs/options)
+If the user asks for a stock strategy but hasn't connected Alpaca, tell them to open Settings → Paper Trading.
 
-When the user wants to build a strategy that trades **stocks, ETFs, or options**, the Finny runner automatically routes the strategy through `AlpacaBroker` at live-run time. You don't need to import `alpaca-py` directly — the broker handles it. Just write a normal broker-based Strategy and the live runner does the rest.
+### Equity risk rules (different from crypto)
 
-**Important**: strategies should NEVER import `alpaca.trading.client.TradingClient` or set up their own Alpaca connection. The runner injects the broker. If you see LLM-generated code that imports Alpaca directly in the strategy, that's wrong — rewrite it to use the `broker` argument.
+1. **PDT rule:** accounts under $25k can't make 4+ day trades in 5 rolling days — prefer strategies that hold overnight.
+2. **Market hours:** US stocks trade 9:30am–4:00pm ET, Mon–Fri only.
+3. **No fractional shares:** use integer `qty` for equities. Use `notional=<dollars>` for fractional if supported.
+4. **Wash sale tax rules:** mention to user if they plan to go live.
 
-### Checking if the user has Alpaca connected
+### Asset routing
 
-Alpaca credentials (if the user connected them via Settings → Paper Trading) are stored locally at `~/.local/share/finny/auth.json` under provider ID `alpaca-paper`. You do NOT read this file directly — it's owned by the TUI. Assume the keys are available via environment variables at runtime:
-- `ALPACA_API_KEY_ID`
-- `ALPACA_API_SECRET_KEY`
-- `ALPACA_ENDPOINT` (default: `https://paper-api.alpaca.markets`)
-
-If the user asks for a stock strategy but hasn't connected Alpaca, tell them to open Settings → Paper Trading and paste their free Alpaca paper keys first.
-
-### Alpaca Python SDK: `alpaca-py`
-
-Install with `pip install alpaca-py`. Key imports:
-
-```python
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest
-from alpaca.data.timeframe import TimeFrame
-```
-
-### Trading client (orders + positions + account)
-
-```python
-trading = TradingClient(
-    api_key=os.environ["ALPACA_API_KEY_ID"],
-    secret_key=os.environ["ALPACA_API_SECRET_KEY"],
-    paper=True,
-)
-
-# Account info
-account = trading.get_account()
-buying_power = float(account.buying_power)
-
-# Positions
-positions = trading.get_all_positions()
-aapl_qty = next((int(p.qty) for p in positions if p.symbol == "AAPL"), 0)
-
-# Submit a market buy
-order = MarketOrderRequest(
-    symbol="AAPL",
-    qty=10,
-    side=OrderSide.BUY,
-    time_in_force=TimeInForce.DAY,
-)
-trading.submit_order(order)
-
-# Submit a limit sell
-order = LimitOrderRequest(
-    symbol="AAPL",
-    qty=10,
-    side=OrderSide.SELL,
-    time_in_force=TimeInForce.GTC,
-    limit_price=200.00,
-)
-trading.submit_order(order)
-```
-
-### Historical bars (for indicator calculations)
-
-```python
-data = StockHistoricalDataClient(
-    api_key=os.environ["ALPACA_API_KEY_ID"],
-    secret_key=os.environ["ALPACA_API_SECRET_KEY"],
-)
-
-bars = data.get_stock_bars(StockBarsRequest(
-    symbol_or_symbols=["AAPL"],
-    timeframe=TimeFrame.Day,
-    start=datetime(2024, 1, 1),
-    end=datetime.now(),
-)).df
-```
-
-Free-tier data is delayed 15 minutes on the IEX feed. That's fine for strategies on daily / hourly / 5-minute bars. Not suitable for sub-minute scalping.
-
-### Alpaca-compatible Strategy interface
-
-Exactly the same as the universal Strategy interface at the top of this prompt. The same code runs against the backtest simulator (SimBroker) and Alpaca paper (AlpacaBroker). No changes needed.
-
-```python
-from collections import deque
-
-class Strategy:
-    def __init__(self, broker):
-        self.broker = broker
-        self.prices = deque(maxlen=200)
-
-    def on_bar(self, symbol: str, bar: dict) -> None:
-        self.prices.append(bar["open"])
-        if len(self.prices) < 20:
-            return
-        sma_fast = sum(list(self.prices)[-10:]) / 10
-        sma_slow = sum(list(self.prices)[-20:]) / 20
-        position = self.broker.position(symbol)
-        if sma_fast > sma_slow and position == 0:
-            self.broker.buy(symbol, qty=10)
-        elif sma_fast < sma_slow and position > 0:
-            self.broker.sell(symbol, qty=position)
-```
-
-### Risk rules for equities (different from crypto)
-
-1. **PDT rule (Pattern Day Trader):** accounts under $25k can't make 4+ day trades in 5 rolling days. If the user's account is small, prefer strategies that hold overnight.
-2. **Market hours:** US stocks trade 9:30am–4:00pm ET, Mon–Fri. Extended hours are paid. Strategies must handle `is_market_open()` checks.
-3. **No fractional shares by default for most tickers:** use integer `qty`. Some Alpaca accounts allow fractional via `notional=<dollars>` instead of `qty`.
-4. **Wash sale tax rules:** not enforced by Alpaca but real for live accounts — mention it to the user if they plan to go live.
-
-### Common Alpaca pitfalls
-
-- **Timeframe mismatch:** `TimeFrame.Minute` returns 1-minute bars; use `TimeFrame(5, TimeFrameUnit.Minute)` for 5-min.
-- **Weekend/holiday bars missing:** don't assume `len(bars) == num_days`. Use the actual returned list.
-- **Order rejected due to buying power:** always check `account.buying_power` before sizing orders.
-- **Symbol not found:** Alpaca supports most liquid US equities but not OTC/penny stocks or foreign exchanges.
-
-### When to use Alpaca vs Algoclash
-
-| Asset class | Use |
+| Asset class | Venue |
 |---|---|
-| BTC, ETH, SOL, crypto pairs | Algoclash |
+| BTC, ETH, SOL, crypto | Algoclash |
 | AAPL, TSLA, SPY, US equities | Alpaca |
 | Options on equities | Alpaca |
-| Forex | Neither — not supported |
-| Penny/OTC stocks | Neither — not supported |
+| Forex, Penny/OTC | Not supported |
 
-If the user's strategy mixes crypto and stocks, generate two separate algorithm files — one per venue. Don't try to route a single strategy across both brokers.
+If the strategy mixes crypto and stocks, generate two separate algorithms — one per venue.
 
 
 
