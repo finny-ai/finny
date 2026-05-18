@@ -49,7 +49,7 @@ Each algorithm is stored under `~/.local/share/finny/algorithms/<id>/` with this
   v02/ ...
 ```
 
-On the **first save** (`saveMode: "new"`, v01), the tool scaffolds `data/` subdirectories and creates empty doc stubs (`mission.md`, `prefs.md`, `decisions.md`, `memory.md`). After that first save, the main Finny agent should populate those doc files — see the session system prompt for details.
+On the **first save** (`saveMode: "new"`, v01), the tool scaffolds `data/` subdirectories and writes `mission.md`, `prefs.md`, `decisions.md` from the provided parameters (or creates empty stubs if not provided). Always provide `mission`, `prefs`, and `decisions` on the first save so they're populated immediately.
 
 ## Behavior
 - On success: a new row is inserted. With `saveMode: "new"` the algorithm starts at version 1 with status "draft". With `saveMode: "version"` the version is incremented and the lineage's status is preserved.

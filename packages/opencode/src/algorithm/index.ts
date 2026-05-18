@@ -187,17 +187,27 @@ export namespace Algorithm {
     return algo?.code ?? null
   }
 
+  async function verifyOwnership(algorithmId: string): Promise<boolean> {
+    const result = await LocalAlgorithmStore.getById(algorithmId)
+    if (!result) return false
+    const userId = await DeviceProfile.userId()
+    return result.userId === userId
+  }
+
   export async function listVersions(algorithmId: string): Promise<Info[]> {
+    if (!(await verifyOwnership(algorithmId))) return []
     const results = await LocalAlgorithmStore.listVersions(algorithmId)
     return (results as Info[]) ?? []
   }
 
   export async function getVersion(algorithmId: string, version: number): Promise<Info | null> {
+    if (!(await verifyOwnership(algorithmId))) return null
     const result = await LocalAlgorithmStore.getByIdAndVersion(algorithmId, version)
     return (result as Info) ?? null
   }
 
   export async function remove(algorithmId: string): Promise<void> {
+    if (!(await verifyOwnership(algorithmId))) return
     await LocalAlgorithmStore.remove(algorithmId)
     log.info("algorithm removed (all versions)", { algorithmId })
 
@@ -209,6 +219,7 @@ export namespace Algorithm {
   }
 
   export async function updateConfig(algorithmId: string, config: string): Promise<Info | null> {
+    if (!(await verifyOwnership(algorithmId))) return null
     const result = await LocalAlgorithmStore.patchLatestConfig(algorithmId, config)
     if (!result) return null
     log.info("algorithm config patched", { algorithmId })

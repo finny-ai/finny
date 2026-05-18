@@ -13,6 +13,15 @@ export const track = mutation({
     appVersion: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await ctx.db.insert("analyticsEvents", args)
+    if (!args.userId || typeof args.userId !== "string" || args.userId.length > 128) {
+      return
+    }
+    if (!args.eventType || typeof args.eventType !== "string") {
+      return
+    }
+    await ctx.db.insert("analyticsEvents", {
+      ...args,
+      timestamp: Date.now(),
+    })
   },
 })

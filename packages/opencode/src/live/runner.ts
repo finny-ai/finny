@@ -468,6 +468,11 @@ if __name__ == "__main__":
         state.stoppedAt = Date.now()
         if (code !== 0) state.error = state.error ?? `Process exited with code ${code}`
         pushLog(state, code === 0 ? "info" : "error", `Process exited (code ${code})`)
+        emit({
+          eventType: "live.stopped",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, reason: code === 0 ? "clean_exit" : `exit_code_${code}` },
+        })
         notify(state)
       })
       .catch((err) => {
@@ -475,6 +480,11 @@ if __name__ == "__main__":
         state.stoppedAt = Date.now()
         state.error = String(err?.message ?? err)
         pushLog(state, "error", state.error)
+        emit({
+          eventType: "live.stopped",
+          algorithmId: state.algorithmId,
+          payload: { runId: state.id, reason: "crash" },
+        })
         notify(state)
       })
   }

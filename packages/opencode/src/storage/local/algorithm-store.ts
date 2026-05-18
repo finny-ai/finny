@@ -32,6 +32,7 @@ interface AlgorithmMeta {
   algorithmId: string
   userId: string
   name: string
+  language: string
   status: string
   brokerKind?: BrokerKind
   latestVersion: number
@@ -133,6 +134,10 @@ async function writeNameIndex(index: Record<string, string>): Promise<void> {
   await Filesystem.writeJson(NAME_INDEX, index)
 }
 
+function nameKey(userId: string, name: string): string {
+  return `${userId}:${name}`
+}
+
 async function rebuildNameIndex(): Promise<Record<string, string>> {
   const index: Record<string, string> = {}
   try {
@@ -140,7 +145,7 @@ async function rebuildNameIndex(): Promise<Record<string, string>> {
     for (const entry of entries) {
       if (entry.startsWith("_")) continue
       const meta = await readMeta(entry)
-      if (meta) index[meta.name] = meta.algorithmId
+      if (meta) index[nameKey(meta.userId, meta.name)] = meta.algorithmId
     }
   } catch {
     // empty dir or doesn't exist
@@ -184,7 +189,7 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
       userId: meta.userId,
       name: meta.name,
       code,
-      language: "python",
+      language: meta.language ?? "python",
       version,
       status: meta.status,
       description: undefined,
@@ -314,6 +319,7 @@ export namespace LocalAlgorithmStore {
       algorithmId: values.algorithmId,
       userId: values.userId,
       name: values.name,
+      language: values.language,
       status: values.status,
       brokerKind: values.brokerKind,
       latestVersion: nextVersion,
@@ -323,7 +329,7 @@ export namespace LocalAlgorithmStore {
     await writeMeta(meta)
 
     const nameIndex = await readNameIndex()
-    nameIndex[values.name] = values.algorithmId
+    nameIndex[nameKey(values.userId, values.name)] = values.algorithmId
     await writeNameIndex(nameIndex)
 
     log.info("algorithm version written locally", {
@@ -382,12 +388,13 @@ export namespace LocalAlgorithmStore {
   }
 
   export async function getByName(userId: string, name: string): Promise<AlgorithmRow | null> {
+    const key = nameKey(userId, name)
     let nameIndex = await readNameIndex()
-    let algorithmId = nameIndex[name]
+    let algorithmId = nameIndex[key]
 
     if (!algorithmId) {
       nameIndex = await rebuildNameIndex()
-      algorithmId = nameIndex[name]
+      algorithmId = nameIndex[key]
     }
     if (!algorithmId) return null
 
@@ -448,8 +455,9 @@ export namespace LocalAlgorithmStore {
 
     if (meta) {
       const nameIndex = await readNameIndex()
-      if (nameIndex[meta.name] === algorithmId) {
-        delete nameIndex[meta.name]
+      const key = nameKey(meta.userId, meta.name)
+      if (nameIndex[key] === algorithmId) {
+        delete nameIndex[key]
         await writeNameIndex(nameIndex)
       }
     }
