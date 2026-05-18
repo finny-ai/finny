@@ -818,7 +818,7 @@ class TestDigestStorageRoundtrip:
         on_disk = pd.read_parquet(result.parquet_path)
         assert result.digest["price"]["high"] == round(float(on_disk["high"].max()), 6)
         assert result.digest["price"]["low"] == round(float(on_disk["low"].min()), 6)
-        assert result.digest["price"]["open"] == round(float(on_disk["close"].iloc[0]), 6)
+        assert result.digest["price"]["open"] == round(float(on_disk["open"].iloc[0]), 6)
         assert result.digest["price"]["close"] == round(float(on_disk["close"].iloc[-1]), 6)
 
     def test_digest_total_return_matches_file(self, tmp_path):

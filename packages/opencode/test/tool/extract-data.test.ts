@@ -192,6 +192,7 @@ describe("agent list ordering", () => {
         expect(deIdx).toBeGreaterThan(-1)
         expect(deIdx).toBeLessThan(genIdx)
         expect(exIdx).toBeGreaterThan(deIdx)
+        expect(exIdx).toBeLessThan(genIdx)
       }),
     ),
   )

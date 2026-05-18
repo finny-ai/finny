@@ -31,9 +31,13 @@ _CRYPTO_BASES = {
 
 
 def _classify_asset(symbol: str) -> str:
-    base = symbol.split("/")[0].split("-")[0].upper()
+    s = symbol.strip().upper()
+    base = s.split("/")[0].split("-")[0]
     if base in _CRYPTO_BASES:
         return "crypto"
+    for cb in _CRYPTO_BASES:
+        if s.startswith(cb):
+            return "crypto"
     return "stock"
 
 
@@ -64,6 +68,7 @@ def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
     if df.empty:
         return {"symbol": symbol, "bars": 0, "status": "no_data"}
 
+    o = df["open"].to_numpy()
     c = df["close"].to_numpy()
     v = df["volume"].to_numpy()
     total_return = float((c[-1] / c[0]) - 1) if c[0] != 0 else 0.0
@@ -93,7 +98,7 @@ def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
         "bars": len(df),
         "period": {"start": first_ts, "end": last_ts},
         "price": {
-            "open": round(float(c[0]), 6),
+            "open": round(float(o[0]), 6),
             "close": round(float(c[-1]), 6),
             "high": round(float(df["high"].max()), 6),
             "low": round(float(df["low"].min()), 6),

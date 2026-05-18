@@ -10,7 +10,7 @@ see in the TUI at each step.
 
 ### 1. User sends a message that needs data
 
-```
+```text
 You: Build me a BTC mean reversion strategy using 1h bars from Jan to June 2024
 ```
 
@@ -18,7 +18,7 @@ You: Build me a BTC mean reversion strategy using 1h bars from Jan to June 2024
 
 In the session view, you see the task tool call appear inline:
 
-```
+```text
 │ ⟳ data_extractor — Extract BTC/USD 1h data
 │   ↳ finny_extract_data fetching BTC/USD...
 ```
@@ -30,7 +30,7 @@ line shows which tool the subagent is currently executing.
 
 During execution, the TUI shows progress:
 
-```
+```text
 │ ⟳ data_extractor — Extract BTC/USD 1h data
 │   ↳ finny_extract_data extracting BTC/USD 1h 2024-01-01→2024-06-01...
 ```
@@ -48,7 +48,7 @@ Behind the scenes:
 
 The inline task collapses to a summary:
 
-```
+```text
 └ data_extractor · 1 tool call · 23s
 ```
 
@@ -58,7 +58,7 @@ Click on it to navigate to the child session and see the full extraction log.
 
 The Build agent gets a structured summary (NOT raw bars):
 
-```
+```text
 ## Data Extraction: BTC/USD 1h
 **Period:** 2024-01-01 → 2024-06-01
 **Bars written:** 4,320
@@ -100,7 +100,7 @@ in the algo's data/ folder for the backtest engine to use.
 
 When you click into the data_extractor child session, the TUI footer shows:
 
-```
+```text
 ┌─ Subagent (1 of 1) ─────────────────────────────┐
 │ data_extractor · 1,250 tokens (8%) · $0.02       │
 │ [↑ Parent]                                        │
@@ -111,7 +111,7 @@ When you click into the data_extractor child session, the TUI footer shows:
 
 ## Where data lands on disk
 
-```
+```text
 ~/.local/share/finny/algos/
   btc-meanrev-1h/
     mission.md
@@ -138,17 +138,17 @@ When you click into the data_extractor child session, the TUI footer shows:
 From any agent mode, you can explicitly ask for data extraction:
 
 **Build mode:**
-```
+```text
 You: Extract ETH/USD 4h data from March to December 2024 for my eth-swing algo
 ```
 
 **Chat mode:**
-```
+```text
 You: Can you pull 1d SPY data for all of 2023 and tell me the stats?
 ```
 
 **Research mode:**
-```
+```text
 You: I'm researching a SOL momentum strategy. Get me 15m data for the last 6 months.
 ```
 
@@ -164,7 +164,7 @@ multi-symbol strategies, the parent agent spawns the subagent once and the
 subagent calls the tool sequentially for each symbol, returning a combined
 summary.
 
-```
+```text
 You: Build a pairs trading strategy for BTC and ETH using 1h data from 2024
 
 → data_extractor spawned
@@ -179,7 +179,7 @@ You: Build a pairs trading strategy for BTC and ETH using 1h data from 2024
 
 If extraction fails for a symbol, the digest reports it clearly:
 
-```
+```text
 ### Sources Tried
 - binance: failed (400 Client Error: Invalid symbol)
 - yfinance: failed (network timeout after 30s)

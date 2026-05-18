@@ -16,19 +16,19 @@ Prerequisites:
 **Mode:** Build (Tab to switch)
 
 **Send:**
-```
+```text
 Build me a BTC mean reversion strategy using 1h bars from Jan to March 2024
 ```
 
 **Observe in TUI:**
 1. Build agent recognizes data is needed and spawns `data_extractor`:
-   ```
+   ```text
    │ ⟳ data_extractor — Extract BTC/USD 1h data
    │   ↳ finny_extract_data fetching BTC/USD...
    ```
 2. Progress updates show source being tried (Binance first for crypto)
 3. Task collapses to summary after 10-60s:
-   ```
+   ```text
    └ data_extractor · 1 tool call · XXs
    ```
 4. Build agent receives the digest and continues with strategy design
@@ -44,15 +44,17 @@ ls -la ~/.local/share/finny/algos/$ALGO/data/crypto/
 
 ```bash
 # Inspect parquet content
+PQ=$(ls ~/.local/share/finny/algos/$ALGO/data/crypto/BTC-USD_1h_*.parquet 2>/dev/null | head -1)
+[ -z "$PQ" ] && echo "No parquet found" && exit 1
 python3 -c "
-import pandas as pd
-df = pd.read_parquet('$(echo ~/.local/share/finny/algos/$ALGO/data/crypto/BTC-USD_1h_*.parquet)')
+import pandas as pd, sys
+df = pd.read_parquet(sys.argv[1])
 print(f'Rows: {len(df)}')
 print(f'Columns: {list(df.columns)}')
 print(f'Date range: {df.timestamp.min()} → {df.timestamp.max()}')
 print(f'Close range: {df.close.min():.2f} – {df.close.max():.2f}')
 print(df.head(3))
-"
+" "$PQ"
 ```
 
 **Pass criteria:**
@@ -69,7 +71,7 @@ print(df.head(3))
 **Mode:** Research (Tab to switch)
 
 **Send:**
-```
+```text
 I'm researching a NVDA momentum strategy. Get me 1d data for all of 2024 and tell me the stats.
 ```
 
@@ -96,7 +98,7 @@ ls -la ~/.local/share/finny/algos/$ALGO/data/stock/
 **Mode:** Chat (Tab to switch)
 
 **Send:**
-```
+```text
 Can you pull 1h ETH data from June to December 2024 and tell me the stats?
 ```
 
@@ -123,7 +125,7 @@ ls -la ~/.local/share/finny/algos/$ALGO/data/crypto/
 **Mode:** Build
 
 **Send:**
-```
+```text
 Build a pairs trading strategy for BTC and ETH using 4h data from 2024
 ```
 
@@ -153,7 +155,7 @@ ls -la ~/.local/share/finny/algos/$ALGO/data/crypto/
 **Mode:** Chat
 
 **Send:**
-```
+```text
 Pull 1h data for FAKECOIN/USD from 2024
 ```
 
@@ -173,14 +175,14 @@ Pull 1h data for FAKECOIN/USD from 2024
 After any successful extraction:
 
 1. Click on the collapsed task summary:
-   ```
+   ```text
    └ data_extractor · 1 tool call · 23s
    ```
 2. TUI should navigate to the child session
 
 **Verify in child session:**
 - [ ] Footer shows subagent info:
-  ```
+  ```text
   ┌─ Subagent (1 of 1) ────────────────┐
   │ data_extractor · X tokens · $X.XX   │
   │ [↑ Parent]                          │
@@ -198,7 +200,7 @@ First, ensure no algo is active (or pass an explicit name).
 **Mode:** Chat
 
 **Send:**
-```
+```text
 Pull BTC 1h data from January 2024
 ```
 
@@ -214,7 +216,7 @@ Pull BTC 1h data from January 2024
 **Mode:** Chat
 
 **Send:**
-```
+```text
 Extract SOL/USD 15m data from 2024-03-01 to 2024-03-15 and show me the quality report
 ```
 

@@ -23,10 +23,12 @@ const parameters = z.object({
   start: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD")
+    .refine((s) => !isNaN(Date.parse(s)), "Must be a valid date")
     .describe("Start date (inclusive) in YYYY-MM-DD format."),
   end: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD")
+    .refine((s) => !isNaN(Date.parse(s)), "Must be a valid date")
     .describe("End date (exclusive) in YYYY-MM-DD format."),
   algorithm_name: z
     .string()
@@ -74,6 +76,14 @@ export const ExtractDataTool = Tool.define(
           always: ["*"],
           metadata: { symbol: params.symbol, interval: params.interval },
         })
+
+        if (params.start >= params.end) {
+          return {
+            title: "Invalid date range",
+            output: `start (${params.start}) must be before end (${params.end}).`,
+            metadata: { error: "invalid_date_range" },
+          }
+        }
 
         const resolved = resolveSymbol(params.symbol)
         if (!resolved) {
@@ -129,7 +139,6 @@ export const ExtractDataTool = Tool.define(
               { spec: "yfinance", importCheck: "yfinance" },
               { spec: "requests", importCheck: "requests" },
               { spec: "pandas", importCheck: "pandas" },
-              { spec: "pyarrow", importCheck: "pyarrow" },
             ])
             pythonCmd = env.python
           } catch (e: any) {

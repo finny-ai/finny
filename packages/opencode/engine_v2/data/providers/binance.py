@@ -33,6 +33,8 @@ def _to_binance_symbol(symbol: str) -> str:
         if quote in _QUOTE_STRIP:
             return f"{base}USDT"
         return f"{base}{quote}"
+    if s.endswith(("USDT", "USDC", "BUSD")):
+        return s
     return f"{s}USDT"
 
 
