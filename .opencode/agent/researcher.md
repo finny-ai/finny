@@ -75,6 +75,14 @@ Use `websearch` to run 3-4 targeted searches. Pick the best angles:
 **Do NOT run more than 4 web searches.** If one fails (429, timeout), skip
 it and move on.
 
+**If `websearch` is unavailable** (returns a permission error or tool-not-found),
+fall back to `webfetch` on known news sites. Try URLs like:
+- `https://www.reuters.com/search/news?query=<topic>`
+- `https://finance.yahoo.com/quote/<TICKER>/news`
+- `https://www.google.com/search?q=<topic>&tbm=nws`
+Do not get stuck — if you can't search, work with Discord data + any URLs
+you can construct.
+
 For the 3-5 most promising URLs from search results, use `webfetch` to get
 the full article text. Skip URLs that look like duplicates or low-quality.
 

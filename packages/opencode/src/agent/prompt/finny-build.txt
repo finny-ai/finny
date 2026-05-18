@@ -105,7 +105,13 @@ This captures the trader's prior *before* the data arrives — it's the human ed
 
 #### Phase 2: When Research Completes (WAIT FOR THIS)
 
-**You MUST wait for ALL dispatched research tasks to complete before proceeding to Phase 3.** Do not build a strategy based on partial results. When the background task result(s) inject back:
+**You MUST wait for ALL dispatched research tasks to complete before proceeding to Phase 3.** Do not build a strategy based on partial results.
+
+**How to know tasks are done:** Background tasks inject their results into this conversation automatically — you will see a `[background task completed: ...]` message with the `<task_result>` block. If you dispatched multiple research tasks, wait for ALL of them to inject before moving on. If you're unsure whether a task is still running, call `task_status` or `list_tasks` to check. Do NOT proceed to Phase 3 while any task shows status "running".
+
+**Handling the question/inject race:** The `question` tool in Phase 1 is synchronous — the user's answer arrives as a normal message. Research results inject separately. If research completes while you're waiting for the user's instinct answer, that's fine — process the instinct answer first, then read the injected results, then proceed to Phase 3.
+
+When the background task result(s) inject back:
 1. Read the research summary from the injected result.
 2. Read the algorithm's `data/news/headlines/` files via the progressive disclosure pattern (headlines first, body files only as needed).
 3. Compare findings against the human instinct captured in Phase 1.

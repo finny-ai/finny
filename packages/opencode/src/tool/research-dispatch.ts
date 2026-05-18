@@ -100,17 +100,13 @@ export const ResearchDispatchTool = Tool.define(
 
         return {
           title: `Research dispatch: ${params.topic.slice(0, 50)}`,
-          output: JSON.stringify(
-            {
-              prompt,
-              subagent: "researcher",
-              algorithm: params.algorithm,
-              dataDir: dir,
-            },
-            null,
-            2,
-          ),
-          metadata: { algorithm: params.algorithm, topic: params.topic },
+          output: prompt,
+          metadata: {
+            algorithm: params.algorithm,
+            topic: params.topic,
+            subagent: "researcher",
+            dataDir: dir,
+          },
         }
       }),
   }),
