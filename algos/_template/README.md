@@ -93,6 +93,39 @@ The `data/` subtree is owned by sub-agents, not the main Finny agent.
   you need the full article. This keeps context usage proportional to
   actual interest.
 
+## Strategy API & runner shapes
+
+Three strategy shapes coexist in the codebase. The backtest runner
+(`engine_v2/cli.py`) auto-detects which shape a strategy uses and wires
+it to the appropriate adapter. **Read this table before writing a new
+strategy.**
+
+| Shape | Constructor | Method | Order API | Location | Usage |
+|-------|-------------|--------|-----------|----------|-------|
+| **A** — v1 legacy | `__init__(config_path, broker, market)` | event-driven | `broker.submit_order(Order(...))`, `market.candles(...)` | `packages/opencode/strategy.py` | Live Alpaca/Algoclash |
+| **B** — engine_v2 native | `__init__(broker, market, config)` | `on_bar() -> dict` | `broker.submit_order(V2Order(...))` | `engine_v2/runtime/strategy_api.py` | Future |
+| **C** — backtest canonical | `__init__(broker, params=None)` | `on_bar(symbol, bar)` | `broker.buy/sell/position/cash/equity/price` | Template, `strategies/*/strategy.py` | **Every new algo** |
+
+### Shape-C bar dict
+
+```python
+bar = {
+    "open":      float,   # decision-time-safe
+    "high":      float,   # end-of-bar (lookahead if used for entry)
+    "low":       float,   # end-of-bar
+    "close":     float,   # end-of-bar
+    "volume":    float,
+    "timestamp": int,     # unix nanoseconds
+    "symbol":    str,
+}
+```
+
+### Loader discovery order
+
+1. Module has a `Strategy` class whose `__init__` first param is `broker` → **Shape C**
+2. Module has `EthTrendBreakoutStrategy` → **Shape A** (v1 compat adapter)
+3. Neither found → error with helpful message
+
 ## Where algos live
 
 User-owned algorithms live under
