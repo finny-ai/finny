@@ -110,10 +110,17 @@ describe("researcher agent definition", () => {
       "write",
       "edit",
       "read",
-      "bash",
       "external_directory",
     ]) {
       expect(content).toContain(`${perm}: allow`)
+    }
+  })
+
+  test("does not grant bash, glob, or grep permissions", () => {
+    const lines = content.split("\n")
+    const permLines = lines.filter(l => l.match(/^\s+\w+: allow/))
+    for (const perm of ["bash", "glob", "grep"]) {
+      expect(permLines.some(l => l.trim().startsWith(`${perm}:`))).toBe(false)
     }
   })
 

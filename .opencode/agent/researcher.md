@@ -11,9 +11,6 @@ permission:
   write: allow
   edit: allow
   read: allow
-  bash: allow
-  glob: allow
-  grep: allow
   external_directory: allow
 ---
 
@@ -158,7 +155,7 @@ Use kebab-case derived from the headline. Keep slugs under 60 characters.
 
 After writing all files, respond with a structured summary:
 
-```
+```markdown
 ## Research Complete: <topic>
 
 **Sources checked:** <N web + M Discord posts>

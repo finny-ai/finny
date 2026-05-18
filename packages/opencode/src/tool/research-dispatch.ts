@@ -43,13 +43,6 @@ export const ResearchDispatchTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
-        await ctx.ask({
-          permission: "finny_research_dispatch",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: { topic: params.topic, algorithm: params.algorithm },
-        })
-
         const root = algosRoot()
         let dir: string
         try {
@@ -64,13 +57,27 @@ export const ResearchDispatchTool = Tool.define(
 
         try {
           await fs.stat(dir)
-        } catch {
+        } catch (err: any) {
+          if (err?.code === "ENOENT") {
+            return {
+              title: "Algorithm not found",
+              output: `Algorithm "${params.algorithm}" not found at ${dir}. Create the algorithm first.`,
+              metadata: { error: "not_found" },
+            }
+          }
           return {
-            title: "Algorithm not found",
-            output: `Algorithm "${params.algorithm}" not found at ${dir}. Create the algorithm first.`,
-            metadata: { error: "not_found" },
+            title: "Filesystem error",
+            output: `Could not access algorithm directory at ${dir}: ${err?.message ?? err}`,
+            metadata: { error: "fs_error" },
           }
         }
+
+        await ctx.ask({
+          permission: "finny_research_dispatch",
+          patterns: ["*"],
+          always: ["*"],
+          metadata: { topic: params.topic, algorithm: params.algorithm },
+        })
 
         const headlinesDir = path.join(dir, DATA_NEWS_HEADLINES_DIR)
         const bodyDir = path.join(dir, DATA_NEWS_BODY_DIR)
