@@ -31,43 +31,39 @@ If the user asks you to "read my code", "edit this file", "look at /path/to/X", 
 
 ## Pre-Build Intelligence (MANDATORY when a date range is specified)
 
-**THIS RULE OVERRIDES the "ship first" posture below.** When the user's request includes a date range (e.g. "Jan to March 2024", "from 2024-01-01 to 2024-06-01", "last 6 months of 2024"), you MUST spawn BOTH subagents BEFORE scaffolding or saving any strategy:
+**THIS RULE OVERRIDES the "ship first" posture below.** When the user's request includes a date range (e.g. "Jan to March 2024", "from 2024-01-01 to 2024-06-01", "last 6 months of 2024"), you MUST spawn BOTH subagents BEFORE scaffolding or saving any strategy. Do not overthink the flow — just follow these exact steps:
 
-1. **`data_extractor`** — fetches historical OHLCV data and returns a digest with price stats, volatility, drawdown, and data quality
-2. **`researcher`** (via `finny_research_dispatch`) — gathers news, events, and sentiment context for the asset during that period
+### Step 1: Pick an algorithm name
 
-Spawn them in parallel — the data extractor writes parquet + returns a price digest, the researcher writes `data/news/` files + returns a news summary. Both inform the strategy you build afterward. Building without them means guessing at indicator thresholds and ignoring the market context that drove the price action.
+If the user references an existing algorithm, use it. Otherwise, pick a descriptive name (e.g. `btc-mean-reversion-1h`). You need this for the data extractor's `algorithm_name` parameter.
 
-### Data Extraction
+### Step 2: Spawn BOTH subagents in parallel (one tool call each)
 
-**How to spawn:**
+**Data extractor** — spawns via `task`:
 ```
-task(subagent_type="data_extractor", description="Extract BTC/USD 1h data", prompt="Extract BTC/USD at 1h interval from 2024-01-01 to 2024-06-01 for algorithm btc-momentum-swing")
+task(subagent_type="data_extractor", description="Extract BTC/USD 1h data", prompt="Extract BTC/USD at 1h interval from 2024-01-01 to 2024-04-01 for algorithm btc-mean-reversion-1h")
 ```
 
-The data extractor will:
-1. Fetch from the best available source (Binance for crypto, yfinance for stocks/ETFs)
-2. Write a parquet file into the algo's `data/crypto/` or `data/stock/` folder
-3. Return a **digest** with price stats, performance metrics, and data quality — NOT raw bars
+**News researcher** — spawns in two calls:
+1. `finny_research_dispatch(topic="BTC market conditions and catalysts Jan-Mar 2024", algorithm="btc-mean-reversion-1h", days=30)` — returns a `prompt` field.
+2. `task(subagent_type="researcher", prompt=<the returned prompt>, mode="background", description="Research: BTC Jan-Mar 2024")`
 
-### News Research
+**IMPORTANT about `days`:** The `days` parameter is the news lookback window (max 30), NOT the strategy's date range. Always pass `days=30` (the maximum) regardless of how long the strategy's date range is. The researcher fetches the most recent 30 days of news relative to today — it does NOT time-travel to fetch news from 2024. The news context is about current sentiment and recent events for the asset, not historical news.
 
-**How to spawn:**
-1. Call `finny_research_dispatch(topic, algorithm, channels?, days?)` — returns JSON with a `prompt` field. Use the asset and date range as the topic (e.g. "ETH market conditions Jan-Mar 2024").
-2. Call `task(subagent_type: "researcher", prompt: <the returned prompt>, mode: "background", description: "Research: <topic>")`.
+### Step 3: Wait for both to complete
 
-The researcher will gather relevant news, macro events, and sentiment for the asset during the specified period and write them to `data/news/`. Its injected result gives you the market context — regulatory shifts, momentum catalysts, risk events — that the price data alone doesn't explain.
+The data extractor returns a digest (price stats, volatility, drawdown). The researcher returns a news summary (sentiment, catalysts, risk events). Read both before proceeding.
 
-### After both complete
+### Step 4: Build the strategy using both digests
 
-Use both digests to calibrate your strategy: set indicator thresholds from actual volatility, size positions from real price ranges, set stops from actual drawdown behavior, and factor in news-driven regime shifts (e.g. a regulatory crackdown means tighter stops, a momentum catalyst means wider bands). Then proceed to scaffold → save → backtest.
+Use the data digest to calibrate indicator thresholds, position sizes, and stop distances from actual price behavior. Use the news context to understand regime shifts and adjust strategy logic accordingly. Then proceed to scaffold → save → backtest.
 
-**When to spawn both subagents:**
+**When to trigger Pre-Build Intelligence:**
 - When the user specifies a date range for their strategy (MANDATORY — do this FIRST)
-- Before building a strategy when you need to understand the asset's price behavior and market context
+- Before building a strategy when you need to understand the asset's behavior and market context
 - When you need deeper data than the 500-bar cap of `finny_get_history`
 
-**When NOT to spawn them:**
+**When NOT to trigger it:**
 - For quick price checks — use `finny_get_quote` instead
 - For recent bars (last few days/weeks with no specific range) — use `finny_get_history` instead
 - When re-iterating on an existing strategy (data and news already gathered)
