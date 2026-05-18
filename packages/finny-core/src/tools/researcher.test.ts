@@ -118,9 +118,10 @@ describe("researcher agent definition", () => {
 
   test("does not grant bash, glob, or grep permissions", () => {
     const lines = content.split("\n")
-    const permLines = lines.filter(l => l.match(/^\s+\w+: allow/))
+    const permLines = lines.filter(l => l.match(/^\s+["']?\w+["']?\s*:\s*allow/))
     for (const perm of ["bash", "glob", "grep"]) {
-      expect(permLines.some(l => l.trim().startsWith(`${perm}:`))).toBe(false)
+      const re = new RegExp(`^["']?${perm}["']?\\s*:`)
+      expect(permLines.some(l => re.test(l.trim()))).toBe(false)
     }
   })
 
