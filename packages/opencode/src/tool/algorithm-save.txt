@@ -1,4 +1,4 @@
-Use this tool to save a trading algorithm to Finny's cloud storage. Every saved algorithm is validated first — the save is blocked unless the strategy passes Finny's strict validator.
+Use this tool to save a trading algorithm to Finny's local storage. Every saved algorithm is validated first — the save is blocked unless the strategy passes Finny's strict validator.
 
 ## When to Use
 - After generating a new trading algorithm (strategy.py, config.json, backtest.py)
@@ -13,19 +13,43 @@ Use this tool to save a trading algorithm to Finny's cloud storage. Every saved 
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. The validator cross-references every config key against the strategy code, so do not declare keys you do not use.
 - **backtestCode**: The backtest.py source code
-- **localPath**: The local filesystem path where the algorithm files were written
+- **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
+- **mission**: (new algorithms only) WHO: hypothesis, scope, exit conditions. Written to `mission.md`.
+- **prefs**: (new algorithms only) HOW: sizing, risk, constraints, interval, asset. Written to `prefs.md`.
+- **decisions**: (new algorithms only) Design decisions log. Written to `decisions.md`.
 
 ## Choosing saveMode
 
 You MUST decide explicitly. Versions cannot be split apart later — getting this wrong has frustrated real users.
 
-- Use `saveMode: "version"` ONLY for parameter tweaks, bug fixes, or small refinements to the SAME strategy logic. The new save will be saved as v(N+1) of the existing algorithm, and v1..vN remain available in the version history.
-- Use `saveMode: "new"` (with a derived name like `<base>-bear`, `<base>-tight`, or `<base>-2`) when the user describes a materially different strategy direction — different signals, different exit logic, different asset class. The new save creates a sibling algorithm that lives alongside the original.
-- **When in doubt, prefer `"new"`.** A user who wanted a version bump can always merge later by deleting the sibling; a user who wanted a sibling and got a version bump has lost their original.
+- Use `saveMode: "version"` when the user is **iterating on an existing algorithm** — improving it, adding features, fixing bugs, tweaking parameters, or refining the logic. Key signals: "improve X", "add stop-loss to X", "update X", "fix X", "make X better", or any prompt that references a specific existing algorithm by name. The new save will be saved as v(N+1) of the existing algorithm, and v1..vN remain available in the version history.
+- Use `saveMode: "new"` when the user wants a **separate, independent algorithm** — a different strategy concept, a different asset, or when they explicitly say "build a new", "create another", or "make a separate". The new save creates a sibling algorithm that lives alongside the original.
+- **When in doubt, prefer `"version"` if the user references an existing algorithm.** Users expect "improve my algo" to update the existing one, not create a duplicate with a slightly different name. Only use `"new"` when it's clearly a distinct strategy.
 
 If you pass `saveMode: "new"` and the name is already taken, the tool returns an error with a suggested alternative name — do NOT retry with the same name.
 
 If you pass `saveMode: "version"` and no algorithm with that name exists yet, the tool returns an error — switch to `saveMode: "new"`.
+
+## Directory Layout (on disk)
+Each algorithm is stored under `~/.local/share/finny/algorithms/<id>/` with this structure:
+```
+<algorithmId>/
+  meta.json               ← internal metadata (do not reference)
+  mission.md              ← WHO: hypothesis, scope, exit conditions
+  prefs.md                ← HOW: sizing, risk, constraints
+  decisions.md            ← HUMAN log: material design decisions
+  memory.md               ← AGENT log: written on /compact only
+  CURRENT                 ← pointer to active version (e.g. "v01")
+  data/                   ← OWNED BY SUB-AGENTS (read-only for you)
+  v01/
+    strategy.py           ← the algorithm code
+    config.json           ← config parameters
+    backtest.py           ← custom backtest runner (if any)
+    reasoning.md          ← why this version exists
+  v02/ ...
+```
+
+On the **first save** (`saveMode: "new"`, v01), the tool scaffolds `data/` subdirectories and creates empty doc stubs (`mission.md`, `prefs.md`, `decisions.md`, `memory.md`). After that first save, the main Finny agent should populate those doc files — see the session system prompt for details.
 
 ## Behavior
 - On success: a new row is inserted. With `saveMode: "new"` the algorithm starts at version 1 with status "draft". With `saveMode: "version"` the version is incremented and the lineage's status is preserved.

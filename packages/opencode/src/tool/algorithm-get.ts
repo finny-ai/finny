@@ -48,7 +48,6 @@ export const AlgorithmGetTool = Tool.define(
               code: algo.code,
               config: algo.config ?? null,
               backtestCode: algo.backtestCode ?? null,
-              localPath: algo.localPath ?? null,
               created: new Date(algo.time_created).toISOString(),
               updated: new Date(algo.time_updated).toISOString(),
             },

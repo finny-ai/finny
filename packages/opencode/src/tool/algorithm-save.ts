@@ -130,7 +130,10 @@ const parameters = z.object({
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
   backtestCode: z.string().optional().describe("The backtest.py source code"),
-  localPath: z.string().optional().describe("Local filesystem path where files were written"),
+  reasoning: z.string().optional().describe("Markdown explaining why this version exists — what changed and why. Written to reasoning.md inside the version directory."),
+  mission: z.string().optional().describe("For new algorithms only. WHO: the hypothesis, scope, and exit conditions. Written to mission.md."),
+  prefs: z.string().optional().describe("For new algorithms only. HOW: sizing, risk constraints, interval, target asset. Written to prefs.md."),
+  decisions: z.string().optional().describe("For new algorithms only. Design decisions log: why this approach was chosen. Written to decisions.md."),
 })
 
 // Payload the async body returns: the tool's ExecuteResult-shaped value, plus (optionally)
@@ -305,7 +308,10 @@ export const AlgorithmSaveTool = Tool.define(
                 description: params.description,
                 config: params.config,
                 backtestCode: params.backtestCode,
-                localPath: params.localPath,
+                reasoning: params.reasoning,
+                mission: params.mission,
+                prefs: params.prefs,
+                decisions: params.decisions,
                 brokerKind: activeBrokerKind ?? undefined,
                 saveMode: params.saveMode,
               })

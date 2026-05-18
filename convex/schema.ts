@@ -1,8 +1,6 @@
 import { defineSchema, defineTable } from "convex/server"
 import { v } from "convex/values"
 
-const brokerKind = v.union(v.literal("alpaca"), v.literal("binance"), v.literal("ibkr"))
-
 export default defineSchema({
   projects: defineTable({
     id: v.string(),
@@ -135,75 +133,6 @@ export default defineSchema({
     .index("by_session", ["sessionId"])
     .index("by_project", ["projectId"]),
 
-  algoclashUsers: defineTable({
-    finnyUserId: v.string(),
-    username: v.string(),
-    elo: v.number(),
-    rank: v.optional(v.number()),
-    wins: v.number(),
-    losses: v.number(),
-    time_created: v.number(),
-    time_updated: v.number(),
-  })
-    .index("by_finnyUserId", ["finnyUserId"])
-    .index("by_elo", ["elo"]),
-
-  algoclashAlgorithms: defineTable({
-    algorithmId: v.string(),
-    userId: v.string(),
-    name: v.string(),
-    code: v.string(),
-    language: v.string(),
-    version: v.number(),
-    status: v.string(),
-    description: v.optional(v.string()),
-    config: v.optional(v.string()),
-    backtestCode: v.optional(v.string()),
-    localPath: v.optional(v.string()),
-    brokerKind: v.optional(brokerKind),
-    time_created: v.number(),
-    time_updated: v.number(),
-  })
-    // One row PER VERSION. `algorithmId` is the lineage id (shared across
-    // versions), `version` is the monotonically-increasing integer within
-    // that lineage. `getByName`/`listByUser` collapse to the latest version
-    // per algorithmId; `listVersions` walks the whole lineage.
-    .index("by_algorithmId", ["algorithmId"])
-    .index("by_algorithmId_version", ["algorithmId", "version"])
-    .index("by_userId", ["userId"])
-    .index("by_userId_name", ["userId", "name"]),
-
-  algoclashTrades: defineTable({
-    tradeId: v.string(),
-    algorithmId: v.string(),
-    symbol: v.string(),
-    side: v.string(),
-    quantity: v.number(),
-    price: v.number(),
-    pnl: v.optional(v.number()),
-    time_created: v.number(),
-  })
-    .index("by_tradeId", ["tradeId"])
-    .index("by_algorithmId", ["algorithmId"]),
-
-  algoclashPortfolios: defineTable({
-    userId: v.string(),
-    algorithmId: v.string(),
-    holdings: v.any(),
-    cash: v.number(),
-    totalValue: v.number(),
-    time_updated: v.number(),
-  })
-    .index("by_userId", ["userId"])
-    .index("by_algorithmId", ["algorithmId"]),
-
-  algoclashLeaderboard: defineTable({
-    period: v.string(),
-    date: v.string(),
-    entries: v.array(v.any()),
-    time_updated: v.number(),
-  }).index("by_period_date", ["period", "date"]),
-
   devices: defineTable({
     userId: v.string(),
     hostname: v.string(),
@@ -226,4 +155,18 @@ export default defineSchema({
     time_created: v.number(),
     time_updated: v.number(),
   }).index("by_email", ["email"]),
+
+  analyticsEvents: defineTable({
+    userId: v.string(),
+    deviceId: v.optional(v.string()),
+    eventType: v.string(),
+    algorithmId: v.optional(v.string()),
+    payload: v.any(),
+    timestamp: v.number(),
+    source: v.optional(v.string()),
+    appVersion: v.optional(v.string()),
+  })
+    .index("by_userId_timestamp", ["userId", "timestamp"])
+    .index("by_userId_eventType", ["userId", "eventType"])
+    .index("by_algorithmId", ["algorithmId"]),
 })
