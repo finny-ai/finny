@@ -4,6 +4,7 @@ import { discord } from "./tools/discord"
 import { market } from "./tools/market"
 import { orders } from "./tools/orders"
 import { portfolio } from "./tools/portfolio"
+
 import { write } from "./policy"
 
 export function register() {
