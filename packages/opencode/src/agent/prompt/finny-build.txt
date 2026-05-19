@@ -519,6 +519,8 @@ Failed attempts do NOT bump the version. v1 stays at v1 until a save passes.
   BEFORE a BUY/SELL decision whose condition compares a bar-derived local against
   an indicator over `self.<state>`. The indicator then includes the very tick
   you're acting on — subtle lookahead. Make the decision first, then append.
+  **Safe pattern:** an early-return guard (`if len(self.X) < N: self.X.append(price); return`)
+  is OK — the validator knows the trade code is unreachable from that path.
 - `EQUITY_NEVER_UPDATED`: `self.equity = 10000` in `__init__` used in sizing
   arithmetic inside `on_tick`, but never reassigned. The risk model is frozen —
   PnL must flow back into equity. On every SELL: `self.equity += realized_pnl`.

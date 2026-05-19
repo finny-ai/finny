@@ -497,6 +497,33 @@ def _local_names_tainted_by_self(on_tick, self_attrs_to_track):
     return tainted
 
 
+def _appends_in_early_return_guards(entry_method, tracked_attrs):
+    """Return line numbers of appends inside top-level if-blocks that return,
+    making the append unreachable for code after the if-block."""
+    guarded = set()
+    for stmt in entry_method.body:
+        if not isinstance(stmt, ast.If):
+            continue
+        for branch in (stmt.body, stmt.orelse):
+            if not branch:
+                continue
+            if not any(isinstance(s, ast.Return) for s in branch):
+                continue
+            for s in branch:
+                for n in ast.walk(s):
+                    if (
+                        isinstance(n, ast.Call)
+                        and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in GROWTH_METHODS
+                        and isinstance(n.func.value, ast.Attribute)
+                        and isinstance(n.func.value.value, ast.Name)
+                        and n.func.value.value.id == "self"
+                        and n.func.value.attr in tracked_attrs
+                    ):
+                        guarded.add(n.lineno)
+    return guarded
+
+
 def check_same_bar_execution_bias(entry_method):
     """self.X.append(bar-derived) precedes a trade action (return-string OR broker call)
     gated by a condition that compares a bar-tainted local against a self.X-tainted expression."""
@@ -524,6 +551,16 @@ def check_same_bar_execution_bias(entry_method):
             if any(arg_is_bar_derived(arg) for arg in node.args):
                 append_events.append((node.lineno, attr))
 
+    if not append_events:
+        return diagnostics
+
+    # Exclude appends inside top-level if-return guards (early returns).
+    # These appends can't flow to trade actions after the guard block.
+    guarded_lines = _appends_in_early_return_guards(
+        entry_method, {attr for _, attr in append_events}
+    )
+    append_events = [(ln, attr) for ln, attr in append_events
+                     if ln not in guarded_lines]
     if not append_events:
         return diagnostics
 
