@@ -326,38 +326,42 @@ def main():
 
     eq_curve = broker.equity_curve
     ending = eq_curve[-1] if eq_curve else args.capital
-    # Equity should never go below 0 for a long-only sim — clamp defensively
-    # so a stale-price or position-accounting glitch can't poison downstream
-    # drawdown math with impossible negative values.
+    # Equity floor at 0 — long-only sim should never go negative; defensive
+    # clamp prevents pricing glitches from poisoning downstream math.
     eq_curve = [max(0.0, e) for e in eq_curve]
     ending = max(0.0, ending)
-    total_return = (ending / args.capital - 1) * 100 if args.capital > 0 else 0
 
-    # Max drawdown — clamp to [0, 100]. A drawdown >100% is mathematically
-    # impossible for a long-only book; if we see it, the equity curve has
-    # an artifact and the raw number would mislead.
+    # ── UNITS CONTRACT ────────────────────────────────────────────────
+    # The TS layer (formatPercent, backtest-run.ts, dialog-backtest-results.tsx)
+    # multiplies these by 100 for display. So we MUST emit decimal fractions:
+    #   total_return    : 0.12 means +12%
+    #   max_drawdown    : 0.08 means 8% drawdown
+    #   ann_vol         : 0.42 means 42% annualized volatility
+    #   win_rate        : 0.55 means 55% win rate
+    # profit_factor and ann_sharpe are raw ratios, no scaling.
+    total_return = (ending / args.capital - 1) if args.capital > 0 else 0.0
+
+    # Max drawdown as a fraction in [0, 1]
     peak = args.capital
-    max_dd = 0
+    max_dd = 0.0
     for eq in eq_curve:
         if eq > peak:
             peak = eq
-        dd = (peak - eq) / peak * 100 if peak > 0 else 0
+        dd = (peak - eq) / peak if peak > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
-    max_dd = min(max_dd, 100.0)
+    max_dd = min(max_dd, 1.0)
 
     # Trade stats
     pnls = broker.trade_pnls
     total_trades = len(pnls)
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
-    win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
-    win_rate = max(0.0, min(100.0, win_rate))
+    win_rate = (len(wins) / total_trades) if total_trades > 0 else 0.0
+    win_rate = max(0.0, min(1.0, win_rate))
     gross_profit = sum(wins) if wins else 0
     gross_loss = abs(sum(losses)) if losses else 0
     profit_factor_raw = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
-    # Cap profit_factor at 50 — beyond that the number is dominated by a
-    # single outlier trade and adds no signal.
     profit_factor = min(profit_factor_raw, 50.0)
 
     # Annualized vol & Sharpe from equity curve returns
@@ -369,7 +373,7 @@ def main():
             std_r = math.sqrt(var_r)
             interval_map = {"1min": 525600, "5min": 105120, "15min": 35040, "30min": 17520, "1h": 8760, "4h": 2190, "1d": 365}
             bpy = interval_map.get(args.interval, 8760)
-            ann_vol = std_r * math.sqrt(bpy) * 100
+            ann_vol = std_r * math.sqrt(bpy)
             ann_sharpe = (mean_r / std_r * math.sqrt(bpy)) if std_r > 0 else 0
         else:
             ann_vol = 0
@@ -378,15 +382,12 @@ def main():
         ann_vol = 0
         ann_sharpe = 0
 
-    # Cap annualized vol at a generous upper bound — anything above ~500%
-    # is dominated by sparse-sample variance artifacts, not real volatility.
-    ann_vol = min(ann_vol, 500.0)
+    # Cap ann_vol at 5.0 (i.e. 500%) — beyond that it's a sparse-sample artifact.
+    ann_vol = min(ann_vol, 5.0)
     # Sharpe capped at +/- 20 for the same reason.
     ann_sharpe = max(-20.0, min(20.0, ann_sharpe))
 
-    # Low-sample warning — fewer than 10 trades means the stats above are
-    # not statistically meaningful. Surface this to the agent so it doesn't
-    # report polished-looking metrics from a 1-trade run.
+    # Low-sample warning — fewer than 10 trades means stats are unreliable.
     low_sample = 1 if total_trades < 10 else 0
 
     print(f"total_return: {total_return:.6f}")
@@ -395,7 +396,7 @@ def main():
     print(f"ann_sharpe: {ann_sharpe:.6f}")
     print(f"ending_equity: {ending:.2f}")
     print(f"total_trades: {total_trades}")
-    print(f"win_rate: {win_rate:.2f}")
+    print(f"win_rate: {win_rate:.6f}")
     print(f"profit_factor: {profit_factor:.4f}")
     print(f"low_sample: {low_sample}")
 
