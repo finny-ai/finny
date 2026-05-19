@@ -76,7 +76,15 @@ export namespace Validate {
   const DANGEROUS_CALLS = ["exec(", "eval(", "__import__(", "compile(", "open("]
 
   // Config keys that are legitimately metadata (not expected to appear in strategy code).
-  const CONFIG_META_KEYS = new Set(["symbol", "interval", "risk", "starting_equity_usd"])
+  const CONFIG_META_KEYS = new Set([
+    // Strategy-level metadata
+    "symbol", "interval", "risk", "starting_equity_usd",
+    // Platform-level metadata (injected by runner / used by backtest harness, not by strategy code)
+    "asset_class", "asset_type",
+    "start_date", "end_date", "duration",
+    "max_risk_per_trade_pct",
+    "_generated",
+  ])
 
   // Known error codes that mirror AST/smoke diagnostic codes. Used to coerce Python-side
   // string codes into our typed unions safely.
@@ -549,7 +557,7 @@ export namespace Validate {
 
       diagnostics.push({
         code: "CONFIG_KEY_UNUSED",
-        severity: "error",
+        severity: "warning",
         message: (
           `Config key \`${key}\` is declared but never referenced in the strategy code. ` +
           `Either remove it from config.json or use it (e.g. self.${key} = config["${key}"]).`

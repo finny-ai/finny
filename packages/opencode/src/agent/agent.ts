@@ -17,6 +17,8 @@ import PROMPT_FINNY_BUILD_RAW from "./prompt/finny-build.txt"
 import PROMPT_FINNY_RESEARCH_RAW from "./prompt/finny-research.txt"
 import PROMPT_FINNY_CHAT_RAW from "./prompt/finny-chat.txt"
 import PROMPT_FINNY_PORTFOLIO_BUILDER_RAW from "./prompt/finny-portfolio-builder.txt"
+import PROMPT_FINNY_DATA_EXTRACTOR from "./prompt/finny-data-extractor.txt"
+import PROMPT_FINNY_RESEARCHER from "./prompt/finny-researcher.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 
 // Render `<supported_markets/>` once so every agent prompt and the runtime
@@ -101,6 +103,7 @@ export namespace Agent {
             external_directory: {
               "*": "ask",
               ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+              "~/.local/share/finny/algos/*": "allow",
             },
             question: "deny",
             plan_enter: "deny",
@@ -284,6 +287,49 @@ export namespace Agent {
               options: {},
               mode: "subagent",
               native: true,
+            },
+            data_extractor: {
+              name: "data_extractor",
+              description:
+                "Data extraction subagent. Fetches historical OHLCV data from the best available source " +
+                "(Binance for crypto, yfinance for stocks/ETFs), writes parquet files into the active " +
+                "algorithm's data/ folder, and returns a structured digest with price stats, performance " +
+                "metrics, and data quality — not raw bars. Use this when the main agent needs market " +
+                "data for strategy design, backtesting, or analysis.",
+              color: "#06b6d4",
+              options: {},
+              prompt: PROMPT_FINNY_DATA_EXTRACTOR,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  "*": "deny",
+                  finny_extract_data: "allow",
+                }),
+                user,
+              ),
+              mode: "subagent",
+              native: true,
+              steps: 10,
+            },
+            researcher: {
+              name: "researcher",
+              description:
+                "News research subagent. Searches the web for recent news, sentiment, and market " +
+                "context, then writes structured findings to the algorithm's data/news/ directory. " +
+                "Use this when the main agent needs current market context for strategy design.",
+              color: "#8b5cf6",
+              options: {},
+              prompt: PROMPT_FINNY_RESEARCHER,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  todowrite: "deny",
+                }),
+                user,
+              ),
+              mode: "subagent",
+              native: true,
+              steps: 15,
             },
             compaction: {
               name: "compaction",

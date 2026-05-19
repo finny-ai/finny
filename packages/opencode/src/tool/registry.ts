@@ -32,6 +32,7 @@ import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
+import { ExtractDataTool } from "./extract-data"
 import { ResearchDispatchTool } from "./research-dispatch"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
@@ -171,6 +172,7 @@ export namespace ToolRegistry {
       const pricehistory = yield* PriceHistoryTool
       const portfoliobacktest = yield* PortfolioBacktestTool
       const discordread = yield* DiscordReadTool
+      const extractdata = yield* ExtractDataTool
       const researchdispatch = yield* ResearchDispatchTool
 
       const state = yield* InstanceState.make<State>(
@@ -273,6 +275,7 @@ export namespace ToolRegistry {
             pricehistory: Tool.init(pricehistory),
             portfoliobacktest: Tool.init(portfoliobacktest),
             discordread: Tool.init(discordread),
+            extractdata: Tool.init(extractdata),
             researchdispatch: Tool.init(researchdispatch),
           })
 
@@ -318,6 +321,7 @@ export namespace ToolRegistry {
               tool.pricehistory,
               tool.portfoliobacktest,
               tool.discordread,
+              tool.extractdata,
               tool.researchdispatch,
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),

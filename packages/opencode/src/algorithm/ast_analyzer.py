@@ -347,23 +347,218 @@ def _collect_names_from_expr(expr):
     return names
 
 
+def _is_self_method_call(expr):
+    """True if `expr` is `self.<something>(...)` — a method call on self."""
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and isinstance(expr.func.value, ast.Name)
+        and expr.func.value.id == "self"
+    )
+
+
+def _collect_names_skipping_self_method_args(expr):
+    """Like _collect_names_from_expr but excludes Names that appear ONLY inside
+    the argument list of `self.method(...)` calls. Rationale: self-methods can
+    update internal state and return values computed from `self.*` history rather
+    than from their arguments. Treating their return as tainted-by-args causes
+    pervasive false positives on the common `rsi = self._update_rsi(close_px)`
+    pattern. A real lookahead in this shape is rare; a model writing the
+    comparison inline (`if bar["close"] > x:`) is still caught by the direct
+    bar-field check.
+    """
+    safe_arg_names = set()
+    for node in ast.walk(expr):
+        if _is_self_method_call(node):
+            for arg in node.args:
+                for n in ast.walk(arg):
+                    if isinstance(n, ast.Name):
+                        safe_arg_names.add(n.id)
+            for kw in node.keywords:
+                for n in ast.walk(kw.value):
+                    if isinstance(n, ast.Name):
+                        safe_arg_names.add(n.id)
+
+    all_names = _collect_names_from_expr(expr)
+    # Names that appear OUTSIDE self-method args are still tracked normally.
+    # We can't easily separate "in arg only" vs "in arg + elsewhere", so the
+    # cleanest rule is: if a name appears anywhere outside a self-method arg,
+    # it taints; otherwise it doesn't. Approximate by checking if the name has
+    # ANY non-arg occurrence in the expr.
+    non_arg_names = set()
+
+    def walk_excluding_self_args(node):
+        if _is_self_method_call(node):
+            # Walk only func.value (which is self) — skip the args
+            return
+        if isinstance(node, ast.Name):
+            non_arg_names.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            walk_excluding_self_args(child)
+
+    walk_excluding_self_args(expr)
+    return all_names, non_arg_names
+
+
+def _taint_source_for_expr(expr, tainted):
+    """Return the field name (close/high/low) that would taint a target assigned
+    from `expr`, or None if the assignment is safe.
+
+    Three patterns are explicitly NOT propagated:
+
+    1. Ternary `a if cond else b` only taints when BOTH branches independently
+       taint. Defensive fallback `x if cond else bar["close"]` is unreachable
+       after warmup.
+
+    2. Direct `bar["close"]` reads inside the assigned expression always taint —
+       there's no ambiguity.
+
+    3. Method calls on `self` (`self.foo(close_px)`) do NOT propagate taint from
+       their args to the return value. Self-methods commonly update internal
+       state and return values computed from `self.*` history — flagging this
+       as lookahead produces persistent false positives on the standard
+       `rsi = self._update_rsi(close_px)` pattern. A name that appears ONLY
+       inside self-method args is treated as safe; if it appears anywhere else
+       in the expression it still taints.
+    """
+    if isinstance(expr, ast.IfExp):
+        body_src = _taint_source_for_expr(expr.body, tainted)
+        orelse_src = _taint_source_for_expr(expr.orelse, tainted)
+        if body_src is not None and orelse_src is not None:
+            return body_src
+        return None
+
+    rhs_post_fields = [n.slice.value for n in ast.walk(expr) if _is_bar_post_field(n)]
+    if rhs_post_fields:
+        return rhs_post_fields[0]
+
+    _all_names, non_arg_names = _collect_names_skipping_self_method_args(expr)
+    overlap = tainted.keys() & non_arg_names
+    if overlap:
+        return tainted[next(iter(overlap))]
+    return None
+
+
+def _expr_uses_only_self(expr):
+    """True if `expr` references only self.* attributes, constants, and arithmetic on them.
+    No bare local Names, no bar[...] subscripts. Used to recognize the stop-comparison
+    pattern `bar["close"] <op> self.stop_price`.
+    """
+    safe = [True]
+
+    def visit(node):
+        if isinstance(node, ast.Attribute):
+            # self.X — don't recurse into the Name("self") value
+            if isinstance(node.value, ast.Name) and node.value.id == "self":
+                return
+            visit(node.value)
+            return
+        if isinstance(node, ast.Name):
+            if node.id != "self":
+                safe[0] = False
+            return
+        if isinstance(node, ast.Subscript):
+            if _bar_field_name(node) is not None:
+                safe[0] = False
+                return
+            visit(node.value)
+            visit(node.slice)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(expr)
+    return safe[0]
+
+
+def _all_post_fields_are_stop_compares(test):
+    """True if every bar[post_field] reference in `test` is inside a Compare node
+    whose other operands reference only self.* attributes — the standard
+    stop / take-profit / target exit pattern.
+
+    Allows:   `bar["close"] < self.stop_price`
+              `self.target >= bar["close"]`
+              `bar["close"] > self.entry_px * (1 + self.profit_pct)`
+    Rejects:  `bar["close"] > local_var`
+              `bar["close"] > some_indicator_local`
+    """
+    post_subs = [n for n in ast.walk(test) if _is_bar_post_field(n)]
+    if not post_subs:
+        return False
+
+    parents = {}
+    for parent in ast.walk(test):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def enclosing_compare(node):
+        cur = parents.get(node)
+        while cur is not None and not isinstance(cur, ast.Compare):
+            cur = parents.get(cur)
+        return cur
+
+    for sub in post_subs:
+        cmp = enclosing_compare(sub)
+        if cmp is None:
+            return False
+        others = [e for e in [cmp.left, *cmp.comparators] if e is not sub]
+        for other in others:
+            if not _expr_uses_only_self(other):
+                return False
+    return True
+
+
+def _trade_action_at(if_node, action_line):
+    """Locate the trade-action node at `action_line` inside `if_node`.
+    Returns the AST node (Call or Return) or None.
+    """
+    for node in ast.walk(if_node):
+        if getattr(node, "lineno", None) != action_line:
+            continue
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant):
+            if node.value.value in ("BUY", "SELL"):
+                return node
+        if _is_broker_trade_call(node):
+            return node
+    return None
+
+
+def _is_exit_action(node):
+    """True if `node` is a sell/close/cover broker call or `return "SELL"`."""
+    if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant):
+        return node.value.value == "SELL"
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func.attr in ("sell", "close", "cover")
+    return False
+
+
 def check_lookahead_bias_flow(entry_method):
     """bar["close"|"high"|"low"] flows into a guard that gates any trade action
-    (legacy string return OR broker.buy/sell call)."""
-    diagnostics = []
+    (legacy string return OR broker.buy/sell call).
 
-    # names tainted by bar["close"|"high"|"low"] — tracks which field tainted them
-    tainted = {}  # name -> field
-    post_field_lines = []  # (lineno, field)
+    Two patterns are explicitly NOT flagged (false positives the model spent
+    many validation rounds fighting in production):
+
+    1. Ternary fallback — taint only propagates through IfExp when BOTH
+       branches independently taint. `x = self.X if cond else bar["close"]`
+       is safe because the close branch is unreachable once warm.
+
+    2. Stop comparison — `bar["close"] <op> self.stop_price` (or similar
+       pure-self-attr expression on the other side) gating an EXIT
+       (sell/close/cover/SELL). The stop level was set on a PRIOR bar;
+       comparing the current close to it is standard end-of-bar exit logic,
+       not lookahead.
+    """
+    diagnostics = []
+    tainted = {}  # name -> field that tainted it
+    post_field_lines = []
 
     for node in ast.walk(entry_method):
         if _is_bar_post_field(node):
             post_field_lines.append((node.lineno, node.slice.value))
         if isinstance(node, ast.Assign):
-            rhs_post_fields = [n.slice.value for n in ast.walk(node.value) if _is_bar_post_field(n)]
-            rhs_names = _collect_names_from_expr(node.value)
-            if rhs_post_fields or (tainted.keys() & rhs_names):
-                field_source = rhs_post_fields[0] if rhs_post_fields else next(iter(tainted[n] for n in rhs_names if n in tainted))
+            field_source = _taint_source_for_expr(node.value, tainted)
+            if field_source is not None:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         tainted[target.id] = field_source
@@ -371,31 +566,41 @@ def check_lookahead_bias_flow(entry_method):
     if not post_field_lines:
         return diagnostics
 
-    for action_line, if_node, kind in _collect_trade_actions(entry_method):
+    for action_line, if_node, _kind in _collect_trade_actions(entry_method):
         if if_node is None:
             continue
         test = if_node.test
         test_post_fields = [n.slice.value for n in ast.walk(test) if _is_bar_post_field(n)]
         test_names = _collect_names_from_expr(test)
         tainting_names = test_names & tainted.keys()
-        if test_post_fields or tainting_names:
-            offending_field = (
-                test_post_fields[0] if test_post_fields
-                else tainted[next(iter(tainting_names))]
-            )
-            diagnostics.append({
-                "code": "LOOKAHEAD_BIAS_FLOW",
-                "severity": "error",
-                "message": (
-                    f"Trade action (line {action_line}) is gated by `bar[\"{offending_field}\"]` "
-                    "(directly or via a derived variable). "
-                    f"The {offending_field} price is only knowable after the bar ends — trading on it "
-                    "within the same tick assumes you can execute at a price you could not yet observe."
-                ),
-                "line": if_node.lineno,
-                "fix": "Use `bar[\"open\"]` for entry/exit decisions; reserve close/high/low for end-of-bar state updates only.",
-            })
-            break  # one diagnostic per strategy is enough
+        if not (test_post_fields or tainting_names):
+            continue
+
+        # Exit + stop-comparison exception: a sell/exit gated by a Compare of
+        # bar[post] against a self.* expression is the standard stop pattern.
+        if test_post_fields and not tainting_names:
+            action_node = _trade_action_at(if_node, action_line)
+            if action_node is not None and _is_exit_action(action_node):
+                if _all_post_fields_are_stop_compares(test):
+                    continue
+
+        offending_field = (
+            test_post_fields[0] if test_post_fields
+            else tainted[next(iter(tainting_names))]
+        )
+        diagnostics.append({
+            "code": "LOOKAHEAD_BIAS_FLOW",
+            "severity": "error",
+            "message": (
+                f"Trade action (line {action_line}) is gated by `bar[\"{offending_field}\"]` "
+                "(directly or via a derived variable). "
+                f"The {offending_field} price is only knowable after the bar ends — trading on it "
+                "within the same tick assumes you can execute at a price you could not yet observe."
+            ),
+            "line": if_node.lineno,
+            "fix": "Use `bar[\"open\"]` for entry/exit decisions; reserve close/high/low for end-of-bar state updates only.",
+        })
+        break  # one diagnostic per strategy is enough
     return diagnostics
 
 
@@ -497,6 +702,33 @@ def _local_names_tainted_by_self(on_tick, self_attrs_to_track):
     return tainted
 
 
+def _appends_in_early_return_guards(entry_method, tracked_attrs):
+    """Return line numbers of appends inside top-level if-blocks that return,
+    making the append unreachable for code after the if-block."""
+    guarded = set()
+    for stmt in entry_method.body:
+        if not isinstance(stmt, ast.If):
+            continue
+        for branch in (stmt.body, stmt.orelse):
+            if not branch:
+                continue
+            if not any(isinstance(s, ast.Return) for s in branch):
+                continue
+            for s in branch:
+                for n in ast.walk(s):
+                    if (
+                        isinstance(n, ast.Call)
+                        and isinstance(n.func, ast.Attribute)
+                        and n.func.attr in GROWTH_METHODS
+                        and isinstance(n.func.value, ast.Attribute)
+                        and isinstance(n.func.value.value, ast.Name)
+                        and n.func.value.value.id == "self"
+                        and n.func.value.attr in tracked_attrs
+                    ):
+                        guarded.add(n.lineno)
+    return guarded
+
+
 def check_same_bar_execution_bias(entry_method):
     """self.X.append(bar-derived) precedes a trade action (return-string OR broker call)
     gated by a condition that compares a bar-tainted local against a self.X-tainted expression."""
@@ -524,6 +756,16 @@ def check_same_bar_execution_bias(entry_method):
             if any(arg_is_bar_derived(arg) for arg in node.args):
                 append_events.append((node.lineno, attr))
 
+    if not append_events:
+        return diagnostics
+
+    # Exclude appends inside top-level if-return guards (early returns).
+    # These appends can't flow to trade actions after the guard block.
+    guarded_lines = _appends_in_early_return_guards(
+        entry_method, {attr for _, attr in append_events}
+    )
+    append_events = [(ln, attr) for ln, attr in append_events
+                     if ln not in guarded_lines]
     if not append_events:
         return diagnostics
 
