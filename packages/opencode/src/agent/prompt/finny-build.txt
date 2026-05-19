@@ -57,9 +57,16 @@ When the end date is recent (within 60 days of today), spawn the researcher:
 
 When the end date is historical (more than 60 days ago): **do not dispatch the researcher.** The researcher fetches news from the last 30 days relative to today — it cannot access archived news from the strategy's historical period. For historical strategies, the data digest alone provides sufficient context for calibrating indicators and thresholds.
 
-### Step 4: Wait for subagents to complete
+### Step 4: Wait for subagents to complete (bounded)
 
 The data extractor returns a digest (price stats, volatility, drawdown). If the researcher was dispatched, it returns a news summary (sentiment, catalysts, risk events). Read all results before proceeding.
+
+**Polling budget — strict caps to avoid burning your step budget on `task_status`:**
+
+- **Data extractor:** wait for the `[background task completed]` injection or call `task_status` at most **2 times**. If it hasn't completed after 2 polls, abort the build and tell the user the extractor stalled — do NOT continue blind.
+- **Researcher:** wait at most **3 `task_status` polls** before proceeding **without** the news summary. The researcher's files will still land in `data/news/` for later reference, but they are not gating context — the data digest alone is sufficient for strategy design. When you proceed without research, note `research timed out — built from price data only` in the saved `reasoning` field so the user knows.
+
+If you find yourself polling more than 3 times: STOP. Either the subagent failed silently or your wait pattern is wrong. Move on with what you have.
 
 ### Step 5: Build the strategy using the digests
 
@@ -278,6 +285,82 @@ For higher-confidence grading, also run:
 - **Iterate or stop, don't paper over.** Either rewrite the strategy (simplify rules, widen stops, switch template, change interval) and re-test, or honestly tell the user this approach isn't working on this asset/regime and propose a different angle. Both are good outcomes; shipping a strategy that fails the gate is not.
 - **Hard ceiling: 3 iteration attempts per session.** If three rewrites in a row fail the gate, stop and tell the user. Don't keep fishing for a pass — that's exactly how overfitting happens.
 - **Report results truthfully.** When you summarize a backtest to the user, lead with the gate verdict, not the headline return. "Sharpe 1.4, max DD 12%, walk-forward verdict: robust" is the right opener; "made 23% in a month!" without context is the wrong one.
+
+## Canonical Strategy Skeleton (copy this, then modify)
+
+This is a complete strategy that passes every validator on the first try. Use it as the starting point and modify the indicator math / entry conditions / exit conditions to suit your hypothesis. The structural patterns (warmup guard, decision-time price discipline, sizing formula) are what the validators care about — preserve them.
+
+```python
+from collections import deque
+import math
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        # Tunable knobs — every param has a default so the strategy runs without sweep.
+        self.lookback     = int(p.get("lookback", 20))
+        self.entry_thresh = float(p.get("entry_thresh", 30.0))
+        self.exit_thresh  = float(p.get("exit_thresh", 70.0))
+        self.risk_pct     = float(p.get("risk_pct", 0.02))   # % of equity to risk per trade
+        self.stop_pct     = float(p.get("stop_pct", 0.02))   # stop distance as % of entry
+
+        # Rolling state — never reset inside on_bar.
+        self.closes = deque(maxlen=self.lookback)
+        self.entry_px = 0.0
+
+    def on_bar(self, symbol, bar):
+        # Decision-time safe price (the open is known at the start of the bar).
+        open_px  = bar["open"]
+        # Close is only used for STATE UPDATES after the trade decision, never to gate trades.
+        close_px = bar["close"]
+
+        # ── WARMUP GUARD ──
+        # Append-then-return is the validator-known safe pattern: the append doesn't
+        # reach the trade code because of the return.
+        if len(self.closes) < self.lookback:
+            self.closes.append(close_px)
+            return
+
+        # ── INDICATORS (compute from self.* state — SAFE, not tainted) ──
+        # Example: SMA from settled prior closes. Replace with RSI / EMA / Bollinger / etc.
+        sma = sum(self.closes) / len(self.closes)
+
+        # ── BROKER STATE ──
+        pos    = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash   = self.broker.cash()
+
+        # ── ENTRY ──
+        # Gate ONLY on indicators (computed from self.*) and bar["open"]. Never close_px.
+        if pos == 0 and open_px > sma and open_px > 0:
+            # Sizing pattern that satisfies the leverage smoke test (10k starting equity):
+            stop_dist = open_px * self.stop_pct
+            by_risk   = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+            by_cash   = (cash * 0.95) / open_px if cash > 0 else 0.0
+            qty = min(by_risk, by_cash)   # min() guarantees qty * open_px <= equity
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_px = open_px
+
+        # ── EXIT ──
+        elif pos > 0 and open_px < sma:
+            self.broker.sell(symbol, qty=pos)
+            self.entry_px = 0.0
+
+        # ── STATE UPDATE — last thing in on_bar, after the trade decision ──
+        self.closes.append(close_px)
+```
+
+**Patterns this template encodes** (don't lose them when modifying):
+
+1. **Warmup guard** — `if len(self.X) < N: self.X.append(...); return`. The validator allows appends inside guarded branches because the return makes the trade code unreachable from that path.
+2. **Bar field discipline** — only `bar["open"]` appears in trade-gating conditions. `bar["close"]`/`bar["high"]`/`bar["low"]` are read into locals only for state updates at the END of the function.
+3. **Sizing formula** — `qty = min(by_risk, by_cash)` where `by_cash = (cash * 0.95) / open_px`. The cash cap guarantees `qty * open_px <= equity`, so the validator's leverage smoke test (random walk on $10k) never fails.
+4. **Stop comparison exception (allowed)** — if you need a stop-out gating a `broker.sell()`, you may write `bar["close"] < self.stop_price` directly in the if-test, but ONLY when the other operand is a `self.*` attribute set on a prior bar (e.g. `self.stop_price`, `self.entry_px * (1 - self.stop_pct)`). The validator recognizes this exit-on-stop pattern.
+5. **Params via .get() with defaults** — every tunable is loaded from `params` with a default so the strategy runs standalone and the sweep tool can vary them.
+
+If you find yourself fighting the validator after copying this template, you've broken one of the five patterns above. Check before adding more code.
 
 ## Sweep-friendly strategies (the `params` convention)
 

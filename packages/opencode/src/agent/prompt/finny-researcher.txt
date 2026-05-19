@@ -77,6 +77,12 @@ Structure your response as:
 RULES
 ─────────────────────────────────────────────
 
+• **Hard cap: 5 web fetches per dispatch.** The parent agent is on a clock —
+  if 5 sources haven't given you enough signal, return what you have. Quality
+  > exhaustiveness. Five well-chosen sources beat ten redundant ones.
+• **Return within ~30 seconds.** The parent agent has a 3-poll budget on you;
+  finish quickly or it will proceed without your brief. A short, on-time
+  summary is more useful than a thorough one that arrives too late.
 • **Write structured files** — headlines are brief (2-3 sentences), body
   files contain extracted key facts and analysis.
 • **Always cite sources** — include the URL in each file.

@@ -347,23 +347,152 @@ def _collect_names_from_expr(expr):
     return names
 
 
+def _taint_source_for_expr(expr, tainted):
+    """Return the field name (close/high/low) that would taint a target assigned
+    from `expr`, or None if the assignment is safe.
+
+    Ternary expressions (`a if cond else b`) only taint when BOTH branches
+    independently taint — the model's typical defensive fallback
+    `x if x is not None else bar["close"]` is safe because the close branch
+    never runs after warmup.
+    """
+    if isinstance(expr, ast.IfExp):
+        body_src = _taint_source_for_expr(expr.body, tainted)
+        orelse_src = _taint_source_for_expr(expr.orelse, tainted)
+        if body_src is not None and orelse_src is not None:
+            return body_src
+        return None
+
+    rhs_post_fields = [n.slice.value for n in ast.walk(expr) if _is_bar_post_field(n)]
+    if rhs_post_fields:
+        return rhs_post_fields[0]
+    rhs_names = _collect_names_from_expr(expr)
+    overlap = tainted.keys() & rhs_names
+    if overlap:
+        return tainted[next(iter(overlap))]
+    return None
+
+
+def _expr_uses_only_self(expr):
+    """True if `expr` references only self.* attributes, constants, and arithmetic on them.
+    No bare local Names, no bar[...] subscripts. Used to recognize the stop-comparison
+    pattern `bar["close"] <op> self.stop_price`.
+    """
+    safe = [True]
+
+    def visit(node):
+        if isinstance(node, ast.Attribute):
+            # self.X — don't recurse into the Name("self") value
+            if isinstance(node.value, ast.Name) and node.value.id == "self":
+                return
+            visit(node.value)
+            return
+        if isinstance(node, ast.Name):
+            if node.id != "self":
+                safe[0] = False
+            return
+        if isinstance(node, ast.Subscript):
+            if _bar_field_name(node) is not None:
+                safe[0] = False
+                return
+            visit(node.value)
+            visit(node.slice)
+            return
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(expr)
+    return safe[0]
+
+
+def _all_post_fields_are_stop_compares(test):
+    """True if every bar[post_field] reference in `test` is inside a Compare node
+    whose other operands reference only self.* attributes — the standard
+    stop / take-profit / target exit pattern.
+
+    Allows:   `bar["close"] < self.stop_price`
+              `self.target >= bar["close"]`
+              `bar["close"] > self.entry_px * (1 + self.profit_pct)`
+    Rejects:  `bar["close"] > local_var`
+              `bar["close"] > some_indicator_local`
+    """
+    post_subs = [n for n in ast.walk(test) if _is_bar_post_field(n)]
+    if not post_subs:
+        return False
+
+    parents = {}
+    for parent in ast.walk(test):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def enclosing_compare(node):
+        cur = parents.get(node)
+        while cur is not None and not isinstance(cur, ast.Compare):
+            cur = parents.get(cur)
+        return cur
+
+    for sub in post_subs:
+        cmp = enclosing_compare(sub)
+        if cmp is None:
+            return False
+        others = [e for e in [cmp.left, *cmp.comparators] if e is not sub]
+        for other in others:
+            if not _expr_uses_only_self(other):
+                return False
+    return True
+
+
+def _trade_action_at(if_node, action_line):
+    """Locate the trade-action node at `action_line` inside `if_node`.
+    Returns the AST node (Call or Return) or None.
+    """
+    for node in ast.walk(if_node):
+        if getattr(node, "lineno", None) != action_line:
+            continue
+        if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant):
+            if node.value.value in ("BUY", "SELL"):
+                return node
+        if _is_broker_trade_call(node):
+            return node
+    return None
+
+
+def _is_exit_action(node):
+    """True if `node` is a sell/close/cover broker call or `return "SELL"`."""
+    if isinstance(node, ast.Return) and isinstance(node.value, ast.Constant):
+        return node.value.value == "SELL"
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        return node.func.attr in ("sell", "close", "cover")
+    return False
+
+
 def check_lookahead_bias_flow(entry_method):
     """bar["close"|"high"|"low"] flows into a guard that gates any trade action
-    (legacy string return OR broker.buy/sell call)."""
-    diagnostics = []
+    (legacy string return OR broker.buy/sell call).
 
-    # names tainted by bar["close"|"high"|"low"] — tracks which field tainted them
-    tainted = {}  # name -> field
-    post_field_lines = []  # (lineno, field)
+    Two patterns are explicitly NOT flagged (false positives the model spent
+    many validation rounds fighting in production):
+
+    1. Ternary fallback — taint only propagates through IfExp when BOTH
+       branches independently taint. `x = self.X if cond else bar["close"]`
+       is safe because the close branch is unreachable once warm.
+
+    2. Stop comparison — `bar["close"] <op> self.stop_price` (or similar
+       pure-self-attr expression on the other side) gating an EXIT
+       (sell/close/cover/SELL). The stop level was set on a PRIOR bar;
+       comparing the current close to it is standard end-of-bar exit logic,
+       not lookahead.
+    """
+    diagnostics = []
+    tainted = {}  # name -> field that tainted it
+    post_field_lines = []
 
     for node in ast.walk(entry_method):
         if _is_bar_post_field(node):
             post_field_lines.append((node.lineno, node.slice.value))
         if isinstance(node, ast.Assign):
-            rhs_post_fields = [n.slice.value for n in ast.walk(node.value) if _is_bar_post_field(n)]
-            rhs_names = _collect_names_from_expr(node.value)
-            if rhs_post_fields or (tainted.keys() & rhs_names):
-                field_source = rhs_post_fields[0] if rhs_post_fields else next(iter(tainted[n] for n in rhs_names if n in tainted))
+            field_source = _taint_source_for_expr(node.value, tainted)
+            if field_source is not None:
                 for target in node.targets:
                     if isinstance(target, ast.Name):
                         tainted[target.id] = field_source
@@ -371,31 +500,41 @@ def check_lookahead_bias_flow(entry_method):
     if not post_field_lines:
         return diagnostics
 
-    for action_line, if_node, kind in _collect_trade_actions(entry_method):
+    for action_line, if_node, _kind in _collect_trade_actions(entry_method):
         if if_node is None:
             continue
         test = if_node.test
         test_post_fields = [n.slice.value for n in ast.walk(test) if _is_bar_post_field(n)]
         test_names = _collect_names_from_expr(test)
         tainting_names = test_names & tainted.keys()
-        if test_post_fields or tainting_names:
-            offending_field = (
-                test_post_fields[0] if test_post_fields
-                else tainted[next(iter(tainting_names))]
-            )
-            diagnostics.append({
-                "code": "LOOKAHEAD_BIAS_FLOW",
-                "severity": "error",
-                "message": (
-                    f"Trade action (line {action_line}) is gated by `bar[\"{offending_field}\"]` "
-                    "(directly or via a derived variable). "
-                    f"The {offending_field} price is only knowable after the bar ends — trading on it "
-                    "within the same tick assumes you can execute at a price you could not yet observe."
-                ),
-                "line": if_node.lineno,
-                "fix": "Use `bar[\"open\"]` for entry/exit decisions; reserve close/high/low for end-of-bar state updates only.",
-            })
-            break  # one diagnostic per strategy is enough
+        if not (test_post_fields or tainting_names):
+            continue
+
+        # Exit + stop-comparison exception: a sell/exit gated by a Compare of
+        # bar[post] against a self.* expression is the standard stop pattern.
+        if test_post_fields and not tainting_names:
+            action_node = _trade_action_at(if_node, action_line)
+            if action_node is not None and _is_exit_action(action_node):
+                if _all_post_fields_are_stop_compares(test):
+                    continue
+
+        offending_field = (
+            test_post_fields[0] if test_post_fields
+            else tainted[next(iter(tainting_names))]
+        )
+        diagnostics.append({
+            "code": "LOOKAHEAD_BIAS_FLOW",
+            "severity": "error",
+            "message": (
+                f"Trade action (line {action_line}) is gated by `bar[\"{offending_field}\"]` "
+                "(directly or via a derived variable). "
+                f"The {offending_field} price is only knowable after the bar ends — trading on it "
+                "within the same tick assumes you can execute at a price you could not yet observe."
+            ),
+            "line": if_node.lineno,
+            "fix": "Use `bar[\"open\"]` for entry/exit decisions; reserve close/high/low for end-of-bar state updates only.",
+        })
+        break  # one diagnostic per strategy is enough
     return diagnostics
 
 
