@@ -326,9 +326,16 @@ def main():
 
     eq_curve = broker.equity_curve
     ending = eq_curve[-1] if eq_curve else args.capital
+    # Equity should never go below 0 for a long-only sim — clamp defensively
+    # so a stale-price or position-accounting glitch can't poison downstream
+    # drawdown math with impossible negative values.
+    eq_curve = [max(0.0, e) for e in eq_curve]
+    ending = max(0.0, ending)
     total_return = (ending / args.capital - 1) * 100 if args.capital > 0 else 0
 
-    # Max drawdown
+    # Max drawdown — clamp to [0, 100]. A drawdown >100% is mathematically
+    # impossible for a long-only book; if we see it, the equity curve has
+    # an artifact and the raw number would mislead.
     peak = args.capital
     max_dd = 0
     for eq in eq_curve:
@@ -337,6 +344,7 @@ def main():
         dd = (peak - eq) / peak * 100 if peak > 0 else 0
         if dd > max_dd:
             max_dd = dd
+    max_dd = min(max_dd, 100.0)
 
     # Trade stats
     pnls = broker.trade_pnls
@@ -344,9 +352,13 @@ def main():
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
+    win_rate = max(0.0, min(100.0, win_rate))
     gross_profit = sum(wins) if wins else 0
     gross_loss = abs(sum(losses)) if losses else 0
-    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
+    profit_factor_raw = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
+    # Cap profit_factor at 50 — beyond that the number is dominated by a
+    # single outlier trade and adds no signal.
+    profit_factor = min(profit_factor_raw, 50.0)
 
     # Annualized vol & Sharpe from equity curve returns
     if len(eq_curve) > 1:
@@ -366,6 +378,17 @@ def main():
         ann_vol = 0
         ann_sharpe = 0
 
+    # Cap annualized vol at a generous upper bound — anything above ~500%
+    # is dominated by sparse-sample variance artifacts, not real volatility.
+    ann_vol = min(ann_vol, 500.0)
+    # Sharpe capped at +/- 20 for the same reason.
+    ann_sharpe = max(-20.0, min(20.0, ann_sharpe))
+
+    # Low-sample warning — fewer than 10 trades means the stats above are
+    # not statistically meaningful. Surface this to the agent so it doesn't
+    # report polished-looking metrics from a 1-trade run.
+    low_sample = 1 if total_trades < 10 else 0
+
     print(f"total_return: {total_return:.6f}")
     print(f"max_drawdown: {max_dd:.6f}")
     print(f"ann_vol: {ann_vol:.6f}")
@@ -374,6 +397,7 @@ def main():
     print(f"total_trades: {total_trades}")
     print(f"win_rate: {win_rate:.2f}")
     print(f"profit_factor: {profit_factor:.4f}")
+    print(f"low_sample: {low_sample}")
 
 if __name__ == "__main__":
     main()

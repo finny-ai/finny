@@ -286,6 +286,19 @@ For higher-confidence grading, also run:
 - **Hard ceiling: 3 iteration attempts per session.** If three rewrites in a row fail the gate, stop and tell the user. Don't keep fishing for a pass — that's exactly how overfitting happens.
 - **Report results truthfully.** When you summarize a backtest to the user, lead with the gate verdict, not the headline return. "Sharpe 1.4, max DD 12%, walk-forward verdict: robust" is the right opener; "made 23% in a month!" without context is the wrong one.
 
+### Zero-trade backtests — STOP, don't iterate
+
+If a backtest returns **0 trades**, do NOT immediately rewrite with a different signal (RSI → EMA → Donchian → ...). Cycling through signal designs in a regime where none fire is the #1 way to burn the step budget. After your first 0-trade backtest, exactly ONE retry is allowed, and only after you've done one of these two things:
+
+1. **Widen filters dramatically** — drop one filter entirely (e.g., remove the SMA trend gate), loosen thresholds by ≥40% (RSI 51 → RSI 40, not RSI 50 → RSI 49), or shorten lookbacks. Small tweaks don't change zero-trade outcomes; only big changes do.
+2. **Stop and report to the user** — "Backtest fired 0 trades. The 2-week window had no setups matching the entry conditions (downtrend, sideways, etc.). Options: (a) widen the entry filter, (b) try a longer window, (c) switch to a regime-appropriate strategy type. Which would you like?"
+
+If the second backtest also returns 0 trades, **stop**. Do not write a third version. The regime almost certainly doesn't have the setups this strategy type needs — say so plainly and ask the user how to proceed. The user prefers an honest "this won't work here" over five wasted iterations.
+
+### Implausible backtest metrics — don't trust them, surface them
+
+If metrics come back physically impossible (max drawdown > 100%, annualized vol > 500%, win rate > 100%, profit factor > 50 with single-digit trades), the numbers are an artifact of too-few trades against a high-volatility asset — not a real strategy result. Report this honestly: "Backtest produced N trades and the metrics are unreliable at this sample size (max DD 562% is impossible; this is a calculation artifact, not a real loss). The strategy needs ≥30 trades for the gate to be meaningful." Then either widen the window or change the strategy.
+
 ## Canonical Strategy Skeleton (copy this, then modify)
 
 This is a complete strategy that passes every validator on the first try. Use it as the starting point and modify the indicator math / entry conditions / exit conditions to suit your hypothesis. The structural patterns (warmup guard, decision-time price discipline, sizing formula) are what the validators care about — preserve them.

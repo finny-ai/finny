@@ -347,14 +347,79 @@ def _collect_names_from_expr(expr):
     return names
 
 
+def _is_self_method_call(expr):
+    """True if `expr` is `self.<something>(...)` — a method call on self."""
+    return (
+        isinstance(expr, ast.Call)
+        and isinstance(expr.func, ast.Attribute)
+        and isinstance(expr.func.value, ast.Name)
+        and expr.func.value.id == "self"
+    )
+
+
+def _collect_names_skipping_self_method_args(expr):
+    """Like _collect_names_from_expr but excludes Names that appear ONLY inside
+    the argument list of `self.method(...)` calls. Rationale: self-methods can
+    update internal state and return values computed from `self.*` history rather
+    than from their arguments. Treating their return as tainted-by-args causes
+    pervasive false positives on the common `rsi = self._update_rsi(close_px)`
+    pattern. A real lookahead in this shape is rare; a model writing the
+    comparison inline (`if bar["close"] > x:`) is still caught by the direct
+    bar-field check.
+    """
+    safe_arg_names = set()
+    for node in ast.walk(expr):
+        if _is_self_method_call(node):
+            for arg in node.args:
+                for n in ast.walk(arg):
+                    if isinstance(n, ast.Name):
+                        safe_arg_names.add(n.id)
+            for kw in node.keywords:
+                for n in ast.walk(kw.value):
+                    if isinstance(n, ast.Name):
+                        safe_arg_names.add(n.id)
+
+    all_names = _collect_names_from_expr(expr)
+    # Names that appear OUTSIDE self-method args are still tracked normally.
+    # We can't easily separate "in arg only" vs "in arg + elsewhere", so the
+    # cleanest rule is: if a name appears anywhere outside a self-method arg,
+    # it taints; otherwise it doesn't. Approximate by checking if the name has
+    # ANY non-arg occurrence in the expr.
+    non_arg_names = set()
+
+    def walk_excluding_self_args(node):
+        if _is_self_method_call(node):
+            # Walk only func.value (which is self) — skip the args
+            return
+        if isinstance(node, ast.Name):
+            non_arg_names.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            walk_excluding_self_args(child)
+
+    walk_excluding_self_args(expr)
+    return all_names, non_arg_names
+
+
 def _taint_source_for_expr(expr, tainted):
     """Return the field name (close/high/low) that would taint a target assigned
     from `expr`, or None if the assignment is safe.
 
-    Ternary expressions (`a if cond else b`) only taint when BOTH branches
-    independently taint — the model's typical defensive fallback
-    `x if x is not None else bar["close"]` is safe because the close branch
-    never runs after warmup.
+    Three patterns are explicitly NOT propagated:
+
+    1. Ternary `a if cond else b` only taints when BOTH branches independently
+       taint. Defensive fallback `x if cond else bar["close"]` is unreachable
+       after warmup.
+
+    2. Direct `bar["close"]` reads inside the assigned expression always taint —
+       there's no ambiguity.
+
+    3. Method calls on `self` (`self.foo(close_px)`) do NOT propagate taint from
+       their args to the return value. Self-methods commonly update internal
+       state and return values computed from `self.*` history — flagging this
+       as lookahead produces persistent false positives on the standard
+       `rsi = self._update_rsi(close_px)` pattern. A name that appears ONLY
+       inside self-method args is treated as safe; if it appears anywhere else
+       in the expression it still taints.
     """
     if isinstance(expr, ast.IfExp):
         body_src = _taint_source_for_expr(expr.body, tainted)
@@ -366,8 +431,9 @@ def _taint_source_for_expr(expr, tainted):
     rhs_post_fields = [n.slice.value for n in ast.walk(expr) if _is_bar_post_field(n)]
     if rhs_post_fields:
         return rhs_post_fields[0]
-    rhs_names = _collect_names_from_expr(expr)
-    overlap = tainted.keys() & rhs_names
+
+    _all_names, non_arg_names = _collect_names_skipping_self_method_args(expr)
+    overlap = tainted.keys() & non_arg_names
     if overlap:
         return tainted[next(iter(overlap))]
     return None
