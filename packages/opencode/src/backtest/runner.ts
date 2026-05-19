@@ -270,19 +270,113 @@ print(f"Downloaded {len(df)} rows")
 
   /**
    * Default backtest.py shim used when an algorithm doesn't ship its own
-   * runner. Delegates to engine_v2 via `python -m engine_v2.cli` so we have
-   * exactly one engine in the universe. Algorithms that supply their own
-   * `backtestCode` keep working unmodified (they bypass this shim entirely).
+   * runner. Uses finny_broker.py's SimBroker + load_strategy() to run the
+   * strategy bar-by-bar. Outputs legacy key: value lines that the TS parser
+   * expects. Algorithms that supply their own `backtestCode` bypass this shim.
    */
-  const DEFAULT_BACKTEST_PY = String.raw`import os, sys, subprocess
+  const DEFAULT_BACKTEST_PY = String.raw`#!/usr/bin/env python3
+"""Default Finny backtest runner — SimBroker + dynamic strategy loader."""
+import argparse, csv, json, math, sys
 from pathlib import Path
 
-ENGINE_V2_ROOT = Path(os.environ.get("FINNY_ENGINE_V2_ROOT", str(Path(__file__).parent)))
-if str(ENGINE_V2_ROOT) not in sys.path:
-    sys.path.insert(0, str(ENGINE_V2_ROOT))
+sys.path.insert(0, str(Path(__file__).parent))
+from finny_broker import SimBroker, load_strategy
 
-cmd = [sys.executable, "-m", "engine_v2.cli", *sys.argv[1:], "--out", str(Path(__file__).parent)]
-sys.exit(subprocess.call(cmd, cwd=ENGINE_V2_ROOT))
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--csv", required=True)
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--interval", required=True)
+    ap.add_argument("--capital", type=float, required=True)
+    args = ap.parse_args()
+
+    cfg = json.loads(Path(args.config).read_text())
+    symbol = cfg.get("symbol", "ETH/USD")
+    params = cfg.get("params", {})
+
+    broker = SimBroker(starting_cash=args.capital)
+    strategy_path = Path(__file__).parent / "strategy.py"
+    step = load_strategy(strategy_path, broker, params=params)
+
+    bars = []
+    with open(args.csv, newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            bars.append({
+                "timestamp": row.get("timestamp") or row.get("Timestamp") or row.get("date"),
+                "open": float(row.get("open") or row.get("Open", 0)),
+                "high": float(row.get("high") or row.get("High", 0)),
+                "low": float(row.get("low") or row.get("Low", 0)),
+                "close": float(row.get("close") or row.get("Close", 0)),
+                "volume": float(row.get("volume") or row.get("Volume", 0)),
+                "symbol": symbol,
+            })
+
+    if not bars:
+        print("ending_equity: 0", file=sys.stderr)
+        sys.exit(1)
+
+    for bar in bars:
+        broker.set_price(symbol, bar["close"])
+        try:
+            step(symbol, bar)
+        except Exception as e:
+            print(f"[backtest] strategy error at {bar.get('timestamp','?')}: {e}", file=sys.stderr)
+        broker.mark_to_market()
+
+    eq_curve = broker.equity_curve
+    ending = eq_curve[-1] if eq_curve else args.capital
+    total_return = (ending / args.capital - 1) * 100 if args.capital > 0 else 0
+
+    # Max drawdown
+    peak = args.capital
+    max_dd = 0
+    for eq in eq_curve:
+        if eq > peak:
+            peak = eq
+        dd = (peak - eq) / peak * 100 if peak > 0 else 0
+        if dd > max_dd:
+            max_dd = dd
+
+    # Trade stats
+    pnls = broker.trade_pnls
+    total_trades = len(pnls)
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p <= 0]
+    win_rate = (len(wins) / total_trades * 100) if total_trades > 0 else 0
+    gross_profit = sum(wins) if wins else 0
+    gross_loss = abs(sum(losses)) if losses else 0
+    profit_factor = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
+
+    # Annualized vol & Sharpe from equity curve returns
+    if len(eq_curve) > 1:
+        returns = [(eq_curve[i] / eq_curve[i-1] - 1) for i in range(1, len(eq_curve)) if eq_curve[i-1] > 0]
+        if returns:
+            mean_r = sum(returns) / len(returns)
+            var_r = sum((r - mean_r) ** 2 for r in returns) / len(returns)
+            std_r = math.sqrt(var_r)
+            interval_map = {"1min": 525600, "5min": 105120, "15min": 35040, "30min": 17520, "1h": 8760, "4h": 2190, "1d": 365}
+            bpy = interval_map.get(args.interval, 8760)
+            ann_vol = std_r * math.sqrt(bpy) * 100
+            ann_sharpe = (mean_r / std_r * math.sqrt(bpy)) if std_r > 0 else 0
+        else:
+            ann_vol = 0
+            ann_sharpe = 0
+    else:
+        ann_vol = 0
+        ann_sharpe = 0
+
+    print(f"total_return: {total_return:.6f}")
+    print(f"max_drawdown: {max_dd:.6f}")
+    print(f"ann_vol: {ann_vol:.6f}")
+    print(f"ann_sharpe: {ann_sharpe:.6f}")
+    print(f"ending_equity: {ending:.2f}")
+    print(f"total_trades: {total_trades}")
+    print(f"win_rate: {win_rate:.2f}")
+    print(f"profit_factor: {profit_factor:.4f}")
+
+if __name__ == "__main__":
+    main()
 `
 
 
@@ -476,34 +570,27 @@ sys.exit(subprocess.call(cmd, cwd=ENGINE_V2_ROOT))
     try {
       tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-backtest-"))
 
-      // Write finny_broker.py — kept as a thin v1-compat shim for any
-      // algorithm whose `backtestCode` still imports it. New runs prefer
-      // engine_v2 via the DEFAULT_BACKTEST_PY shim below.
+      // Write finny_broker.py — SimBroker + load_strategy() used by the
+      // DEFAULT_BACKTEST_PY shim and by algorithms with custom backtestCode.
       await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_BROKER_PY)
 
       // Write strategy.py
       await fs.writeFile(path.join(tmpDir, "strategy.py"), algorithm.code)
 
-      // Write backtest.py (user-supplied or DEFAULT shim → engine_v2.cli)
+      // Write backtest.py (user-supplied or DEFAULT shim → finny_broker.SimBroker)
       await fs.writeFile(path.join(tmpDir, "backtest.py"), backtestCode)
 
-      // Copy engine_v2/ into the tmpdir so the shim can `python -m engine_v2.cli`.
-      // Source path is resolved relative to this file's directory at build time
-      // (must ship alongside in the bundle).
-      // fileURLToPath() correctly handles Windows drive letters and
-      // percent-decoding; new URL().pathname does neither.
+      // Copy engine_v2/ into the tmpdir — only needed by algorithms with
+      // custom backtestCode that imports engine_v2. The default shim uses
+      // finny_broker.py directly, so a missing engine_v2 is non-fatal.
       const ENGINE_V2_SRC = path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),
         "..", "..", "engine_v2",
       )
       try {
         await fs.cp(ENGINE_V2_SRC, path.join(tmpDir, "engine_v2"), { recursive: true })
-      } catch (e: any) {
-        return {
-          ok: false,
-          error: `engine_v2 source not found at ${ENGINE_V2_SRC}. The Finny package layout is broken: ${e?.message ?? e}`,
-          kind: "internal",
-        }
+      } catch {
+        // Non-fatal: default backtest shim doesn't need engine_v2
       }
 
       // Parse and patch config with user's capital
