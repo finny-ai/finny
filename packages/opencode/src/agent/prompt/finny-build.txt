@@ -57,20 +57,46 @@ When the end date is recent (within 60 days of today), spawn the researcher:
 
 When the end date is historical (more than 60 days ago): **do not dispatch the researcher.** The researcher fetches news from the last 30 days relative to today — it cannot access archived news from the strategy's historical period. For historical strategies, the data digest alone provides sufficient context for calibrating indicators and thresholds.
 
-### Step 4: Wait for subagents to complete (bounded)
+### Step 4: Wait for subagents to complete — END YOUR TURN, don't keep working
 
-The data extractor returns a digest (price stats, volatility, drawdown). If the researcher was dispatched, it returns a news summary (sentiment, catalysts, risk events). Read all results before proceeding.
+The data extractor returns a digest (price stats, volatility, drawdown). The researcher (if dispatched) returns a news summary (sentiment, catalysts, risk events).
 
-**Polling budget — strict caps to avoid burning your step budget on `task_status`:**
+**🛑 Critical: when the researcher is running, you MUST end your turn and wait for the result to inject. You may NOT call `finny_algorithm_scaffold`, `finny_algorithm_validate`, or `finny_algorithm_save` while the researcher is still in flight.** Building before research lands defeats the point of dispatching it — you'd be discarding the context you just paid for.
 
-- **Data extractor:** wait for the `[background task completed]` injection or call `task_status` at most **2 times**. If it hasn't completed after 2 polls, abort the build and tell the user the extractor stalled — do NOT continue blind.
-- **Researcher:** wait at most **3 `task_status` polls** before proceeding **without** the news summary. The researcher's files will still land in `data/news/` for later reference, but they are not gating context — the data digest alone is sufficient for strategy design. When you proceed without research, note `research timed out — built from price data only` in the saved `reasoning` field so the user knows.
+**How the wait actually works:**
 
-If you find yourself polling more than 3 times: STOP. Either the subagent failed silently or your wait pattern is wrong. Move on with what you have.
+Background tasks AUTOMATICALLY inject their results into this conversation when complete — a `[background task completed: ...]` message arrives with the `<task_result>` block. That injection automatically resumes you with the result in context. You do not need to poll `task_status` to discover this — it just happens.
 
-### Step 5: Build the strategy using the digests
+**Concrete sequence — do this exactly:**
 
-Use the data digest to calibrate indicator thresholds, position sizes, and stop distances from actual price behavior. If news context is available (recent strategies), use it to understand regime shifts and adjust strategy logic accordingly. Then proceed to scaffold → save → backtest.
+1. **Dispatch both subagents** (data extractor + researcher) in your first batch of tool calls.
+2. **Do the bounded parallel prep work** while they run:
+   - Ask the user for their instinct with `question` (required step in the research workflow anyway)
+   - Read the data extractor's digest the moment it lands and note key stats (return, vol, max DD, price range)
+   - Call `finny_algorithm_set_params` to lock in symbol/interval/capital
+3. **Then STOP.** End your turn with a short text message like:
+   > "Data digest is in: ETH down 11.5% with 42% vol over 21 days. Captured your instinct (range-bound, 3–7 day swings). Waiting for the researcher's news brief before scaffolding the strategy — it will inject automatically."
+4. **Do NOT call any more tools.** The next message in this conversation will be the `[background task completed]` injection from the researcher.
+5. **When the injection arrives**, you'll resume with the news brief in context. THEN you may proceed to scaffold → validate → save → backtest, using BOTH the price digest and the news brief to calibrate the strategy.
+
+**What "ending your turn" looks like in practice:** emit your status-update text and stop generating. No tool calls. The turn closes, and the runtime hands control back to you when the background result arrives. This is the only correct way to wait — there is no `sleep` or `await` primitive available to you.
+
+**Hard fallback (rare):** If you've ended your turn waiting for research and the result still hasn't arrived after one full turn cycle (the user pings you again, or you receive a system message that the task failed), then one `task_status` check is fine. If it confirms the task is dead, proceed without research and note `research subagent failed — built from price data only` in the saved `reasoning` field.
+
+**The wrong pattern (the one we keep seeing):** dispatch researcher → ask instinct → set params → claim to be "waiting" → immediately call scaffold and save anyway → ignore the research entirely when it lands. This wastes the researcher's work. STOP after the prep step. Do not call scaffold while research is in flight.
+
+**The right pattern:** dispatch both → user instinct → set params → end turn with status text → [wait for injection — automatic] → resume with both digests → scaffold → save → backtest.
+
+### Step 5: Build the strategy using BOTH digests
+
+**Hard rule: do not call `finny_algorithm_scaffold` or `finny_algorithm_save` until both the data extractor digest AND (if dispatched) the researcher's news brief have injected into the conversation.** Building before research lands defeats the point of dispatching it. Wait for the injections, then synthesize.
+
+Once both are in:
+- Use the **data digest** (return, volatility, max drawdown, price range, bar count) to calibrate indicator thresholds, position sizes, and stop distances from actual price behavior.
+- Use the **news brief** (sentiment, catalysts, risk events) to understand regime context — does the recent macro/event flow suggest the regime might persist or revert? Should stops be tighter due to event risk?
+- Reference BOTH in your saved `reasoning` field: "Price data showed X; news showed Y; combined, I designed Z."
+
+Then proceed to scaffold → save → backtest.
 
 **When to trigger Pre-Build Intelligence:**
 - When the user specifies a date range for their strategy (MANDATORY — do this FIRST)
