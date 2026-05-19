@@ -18,6 +18,7 @@ import PROMPT_FINNY_RESEARCH_RAW from "./prompt/finny-research.txt"
 import PROMPT_FINNY_CHAT_RAW from "./prompt/finny-chat.txt"
 import PROMPT_FINNY_PORTFOLIO_BUILDER_RAW from "./prompt/finny-portfolio-builder.txt"
 import PROMPT_FINNY_DATA_EXTRACTOR from "./prompt/finny-data-extractor.txt"
+import PROMPT_FINNY_RESEARCHER from "./prompt/finny-researcher.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 
 // Render `<supported_markets/>` once so every agent prompt and the runtime
@@ -102,6 +103,7 @@ export namespace Agent {
             external_directory: {
               "*": "ask",
               ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
+              "~/.local/share/finny/algos/*": "allow",
             },
             question: "deny",
             plan_enter: "deny",
@@ -308,6 +310,26 @@ export namespace Agent {
               mode: "subagent",
               native: true,
               steps: 10,
+            },
+            researcher: {
+              name: "researcher",
+              description:
+                "News research subagent. Searches the web for recent news, sentiment, and market " +
+                "context, then writes structured findings to the algorithm's data/news/ directory. " +
+                "Use this when the main agent needs current market context for strategy design.",
+              color: "#8b5cf6",
+              options: {},
+              prompt: PROMPT_FINNY_RESEARCHER,
+              permission: Permission.merge(
+                defaults,
+                Permission.fromConfig({
+                  todowrite: "deny",
+                }),
+                user,
+              ),
+              mode: "subagent",
+              native: true,
+              steps: 15,
             },
             compaction: {
               name: "compaction",
