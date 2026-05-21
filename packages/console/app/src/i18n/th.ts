@@ -175,12 +175,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "โมเดลของเรา",
   "home.faq.a7.p2.and": "และ",
   "home.faq.a7.p2.shareLink": "หน้าแชร์",
-  "home.faq.q8": "OpenCode เป็นโอเพนซอร์สหรือไม่?",
-  "home.faq.a8.p1": "ใช่ OpenCode เป็นโอเพนซอร์สเต็มรูปแบบ ซอร์สโค้ดเปิดเผยต่อสาธารณะบน",
-  "home.faq.a8.p2": "ภายใต้",
-  "home.faq.a8.mitLicense": "MIT License",
+  "home.faq.q8": "What license does Finny use?",
+  "home.faq.a8.p1": "Finny's source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
   "home.faq.a8.p3":
-    " ซึ่งหมายความว่าใครๆ ก็สามารถใช้ แก้ไข หรือร่วมพัฒนาได้ ทุกคนในชุมชนสามารถเปิด issue, ส่ง pull request และขยายฟังก์ชันการทำงานได้",
+    ", with commercial use requiring a separate license agreement.",
 
   "home.zenCta.title": "เข้าถึงโมเดลที่เชื่อถือได้และปรับแต่งมาแล้วสำหรับเอเจนต์เขียนโค้ด",
   "home.zenCta.body":
