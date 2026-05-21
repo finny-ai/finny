@@ -3,7 +3,7 @@
   "version": "1.4.3",
   "name": "finny",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch || true",
@@ -76,7 +76,6 @@
   "dependencies": {
     "@actions/core": "1.11.1",
     "@actions/github": "6.0.1",
-    "@finny-ai/core": "workspace:*",
     "@agentclientprotocol/sdk": "0.16.1",
     "@ai-sdk/amazon-bedrock": "4.0.93",
     "@ai-sdk/anthropic": "3.0.67",

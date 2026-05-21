@@ -173,11 +173,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "我們的模型",
   "home.faq.a7.p2.and": "與",
   "home.faq.a7.p2.shareLink": "分享頁面",
-  "home.faq.q8": "OpenCode 是開源的嗎？",
-  "home.faq.a8.p1": "是的，OpenCode 完全開源。原始碼公開在",
-  "home.faq.a8.p2": "並採用",
-  "home.faq.a8.mitLicense": "MIT 授權條款",
-  "home.faq.a8.p3": "，意味著任何人都可以使用、修改或貢獻。社群中的任何人都可以提交 issue、pull requests 並擴充功能。",
+  "home.faq.q8": "Is Finny open source?",
+  "home.faq.a8.p1": "Finny source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
+  "home.faq.a8.p3":
+    ", which permits noncommercial use. Commercial or enterprise use, resale, hosted offerings, bundling, or commercial forks require prior written approval from Finny and a separate commercial license agreement.",
 
   "home.zenCta.title": "存取可靠且最佳化的編碼代理模型",
   "home.zenCta.body":

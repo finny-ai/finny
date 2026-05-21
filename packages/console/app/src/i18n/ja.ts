@@ -176,12 +176,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "モデルのプライバシー",
   "home.faq.a7.p2.and": "と",
   "home.faq.a7.p2.shareLink": "共有ページのプライバシー",
-  "home.faq.q8": "OpenCodeはオープンソースですか？",
-  "home.faq.a8.p1": "はい、OpenCodeは完全にオープンソースです。ソースコードは",
-  "home.faq.a8.p2": "の",
-  "home.faq.a8.mitLicense": "MITライセンス",
+  "home.faq.q8": "Is Finny open source?",
+  "home.faq.a8.p1": "Finny source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
   "home.faq.a8.p3":
-    "のもとで公開されており、誰でも使用、変更、開発への参加ができます。コミュニティの誰でもissueを起こしたり、pull requestを送ったり、機能を拡張できます。",
+    ", which permits noncommercial use. Commercial or enterprise use, resale, hosted offerings, bundling, or commercial forks require prior written approval from Finny and a separate commercial license agreement.",
 
   "home.zenCta.title": "コーディングエージェント向けの信頼できる最適化モデル",
   "home.zenCta.body":
