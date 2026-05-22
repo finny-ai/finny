@@ -5,12 +5,16 @@ import path from "node:path"
 import {
   algoDir,
   clearActiveAlgo,
+  ensureAlgoWorkspace,
   getActiveAlgo,
   setActiveAlgo,
   parseMission,
   writeAlgo,
   _activeMarkerPath,
+  isSlug,
+  humanNameOf,
 } from "./index"
+import { DATA_NEWS_BODY_DIR, DATA_NEWS_HEADLINES_DIR, MISSION_FILE } from "./schemas"
 
 const MISSION = `---
 schema_version: 2
@@ -48,10 +52,11 @@ afterEach(async () => {
   await fs.rm(sandbox, { recursive: true, force: true })
 })
 
-async function seedAlgo(name: string) {
+async function seedAlgo(name: string, slug?: string) {
   const m = parseMission(MISSION.replace("active-demo", name))
   await writeAlgo({
     root: algosRootDir,
+    slug,
     mission: m,
     current: "v01",
     versions: { v01: { strategy: "pass\n" } },
@@ -63,18 +68,25 @@ describe("getActiveAlgo / setActiveAlgo / clearActiveAlgo", () => {
     expect(await getActiveAlgo({ cwd: sandbox })).toBeNull()
   })
 
-  test("set / get round-trip", async () => {
-    await seedAlgo("active-demo")
-    await setActiveAlgo("active-demo")
-    expect(await getActiveAlgo()).toBe("active-demo")
+  test("set / get round-trip with slug", async () => {
+    const { slug } = await writeAlgo({
+      root: algosRootDir,
+      mission: parseMission(MISSION),
+      current: "v01",
+      versions: { v01: { strategy: "pass\n" } },
+    })
+    await setActiveAlgo(slug)
+    expect(await getActiveAlgo()).toBe(slug)
+    expect(isSlug(slug)).toBe(true)
+    expect(humanNameOf(slug)).toBe("active-demo")
   })
 
   test("setActiveAlgo rejects an unknown algo", async () => {
-    await expect(setActiveAlgo("missing-algo")).rejects.toThrow(/not found/)
+    await expect(setActiveAlgo("missing-algo.abcd1234")).rejects.toThrow(/not found/)
   })
 
-  test("setActiveAlgo rejects an invalid name (not kebab-case)", async () => {
-    await expect(setActiveAlgo("BadName")).rejects.toThrow(/kebab-case/)
+  test("setActiveAlgo rejects an invalid name", async () => {
+    await expect(setActiveAlgo("BadName")).rejects.toThrow(/invalid/)
   })
 
   test("clearActiveAlgo is idempotent — safe when no marker exists", async () => {
@@ -84,17 +96,31 @@ describe("getActiveAlgo / setActiveAlgo / clearActiveAlgo", () => {
   })
 
   test("marker takes precedence over cwd walk-up", async () => {
-    await seedAlgo("first-algo")
-    await seedAlgo("second-algo")
-    await setActiveAlgo("second-algo")
-    const inFirst = algoDir("first-algo", algosRootDir)
-    expect(await getActiveAlgo({ cwd: inFirst })).toBe("second-algo")
+    const r1 = await writeAlgo({
+      root: algosRootDir,
+      mission: parseMission(MISSION.replace("active-demo", "first-algo")),
+      current: "v01",
+      versions: { v01: { strategy: "pass\n" } },
+    })
+    const r2 = await writeAlgo({
+      root: algosRootDir,
+      mission: parseMission(MISSION.replace("active-demo", "second-algo")),
+      current: "v01",
+      versions: { v01: { strategy: "pass\n" } },
+    })
+    await setActiveAlgo(r2.slug)
+    expect(await getActiveAlgo({ cwd: r1.dir })).toBe(r2.slug)
   })
 
   test("walk-up fallback finds mission.md ancestor when marker is unset", async () => {
-    await seedAlgo("walk-demo")
-    const deep = path.join(algoDir("walk-demo", algosRootDir), "v01")
-    expect(await getActiveAlgo({ cwd: deep })).toBe("walk-demo")
+    const { slug, dir } = await writeAlgo({
+      root: algosRootDir,
+      mission: parseMission(MISSION.replace("active-demo", "walk-demo")),
+      current: "v01",
+      versions: { v01: { strategy: "pass\n" } },
+    })
+    const deep = path.join(dir, "v01")
+    expect(await getActiveAlgo({ cwd: deep })).toBe(slug)
   })
 
   test("walk-up returns null when no mission.md ancestor exists", async () => {
@@ -122,6 +148,59 @@ describe("active marker storage location", () => {
   test("falls back to ~/.local/share when XDG unset on linux/darwin", () => {
     const got = _activeMarkerPath({} as NodeJS.ProcessEnv, "linux")
     expect(got.endsWith(path.join(".local", "share", "finny", "active-algo"))).toBe(true)
+  })
+})
+
+describe("ensureAlgoWorkspace", () => {
+  test("creates dir with slug, data subtree, and placeholder mission.md on first call", async () => {
+    const res = await ensureAlgoWorkspace("fresh-algo", { root: algosRootDir })
+    expect(res.created).toBe(true)
+    expect(isSlug(res.slug)).toBe(true)
+    expect(humanNameOf(res.slug)).toBe("fresh-algo")
+    expect(res.dir).toBe(algoDir(res.slug, algosRootDir))
+
+    const missionRaw = await fs.readFile(path.join(res.dir, MISSION_FILE), "utf8")
+    // Placeholder must parse against the strict frontmatter schema.
+    expect(() => parseMission(missionRaw)).not.toThrow()
+    // Mission stores human name, not slug
+    const parsed = parseMission(missionRaw)
+    expect(parsed.frontmatter.name).toBe("fresh-algo")
+
+    await fs.stat(path.join(res.dir, DATA_NEWS_HEADLINES_DIR))
+    await fs.stat(path.join(res.dir, DATA_NEWS_BODY_DIR))
+  })
+
+  test("two calls with same human name produce different directories", async () => {
+    const res1 = await ensureAlgoWorkspace("same-name", { root: algosRootDir })
+    const res2 = await ensureAlgoWorkspace("same-name", { root: algosRootDir })
+    expect(res1.slug).not.toBe(res2.slug)
+    expect(res1.dir).not.toBe(res2.dir)
+    expect(res1.created).toBe(true)
+    expect(res2.created).toBe(true)
+  })
+
+  test("idempotent when called with same slug", async () => {
+    const res1 = await ensureAlgoWorkspace("my-algo", { root: algosRootDir })
+    const missionPath = path.join(res1.dir, MISSION_FILE)
+    const before = await fs.readFile(missionPath, "utf8")
+
+    // Re-call with the same slug
+    const res2 = await ensureAlgoWorkspace(res1.slug, { root: algosRootDir })
+    expect(res2.created).toBe(false)
+    expect(res2.slug).toBe(res1.slug)
+    expect(res2.dir).toBe(res1.dir)
+
+    const after = await fs.readFile(missionPath, "utf8")
+    expect(after).toBe(before)
+  })
+
+  test("setActive: true marks the new workspace as the active algo", async () => {
+    const res = await ensureAlgoWorkspace("active-on-create", { root: algosRootDir, setActive: true })
+    expect(await getActiveAlgo()).toBe(res.slug)
+  })
+
+  test("rejects invalid kebab-case names", async () => {
+    await expect(ensureAlgoWorkspace("BadName", { root: algosRootDir })).rejects.toThrow(/kebab-case/)
   })
 })
 

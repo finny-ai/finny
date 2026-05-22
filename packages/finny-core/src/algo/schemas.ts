@@ -1,6 +1,43 @@
 import { z } from "zod"
+import { randomUUID } from "node:crypto"
 
+/** Matches a human-readable kebab-case algo name: `btc-mean-reversion-1h` */
 export const ALGO_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+/** Matches a slug (name + 8-char hex id): `btc-mean-reversion-1h.a3f8c9e2` */
+export const ALGO_SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*\.[a-f0-9]{8}$/
+
+/** Returns true if the string matches the `name.shortid` slug format. */
+export function isSlug(s: string): boolean {
+  return ALGO_SLUG_RE.test(s)
+}
+
+/** Returns true if the string is a valid algo identifier (name or slug). */
+export function isValidAlgoId(s: string): boolean {
+  return ALGO_NAME_RE.test(s) || ALGO_SLUG_RE.test(s)
+}
+
+/** Create a slug from a human name + optional short id. Generates a random id if omitted. */
+export function makeSlug(humanName: string, shortId?: string): string {
+  if (!ALGO_NAME_RE.test(humanName)) {
+    throw new Error(`invalid algo name: ${JSON.stringify(humanName)} (must be kebab-case)`)
+  }
+  const id = shortId ?? randomUUID().replace(/-/g, "").slice(0, 8)
+  return `${humanName}.${id}`
+}
+
+/** Split a slug into its human name and short id. */
+export function parseSlug(slug: string): { humanName: string; shortId: string } {
+  const dot = slug.lastIndexOf(".")
+  if (dot === -1) throw new Error(`not a slug: ${JSON.stringify(slug)}`)
+  return { humanName: slug.slice(0, dot), shortId: slug.slice(dot + 1) }
+}
+
+/** Extract the human-readable name from either a slug or a plain name. */
+export function humanNameOf(nameOrSlug: string): string {
+  return isSlug(nameOrSlug) ? parseSlug(nameOrSlug).humanName : nameOrSlug
+}
+
 // Zero-padded two digits: v01..v99 (no v00).
 export const VERSION_DIR_RE = /^v(?:0[1-9]|[1-9][0-9])$/
 

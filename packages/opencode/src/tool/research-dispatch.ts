@@ -3,7 +3,8 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { Effect } from "effect"
 import { Tool } from "./tool"
-import { algosRoot, algoDir } from "@finny-ai/core/algo/paths"
+import { algosRoot } from "@finny-ai/core/algo/paths"
+import { ensureAlgoWorkspace } from "@finny-ai/core/algo/active"
 import { DATA_NEWS_HEADLINES_DIR, DATA_NEWS_BODY_DIR } from "@finny-ai/core/algo/schemas"
 
 const parameters = z.object({
@@ -45,29 +46,18 @@ export const ResearchDispatchTool = Tool.define(
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
         const root = algosRoot()
         let dir: string
-        try {
-          dir = algoDir(params.algorithm, root)
-        } catch {
-          return {
-            title: "Invalid algorithm name",
-            output: `"${params.algorithm}" is not a valid kebab-case algorithm name.`,
-            metadata: { error: "invalid_name" },
-          }
-        }
+        let slug: string
+        let workspaceCreated = false
 
         try {
-          await fs.stat(dir)
+          const ensured = await ensureAlgoWorkspace(params.algorithm, { root })
+          workspaceCreated = ensured.created
+          dir = ensured.dir
+          slug = ensured.slug
         } catch (err: any) {
-          if (err?.code === "ENOENT") {
-            return {
-              title: "Algorithm not found",
-              output: `Algorithm "${params.algorithm}" not found at ${dir}. Create the algorithm first.`,
-              metadata: { error: "not_found" },
-            }
-          }
           return {
-            title: "Filesystem error",
-            output: `Could not access algorithm directory at ${dir}: ${err?.message ?? err}`,
+            title: "Workspace error",
+            output: `Could not prepare algorithm workspace for "${params.algorithm}": ${err?.message ?? err}`,
             metadata: { error: "fs_error" },
           }
         }
@@ -110,9 +100,11 @@ export const ResearchDispatchTool = Tool.define(
           output: prompt,
           metadata: {
             algorithm: params.algorithm,
+            algo_slug: slug,
             topic: params.topic,
             subagent: "researcher",
             dataDir: dir,
+            workspace_created: workspaceCreated,
           },
         }
       }),
