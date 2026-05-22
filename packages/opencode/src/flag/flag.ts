@@ -13,6 +13,9 @@ function falsy(key: string) {
 export namespace Flag {
   export const OTEL_EXPORTER_OTLP_ENDPOINT = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
   export const OTEL_EXPORTER_OTLP_HEADERS = process.env["OTEL_EXPORTER_OTLP_HEADERS"]
+  export const OPENCODE_TELEMETRY_URL = process.env["OPENCODE_TELEMETRY_URL"] ?? process.env["FINNY_TELEMETRY_URL"]
+  export const OPENCODE_TELEMETRY_TOKEN =
+    process.env["OPENCODE_TELEMETRY_TOKEN"] ?? process.env["FINNY_TELEMETRY_TOKEN"]
 
   export const OPENCODE_AUTO_SHARE = truthy("OPENCODE_AUTO_SHARE")
   export const OPENCODE_AUTO_HEAP_SNAPSHOT = truthy("OPENCODE_AUTO_HEAP_SNAPSHOT")
