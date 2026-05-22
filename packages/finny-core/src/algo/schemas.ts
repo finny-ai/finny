@@ -22,10 +22,10 @@ export function makeSlug(humanName: string, shortId?: string): string {
   if (!ALGO_NAME_RE.test(humanName)) {
     throw new Error(`invalid algo name: ${JSON.stringify(humanName)} (must be kebab-case)`)
   }
-  const id = shortId ?? randomUUID().replace(/-/g, "").slice(0, 8)
   if (shortId !== undefined && !/^[a-f0-9]{8}$/.test(shortId)) {
     throw new Error(`invalid shortId: ${JSON.stringify(shortId)} (must be 8 lowercase hex chars)`)
   }
+  const id = shortId ?? randomUUID().replace(/-/g, "").slice(0, 8)
   return `${humanName}.${id}`
 }
 
