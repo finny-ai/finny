@@ -391,14 +391,30 @@ For higher-confidence grading, also run:
 - **Hard ceiling: 3 iteration attempts per session.** If three rewrites in a row fail the gate, stop and tell the user. Don't keep fishing for a pass — that's exactly how overfitting happens.
 - **Report results truthfully.** When you summarize a backtest to the user, lead with the gate verdict, not the headline return. "Sharpe 1.4, max DD 12%, walk-forward verdict: robust" is the right opener; "made 23% in a month!" without context is the wrong one.
 
+### Strategy Simplicity Rules (MANDATORY for all new strategies)
+
+1. **Max 2 entry conditions ANDed together.** Stacking 3+ filters (RSI < 30 AND price < lower BB AND SMA uptrend AND volume > avg) creates a setup that fires once a year. Pick the 1-2 strongest signals.
+2. **No contradictory conditions.** "Uptrend + oversold" or "breakout + mean-reversion" are self-canceling. If you need both, use them as separate strategies, not ANDed entry conditions.
+3. **Warmup must be < 25% of backtest window.** A 200-bar SMA on a 300-bar daily dataset wastes 67% of the data on warmup. If the user asks for a 1-month backtest, use lookbacks ≤ ~7 bars.
+4. **Prefer DCA or breakout for first iteration.** These template types trade most reliably across regimes. If the user doesn't specify a strategy type, default to breakout or DCA — not momentum or mean-reversion which need specific regime conditions.
+5. **When 0 trades happen, READ the diagnostics block.** The backtester now emits a `ZERO-TRADE DIAGNOSTICS` section with buy attempts, rejected orders, price range, and likely cause. Read it before deciding what to fix.
+6. **Relax thresholds aggressively on retry.** RSI 30 → 38, Bollinger 2σ → 1.5σ, SMA 200 → 100. Small tweaks (RSI 30 → 28) won't change a zero-trade outcome.
+
 ### Zero-trade backtests — STOP, don't iterate
 
-If a backtest returns **0 trades**, do NOT immediately rewrite with a different signal (RSI → EMA → Donchian → ...). Cycling through signal designs in a regime where none fire is the #1 way to burn the step budget. After your first 0-trade backtest, exactly ONE retry is allowed, and only after you've done one of these two things:
+If a backtest returns **0 trades**, READ THE DIAGNOSTICS BLOCK FIRST. The backtester now shows:
+- **Buy attempts / Sell attempts** — did the strategy even try to trade?
+- **Rejected orders + reasons** — did orders fire but get rejected (insufficient cash, no price, etc.)?
+- **Price range** — was the asset flat or did it actually move?
+- **Strategy errors** — did `on_bar` throw exceptions?
+- **LIKELY CAUSE** — an automated diagnosis of the most probable root cause.
 
-1. **Widen filters dramatically** — drop one filter entirely (e.g., remove the SMA trend gate), loosen thresholds by ≥40% (RSI 51 → RSI 40, not RSI 50 → RSI 49), or shorten lookbacks. Small tweaks don't change zero-trade outcomes; only big changes do.
-2. **Stop and report to the user** — "Backtest fired 0 trades. The 2-week window had no setups matching the entry conditions (downtrend, sideways, etc.). Options: (a) widen the entry filter, (b) try a longer window, (c) switch to a regime-appropriate strategy type. Which would you like?"
+Use the diagnostics to decide the fix. Do NOT immediately rewrite with a different signal (RSI → EMA → Donchian → ...). After your first 0-trade backtest, exactly ONE retry is allowed, and only after you've done one of these two things:
 
-If the second backtest also returns 0 trades, **stop**. Do not write a third version. The regime almost certainly doesn't have the setups this strategy type needs — say so plainly and ask the user how to proceed. The user prefers an honest "this won't work here" over five wasted iterations.
+1. **Widen filters dramatically** — drop one filter entirely (e.g., remove the SMA trend gate), loosen thresholds by ≥40% (RSI 38 → RSI 45, not RSI 38 → RSI 36), or shorten lookbacks. Small tweaks don't change zero-trade outcomes; only big changes do.
+2. **Stop and report to the user** — include the diagnostics summary and options: (a) widen the entry filter, (b) try a longer window, (c) switch to a regime-appropriate strategy type.
+
+If the second backtest also returns 0 trades, **stop**. Do not write a third version.
 
 ### Implausible backtest metrics — don't trust them, surface them
 
@@ -824,8 +840,8 @@ The simulator charges realistic fees:
 | Parameter | Min | Recommended | Max |
 |-----------|-----|-------------|-----|
 | Lookback period | 10 | 20-50 | 200 |
-| RSI oversold | 20 | 30 | 40 |
-| RSI overbought | 60 | 70 | 80 |
+| RSI oversold | 25 | 38 | 45 |
+| RSI overbought | 55 | 62 | 75 |
 | Stop loss % | 1% | 2-5% | 10% |
 | Take profit % | 2% | 5-15% | 30% |
 | MA fast period | 5 | 10-20 | 50 |

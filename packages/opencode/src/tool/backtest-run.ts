@@ -42,12 +42,18 @@ export const BacktestRunTool = Tool.define(
           metadata: {},
         })
 
+        const emptyMeta = {
+          algorithmName: undefined as string | undefined,
+          params: undefined as { duration: string; interval: string; capital: string } | undefined,
+          results: undefined as BacktestRunner.Results | undefined,
+        }
+
         const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
           return {
             title: "Backtest failed",
             output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
-            metadata: {},
+            metadata: { ...emptyMeta },
           }
         }
 
@@ -62,29 +68,88 @@ export const BacktestRunTool = Tool.define(
           return {
             title: "Backtest failed",
             output: `Backtest of "${params.algorithmName}" failed:\n${result.error}`,
-            metadata: {},
+            metadata: { ...emptyMeta },
           }
         }
 
         const r = result.results
+        const fmt = (v: number, d = 2) => v.toFixed(d)
+        const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
+
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
           `Duration: ${params.duration} | Interval: ${params.interval} | Capital: $${params.capital}`,
           ``,
-          `Total Return: ${(r.totalReturn * 100).toFixed(2)}%`,
-          `Max Drawdown: ${(r.maxDrawdown * 100).toFixed(2)}%`,
-          `Annualized Volatility: ${(r.annualizedVolatility * 100).toFixed(2)}%`,
-          `Sharpe Ratio: ${r.sharpeRatio.toFixed(2)}`,
-          `Ending Equity: $${r.endingEquity.toFixed(2)}`,
-          `Total Trades: ${r.totalTrades}`,
-          `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
-          `Profit Factor: ${r.profitFactor.toFixed(2)}`,
+          `┌──────────────────────────────────────────────────┐`,
+          `│  BACKTEST RESULTS                                │`,
+          `├──────────────────────┬───────────────────────────┤`,
+          `│  Total Return        │  ${fmtPct(r.totalReturn).padStart(24)} │`,
+          `│  Ending Equity       │  ${("$" + fmt(r.endingEquity)).padStart(24)} │`,
+          `│  Max Drawdown        │  ${fmtPct(r.maxDrawdown).padStart(24)} │`,
+          `│  Sharpe Ratio        │  ${fmt(r.sharpeRatio).padStart(24)} │`,
+          `│  Total Trades        │  ${String(r.totalTrades).padStart(24)} │`,
+          `│  Win Rate            │  ${fmtPct(r.winRate).padStart(24)} │`,
+          `│  Profit Factor       │  ${fmt(r.profitFactor).padStart(24)} │`,
+          `│  Ann. Volatility     │  ${fmtPct(r.annualizedVolatility).padStart(24)} │`,
         ]
+
+        if (r.sortino !== undefined) {
+          lines.push(
+            `├──────────────────────┼───────────────────────────┤`,
+            `│  Sortino Ratio       │  ${fmt(r.sortino).padStart(24)} │`,
+            `│  Calmar Ratio        │  ${fmt(r.calmar ?? 0).padStart(24)} │`,
+            `│  VaR (95%)           │  ${fmtPct(r.var95 ?? 0).padStart(24)} │`,
+            `│  CVaR (95%)          │  ${fmtPct(r.cvar95 ?? 0).padStart(24)} │`,
+            `│  Max DD Duration     │  ${(String(r.maxDdDuration ?? 0) + " bars").padStart(24)} │`,
+            `│  Time in Market      │  ${fmtPct(r.timeInMarket ?? 0).padStart(24)} │`,
+          )
+        }
+
+        lines.push(`└──────────────────────┴───────────────────────────┘`)
+
+        if (r.totalTrades === 0 && r.diagnostics) {
+          const d = r.diagnostics
+          lines.push(
+            ``,
+            `── ZERO-TRADE DIAGNOSTICS ──────────────────────────`,
+            `Bars processed:  ${d.barsProcessed}`,
+            `Buy attempts:    ${d.buyAttempts}  |  Sell attempts: ${d.sellAttempts}`,
+            `Rejected orders: ${d.rejectedOrders}`,
+          )
+          if (Object.keys(d.rejectionReasons).length > 0) {
+            lines.push(`Rejection reasons:`)
+            for (const [reason, count] of Object.entries(d.rejectionReasons)) {
+              lines.push(`  • ${reason}: ${count}`)
+            }
+          }
+          if (d.priceFirst > 0) {
+            lines.push(`Price range:     $${fmt(d.priceFirst)} → $${fmt(d.priceLast)} (${fmtPct(d.priceRangePct)} range)`)
+          }
+          if (d.strategyErrors > 0) {
+            lines.push(`Strategy errors: ${d.strategyErrors} (check stderr for details)`)
+          }
+          if (d.buyAttempts === 0 && d.strategyErrors === 0) {
+            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered.`,`Thresholds may be too restrictive for this asset/regime.`)
+          } else if (d.rejectedOrders > 0 && d.rejectedOrders === d.buyAttempts) {
+            lines.push(``, `LIKELY CAUSE: All buy orders were rejected (${Object.keys(d.rejectionReasons).join(", ")}).`)
+          } else if (d.strategyErrors > 0) {
+            lines.push(``, `LIKELY CAUSE: Strategy raised ${d.strategyErrors} exceptions — the trading logic may be broken.`)
+          }
+          lines.push(`────────────────────────────────────────────────────`)
+        }
 
         return {
           title: `Backtest: ${algo.name} (${params.duration}, ${params.interval})`,
           output: lines.join("\n"),
-          metadata: {},
+          metadata: {
+            algorithmName: algo.name,
+            params: {
+              duration: params.duration,
+              interval: params.interval,
+              capital: params.capital,
+            },
+            results: r,
+          },
         }
       }),
   }),

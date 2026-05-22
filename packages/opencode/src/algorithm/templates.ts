@@ -57,8 +57,8 @@ class Strategy:
         self.broker = broker
         p = params or {}
         self.period = int(p.get("period", 14))
-        self.overbought = float(p.get("overbought", 70))
-        self.oversold = float(p.get("oversold", 30))
+        self.overbought = float(p.get("overbought", 62))
+        self.oversold = float(p.get("oversold", 38))
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.02))
         self.gains = deque(maxlen=self.period)
@@ -128,7 +128,7 @@ class Strategy:
         self.broker = broker
         p = params or {}
         self.period = int(p.get("period", 20))
-        self.num_std = float(p.get("num_std", 2.0))
+        self.num_std = float(p.get("num_std", 1.5))
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.02))
         self.prices = deque(maxlen=self.period)
@@ -263,7 +263,7 @@ class Strategy:
         self.broker = broker
         p = params or {}
         self.fast_period = int(p.get("fast_period", 50))
-        self.slow_period = int(p.get("slow_period", 200))
+        self.slow_period = int(p.get("slow_period", 100))
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.05))
         self.prices = deque(maxlen=self.slow_period)

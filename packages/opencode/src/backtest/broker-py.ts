@@ -244,7 +244,45 @@ class SimBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(),
         )
         self._orders.append(order)
+        log_err(f"[SimBroker] order rejected: {side} {symbol} — {reason}")
         return order
+
+    def diagnostics(self) -> Dict[str, Any]:
+        filled = [o for o in self._orders if o.status == "filled"]
+        rejected = [o for o in self._orders if o.status.startswith("rejected")]
+        buy_attempts = sum(1 for o in self._orders if o.side == "buy")
+        sell_attempts = sum(1 for o in self._orders if o.side == "sell")
+        rejection_reasons: Dict[str, int] = {}
+        for o in rejected:
+            reason = o.status.replace("rejected: ", "")
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        return {
+            "total_orders": len(self._orders),
+            "filled_orders": len(filled),
+            "rejected_orders": len(rejected),
+            "buy_attempts": buy_attempts,
+            "sell_attempts": sell_attempts,
+            "rejection_reasons": rejection_reasons,
+            "final_cash": self._cash,
+            "final_equity": self._equity_curve[-1] if self._equity_curve else self._cash,
+        }
+
+
+class ScanBroker(SimBroker):
+    """Dry-run broker that counts signals without executing trades."""
+
+    def __init__(self, starting_cash: float):
+        super().__init__(starting_cash)
+        self.buy_signals = 0
+        self.sell_signals = 0
+
+    def buy(self, symbol, qty=None, notional=None):
+        self.buy_signals += 1
+        return self._record(symbol, "buy", 0, 0, "scan")
+
+    def sell(self, symbol, qty=None, notional=None):
+        self.sell_signals += 1
+        return self._record(symbol, "sell", 0, 0, "scan")
 
 
 class AlpacaBroker(Broker):
