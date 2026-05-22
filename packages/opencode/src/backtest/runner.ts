@@ -255,6 +255,13 @@ print(f"Downloaded {len(df)} rows")
           totalTrades: v2.total_trades,
           winRate: v2.win_rate,
           profitFactor: v2.profit_factor,
+          // Extended metrics from v2 sub-blocks
+          sortino: v2.ratios?.sortino,
+          calmar: v2.ratios?.calmar ?? undefined,
+          var95: v2.risk?.var_95,
+          cvar95: v2.risk?.cvar_95,
+          maxDdDuration: v2.drawdown?.max_dd_duration_bars,
+          timeInMarket: v2.exposure?.time_in_market_pct != null ? v2.exposure.time_in_market_pct / 100 : undefined,
           v2,
         }
       }
@@ -366,15 +373,17 @@ def main():
         scan = ScanBroker(starting_cash=args.capital)
         strategy_path = Path(__file__).parent / "strategy.py"
         scan_step = load_strategy(strategy_path, scan, params=params)
+        scan_strategy_errors = 0
         for bar in bars:
             scan.set_price(symbol, bar["close"])
             try:
                 scan_step(symbol, bar)
             except Exception:
-                pass
+                scan_strategy_errors += 1
             scan.mark_to_market()
         print(f"scan_buy_signals: {scan.buy_signals}")
         print(f"scan_sell_signals: {scan.sell_signals}")
+        print(f"scan_strategy_errors: {scan_strategy_errors}")
         print(f"scan_bars_total: {len(bars)}")
         return
 
@@ -418,7 +427,7 @@ def main():
     max_dd_duration = 0
     dd_start_bar = 0
     for i, eq in enumerate(eq_curve):
-        if eq > peak:
+        if eq >= peak:
             peak = eq
             dd_start_bar = i
         dd = (peak - eq) / peak if peak > 0 else 0.0
@@ -468,10 +477,9 @@ def main():
             var_95 = abs(sorted_returns[var_idx]) if sorted_returns else 0
             cvar_tail = sorted_returns[:var_idx + 1]
             cvar_95 = abs(sum(cvar_tail) / len(cvar_tail)) if cvar_tail else 0
-            # Time in market
-            orders = broker.orders
-            bars_in_market = sum(1 for eq_i in range(1, len(eq_curve)) if abs(eq_curve[eq_i] - eq_curve[eq_i-1]) > 0.01)
-            time_in_market = bars_in_market / max(1, len(eq_curve) - 1)
+            # Time in market: count bars where position was non-zero
+            bars_in_market = sum(1 for h in broker.position_history if h != 0) if hasattr(broker, 'position_history') else 0
+            time_in_market = bars_in_market / max(1, bar_count)
         else:
             ann_vol = ann_sharpe = sortino = calmar = var_95 = cvar_95 = time_in_market = 0
     else:
@@ -862,8 +870,10 @@ if __name__ == "__main__":
       if (scanResult.code === 0) {
         const scanOut = scanResult.stdout.toString()
         const scanBuys = parseInt(scanOut.match(/scan_buy_signals:\s*(\d+)/)?.[1] ?? "1", 10)
+        const scanErrors = parseInt(scanOut.match(/scan_strategy_errors:\s*(\d+)/)?.[1] ?? "0", 10)
         const scanBars = parseInt(scanOut.match(/scan_bars_total:\s*(\d+)/)?.[1] ?? "0", 10)
-        if (scanBuys === 0 && scanBars > 0) {
+        // Only short-circuit if zero signals AND no strategy errors (errors could mask real signals)
+        if (scanBuys === 0 && scanBars > 0 && scanErrors === 0) {
           emit({
             eventType: "backtest.scan_zero_signals",
             algorithmId: algorithm.algorithmId,

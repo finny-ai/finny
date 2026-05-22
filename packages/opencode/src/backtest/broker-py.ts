@@ -121,6 +121,7 @@ class SimBroker(Broker):
         self._orders: list = []
         self._trade_pnls: list = []
         self._equity_curve: list = [float(starting_cash)]
+        self._position_history: list = []
         self._order_counter = 0
 
     @property
@@ -142,11 +143,18 @@ class SimBroker(Broker):
     def set_price(self, symbol: str, price: float) -> None:
         self._last_price[symbol] = float(price)
 
+    @property
+    def position_history(self) -> list:
+        return list(self._position_history)
+
     def mark_to_market(self) -> float:
         eq = self._cash
+        total_pos = 0.0
         for sym, qty in self._positions.items():
             eq += qty * self._last_price.get(sym, 0)
+            total_pos += abs(qty)
         self._equity_curve.append(eq)
+        self._position_history.append(total_pos)
         return eq
 
     def buy(self, symbol, qty=None, notional=None):

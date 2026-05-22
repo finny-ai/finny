@@ -10,10 +10,17 @@ const DURATION_LABELS: Record<string, string> = {
   "1y": "1 Year",
 }
 
-function fmtPct(value: number): string {
+/** Signed percent for returns (shows +/-) */
+function fmtSignedPct(value: number): string {
   const pct = value * 100
   const sign = pct >= 0 ? "+" : ""
   return `${sign}${pct.toFixed(2)}%`
+}
+
+/** Unsigned percent for rates/risk metrics */
+function fmtPct(value: number): string {
+  const pct = value * 100
+  return `${pct.toFixed(2)}%`
 }
 
 function fmtUsd(value: number): string {
@@ -27,8 +34,6 @@ function fmtNum(value: number, decimals = 2): string {
 // Fixed-width columns: label = 22 chars, value = 16 chars
 const LW = 22
 const VW = 16
-const TOTAL = LW + VW + 5 // 5 = "│ " + " │ " + " │"
-
 const hline = (left: string, mid: string, right: string) =>
   `${left}${"─".repeat(LW + 2)}${mid}${"─".repeat(VW + 2)}${right}`
 
@@ -54,7 +59,7 @@ export function BacktestResultsView(props: {
     r().winRate >= 0.5 ? theme.success : r().winRate < 0.3 ? theme.error : theme.text
 
   const coreRows = (): RowData[] => [
-    { label: "Total Return", value: fmtPct(r().totalReturn), color: returnColor(), bold: true },
+    { label: "Total Return", value: fmtSignedPct(r().totalReturn), color: returnColor(), bold: true },
     { label: "Max Drawdown", value: fmtPct(r().maxDrawdown), color: theme.error },
     { label: "Sharpe Ratio", value: fmtNum(r().sharpeRatio), color: sharpeColor() },
     { label: "Volatility", value: fmtPct(r().annualizedVolatility) },
