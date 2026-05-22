@@ -72,9 +72,9 @@ Research the following topic deeply and write findings to the algo data director
 {topic — e.g. "BTC market conditions and catalysts over the last 30 days for a 1h mean-reversion strategy"}
 
 ## Output directory
-First, find the algo workspace by running: ls ~/.local/share/finny/algos/{algo_name}.*
-Pick the most recently created directory (the data extractor creates it in parallel).
-If no slug directory exists yet, use: ~/.local/share/finny/algos/{algo_name}/
+First, find the active algo workspace by running: ls -1dt ~/.local/share/finny/algos/{algo_name}.* 2>/dev/null | head -n1
+Use the returned path as <workspace> (the data extractor creates it in parallel).
+If no slug directory exists yet, wait a few seconds and retry — the data extractor creates it. Do NOT fall back to ~/.local/share/finny/algos/{algo_name}/ (that's a legacy path from a different session).
 
 Write files to:
 - Headlines: <workspace>/data/news/headlines/

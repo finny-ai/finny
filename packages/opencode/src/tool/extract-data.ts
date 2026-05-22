@@ -35,7 +35,13 @@ function classifyRegime(digest: any): Regime {
   const dd = Math.abs(digest?.performance?.max_drawdown_pct ?? 0)
 
   const price = digest?.price ?? {}
-  const range = price.high && price.low ? (price.high - price.low) / price.median : 0
+  const high = price.high
+  const low = price.low
+  const median = price.median
+  const range =
+    Number.isFinite(high) && Number.isFinite(low) && Number.isFinite(median) && median !== 0
+      ? (high - low) / median
+      : 0
 
   // High vol + small net return = chop
   if (vol > 60 && Math.abs(ret) < 10) {
@@ -116,12 +122,12 @@ function deriveSuggestions(digest: any, interval: string, regime: Regime): Sugge
       notes.push("Range-bound regime favors mean-reversion — fade extremes, tight stops")
       break
     case "trending-up":
-      stratTypes.push("momentum-pullback", "breakout-continuation", "mean-reversion (counter-trend, higher risk)")
-      notes.push("Trending up — mean-reversion shorts are counter-trend; consider long-only or pullback entries")
+      stratTypes.push("momentum-pullback", "breakout-continuation", "trend-following-long")
+      notes.push("Trending up — favor long-only trend-following and pullback entries; avoid mean-reversion setups")
       break
     case "trending-down":
-      stratTypes.push("momentum-short", "mean-reversion (counter-trend bounces)", "breakout-continuation-short")
-      notes.push("Trending down — mean-reversion longs are counter-trend; widen stops or reduce size")
+      stratTypes.push("momentum-short", "breakout-continuation-short", "trend-following-short")
+      notes.push("Trending down — favor short-biased trend-following entries; avoid mean-reversion setups")
       break
     case "high-vol-chop":
       stratTypes.push("mean-reversion (wide bands)", "volatility-breakout", "reduced-size-scalping")
@@ -155,7 +161,7 @@ function buildDataBrief(p: {
     `| Period | ${p.start} → ${p.end} |`,
     `| Bars | ${p.bars} from ${p.source} |`,
     `| Parquet | \`${p.parquetPath}\` |`,
-    `| Algorithm | ${path.basename(path.dirname(p.parquetPath) + "/..")}${p.workspaceCreated ? " (workspace bootstrapped)" : ""} |`,
+    `| Algorithm | ${path.basename(path.resolve(path.dirname(p.parquetPath), "..", ".."))}${p.workspaceCreated ? " (workspace bootstrapped)" : ""} |`,
     "",
     `## Regime`,
     "",

@@ -81,11 +81,17 @@ export async function resolveAlgoDir(
   }
 
   if (matches.length === 1) {
-    return { dir: path.join(root, matches[0]!.name), slug: matches[0]!.name }
+    const dir = path.join(root, matches[0]!.name)
+    try {
+      await fs.stat(path.join(dir, MISSION_FILE))
+    } catch {
+      throw new Error(`algo "${nameOrSlug}" found at ${dir} but missing ${MISSION_FILE}`)
+    }
+    return { dir, slug: matches[0]!.name }
   }
 
   // Multiple matches — pick the most recently modified (by mission.md mtime)
-  let best = matches[0]!
+  let best: import("node:fs").Dirent | null = null
   let bestMtime = 0
   for (const m of matches) {
     try {
@@ -97,6 +103,9 @@ export async function resolveAlgoDir(
     } catch {
       // skip broken entries
     }
+  }
+  if (!best) {
+    throw new Error(`algo "${nameOrSlug}": found ${matches.length} slug directories but none contain a valid ${MISSION_FILE}`)
   }
   return { dir: path.join(root, best.name), slug: best.name }
 }

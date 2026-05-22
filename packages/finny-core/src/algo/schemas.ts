@@ -23,6 +23,9 @@ export function makeSlug(humanName: string, shortId?: string): string {
     throw new Error(`invalid algo name: ${JSON.stringify(humanName)} (must be kebab-case)`)
   }
   const id = shortId ?? randomUUID().replace(/-/g, "").slice(0, 8)
+  if (shortId !== undefined && !/^[a-f0-9]{8}$/.test(shortId)) {
+    throw new Error(`invalid shortId: ${JSON.stringify(shortId)} (must be 8 lowercase hex chars)`)
+  }
   return `${humanName}.${id}`
 }
 
