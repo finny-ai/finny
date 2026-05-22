@@ -73,7 +73,7 @@ export function BacktestResultsView(props: {
   ]
 
   const extendedRows = (): RowData[] =>
-    r().sortino !== undefined
+    r().sortino !== undefined && r().totalTrades > 0
       ? [
           { label: "Sortino Ratio", value: fmtNum(r().sortino ?? 0) },
           { label: "Calmar Ratio", value: fmtNum(r().calmar ?? 0) },
@@ -84,7 +84,7 @@ export function BacktestResultsView(props: {
         ]
       : []
 
-  const hasDiagnostics = () => r().totalTrades === 0 && r().diagnostics
+  const hasDiagnostics = () => r().totalTrades === 0 && !!r().diagnostics
   const diag = () => r().diagnostics!
 
   const diagRows = (): RowData[] =>

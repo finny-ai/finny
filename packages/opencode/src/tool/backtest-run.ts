@@ -148,7 +148,8 @@ export const BacktestRunTool = Tool.define(
               interval: params.interval,
               capital: params.capital,
             },
-            results: r,
+            // Omit v2 blob from metadata to keep session payload lean
+            results: { ...r, v2: undefined },
           },
         }
       }),

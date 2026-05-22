@@ -284,8 +284,10 @@ print(f"Downloaded {len(df)} rows")
     if (!("ending_equity" in metrics)) return null
 
     let diagnostics: Diagnostics | undefined
+    const totalTrades = metrics["total_trades"] ?? 0
     const diagBars = metrics["diag_bars_processed"]
-    if (diagBars !== undefined) {
+    // Only attach diagnostics on zero-trade runs to keep payloads lean
+    if (diagBars !== undefined && totalTrades === 0) {
       let rejectionReasons: Record<string, number> = {}
       const rrLine = lines.find(l => l.startsWith("diag_rejection_reasons:"))
       if (rrLine) {
