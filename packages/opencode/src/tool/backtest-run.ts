@@ -93,7 +93,7 @@ export const BacktestRunTool = Tool.define(
           `│  Ann. Volatility     │  ${fmtPct(r.annualizedVolatility).padStart(24)} │`,
         ]
 
-        if (r.sortino !== undefined) {
+        if (r.sortino !== undefined && r.totalTrades > 0) {
           lines.push(
             `├──────────────────────┼───────────────────────────┤`,
             `│  Sortino Ratio       │  ${fmt(r.sortino).padStart(24)} │`,

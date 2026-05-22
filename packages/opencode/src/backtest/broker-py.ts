@@ -123,6 +123,7 @@ class SimBroker(Broker):
         self._equity_curve: list = [float(starting_cash)]
         self._position_history: list = []
         self._order_counter = 0
+        self._reject_log_count = 0
 
     @property
     def starting_cash(self) -> float:
@@ -252,7 +253,11 @@ class SimBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(),
         )
         self._orders.append(order)
-        log_err(f"[SimBroker] order rejected: {side} {symbol} — {reason}")
+        self._reject_log_count += 1
+        if self._reject_log_count <= 5:
+            log_err(f"[SimBroker] order rejected: {side} {symbol} — {reason}")
+            if self._reject_log_count == 5:
+                log_err("[SimBroker] further rejection logs suppressed (see diagnostics)")
         return order
 
     def diagnostics(self) -> Dict[str, Any]:
