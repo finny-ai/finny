@@ -90,7 +90,10 @@ function deriveSuggestions(digest: any, interval: string, regime: Regime): Sugge
   const vol = digest?.performance?.annualized_volatility_pct ?? 30
   const dd = Math.abs(digest?.performance?.max_drawdown_pct ?? 10)
   const price = digest?.price ?? {}
-  const range = price.high && price.low && price.median ? (price.high - price.low) / price.median : 0.2
+  const range =
+    Number.isFinite(price.high) && Number.isFinite(price.low) && Number.isFinite(price.median) && price.median !== 0
+      ? (price.high - price.low) / price.median
+      : 0.2
 
   // Bar-level vol estimate (rough)
   const barsPerYear: Record<string, number> = { "1m": 525600, "5m": 105120, "15m": 35040, "30m": 17520, "1h": 8760, "4h": 2190, "1d": 365 }

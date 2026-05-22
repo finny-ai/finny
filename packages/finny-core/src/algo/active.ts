@@ -153,8 +153,8 @@ export interface EnsureAlgoWorkspaceOptions extends ActiveAlgoOptions {
  *
  * Idempotent when called with the same slug. Never overwrites an existing `mission.md`.
  *
- * Used by subagent-facing tools (`finny_extract_data`, `finny_research_dispatch`)
- * so the agent can dispatch research before authoring the strategy.
+ * Used by `finny_extract_data` and the researcher subagent workflow
+ * so data gathering can start before strategy authoring.
  */
 export async function ensureAlgoWorkspace(
   nameOrSlug: string,

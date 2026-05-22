@@ -1,7 +1,7 @@
 import { homedir } from "node:os"
 import path from "node:path"
 import fs from "node:fs/promises"
-import { ALGO_NAME_RE, ALGO_SLUG_RE, VERSION_DIR_RE, isValidAlgoId, humanNameOf, MISSION_FILE } from "./schemas"
+import { ALGO_NAME_RE, ALGO_SLUG_RE, VERSION_DIR_RE, isValidAlgoId, MISSION_FILE } from "./schemas"
 
 const TEMPLATE_DIR = "_template"
 

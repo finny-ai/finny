@@ -44,13 +44,13 @@ async function seedAlgo(root: string, name: string = "trump-china-swing") {
     MISSION_YAML.replace("trump-china-swing", name),
   )
   mission.frontmatter.name = name
-  await writeAlgo({
+  const { dir } = await writeAlgo({
     root,
     mission,
     current: "v01",
     versions: { v01: { strategy: "class Strategy:\n    pass\n" } },
   })
-  return path.join(root, name)
+  return dir
 }
 
 async function setupEnv(): Promise<{ algosPath: string; algoDir: string }> {
@@ -211,14 +211,13 @@ describe("news data structure contract", () => {
   test("writeAlgo creates both headlines and body directories", async () => {
     const root = await mkSandbox()
     const mission = parseMission(MISSION_YAML)
-    await writeAlgo({
+    const { dir: algoDir } = await writeAlgo({
       root,
       mission,
       current: "v01",
       versions: { v01: { strategy: "class Strategy:\n    pass\n" } },
     })
 
-    const algoDir = path.join(root, "trump-china-swing")
     const headlinesStat = await fs.stat(
       path.join(algoDir, DATA_NEWS_HEADLINES_DIR),
     )
@@ -417,9 +416,10 @@ describe("main agent prompts reference researcher", () => {
 
   const PROMPT_FILES = ["finny-build.txt", "finny-research.txt", "finny-chat.txt"]
 
-  test.each(PROMPT_FILES)("%s mentions finny_research_dispatch", async (file) => {
+  test.each(PROMPT_FILES)("%s mentions the researcher workflow", async (file) => {
     const content = await fs.readFile(path.join(PROMPT_DIR, file), "utf8")
-    expect(content).toContain("finny_research_dispatch")
+    // finny-build.txt uses inline researcher prompts; others still reference the dispatch tool
+    expect(content).toMatch(/finny_research_dispatch|researcher/)
   })
 
   test.each(PROMPT_FILES)("%s describes a background dispatch workflow", async (file) => {
