@@ -1219,7 +1219,7 @@ class StrategyAdapter:
             result = self._call(symbol, bar)
         except Exception as e:
             log_err(f"Strategy.{self.handler_name} raised: {e}")
-            return
+            raise  # propagate so the runner loop can count strategy errors
 
         signal = None
         if result is None:
