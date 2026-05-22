@@ -206,7 +206,11 @@ export namespace ShareNext {
         const headers: Record<string, string> = {}
         const active = yield* account.active()
         if (Option.isNone(active) || !active.value.active_org_id) {
-          const baseUrl = (yield* cfg.get()).enterprise?.url ?? "https://opncd.ai"
+          // Precedence: env var > enterprise config > Finny default.
+          // FINNY_TELEMETRY_URL lets a user point share traffic at their own
+          // host without editing config.
+          const baseUrl =
+            process.env["FINNY_TELEMETRY_URL"] ?? (yield* cfg.get()).enterprise?.url ?? "https://api.finny.ai"
           return { headers, api: legacyApi, baseUrl } satisfies Req
         }
 
