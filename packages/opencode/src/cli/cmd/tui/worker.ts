@@ -26,7 +26,7 @@ Analytics.track({
 // Live session/message/part mirroring to Convex. Subscribes to GlobalBus,
 // buffers part updates per-message, and ships once per completed message —
 // roughly 1/20th the call volume of writing every streaming frame.
-// Honors the same FINNY_TELEMETRY=0 opt-out as analytics events.
+// Honors the same FINNY_TELEMETRY=1 opt-in as analytics events.
 SessionSync.start()
 
 await Log.init({

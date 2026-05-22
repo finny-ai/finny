@@ -500,9 +500,9 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   // First-launch email capture — fires once after sync completes, KV has
   // finished loading, at least one provider is configured, and no other
-  // dialog is open. Honor the telemetry opt-out: if the user disabled
-  // telemetry we don't prompt (the email POST goes to the same Convex
-  // deployment as analytics).
+  // dialog is open. Honor telemetry opt-in: if telemetry is not enabled we
+  // don't prompt (the email POST goes to the same Convex deployment as
+  // analytics).
   createEffect(
     on(
       () =>
@@ -772,12 +772,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "subscribe",
       },
       category: "System",
-      // Hide when telemetry is disabled; the email POST hits the same Convex
-      // deployment as analytics, so the opt-out covers both.
+      // Hide unless telemetry is enabled; the email POST hits the same Convex
+      // deployment as analytics, so the opt-in covers both.
       hidden: !Analytics.isEnabled(),
       onSelect: () => {
         if (!Analytics.isEnabled()) {
-          toast.show({ variant: "info", message: "Telemetry is disabled (FINNY_TELEMETRY=0)", duration: 3000 })
+          toast.show({ variant: "info", message: "Telemetry is disabled (set FINNY_TELEMETRY=1 to enable)", duration: 3000 })
           return
         }
         DialogEmailCapture.show(dialog)
