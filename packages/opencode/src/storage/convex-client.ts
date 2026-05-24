@@ -13,11 +13,31 @@ export const NotFoundError = NamedError.create(
 
 const log = Log.create({ service: "convex" })
 
+// No default Convex deployment is baked in. When CONVEX_URL is unset, the
+// client is a no-op proxy whose every method resolves to null, so the CLI
+// makes no outbound Convex calls. Set CONVEX_URL explicitly to opt in.
 export const convexClient = lazy(() => {
-  const url = process.env.CONVEX_URL || "https://brave-shark-548.convex.cloud"
+  const url = process.env.CONVEX_URL
+  if (!url) {
+    log.info("CONVEX_URL not set, Convex client disabled (no-op)")
+    return noopConvexClient()
+  }
   log.info("connecting to Convex", { url })
   return new ConvexHttpClient(url)
 })
+
+function noopConvexClient(): ConvexHttpClient {
+  const noop = async () => null
+  return new Proxy({} as ConvexHttpClient, {
+    get: (_target, prop) => {
+      // Don't be accidentally thenable: returning a function for `then`
+      // would make `await convexClient()` hang, since the would-be
+      // then(resolve, reject) callback would never call resolve.
+      if (prop === "then" || typeof prop === "symbol") return undefined
+      return noop
+    },
+  })
+}
 
 export namespace Database {
   export function close() {
