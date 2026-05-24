@@ -51,6 +51,8 @@ import type { SkillTool } from "@/tool/skill"
 import { useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "@tui/context/sdk"
 import { useCommandDialog } from "@tui/component/dialog-command"
+import { BacktestResultsView } from "@tui/component/backtest-results-view"
+import type { BacktestRunner } from "@/backtest/runner"
 import type { DialogContext } from "@tui/ui/dialog"
 import { useKeybind } from "@tui/context/keybind"
 import { parsePatch } from "diff"
@@ -1569,6 +1571,8 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
     }
     if (ctx.showDetails()) return false
     if (props.part.state.status !== "completed") return false
+    // Always show backtest results — they're the whole point of the tool call
+    if (props.part.tool === "finny_backtest_run") return false
     return true
   })
 
@@ -1643,6 +1647,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "skill"}>
           <Skill {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "finny_backtest_run"}>
+          <FinnyBacktestRun {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
@@ -1659,6 +1666,46 @@ type ToolProps<T> = {
   output?: string
   part: ToolPart
 }
+function FinnyBacktestRun(props: ToolProps<any>) {
+  const { theme } = useTheme()
+  const meta = () =>
+    props.metadata as
+      | { algorithmName: string; params: { duration: string; interval: string; capital: string }; results: BacktestRunner.Results }
+      | undefined
+  const hasResults = () => {
+    const m = meta()
+    return m && m.results && m.algorithmName
+  }
+
+  return (
+    <Show
+      when={hasResults()}
+      fallback={
+        <Show
+          when={props.output}
+          fallback={
+            <InlineTool icon="📊" pending="Running backtest..." complete={props.part.state.status === "completed"} part={props.part}>
+              finny_backtest_run {input(props.input)}
+            </InlineTool>
+          }
+        >
+          <BlockTool title="# Backtest Results" part={props.part}>
+            <text fg={theme.text}>{props.output}</text>
+          </BlockTool>
+        </Show>
+      }
+    >
+      <BlockTool title="# Backtest Results" part={props.part}>
+        <BacktestResultsView
+          algorithmName={meta()!.algorithmName}
+          params={meta()!.params}
+          results={meta()!.results}
+        />
+      </BlockTool>
+    </Show>
+  )
+}
+
 function GenericTool(props: ToolProps<any>) {
   const { theme } = useTheme()
   const ctx = use()

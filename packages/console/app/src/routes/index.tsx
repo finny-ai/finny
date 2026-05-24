@@ -721,7 +721,7 @@ export default function Home() {
                     {i18n.t("nav.github")}
                   </a>{" "}
                   {i18n.t("home.faq.a8.p2")}{" "}
-                  <a href={`${config.github.repoUrl}?tab=MIT-1-ov-file#readme`} target="_blank">
+                  <a href={`${config.github.repoUrl}/blob/main/LICENSE`} target="_blank">
                     {i18n.t("home.faq.a8.mitLicense")}
                   </a>
                   {i18n.t("home.faq.a8.p3")}

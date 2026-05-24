@@ -28,6 +28,18 @@ export namespace BacktestRunner {
     configOverrides?: Record<string, unknown>
   }
 
+  export interface Diagnostics {
+    barsProcessed: number
+    buyAttempts: number
+    sellAttempts: number
+    rejectedOrders: number
+    rejectionReasons: Record<string, number>
+    priceFirst: number
+    priceLast: number
+    priceRangePct: number
+    strategyErrors: number
+  }
+
   export interface Results {
     totalReturn: number
     maxDrawdown: number
@@ -37,6 +49,13 @@ export namespace BacktestRunner {
     totalTrades: number
     winRate: number
     profitFactor: number
+    sortino?: number
+    calmar?: number
+    var95?: number
+    cvar95?: number
+    maxDdDuration?: number
+    timeInMarket?: number
+    diagnostics?: Diagnostics
     /**
      * Full engine_v2 result blob. Present when the run completed via the v2
      * engine (the default). Carries all the new metric blocks, trades, MC,
@@ -236,6 +255,13 @@ print(f"Downloaded {len(df)} rows")
           totalTrades: v2.total_trades,
           winRate: v2.win_rate,
           profitFactor: v2.profit_factor,
+          // Extended metrics from v2 sub-blocks
+          sortino: v2.ratios?.sortino,
+          calmar: v2.ratios?.calmar ?? undefined,
+          var95: v2.risk?.var_95,
+          cvar95: v2.risk?.cvar_95,
+          maxDdDuration: v2.drawdown?.max_dd_duration_bars,
+          timeInMarket: v2.exposure?.time_in_market_pct != null ? v2.exposure.time_in_market_pct / 100 : undefined,
           v2,
         }
       }
@@ -256,6 +282,30 @@ print(f"Downloaded {len(df)} rows")
       }
     }
     if (!("ending_equity" in metrics)) return null
+
+    let diagnostics: Diagnostics | undefined
+    const totalTrades = metrics["total_trades"] ?? 0
+    const diagBars = metrics["diag_bars_processed"]
+    // Only attach diagnostics on zero-trade runs to keep payloads lean
+    if (diagBars !== undefined && totalTrades === 0) {
+      let rejectionReasons: Record<string, number> = {}
+      const rrLine = lines.find(l => l.startsWith("diag_rejection_reasons:"))
+      if (rrLine) {
+        try { rejectionReasons = JSON.parse(rrLine.split(": ", 2)[1]) } catch {}
+      }
+      diagnostics = {
+        barsProcessed: diagBars,
+        buyAttempts: metrics["diag_buy_attempts"] ?? 0,
+        sellAttempts: metrics["diag_sell_attempts"] ?? 0,
+        rejectedOrders: metrics["diag_rejected_orders"] ?? 0,
+        rejectionReasons,
+        priceFirst: metrics["diag_price_first"] ?? 0,
+        priceLast: metrics["diag_price_last"] ?? 0,
+        priceRangePct: metrics["diag_price_range_pct"] ?? 0,
+        strategyErrors: metrics["diag_strategy_errors"] ?? 0,
+      }
+    }
+
     return {
       totalReturn: metrics["total_return"] ?? 0,
       maxDrawdown: metrics["max_drawdown"] ?? 0,
@@ -265,6 +315,13 @@ print(f"Downloaded {len(df)} rows")
       totalTrades: metrics["total_trades"] ?? 0,
       winRate: metrics["win_rate"] ?? 0,
       profitFactor: metrics["profit_factor"] ?? 0,
+      sortino: metrics["sortino"],
+      calmar: metrics["calmar"],
+      var95: metrics["var_95"],
+      cvar95: metrics["cvar_95"],
+      maxDdDuration: metrics["max_dd_duration"],
+      timeInMarket: metrics["time_in_market"],
+      diagnostics,
     }
   }
 
@@ -280,7 +337,7 @@ import argparse, csv, json, math, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from finny_broker import SimBroker, load_strategy
+from finny_broker import SimBroker, ScanBroker, load_strategy
 
 def main():
     ap = argparse.ArgumentParser()
@@ -288,15 +345,12 @@ def main():
     ap.add_argument("--config", required=True)
     ap.add_argument("--interval", required=True)
     ap.add_argument("--capital", type=float, required=True)
+    ap.add_argument("--scan-only", action="store_true")
     args = ap.parse_args()
 
     cfg = json.loads(Path(args.config).read_text())
     symbol = cfg.get("symbol", "ETH/USD")
     params = cfg.get("params", {})
-
-    broker = SimBroker(starting_cash=args.capital)
-    strategy_path = Path(__file__).parent / "strategy.py"
-    step = load_strategy(strategy_path, broker, params=params)
 
     bars = []
     with open(args.csv, newline="") as f:
@@ -316,43 +370,77 @@ def main():
         print("ending_equity: 0", file=sys.stderr)
         sys.exit(1)
 
+    # ── PRE-FLIGHT SIGNAL SCAN ──
+    if args.scan_only:
+        scan = ScanBroker(starting_cash=args.capital)
+        strategy_path = Path(__file__).parent / "strategy.py"
+        scan_step = load_strategy(strategy_path, scan, params=params)
+        scan_strategy_errors = 0
+        for bar in bars:
+            scan.set_price(symbol, bar["close"])
+            try:
+                scan_step(symbol, bar)
+            except Exception:
+                scan_strategy_errors += 1
+            scan.mark_to_market()
+        print(f"scan_buy_signals: {scan.buy_signals}")
+        print(f"scan_sell_signals: {scan.sell_signals}")
+        print(f"scan_strategy_errors: {scan_strategy_errors}")
+        print(f"scan_bars_total: {len(bars)}")
+        return
+
+    # ── FULL BACKTEST ──
+    broker = SimBroker(starting_cash=args.capital)
+    strategy_path = Path(__file__).parent / "strategy.py"
+    step = load_strategy(strategy_path, broker, params=params)
+
+    bar_count = 0
+    strategy_errors = 0
+    price_high = -math.inf
+    price_low = math.inf
+    first_price = bars[0]["close"]
+    last_price = bars[-1]["close"]
+
     for bar in bars:
         broker.set_price(symbol, bar["close"])
+        bar_count += 1
+        px = bar["close"]
+        if px > price_high:
+            price_high = px
+        if px < price_low:
+            price_low = px
         try:
             step(symbol, bar)
         except Exception as e:
+            strategy_errors += 1
             print(f"[backtest] strategy error at {bar.get('timestamp','?')}: {e}", file=sys.stderr)
         broker.mark_to_market()
 
     eq_curve = broker.equity_curve
     ending = eq_curve[-1] if eq_curve else args.capital
-    # Equity floor at 0 — long-only sim should never go negative; defensive
-    # clamp prevents pricing glitches from poisoning downstream math.
     eq_curve = [max(0.0, e) for e in eq_curve]
     ending = max(0.0, ending)
 
     # ── UNITS CONTRACT ────────────────────────────────────────────────
-    # The TS layer (formatPercent, backtest-run.ts, dialog-backtest-results.tsx)
-    # multiplies these by 100 for display. So we MUST emit decimal fractions:
-    #   total_return    : 0.12 means +12%
-    #   max_drawdown    : 0.08 means 8% drawdown
-    #   ann_vol         : 0.42 means 42% annualized volatility
-    #   win_rate        : 0.55 means 55% win rate
-    # profit_factor and ann_sharpe are raw ratios, no scaling.
     total_return = (ending / args.capital - 1) if args.capital > 0 else 0.0
 
-    # Max drawdown as a fraction in [0, 1]
     peak = args.capital
     max_dd = 0.0
-    for eq in eq_curve:
-        if eq > peak:
+    max_dd_duration = 0
+    dd_start_bar = 0
+    for i, eq in enumerate(eq_curve):
+        if eq >= peak:
             peak = eq
+            dd_start_bar = i
         dd = (peak - eq) / peak if peak > 0 else 0.0
         if dd > max_dd:
             max_dd = dd
+        if dd > 0:
+            dur = i - dd_start_bar
+            if dur > max_dd_duration:
+                max_dd_duration = dur
     max_dd = min(max_dd, 1.0)
 
-    # Trade stats
     pnls = broker.trade_pnls
     total_trades = len(pnls)
     wins = [p for p in pnls if p > 0]
@@ -364,7 +452,6 @@ def main():
     profit_factor_raw = (gross_profit / gross_loss) if gross_loss > 0 else (999.0 if gross_profit > 0 else 0)
     profit_factor = min(profit_factor_raw, 50.0)
 
-    # Annualized vol & Sharpe from equity curve returns
     if len(eq_curve) > 1:
         returns = [(eq_curve[i] / eq_curve[i-1] - 1) for i in range(1, len(eq_curve)) if eq_curve[i-1] > 0]
         if returns:
@@ -375,21 +462,39 @@ def main():
             bpy = interval_map.get(args.interval, 8760)
             ann_vol = std_r * math.sqrt(bpy)
             ann_sharpe = (mean_r / std_r * math.sqrt(bpy)) if std_r > 0 else 0
+            # Sortino: downside deviation only
+            neg_returns = [r for r in returns if r < 0]
+            if neg_returns:
+                down_var = sum(r ** 2 for r in neg_returns) / len(neg_returns)
+                down_dev = math.sqrt(down_var) * math.sqrt(bpy)
+                sortino = (mean_r * bpy) / down_dev if down_dev > 0 else 0
+            else:
+                sortino = 0 if mean_r <= 0 else 20.0
+            # Calmar: annualized return / max drawdown
+            ann_return = mean_r * bpy
+            calmar = ann_return / max_dd if max_dd > 0.001 else (20.0 if ann_return > 0 else 0)
+            # VaR / CVaR (95%)
+            sorted_returns = sorted(returns)
+            var_idx = max(0, int(len(sorted_returns) * 0.05) - 1)
+            var_95 = abs(sorted_returns[var_idx]) if sorted_returns else 0
+            cvar_tail = sorted_returns[:var_idx + 1]
+            cvar_95 = abs(sum(cvar_tail) / len(cvar_tail)) if cvar_tail else 0
+            # Time in market: count bars where position was non-zero
+            bars_in_market = sum(1 for h in broker.position_history if h != 0) if hasattr(broker, 'position_history') else 0
+            time_in_market = bars_in_market / max(1, bar_count)
         else:
-            ann_vol = 0
-            ann_sharpe = 0
+            ann_vol = ann_sharpe = sortino = calmar = var_95 = cvar_95 = time_in_market = 0
     else:
-        ann_vol = 0
-        ann_sharpe = 0
+        ann_vol = ann_sharpe = sortino = calmar = var_95 = cvar_95 = time_in_market = 0
 
-    # Cap ann_vol at 5.0 (i.e. 500%) — beyond that it's a sparse-sample artifact.
     ann_vol = min(ann_vol, 5.0)
-    # Sharpe capped at +/- 20 for the same reason.
     ann_sharpe = max(-20.0, min(20.0, ann_sharpe))
+    sortino = max(-20.0, min(20.0, sortino))
+    calmar = max(-20.0, min(20.0, calmar))
 
-    # Low-sample warning — fewer than 10 trades means stats are unreliable.
     low_sample = 1 if total_trades < 10 else 0
 
+    # ── Core metrics ──
     print(f"total_return: {total_return:.6f}")
     print(f"max_drawdown: {max_dd:.6f}")
     print(f"ann_vol: {ann_vol:.6f}")
@@ -399,6 +504,27 @@ def main():
     print(f"win_rate: {win_rate:.6f}")
     print(f"profit_factor: {profit_factor:.4f}")
     print(f"low_sample: {low_sample}")
+
+    # ── Extended metrics ──
+    print(f"sortino: {sortino:.4f}")
+    print(f"calmar: {calmar:.4f}")
+    print(f"var_95: {var_95:.6f}")
+    print(f"cvar_95: {cvar_95:.6f}")
+    print(f"max_dd_duration: {max_dd_duration}")
+    print(f"time_in_market: {time_in_market:.4f}")
+
+    # ── Diagnostics (always emitted; parsed when total_trades == 0) ──
+    diag = broker.diagnostics()
+    print(f"diag_bars_processed: {bar_count}")
+    print(f"diag_buy_attempts: {diag['buy_attempts']}")
+    print(f"diag_sell_attempts: {diag['sell_attempts']}")
+    print(f"diag_rejected_orders: {diag['rejected_orders']}")
+    print(f"diag_rejection_reasons: {json.dumps(diag['rejection_reasons'])}")
+    print(f"diag_price_first: {first_price:.6f}")
+    print(f"diag_price_last: {last_price:.6f}")
+    price_range_pct = (price_high - price_low) / first_price if first_price > 0 else 0
+    print(f"diag_price_range_pct: {price_range_pct:.6f}")
+    print(f"diag_strategy_errors: {strategy_errors}")
 
 if __name__ == "__main__":
     main()
@@ -734,6 +860,39 @@ if __name__ == "__main__":
           error: human,
           kind,
           suggestions: kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
+        }
+      }
+
+      // Pre-flight signal scan — fast dry run to detect 0-signal strategies
+      // before spending time on a full backtest.
+      const scanResult = await Process.run(
+        [pythonCmd, "backtest.py", "--csv", csvPath, "--config", "config.json", "--interval", interval, "--capital", capital, "--scan-only"],
+        { cwd: tmpDir, nothrow: true, timeout: 60_000 },
+      )
+      if (scanResult.code === 0) {
+        const scanOut = scanResult.stdout.toString()
+        const scanBuys = parseInt(scanOut.match(/scan_buy_signals:\s*(\d+)/)?.[1] ?? "1", 10)
+        const scanErrors = parseInt(scanOut.match(/scan_strategy_errors:\s*(\d+)/)?.[1] ?? "0", 10)
+        const scanBars = parseInt(scanOut.match(/scan_bars_total:\s*(\d+)/)?.[1] ?? "0", 10)
+        // Only short-circuit if zero signals AND no strategy errors (errors could mask real signals)
+        if (scanBuys === 0 && scanBars > 0 && scanErrors === 0) {
+          emit({
+            eventType: "backtest.scan_zero_signals",
+            algorithmId: algorithm.algorithmId,
+            payload: { scanBars, duration, interval, capital },
+          })
+          return {
+            ok: true,
+            results: {
+              totalReturn: 0, maxDrawdown: 0, annualizedVolatility: 0, sharpeRatio: 0,
+              endingEquity: parseFloat(capital), totalTrades: 0, winRate: 0, profitFactor: 0,
+              diagnostics: {
+                barsProcessed: scanBars, buyAttempts: 0, sellAttempts: 0,
+                rejectedOrders: 0, rejectionReasons: {},
+                priceFirst: 0, priceLast: 0, priceRangePct: 0, strategyErrors: 0,
+              },
+            },
+          }
         }
       }
 

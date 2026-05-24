@@ -546,7 +546,7 @@ def analyze(source):
     rw_buys = sum(1 for r in results["random"]["returns"] if r == "BUY")
     if rw_buys == 0:
         has_threshold = any(
-            re.search(r"threshold|min_|max_", name, re.IGNORECASE)
+            re.search(r"threshold|min_|max_|oversold|overbought|num_std|stop_|risk_|period|lookback|entry_|exit_|lower|upper|band|level|cutoff", name, re.IGNORECASE)
             for name in results["random"]["initial_scalars"]
         )
         if has_threshold:

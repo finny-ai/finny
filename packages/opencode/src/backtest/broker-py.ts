@@ -121,7 +121,9 @@ class SimBroker(Broker):
         self._orders: list = []
         self._trade_pnls: list = []
         self._equity_curve: list = [float(starting_cash)]
+        self._position_history: list = []
         self._order_counter = 0
+        self._reject_log_count = 0
 
     @property
     def starting_cash(self) -> float:
@@ -142,11 +144,18 @@ class SimBroker(Broker):
     def set_price(self, symbol: str, price: float) -> None:
         self._last_price[symbol] = float(price)
 
+    @property
+    def position_history(self) -> list:
+        return list(self._position_history)
+
     def mark_to_market(self) -> float:
         eq = self._cash
+        total_pos = 0.0
         for sym, qty in self._positions.items():
             eq += qty * self._last_price.get(sym, 0)
+            total_pos += abs(qty)
         self._equity_curve.append(eq)
+        self._position_history.append(total_pos)
         return eq
 
     def buy(self, symbol, qty=None, notional=None):
@@ -244,7 +253,49 @@ class SimBroker(Broker):
             ts=datetime.now(timezone.utc).isoformat(),
         )
         self._orders.append(order)
+        self._reject_log_count += 1
+        if self._reject_log_count <= 5:
+            log_err(f"[SimBroker] order rejected: {side} {symbol} — {reason}")
+            if self._reject_log_count == 5:
+                log_err("[SimBroker] further rejection logs suppressed (see diagnostics)")
         return order
+
+    def diagnostics(self) -> Dict[str, Any]:
+        filled = [o for o in self._orders if o.status == "filled"]
+        rejected = [o for o in self._orders if o.status.startswith("rejected")]
+        buy_attempts = sum(1 for o in self._orders if o.side == "buy")
+        sell_attempts = sum(1 for o in self._orders if o.side == "sell")
+        rejection_reasons: Dict[str, int] = {}
+        for o in rejected:
+            reason = o.status.replace("rejected: ", "")
+            rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        return {
+            "total_orders": len(self._orders),
+            "filled_orders": len(filled),
+            "rejected_orders": len(rejected),
+            "buy_attempts": buy_attempts,
+            "sell_attempts": sell_attempts,
+            "rejection_reasons": rejection_reasons,
+            "final_cash": self._cash,
+            "final_equity": self._equity_curve[-1] if self._equity_curve else self._cash,
+        }
+
+
+class ScanBroker(SimBroker):
+    """Dry-run broker that counts signals without executing trades."""
+
+    def __init__(self, starting_cash: float):
+        super().__init__(starting_cash)
+        self.buy_signals = 0
+        self.sell_signals = 0
+
+    def buy(self, symbol, qty=None, notional=None):
+        self.buy_signals += 1
+        return self._record(symbol, "buy", 0, 0, "scan")
+
+    def sell(self, symbol, qty=None, notional=None):
+        self.sell_signals += 1
+        return self._record(symbol, "sell", 0, 0, "scan")
 
 
 class AlpacaBroker(Broker):
@@ -1173,7 +1224,7 @@ class StrategyAdapter:
             result = self._call(symbol, bar)
         except Exception as e:
             log_err(f"Strategy.{self.handler_name} raised: {e}")
-            return
+            raise  # propagate so the runner loop can count strategy errors
 
         signal = None
         if result is None:

@@ -33,26 +33,16 @@ WORKFLOW
 OUTPUT FORMAT
 ─────────────────────────────────────────────
 
-Your response to the parent agent MUST be a concise summary — NOT raw data.
-The goal is to give the parent agent enough context to design or evaluate a
-strategy without hallucinating from number overload.
+The tool now returns a **data brief** (also written to `data_brief.md` in the
+algo workspace). This brief includes:
+• Regime classification (trending-up/down, range-bound, high-vol-chop)
+• Suggested parameter ranges (Bollinger width, lookback, stop/TP, hold time)
+• Notes for strategy design (what works in this regime, warnings)
+• Price/performance stats and data quality
 
-Structure your response as:
-
-```
-## Data Extracted: {symbol} {interval}
-- **Period:** {start} → {end}
-- **Bars:** {count} from {source}
-- **File:** {parquet_path}
-
-### Key Stats
-- Return: {total_return}% | Vol: {ann_vol}% | Max DD: {max_dd}%
-- Price range: {low} – {high} (median: {median})
-- Avg volume: {avg_vol}
-
-### Quality
-- Coverage: {pct}% | Gaps: {n} | Issues: {notes}
-```
+Your response to the parent agent is simply the tool's output — the brief
+itself. Do NOT reformat it or strip sections. The parent agent reads the full
+brief to calibrate its strategy.
 
 ─────────────────────────────────────────────
 RULES

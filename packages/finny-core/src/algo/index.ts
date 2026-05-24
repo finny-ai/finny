@@ -16,8 +16,11 @@ import {
   STRATEGY_FILE,
   VERSION_DIR_RE,
   parseCurrent,
+  humanNameOf,
+  isSlug,
+  makeSlug,
 } from "./schemas"
-import { algoDir, algosRoot, discoverAlgos, discoverVersions, versionDir } from "./paths"
+import { algoDir, algosRoot, discoverAlgos, discoverVersions, resolveAlgoDir, versionDir } from "./paths"
 
 export * from "./schemas"
 export * from "./paths"
@@ -56,7 +59,10 @@ export interface AlgoVersion {
 }
 
 export interface Algo {
+  /** The slug (e.g. `btc-mean-reversion-1h.a3f8c9e2`) or legacy plain name. */
   name: string
+  /** Human-readable name extracted from the slug. */
+  displayName: string
   dir: string
   mission: ParsedMission
   current: string
@@ -97,20 +103,40 @@ function buildVersion(algoRoot: string, version: string): AlgoVersion {
   }
 }
 
-export async function loadAlgo(name: string, root: string = algosRoot()): Promise<Algo> {
-  const dir = algoDir(name, root)
+/**
+ * Load an algo by slug or human name.
+ * - Slug: used directly (e.g. `btc-mean-reversion-1h.a3f8c9e2`)
+ * - Human name: resolved via `resolveAlgoDir` (glob for `<name>.*` or legacy exact match)
+ */
+export async function loadAlgo(nameOrSlug: string, root: string = algosRoot()): Promise<Algo> {
+  let dir: string
+  let slug: string
+
+  if (isSlug(nameOrSlug)) {
+    slug = nameOrSlug
+    dir = algoDir(slug, root)
+  } else {
+    const resolved = await resolveAlgoDir(nameOrSlug, root)
+    dir = resolved.dir
+    slug = resolved.slug
+  }
+
   const missionRaw = await fs.readFile(path.join(dir, MISSION_FILE), "utf8")
   const mission = parseMission(missionRaw)
-  if (mission.frontmatter.name !== name) {
+  const displayName = humanNameOf(slug)
+
+  // Mission frontmatter stores the human name, not the slug
+  if (mission.frontmatter.name !== displayName) {
     throw new Error(
-      `mission.name (${mission.frontmatter.name}) does not match folder name (${name}) at ${dir}`,
+      `mission.name (${mission.frontmatter.name}) does not match folder name (${slug}) at ${dir}`,
     )
   }
   const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
   const current = parseCurrent(currentRaw)
-  const versions = await discoverVersions(name, root)
+  const versions = await discoverVersions(slug, root)
   return {
-    name,
+    name: slug,
+    displayName,
     dir,
     mission,
     current,
@@ -143,7 +169,10 @@ export async function loadAlgo(name: string, root: string = algosRoot()): Promis
 }
 
 export interface AlgoHeader {
+  /** Slug or legacy plain name (the directory name). */
   name: string
+  /** Human-readable display name. */
+  displayName: string
   dir: string
   mission: ParsedMission
   current: string
@@ -159,6 +188,7 @@ export async function listAlgos(root: string = algosRoot()): Promise<AlgoHeader[
       const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
       out.push({
         name,
+        displayName: humanNameOf(name),
         dir,
         mission: parseMission(missionRaw),
         current: parseCurrent(currentRaw),
@@ -172,6 +202,8 @@ export async function listAlgos(root: string = algosRoot()): Promise<AlgoHeader[
 
 export async function writeAlgo(params: {
   root?: string
+  /** Optional slug to use as directory name. If omitted, generates one from mission.frontmatter.name. */
+  slug?: string
   mission: ParsedMission
   current: string
   decisions?: string
@@ -185,14 +217,15 @@ export async function writeAlgo(params: {
       backtest?: Backtest
     }
   >
-}): Promise<string> {
+}): Promise<{ dir: string; slug: string }> {
   const root = params.root ?? algosRoot()
-  const name = params.mission.frontmatter.name
-  const dir = algoDir(name, root)
+  const humanName = params.mission.frontmatter.name
+  const slug = params.slug ?? makeSlug(humanName)
+  const dir = algoDir(slug, root)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, MISSION_FILE), serializeMission(params.mission), "utf8")
   await fs.writeFile(path.join(dir, CURRENT_FILE), parseCurrent(params.current) + "\n", "utf8")
-  await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${name}\n`, "utf8")
+  await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${humanName}\n`, "utf8")
   // memory.md is append-only. Only seed it on first creation, or overwrite
   // when an explicit `memory` arg is provided. Never clobber existing history.
   const memoryPath = path.join(dir, MEMORY_FILE)
@@ -203,15 +236,15 @@ export async function writeAlgo(params: {
       await fs.stat(memoryPath)
     } catch (err: any) {
       if (err?.code !== "ENOENT") throw err
-      await fs.writeFile(memoryPath, DEFAULT_MEMORY_SEED(name), "utf8")
+      await fs.writeFile(memoryPath, DEFAULT_MEMORY_SEED(humanName), "utf8")
     }
   }
-  await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${name}\n`, "utf8")
+  await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${humanName}\n`, "utf8")
   for (const sub of DATA_SUBDIRS) {
     await fs.mkdir(path.join(dir, sub), { recursive: true })
   }
   for (const [v, content] of Object.entries(params.versions)) {
-    const vdir = versionDir(name, v, root)
+    const vdir = versionDir(slug, v, root)
     await fs.mkdir(vdir, { recursive: true })
     await fs.writeFile(path.join(vdir, STRATEGY_FILE), content.strategy, "utf8")
     if (content.reasoning !== undefined) {
@@ -222,5 +255,5 @@ export async function writeAlgo(params: {
       await fs.writeFile(path.join(vdir, BACKTEST_FILE), JSON.stringify(parsed, null, 2) + "\n", "utf8")
     }
   }
-  return dir
+  return { dir, slug }
 }

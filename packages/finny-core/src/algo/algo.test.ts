@@ -13,6 +13,8 @@ import {
   algosRoot,
   discoverAlgos,
   discoverVersions,
+  humanNameOf,
+  isSlug,
   listAlgos,
   loadAlgo,
   parseCurrent,
@@ -188,7 +190,7 @@ describe("loadAlgo + listAlgos", () => {
     const v02Strategy = "# v02 strategy code\nclass Strategy:\n    pass\n"
     const v01Strategy = "# v01 strategy code\nclass Strategy:\n    pass\n"
 
-    await writeAlgo({
+    const { slug } = await writeAlgo({
       root,
       mission,
       current: "v02",
@@ -200,11 +202,16 @@ describe("loadAlgo + listAlgos", () => {
       },
     })
 
+    expect(isSlug(slug)).toBe(true)
+    expect(humanNameOf(slug)).toBe("hanta-biotech-swing")
+
     const algo = await loadAlgo("hanta-biotech-swing", root)
     expect(algo.current).toBe("v02")
     expect(algo.versions).toEqual(["v01", "v02"])
     expect(algo.mission.frontmatter.name).toBe("hanta-biotech-swing")
-    expect(algo.dir).toBe(algoDir("hanta-biotech-swing", root))
+    expect(algo.name).toBe(slug)
+    expect(algo.displayName).toBe("hanta-biotech-swing")
+    expect(algo.dir).toBe(algoDir(slug, root))
 
     const decisions = await algo.decisions()
     expect(decisions).toContain("2026-05-10")
@@ -225,7 +232,8 @@ describe("loadAlgo + listAlgos", () => {
 
     const headers = await listAlgos(root)
     expect(headers).toHaveLength(1)
-    expect(headers[0]!.name).toBe("hanta-biotech-swing")
+    expect(isSlug(headers[0]!.name)).toBe(true)
+    expect(headers[0]!.displayName).toBe("hanta-biotech-swing")
     expect(headers[0]!.current).toBe("v02")
     expect(headers[0]!.mission.frontmatter.status).toBe("research")
   })
@@ -233,13 +241,13 @@ describe("loadAlgo + listAlgos", () => {
   test("writeAlgo creates the data/ skeleton", async () => {
     const root = await mkSandbox()
     const mission = parseMission(EXAMPLE_MISSION_YAML)
-    await writeAlgo({
+    const { dir, slug } = await writeAlgo({
       root,
       mission,
       current: "v01",
       versions: { v01: { strategy: "class Strategy: pass\n" } },
     })
-    const dir = algoDir("hanta-biotech-swing", root)
+    expect(dir).toBe(algoDir(slug, root))
     for (const sub of [DATA_STOCK_DIR, DATA_NEWS_HEADLINES_DIR, DATA_NEWS_BODY_DIR]) {
       const stat = await fs.stat(path.join(dir, sub))
       expect(stat.isDirectory()).toBe(true)
@@ -260,7 +268,7 @@ describe("loadAlgo + listAlgos", () => {
   test("round-trips a populated algo through writeAlgo -> loadAlgo", async () => {
     const root = await mkSandbox()
     const mission = parseMission(EXAMPLE_MISSION_YAML)
-    await writeAlgo({
+    const { slug } = await writeAlgo({
       root,
       mission,
       current: "v01",
@@ -269,7 +277,7 @@ describe("loadAlgo + listAlgos", () => {
       },
     })
 
-    const algo = await loadAlgo("hanta-biotech-swing", root)
+    const algo = await loadAlgo(slug, root)
     expect(algo.mission.frontmatter).toEqual(mission.frontmatter)
     const bt = await algo.version("v01").backtest()
     expect(bt).toEqual(Backtest.parse({ ...EXAMPLE_BACKTEST, version: "v01" }))
