@@ -29,7 +29,13 @@ export const convexClient = lazy(() => {
 function noopConvexClient(): ConvexHttpClient {
   const noop = async () => null
   return new Proxy({} as ConvexHttpClient, {
-    get: () => noop,
+    get: (_target, prop) => {
+      // Don't be accidentally thenable: returning a function for `then`
+      // would make `await convexClient()` hang, since the would-be
+      // then(resolve, reject) callback would never call resolve.
+      if (prop === "then" || typeof prop === "symbol") return undefined
+      return noop
+    },
   })
 }
 

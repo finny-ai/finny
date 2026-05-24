@@ -88,7 +88,7 @@ async function getCurrentProject(): Promise<Project.Info> {
 
 async function getAllSessions(): Promise<Session.Info[]> {
   const rows = await ConvexSessions.listAll()
-  return rows.map((row: any) => Session.fromRow(row))
+  return (rows ?? []).map((row: any) => Session.fromRow(row))
 }
 
 export async function aggregateSessionStats(days?: number, projectFilter?: string): Promise<SessionStats> {
