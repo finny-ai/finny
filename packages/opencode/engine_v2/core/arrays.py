@@ -7,7 +7,7 @@ pandas.iloc overhead in the hot loop.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Mapping, Tuple
 
 import numpy as np
 import pandas as pd
@@ -89,6 +89,7 @@ class MarketSnapshot:
         self.n = first.shape[0]
         self.symbols: List[str] = list(arrays.keys())
         self._i = 0
+        self._decision_phase = False
 
     def set_index(self, i: int) -> None:
         ii = int(i)
@@ -100,14 +101,61 @@ class MarketSnapshot:
     def i(self) -> int:
         return self._i
 
+    def set_decision_phase(self, active: bool) -> None:
+        self._decision_phase = bool(active)
+
     def last_close(self, symbol: str) -> float:
         return float(self.arrays[symbol].close[self._i])
 
-    def history(self, symbol: str, limit: int) -> pd.DataFrame:
-        """Pandas DataFrame view of [i-limit+1, i] inclusive. Used by v1 compat."""
+    def decision_price(self, symbol: str) -> float:
+        return float(self.arrays[symbol].open[self._i])
+
+    def visible_price(self, symbol: str) -> float:
+        return self.decision_price(symbol) if self._decision_phase else self.last_close(symbol)
+
+    def decision_safe_bar(self, symbol: str) -> Dict[str, object]:
         ba = self.arrays[symbol]
-        start = max(0, self._i - limit + 1)
-        end = self._i + 1
+        prev = self._i - 1
+        prev_open = float(ba.open[prev]) if prev >= 0 else None
+        prev_high = float(ba.high[prev]) if prev >= 0 else None
+        prev_low = float(ba.low[prev]) if prev >= 0 else None
+        prev_close = float(ba.close[prev]) if prev >= 0 else None
+        prev_volume = float(ba.volume[prev]) if prev >= 0 else None
+        return {
+            "timestamp": int(ba.ts[self._i]),
+            "symbol": symbol,
+            "open": float(ba.open[self._i]),
+            "prev_open": prev_open,
+            "prev_high": prev_high,
+            "prev_low": prev_low,
+            "prev_close": prev_close,
+            "volume": prev_volume,
+        }
+
+    def history_records(self, symbol: str, limit: int) -> Tuple[Mapping[str, object], ...]:
+        """Immutable completed-bar records ending before the current decision."""
+        ba = self.arrays[symbol]
+        safe_limit = max(0, int(limit))
+        end = self._i if self._decision_phase else self._i + 1
+        start = max(0, end - safe_limit)
+        out: List[Mapping[str, object]] = []
+        for j in range(start, end):
+            out.append({
+                "timestamp": int(ba.ts[j]),
+                "symbol": symbol,
+                "open": float(ba.open[j]),
+                "high": float(ba.high[j]),
+                "low": float(ba.low[j]),
+                "close": float(ba.close[j]),
+                "volume": float(ba.volume[j]),
+            })
+        return tuple(out)
+
+    def history(self, symbol: str, limit: int) -> pd.DataFrame:
+        """Pandas DataFrame view of completed bars only during decision time."""
+        ba = self.arrays[symbol]
+        end = self._i if self._decision_phase else self._i + 1
+        start = max(0, end - limit)
         return pd.DataFrame({
             "ts": pd.to_datetime(ba.ts[start:end], unit="ns", utc=True),
             "open": ba.open[start:end],

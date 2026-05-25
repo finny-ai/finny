@@ -20,7 +20,7 @@ def interval_to_rule_and_bars_per_year(interval: str) -> Tuple[str, float]:
         n = int(s[:-1])
         if n <= 0:
             raise ValueError(f"Unsupported interval: {interval}")
-        return f"{n}H", (24.0 / n) * 365.0
+        return f"{n}h", (24.0 / n) * 365.0
     if s.endswith("d"):
         n = int(s[:-1])
         if n <= 0:

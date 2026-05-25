@@ -4,6 +4,7 @@ equity.csv / trades.csv / diagnostics.csv."""
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict
 from pathlib import Path
@@ -26,6 +27,31 @@ from ..portfolio.attribution import per_symbol
 from ..portfolio.positions import ClosedTrade
 from ..runtime.broker import PortfolioBroker
 from . import schema as S
+
+
+def _sanitize_json(obj: Any, path: str = "") -> tuple[Any, List[Dict[str, str]]]:
+    non_finite: List[Dict[str, str]] = []
+    if isinstance(obj, float):
+        if not math.isfinite(obj):
+            return None, [{"path": path or "$", "value": repr(obj)}]
+        return obj, []
+    if isinstance(obj, dict):
+        out: Dict[str, Any] = {}
+        for key, value in obj.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            sanitized, found = _sanitize_json(value, child_path)
+            out[key] = sanitized
+            non_finite.extend(found)
+        return out, non_finite
+    if isinstance(obj, list):
+        out_list: List[Any] = []
+        for idx, value in enumerate(obj):
+            child_path = f"{path}[{idx}]" if path else f"[{idx}]"
+            sanitized, found = _sanitize_json(value, child_path)
+            out_list.append(sanitized)
+            non_finite.extend(found)
+        return out_list, non_finite
+    return obj, []
 
 
 def _gross_exposure_history(broker: PortfolioBroker, snap: MarketSnapshot, equity: np.ndarray) -> np.ndarray:
@@ -57,6 +83,8 @@ def assemble(
     walk_forward: Optional[Any] = None,
     regimes: Optional[List[Any]] = None,
     data_quality: Optional[Any] = None,
+    execution_config: Optional[Dict[str, Any]] = None,
+    run_metadata: Optional[Dict[str, Any]] = None,
 ) -> S.Results:
     trades = broker.book.trades
     ts_ns = snap.ts
@@ -157,17 +185,18 @@ def assemble(
     # Trades schema
     trades_rows: List[S.TradeRow] = []
     for t in trades:
-        notional = t.entry_price * t.qty if t.qty > 0 else 0.0
+        multiplier = t.multiplier if t.multiplier else 1.0
+        notional = t.entry_price * t.qty * multiplier if t.qty > 0 else 0.0
         pnl_pct = float(t.pnl / notional) if notional > 0 else 0.0
         r_mult = None
         if t.stop_distance is not None and t.stop_distance > 0 and t.qty > 0:
-            r_mult = float(t.pnl / (t.stop_distance * t.qty))
+            r_mult = float(t.pnl / (t.stop_distance * t.qty * multiplier))
         trades_rows.append(S.TradeRow(
             symbol=t.symbol, side=t.side,
             entry_ts=str(pd.Timestamp(int(t.entry_ts_ns), unit="ns", tz="UTC")),
             exit_ts=str(pd.Timestamp(int(t.exit_ts_ns), unit="ns", tz="UTC")),
             qty=t.qty, entry_price=t.entry_price, exit_price=t.exit_price,
-            pnl=t.pnl, pnl_pct=pnl_pct, r_multiple=r_mult,
+            multiplier=multiplier, pnl=t.pnl, pnl_pct=pnl_pct, r_multiple=r_mult,
             fees=t.fees, funding=t.funding, borrow=t.borrow,
             mae=t.mae, mfe=t.mfe, hold_bars=t.hold_bars,
             entry_tag=t.entry_tag, exit_tag=t.exit_tag, liquidation=t.liquidation,
@@ -228,6 +257,12 @@ def assemble(
     regimes_block = None
     if regimes is not None:
         regimes_block = [S.RegimeBreakdown(**asdict(r)) for r in regimes]
+    asset_spec_block = None
+    if run_metadata and isinstance(run_metadata.get("asset_spec"), dict):
+        asset_spec_block = S.AssetSpecReport(**{
+            k: v for k, v in run_metadata["asset_spec"].items()
+            if k in S.AssetSpecReport.__dataclass_fields__
+        })
 
     return S.Results(
         schema_version=S.SCHEMA_VERSION,
@@ -252,18 +287,51 @@ def assemble(
         trades=trades_rows, per_symbol=attrib_rows, data_quality=data_quality,
         benchmark=bench_block, monte_carlo=mc_block,
         walk_forward=wf_block, regimes=regimes_block,
+        execution_config=execution_config,
+        diagnostics={
+            **broker.diagnostics(),
+            "bar_diagnostics_count": len(diagnostics),
+            "margin_used": float(broker.account.gross_notional(broker.book.positions)),
+            "free_margin": float(broker.account.free_margin(broker.book.positions)),
+        },
+        run_metadata=run_metadata,
+        asset_spec=asset_spec_block,
     )
 
 
 def write_artifacts(
     out_dir: Path, results: S.Results, equity: np.ndarray, ts_ns: np.ndarray,
-    diagnostics: List[Dict[str, Any]],
+    diagnostics: List[Dict[str, Any]], broker: Optional[PortfolioBroker] = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / "results.json").write_text(json.dumps(results.to_dict(), indent=2, default=str))
+    results_dict = results.to_dict()
+    sanitized, non_finite = _sanitize_json(results_dict)
+    if non_finite:
+        diagnostics_map = sanitized.setdefault("diagnostics", {})
+        if not isinstance(diagnostics_map, dict):
+            diagnostics_map = {}
+            sanitized["diagnostics"] = diagnostics_map
+        diagnostics_map["non_finite_metrics"] = non_finite
+    (out_dir / "results.json").write_text(json.dumps(sanitized, indent=2, default=str, allow_nan=False))
     eq_df = pd.DataFrame({"ts": pd.to_datetime(ts_ns, unit="ns", utc=True), "equity": equity})
     eq_df.to_csv(out_dir / "equity.csv", index=False)
     trades_df = pd.DataFrame([asdict(t) for t in results.trades]) if results.trades else pd.DataFrame()
     trades_df.to_csv(out_dir / "trades.csv", index=False)
+    fills_df = pd.DataFrame([asdict(f) for f in broker.fills_log]) if broker is not None and broker.fills_log else pd.DataFrame()
+    fills_df.to_csv(out_dir / "fills.csv", index=False)
+    rejections = []
+    if results.diagnostics and isinstance(results.diagnostics.get("rejections"), list):
+        rejections = results.diagnostics.get("rejections") or []
+    pd.DataFrame(rejections).to_csv(out_dir / "rejections.csv", index=False)
+    orders_rows = []
+    for f in fills_df.to_dict("records") if not fills_df.empty else []:
+        orders_rows.append({
+            "order_id": f.get("order_id"),
+            "symbol": f.get("symbol"),
+            "side": f.get("side"),
+            "qty": f.get("qty"),
+            "status": "filled" if f.get("full") else "partial",
+        })
+    pd.DataFrame(orders_rows).to_csv(out_dir / "orders.csv", index=False)
     if diagnostics:
         pd.DataFrame(diagnostics).to_csv(out_dir / "diagnostics.csv", index=False)

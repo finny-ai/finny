@@ -48,7 +48,7 @@ def compute(trades: List[ClosedTrade]) -> Dict:
     expectancy = float(pnls.mean())
     gp = float(wins.sum())
     gl = float(abs(losses.sum()))
-    pf = float(gp / gl) if gl > 0 else (0.0 if gp == 0 else float("inf"))
+    pf = float(gp / gl) if gl > 0 else (0.0 if gp == 0 else None)
 
     r_vals = [r for r in (_r_multiple(t) for t in trades) if r is not None]
     expectancy_r = float(np.mean(r_vals)) if r_vals else None

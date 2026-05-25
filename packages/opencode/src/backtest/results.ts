@@ -8,7 +8,7 @@
  */
 
 export namespace EngineV2 {
-  export const SCHEMA_VERSION_MAJOR = 2
+  export const SCHEMA_VERSION_MAJOR = 3
 
   export interface TradeRow {
     symbol: string
@@ -18,6 +18,7 @@ export namespace EngineV2 {
     qty: number
     entry_price: number
     exit_price: number
+    multiplier?: number
     pnl: number
     pnl_pct: number
     r_multiple: number | null
@@ -73,7 +74,7 @@ export namespace EngineV2 {
     sharpe: number
     sortino: number
     calmar: number | null
-    omega: number
+    omega: number | null
     mar: number | null
     sterling: number | null
     k_ratio: number
@@ -99,7 +100,7 @@ export namespace EngineV2 {
     payoff_ratio: number
     expectancy: number
     expectancy_r: number | null
-    profit_factor: number
+    profit_factor: number | null
     max_consecutive_wins: number
     max_consecutive_losses: number
     longest_trade_bars: number
@@ -208,6 +209,50 @@ export namespace EngineV2 {
     notes: string[]
   }
 
+  export interface ExecutionConfig {
+    fill_model: string
+    participation_pct: number
+    maker_fee_bps: number
+    taker_fee_bps: number
+    slippage_bps: number
+    k_atr: number
+    k_vol: number
+    spread_enabled: boolean
+    spread_k: number
+    spread_lookback: number
+    max_leverage: number
+    initial_margin_pct?: number
+    maintenance_margin_pct: number
+    funding_enabled?: boolean
+    funding_rate_bps?: number
+    funding_interval_hours?: number
+    liquidation_enabled?: boolean
+    asset_class?: string
+    multiplier?: number
+    tick_size?: number
+    lot_size?: number
+  }
+
+  export interface AssetSpecReport {
+    assetClass: string
+    symbol: string
+    currency: string
+    calendar: string
+    tickSize: number
+    lotSize: number
+    multiplier: number
+    feeModel: string
+    marginModel: string
+    dataProvider: string
+    productionEligible: boolean
+    venue?: string | null
+    expiry?: string | null
+    rollPolicy?: string | null
+    quoteCurrency?: string | null
+    baseCurrency?: string | null
+    blockingReason?: string | null
+  }
+
   export interface PerSymbolAttribution {
     symbol: string
     realized_pnl: number
@@ -236,7 +281,7 @@ export namespace EngineV2 {
     ann_sharpe: number
     total_trades: number
     win_rate: number
-    profit_factor: number
+    profit_factor: number | null
 
     returns: ReturnMetrics
     risk: RiskMetrics
@@ -254,5 +299,9 @@ export namespace EngineV2 {
     monte_carlo?: MonteCarloSummary | null
     walk_forward?: WalkForwardSummary | null
     regimes?: RegimeBreakdown[] | null
+    execution_config?: ExecutionConfig | null
+    diagnostics?: Record<string, unknown> | null
+    run_metadata?: Record<string, unknown> | null
+    asset_spec?: AssetSpecReport | null
   }
 }

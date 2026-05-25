@@ -42,13 +42,13 @@ def calmar(equity: np.ndarray, ts_ns: np.ndarray) -> Optional[float]:
     return float(c / abs(mdd))
 
 
-def omega(returns: np.ndarray, threshold: float = 0.0) -> float:
+def omega(returns: np.ndarray, threshold: float = 0.0) -> Optional[float]:
     if returns.size < 2:
         return 0.0
     pos = float(np.sum(np.maximum(returns - threshold, 0.0)))
     neg = float(np.sum(np.maximum(threshold - returns, 0.0)))
     if neg <= 0:
-        return 0.0 if pos == 0 else float("inf")
+        return 0.0 if pos == 0 else None
     return float(pos / neg)
 
 

@@ -107,17 +107,26 @@ export const BacktestConfig = z
   })
   .passthrough()
 
-export const Backtest = z
-  .object({
+const BacktestCommon = {
+  version: z.string().regex(VERSION_DIR_RE, "version must be v01..v99"),
+  ran_at: z.string().datetime({ offset: true }),
+  period: BacktestPeriod,
+  config: BacktestConfig,
+  metrics: BacktestMetrics,
+  notes: z.string().optional(),
+} as const
+
+export const Backtest = z.discriminatedUnion("schema_version", [
+  z.object({
     schema_version: z.literal(2),
-    version: z.string().regex(VERSION_DIR_RE, "version must be v01..v99"),
-    ran_at: z.string().datetime({ offset: true }),
-    period: BacktestPeriod,
-    config: BacktestConfig,
-    metrics: BacktestMetrics,
-    notes: z.string().optional(),
-  })
-  .strict()
+    ...BacktestCommon,
+  }).strict(),
+  z.object({
+    schema_version: z.literal(3),
+    ...BacktestCommon,
+    engine_version: z.string(),
+  }).strict(),
+])
 export type Backtest = z.infer<typeof Backtest>
 
 export const CURRENT_FILE = "CURRENT"

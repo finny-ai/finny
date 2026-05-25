@@ -7,6 +7,7 @@ schema_version semver rules:
 
 CHANGELOG:
   2.0.0  initial engine_v2 release.
+  3.0.0  trade rows require multiplier; omega/profit_factor may be null.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "3.0.0"
 
 
 @dataclass
@@ -26,6 +27,7 @@ class TradeRow:
     qty: float
     entry_price: float
     exit_price: float
+    multiplier: float
     pnl: float
     pnl_pct: float
     r_multiple: Optional[float]
@@ -85,7 +87,7 @@ class RatioMetrics:
     sharpe: float
     sortino: float
     calmar: Optional[float]
-    omega: float
+    omega: Optional[float]
     mar: Optional[float]
     sterling: Optional[float]
     k_ratio: float
@@ -113,7 +115,7 @@ class TradeMetrics:
     payoff_ratio: float
     expectancy: float
     expectancy_r: Optional[float]
-    profit_factor: float
+    profit_factor: Optional[float]
     max_consecutive_wins: int
     max_consecutive_losses: int
     longest_trade_bars: int
@@ -241,6 +243,27 @@ class PerSymbolAttribution:
 
 
 @dataclass
+class AssetSpecReport:
+    assetClass: str
+    symbol: str
+    currency: str
+    calendar: str
+    tickSize: float
+    lotSize: float
+    multiplier: float
+    feeModel: str
+    marginModel: str
+    dataProvider: str
+    productionEligible: bool
+    venue: Optional[str] = None
+    expiry: Optional[str] = None
+    rollPolicy: Optional[str] = None
+    quoteCurrency: Optional[str] = None
+    baseCurrency: Optional[str] = None
+    blockingReason: Optional[str] = None
+
+
+@dataclass
 class Results:
     schema_version: str
     engine_version: str
@@ -260,7 +283,7 @@ class Results:
     ann_sharpe: float
     total_trades: int
     win_rate: float
-    profit_factor: float
+    profit_factor: Optional[float]
 
     # New structured blocks.
     returns: ReturnMetrics
@@ -279,6 +302,10 @@ class Results:
     monte_carlo: Optional[MonteCarloSummary] = None
     walk_forward: Optional[WalkForwardSummary] = None
     regimes: Optional[List[RegimeBreakdown]] = None
+    execution_config: Optional[Dict[str, Any]] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+    run_metadata: Optional[Dict[str, Any]] = None
+    asset_spec: Optional[AssetSpecReport] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

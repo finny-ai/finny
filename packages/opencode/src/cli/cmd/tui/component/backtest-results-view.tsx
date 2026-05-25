@@ -27,8 +27,8 @@ function fmtUsd(value: number): string {
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function fmtNum(value: number, decimals = 2): string {
-  return value.toFixed(decimals)
+function fmtNum(value: number | null | undefined, decimals = 2): string {
+  return value == null ? "N/A" : value.toFixed(decimals)
 }
 
 // Fixed-width columns: label = 22 chars, value = 16 chars

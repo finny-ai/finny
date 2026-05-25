@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
+import { Validate } from "../algorithm/validate"
 
 const parameters = z.object({
   algorithmName: z
@@ -57,11 +58,33 @@ export const BacktestRunTool = Tool.define(
           }
         }
 
+        let riskBanner = ""
+        try {
+          const v = await Validate.run(algo.code, {
+            config: algo.config,
+          })
+          if (!v.valid) {
+            return {
+              title: "Backtest blocked by validation",
+              output: Validate.format(v),
+              metadata: { ...emptyMeta },
+            }
+          }
+          riskBanner = Validate.formatRiskBanner(v)
+        } catch (e: any) {
+          return {
+            title: "Backtest blocked by validation",
+            output: `Validation failed to run: ${e?.message ?? String(e)}`,
+            metadata: { ...emptyMeta },
+          }
+        }
+
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
           interval: params.interval,
           capital: params.capital,
+          robustness: { monteCarloPaths: 500, regimes: true },
         })
 
         if (!result.ok) {
@@ -73,7 +96,7 @@ export const BacktestRunTool = Tool.define(
         }
 
         const r = result.results
-        const fmt = (v: number, d = 2) => v.toFixed(d)
+        const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
 
         const lines = [
@@ -138,9 +161,50 @@ export const BacktestRunTool = Tool.define(
           lines.push(`────────────────────────────────────────────────────`)
         }
 
+        // Engine + assumptions footer — surfaces fill model, fee/slippage
+        // assumptions, kill-switch trips, and parse-warning fallout so
+        // consumers don't silently miss them.
+        if (r.engineVersion || r.diagnostics?.assumptions) {
+          lines.push(``, `── ENGINE & ASSUMPTIONS ────────────────────────────`)
+          if (r.engineVersion) lines.push(`Engine: ${r.engineVersion} (schema_version=${r.schemaVersion ?? "?"})`)
+          if (r.runId) lines.push(`Run ID: ${r.runId}`)
+          if (r.artifactDir) lines.push(`Artifacts: ${r.artifactDir}`)
+          if (r.eligibilityStatus) lines.push(`Eligibility: ${r.eligibilityStatus}`)
+          if (r.diagnostics?.assumptions) {
+            const a = r.diagnostics.assumptions
+            const fee = a.taker_fee_bps != null ? `${a.taker_fee_bps.toFixed(2)} bps taker` : `${(((a.fee_rate ?? 0) * 100).toFixed(3))}%`
+            const slip = a.slippage_bps != null ? `${a.slippage_bps.toFixed(2)} bps + ATR/volume impact` : `${(((a.slippage ?? 0) * 100).toFixed(3))}%`
+            lines.push(`Fill model: ${a.fill_model}  |  fee=${fee}  |  slippage=${slip}`)
+            if (a.participation_cap_pct != null) {
+              lines.push(`Participation cap: ${a.participation_cap_pct.toFixed(1)}% of bar volume (binding)`)
+            }
+          }
+          if (r.diagnostics?.participationWarningCount && r.diagnostics.participationWarningCount > 0) {
+            lines.push(`[!] ${r.diagnostics.participationWarningCount} fills exceeded participation cap — review diagnostics`)
+          }
+          if (r.diagnostics?.killed) {
+            const k = r.diagnostics.killed
+            lines.push(`[!] KILL SWITCH TRIPPED — ${k.reason}` + (k.equity !== undefined ? ` (equity=${k.equity.toFixed(2)}, threshold=${(k.threshold ?? 0).toFixed(2)})` : ""))
+          }
+          if (r.diagnostics?.pendingOrdersAtEnd && r.diagnostics.pendingOrdersAtEnd > 0) {
+            lines.push(`${r.diagnostics.pendingOrdersAtEnd} order(s) remained pending at end of window (placed on the last bar, never filled).`)
+          }
+          if (r.diagnostics?.sharpeUndefinedReason) {
+            lines.push(`Sharpe undefined — reason: ${r.diagnostics.sharpeUndefinedReason}`)
+          }
+          if (r.diagnostics?.parseWarnings && r.diagnostics.parseWarnings.length > 0) {
+            lines.push(`Parse warnings: ${r.diagnostics.parseWarnings.join(", ")}`)
+          }
+          lines.push(`────────────────────────────────────────────────────`)
+        }
+
+        const finalOutput = riskBanner
+          ? `${riskBanner}\n\n${lines.join("\n")}`
+          : lines.join("\n")
+
         return {
           title: `Backtest: ${algo.name} (${params.duration}, ${params.interval})`,
-          output: lines.join("\n"),
+          output: finalOutput,
           metadata: {
             algorithmName: algo.name,
             params: {
@@ -148,7 +212,6 @@ export const BacktestRunTool = Tool.define(
               interval: params.interval,
               capital: params.capital,
             },
-            // Omit v2 blob from metadata to keep session payload lean
             results: { ...r, v2: undefined },
           },
         }

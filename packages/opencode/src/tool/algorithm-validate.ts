@@ -6,6 +6,7 @@ import { Validate } from "../algorithm/validate"
 
 const parameters = z.object({
   code: z.string().describe("The full Python strategy source code to validate"),
+  config: z.string().optional().describe("Optional config.json contents to validate against the strategy"),
 })
 
 export const AlgorithmValidateTool = Tool.define(
@@ -22,7 +23,7 @@ export const AlgorithmValidateTool = Tool.define(
           metadata: {},
         })
 
-        const result = await Validate.run(params.code)
+        const result = await Validate.run(params.code, { config: params.config })
         const output = Validate.format(result)
 
         return {
@@ -30,7 +31,9 @@ export const AlgorithmValidateTool = Tool.define(
             ? result.warnings.length > 0
               ? `Valid (${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"})`
               : "Valid"
-            : `Invalid (${result.errors.length} error${result.errors.length === 1 ? "" : "s"})`,
+            : result.errors.length > 0
+              ? `Invalid (${result.errors.length} error${result.errors.length === 1 ? "" : "s"})`
+              : `Invalid (${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"} must clear)`,
           output,
           metadata: {
             valid: result.valid,
