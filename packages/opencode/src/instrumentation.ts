@@ -66,4 +66,4 @@ if (activeProvider) {
   process.on("SIGTERM", flushAndExit)
 }
 
-export { activeProvider as otelProvider }
+export { activeProvider as otelProvider, flushWithTimeout }

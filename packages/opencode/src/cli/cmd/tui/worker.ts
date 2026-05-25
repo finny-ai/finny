@@ -1,4 +1,4 @@
-import { otelProvider } from "../../../instrumentation"
+import { otelProvider, flushWithTimeout } from "../../../instrumentation"
 import { Installation } from "@/installation"
 import { Server } from "@/server/server"
 import { Log } from "@/util/log"
@@ -110,7 +110,7 @@ export const rpc = {
     // beforeExit nor SIGTERM fire reliably inside Bun workers when the
     // main thread calls worker.terminate(), so we have to do it here.
     await Analytics.drain(1500).catch(() => {})
-    await otelProvider?.forceFlush().catch(() => {})
+    if (otelProvider) await flushWithTimeout(otelProvider, 2_000).catch(() => {})
     Scheduler.stop()
 
     await Instance.disposeAll()
