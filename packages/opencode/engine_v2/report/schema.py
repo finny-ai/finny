@@ -7,6 +7,7 @@ schema_version semver rules:
 
 CHANGELOG:
   2.0.0  initial engine_v2 release.
+  3.0.0  trade rows require multiplier; omega/profit_factor may be null.
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "3.0.0"
 
 
 @dataclass

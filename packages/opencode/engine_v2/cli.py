@@ -328,7 +328,46 @@ class StrictStrategyWorker:
             raise SystemExit("Strategy worker protocol violation: orders is not a list")
         if len(orders) > self.MAX_ORDERS_PER_BAR:
             raise SystemExit(f"Strategy worker emitted {len(orders)} orders in one bar; max is {self.MAX_ORDERS_PER_BAR}")
-        return [o for o in orders if isinstance(o, dict)]
+        return [self._validate_order(o, idx, symbol) for idx, o in enumerate(orders)]
+
+    @staticmethod
+    def _validate_order(order: Any, idx: int, default_symbol: str) -> Dict[str, Any]:
+        if not isinstance(order, dict):
+            raise SystemExit(f"Strategy worker protocol violation: order[{idx}] is not an object")
+        side = order.get("side")
+        if side not in {"buy", "sell"}:
+            raise SystemExit(f"Strategy worker protocol violation: order[{idx}].side must be 'buy' or 'sell'")
+        symbol = order.get("symbol", default_symbol)
+        if not isinstance(symbol, str) or not symbol:
+            raise SystemExit(f"Strategy worker protocol violation: order[{idx}].symbol must be a non-empty string")
+        qty = order.get("qty")
+        notional = order.get("notional")
+        if qty is None and notional is None:
+            raise SystemExit(f"Strategy worker protocol violation: order[{idx}] must include qty or notional")
+        if qty is not None:
+            try:
+                qty_num = float(qty)
+            except Exception as exc:
+                raise SystemExit(f"Strategy worker protocol violation: order[{idx}].qty must be a positive finite number") from exc
+            if not np.isfinite(qty_num) or qty_num <= 0:
+                raise SystemExit(f"Strategy worker protocol violation: order[{idx}].qty must be a positive finite number")
+        if notional is not None:
+            try:
+                notional_num = float(notional)
+            except Exception as exc:
+                raise SystemExit(f"Strategy worker protocol violation: order[{idx}].notional must be a positive finite number") from exc
+            if not np.isfinite(notional_num) or notional_num <= 0:
+                raise SystemExit(f"Strategy worker protocol violation: order[{idx}].notional must be a positive finite number")
+        tag = order.get("tag", "")
+        if not isinstance(tag, str):
+            raise SystemExit(f"Strategy worker protocol violation: order[{idx}].tag must be a string")
+        return {
+            "side": side,
+            "symbol": symbol,
+            "qty": qty,
+            "notional": notional,
+            "tag": tag,
+        }
 
     def close(self) -> None:
         if self.proc.poll() is None:

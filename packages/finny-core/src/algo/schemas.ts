@@ -107,22 +107,26 @@ export const BacktestConfig = z
   })
   .passthrough()
 
-export const Backtest = z
-  .object({
-    // v2 = legacy same-bar execution. v3 = engine.next-open-v1 (fills at next
-    // bar's open, no equity clip, no Sharpe cap). Accept both for read
-    // compatibility; new writers should emit 3.
-    schema_version: z.union([z.literal(2), z.literal(3)]),
-    version: z.string().regex(VERSION_DIR_RE, "version must be v01..v99"),
-    ran_at: z.string().datetime({ offset: true }),
-    period: BacktestPeriod,
-    config: BacktestConfig,
-    metrics: BacktestMetrics,
-    notes: z.string().optional(),
-    /** Engine identifier (e.g. "engine.next-open-v1"). Required on v3, absent on v2. */
-    engine_version: z.string().optional(),
-  })
-  .strict()
+const BacktestCommon = {
+  version: z.string().regex(VERSION_DIR_RE, "version must be v01..v99"),
+  ran_at: z.string().datetime({ offset: true }),
+  period: BacktestPeriod,
+  config: BacktestConfig,
+  metrics: BacktestMetrics,
+  notes: z.string().optional(),
+} as const
+
+export const Backtest = z.discriminatedUnion("schema_version", [
+  z.object({
+    schema_version: z.literal(2),
+    ...BacktestCommon,
+  }).strict(),
+  z.object({
+    schema_version: z.literal(3),
+    ...BacktestCommon,
+    engine_version: z.string(),
+  }).strict(),
+])
 export type Backtest = z.infer<typeof Backtest>
 
 export const CURRENT_FILE = "CURRENT"

@@ -214,7 +214,7 @@ describe("Validate strict Shape C gates", () => {
             self.last_close = close_px
             return
         if not self.traded and self.broker.position(symbol) == 0:
-            self.broker.buy(symbol, qty=1)
+            self.broker.buy(symbol, qty=0.001)
             self.traded = True
         self.last_close = close_px
 `

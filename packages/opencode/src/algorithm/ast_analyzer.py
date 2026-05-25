@@ -63,7 +63,11 @@ def _find_entry_methods(cls):
 def _call_name(node):
     if isinstance(node, ast.Name):
         return node.id
-    if isinstance(node, ast.Attribute):
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"builtins", "__builtins__"}
+    ):
         return node.attr
     return None
 
@@ -145,19 +149,29 @@ def check_strict_security(tree, cls):
                 })
                 return diagnostics
         if isinstance(node, ast.Attribute):
-            is_broker_private = (
+            receiver_is_self_broker = (
                 isinstance(node.value, ast.Attribute)
                 and isinstance(node.value.value, ast.Name)
                 and node.value.value.id == "self"
                 and node.value.attr == "broker"
+            )
+            receiver_is_broker_alias = (
+                isinstance(node.value, ast.Name)
+                and node.value.id in broker_aliases
+            )
+            is_broker_private = (
+                receiver_is_self_broker
                 and node.attr.startswith("_")
             )
             is_broker_alias_private = (
-                isinstance(node.value, ast.Name)
-                and node.value.id in broker_aliases
+                receiver_is_broker_alias
                 and node.attr.startswith("_")
             )
-            if is_broker_private or is_broker_alias_private or node.attr in PRIVATE_STRATEGY_ATTRS:
+            is_private_strategy_attr = (
+                node.attr in PRIVATE_STRATEGY_ATTRS
+                and (receiver_is_self_broker or receiver_is_broker_alias)
+            )
+            if is_broker_private or is_broker_alias_private or is_private_strategy_attr:
                 diagnostics.append({
                     "code": "PRIVATE_BROKER_ACCESS",
                     "severity": "error",

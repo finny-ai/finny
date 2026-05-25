@@ -65,7 +65,7 @@ describe("parseResults", () => {
   test("surfaces Infinity as parse_warning", async () => {
     const stdout = minimal().replace("profit_factor: 2.0", "profit_factor: inf")
     const r = await parseResults(stdout, "")
-    expect(r!.profitFactor).toBe(Number.POSITIVE_INFINITY)
+    expect(r!.profitFactor).toBeNull()
     expect(r!.diagnostics?.parseWarnings).toBeDefined()
     expect(r!.diagnostics!.parseWarnings!.some(w => w.startsWith("profit_factor"))).toBe(true)
   })
@@ -132,7 +132,7 @@ describe("parseResults", () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "finny-parse-results-"))
     try {
       await fs.writeFile(path.join(tmp, "results.json"), JSON.stringify({
-        schema_version: "2.0.0",
+        schema_version: "3.0.0",
         engine_version: "engine_v2-test",
         seed: 123,
         starting_equity: 10000,
@@ -179,7 +179,7 @@ describe("parseResults", () => {
     const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "finny-parse-results-null-metrics-"))
     try {
       await fs.writeFile(path.join(tmp, "results.json"), JSON.stringify({
-        schema_version: "2.0.0",
+        schema_version: "3.0.0",
         engine_version: "engine_v2-test",
         seed: 123,
         starting_equity: 10000,

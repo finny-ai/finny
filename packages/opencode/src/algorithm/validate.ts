@@ -384,6 +384,13 @@ export namespace Validate {
     if (!classResult) return diagnostics
     const { body: classBody, startLine: classStartLine } = classResult
 
+    function normalizeParamList(raw: string): string[] {
+      return raw
+        .split(",")
+        .map((p) => p.trim().replace(/\s+/g, ""))
+        .filter(Boolean)
+    }
+
     const initMatch = classBody.match(/def\s+__init__\s*\(([^)]*)\)/)
     if (!initMatch) {
       diagnostics.push({
@@ -393,13 +400,12 @@ export namespace Validate {
         fix: "Add `def __init__(self, broker, params=None):` and store only `self.broker = broker` plus your own state.",
       })
     } else {
-      const params = initMatch[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter(Boolean)
-      const withoutSelf = params.filter((p) => p !== "self")
-      if (withoutSelf[0] !== "broker") {
+      const params = normalizeParamList(initMatch[1])
+      if (params.length !== 3 || params[0] !== "self" || params[1] !== "broker" || params[2] !== "params=None") {
         diagnostics.push({
           code: "STRICT_SHAPE_REQUIRED",
           severity: "error",
-          message: "Strict v2 requires `Strategy(broker, params=None)`; the first constructor parameter after `self` must be `broker`.",
+          message: "Strict v2 requires the exact constructor `__init__(self, broker, params=None)`.",
           fix: "Change the constructor to `def __init__(self, broker, params=None):`.",
         })
       }
@@ -423,9 +429,8 @@ export namespace Validate {
         fix: "Add `def on_bar(self, symbol, bar):` to your Strategy class.",
       })
     } else if (onBarMatch) {
-      const params = onBarMatch[1].split(",").map((p) => p.trim().split("=")[0].trim()).filter(Boolean)
-      const withoutSelf = params.filter((p) => p !== "self")
-      if (withoutSelf[0] !== "symbol" || withoutSelf[1] !== "bar") {
+      const params = normalizeParamList(onBarMatch[1])
+      if (params.length !== 3 || params[0] !== "self" || params[1] !== "symbol" || params[2] !== "bar") {
         const onBarLine = classBody.split("\n").findIndex((l) => /def\s+on_bar/.test(l))
         diagnostics.push({
           code: "ON_TICK_BAD_PARAMS",
@@ -715,7 +720,7 @@ export namespace Validate {
     const warnings = allDiagnostics.filter((d) => d.severity === "warning")
 
     return {
-      valid: errors.length === 0 && warnings.length === 0,
+      valid: errors.length === 0,
       errors,
       warnings,
     }

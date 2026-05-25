@@ -307,11 +307,11 @@ def write_artifacts(
     results_dict = results.to_dict()
     sanitized, non_finite = _sanitize_json(results_dict)
     if non_finite:
-        diagnostics = sanitized.setdefault("diagnostics", {})
-        if not isinstance(diagnostics, dict):
-            diagnostics = {}
-            sanitized["diagnostics"] = diagnostics
-        diagnostics["non_finite_metrics"] = non_finite
+        diagnostics_map = sanitized.setdefault("diagnostics", {})
+        if not isinstance(diagnostics_map, dict):
+            diagnostics_map = {}
+            sanitized["diagnostics"] = diagnostics_map
+        diagnostics_map["non_finite_metrics"] = non_finite
     (out_dir / "results.json").write_text(json.dumps(sanitized, indent=2, default=str, allow_nan=False))
     eq_df = pd.DataFrame({"ts": pd.to_datetime(ts_ns, unit="ns", utc=True), "equity": equity})
     eq_df.to_csv(out_dir / "equity.csv", index=False)

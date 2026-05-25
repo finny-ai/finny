@@ -25,7 +25,6 @@ DENIED_IMPORT_ROOTS = {
     "shutil", "socket", "subprocess", "sys", "tempfile", "threading",
 }
 SAFE_IMPORT_ROOTS = {
-    "_io",
     "abc", "array", "bisect", "collections", "copy", "dataclasses", "datetime",
     "decimal", "enum", "functools", "heapq", "itertools", "math", "numbers",
     "operator", "random", "re", "statistics", "typing",

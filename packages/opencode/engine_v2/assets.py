@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 
 AssetClass = str
+CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"}
 
 
 @dataclass(frozen=True)
@@ -35,14 +37,15 @@ class AssetSpec:
     def notional(self, qty: float, price: float) -> float:
         return abs(float(qty) * float(price) * self.multiplier)
 
-    def signed_pnl(self, qty: float, entry: float, exit: float) -> float:
-        return float(qty) * (float(exit) - float(entry)) * self.multiplier
+    def signed_pnl(self, qty: float, entry: float, exit_price: float) -> float:
+        return float(qty) * (float(exit_price) - float(entry)) * self.multiplier
 
     def round_qty(self, qty: float) -> float:
         lot = self.lotSize
         if lot <= 0:
             return float(qty)
-        return int(float(qty) / lot) * lot
+        steps = math.floor((float(qty) / lot) + 1e-12)
+        return steps * lot
 
     def round_price(self, price: float) -> float:
         tick = self.tickSize
@@ -62,6 +65,10 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
     if raw in {"crypto_spot", "crypto_perp", "equity", "future", "fx", "option"}:
         return raw
     sym = str(symbol).upper()
+    if len(sym) == 6 and sym.isalpha() and sym[:3] not in CRYPTO_BASES:
+        return "fx"
+    if len(sym) == 7 and sym[3] in {"/", "-"} and sym[:3].isalpha() and sym[4:].isalpha() and sym[:3] not in CRYPTO_BASES:
+        return "fx"
     if "/" in sym or "-" in sym or sym.endswith("USDT") or sym.endswith("USD"):
         return "crypto_spot"
     return "equity"

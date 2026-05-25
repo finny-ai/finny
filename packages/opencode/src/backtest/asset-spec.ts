@@ -21,6 +21,8 @@ export interface AssetSpec {
   blockingReason?: string
 }
 
+const CRYPTO_BASES = new Set(["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"])
+
 export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
   if (raw === "crypto") return "crypto_spot"
@@ -28,6 +30,8 @@ export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass
     return raw
   }
   const sym = String(symbol ?? "").toUpperCase()
+  if (/^[A-Z]{6}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
+  if (/^[A-Z]{3}[/-][A-Z]{3}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
   if (sym.includes("/") || sym.includes("-") || sym.endsWith("USDT") || sym.endsWith("USD")) return "crypto_spot"
   return "equity"
 }

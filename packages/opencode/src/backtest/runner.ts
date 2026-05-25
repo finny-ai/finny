@@ -354,8 +354,8 @@ print(f"Downloaded {len(df)} rows")
       timeInMarket: v2.exposure?.time_in_market_pct,
       diagnostics: {
         barsProcessed: v2.bars_processed,
-        buyAttempts: v2.trades?.filter(t => t.side === "long").length ?? 0,
-        sellAttempts: v2.trades?.filter(t => t.side === "short").length ?? 0,
+        buyAttempts: Number((v2.diagnostics as any)?.buy_attempts ?? 0),
+        sellAttempts: Number((v2.diagnostics as any)?.sell_attempts ?? 0),
         rejectedOrders: Number((v2.diagnostics as any)?.rejected_orders ?? 0),
         pendingOrdersAtEnd: Number((v2.diagnostics as any)?.pending_orders_at_end ?? 0),
         rejectionReasons: ((v2.diagnostics as any)?.rejection_reasons ?? {}) as Record<string, number>,
@@ -400,7 +400,7 @@ print(f"Downloaded {len(df)} rows")
     const parseWarnings: string[] = []
     const strings: Record<string, string> = {}
     // Numeric value: optional sign, then digits/exponent/dot, OR nan/inf tokens.
-    const numericRe = /^([\w_]+):\s+(-?(?:nan|inf|\d[\d.eE+\-]*))\s*$/i
+    const numericRe = /^([\w_]+):\s*(-?(?:nan|inf|\d[\d.eE+\-]*))\s*$/i
     // String value: anything else (engine_version, JSON blobs, etc.)
     const stringRe = /^([\w_]+):\s+(.+)$/
     for (const line of lines) {
@@ -410,7 +410,9 @@ print(f"Downloaded {len(df)} rows")
         const tok = numMatch[2].toLowerCase()
         if (tok === "nan" || tok === "inf" || tok === "-inf") {
           parseWarnings.push(`${key}=${tok}`)
-          metrics[key] = tok === "nan" ? Number.NaN : (tok === "inf" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY)
+          metrics[key] = key === "profit_factor"
+            ? null as any
+            : (tok === "nan" ? Number.NaN : (tok === "inf" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY))
           continue
         }
         const val = parseFloat(numMatch[2])
@@ -492,7 +494,7 @@ print(f"Downloaded {len(df)} rows")
         ann_sharpe: metrics["ann_sharpe"] ?? 0,
         total_trades: metrics["total_trades"] ?? 0,
         win_rate: metrics["win_rate"] ?? 0,
-        profit_factor: metrics["profit_factor"] ?? 0,
+        profit_factor: metrics["profit_factor"] ?? null,
         returns: undefined as any,
         risk: undefined as any,
         ratios: undefined as any,
@@ -515,7 +517,7 @@ print(f"Downloaded {len(df)} rows")
       endingEquity: metrics["ending_equity"] ?? 0,
       totalTrades: metrics["total_trades"] ?? 0,
       winRate: metrics["win_rate"] ?? 0,
-      profitFactor: metrics["profit_factor"] ?? 0,
+      profitFactor: metrics["profit_factor"] ?? null,
       sortino: metrics["sortino"],
       calmar: metrics["calmar"],
       var95: metrics["var_95"],
@@ -1177,7 +1179,9 @@ if __name__ == "__main__":
   function applyConfigOverrides(config: any, configOverrides?: Record<string, unknown>) {
     if (!configOverrides) return
     for (const [k, v] of Object.entries(configOverrides)) {
-      if (isPlainObj(v) && isPlainObj(config[k])) {
+      if (k === "params") {
+        config[k] = v
+      } else if (isPlainObj(v) && isPlainObj(config[k])) {
         config[k] = { ...config[k], ...v }
       } else {
         config[k] = v

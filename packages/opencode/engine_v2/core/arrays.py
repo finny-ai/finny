@@ -120,6 +120,7 @@ class MarketSnapshot:
         prev_high = float(ba.high[prev]) if prev >= 0 else None
         prev_low = float(ba.low[prev]) if prev >= 0 else None
         prev_close = float(ba.close[prev]) if prev >= 0 else None
+        prev_volume = float(ba.volume[prev]) if prev >= 0 else None
         return {
             "timestamp": int(ba.ts[self._i]),
             "symbol": symbol,
@@ -128,7 +129,7 @@ class MarketSnapshot:
             "prev_high": prev_high,
             "prev_low": prev_low,
             "prev_close": prev_close,
-            "volume": float(ba.volume[self._i]),
+            "volume": prev_volume,
         }
 
     def history_records(self, symbol: str, limit: int) -> Tuple[Mapping[str, object], ...]:

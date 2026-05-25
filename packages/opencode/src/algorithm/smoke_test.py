@@ -20,6 +20,7 @@ Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emit
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
 """
 import importlib.util
+import inspect
 import json
 import math
 import random
@@ -139,10 +140,14 @@ class StubBroker:
 
 def _instantiate_strategy(StrategyCls, broker):
     """Instantiate the strict Shape-C strategy."""
-    try:
-        return StrategyCls(broker), True
-    except TypeError:
+    sig = inspect.signature(StrategyCls)
+    accepts_params = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "params"
+        for p in sig.parameters.values()
+    )
+    if accepts_params:
         return StrategyCls(broker, params={}), True
+    return StrategyCls(broker), True
 
 
 def _pick_entry(strategy):

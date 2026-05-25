@@ -201,6 +201,8 @@ class SimBroker(Broker):
                     "drawdown_frac": self._killswitch_drawdown,
                 }
                 # Drop any pending orders — strategy is dead.
+                for order in self._pending_orders:
+                    self._update_pending_order_record(order, 0.0, 0.0, "canceled")
                 self._pending_orders.clear()
         return eq
 
@@ -212,6 +214,8 @@ class SimBroker(Broker):
         is emptied and this call is a no-op.
         """
         if self._killed is not None:
+            for order in self._pending_orders:
+                self._update_pending_order_record(order, 0.0, 0.0, "canceled")
             self._pending_orders.clear()
             return
         if fill_price is None or fill_price <= 0:

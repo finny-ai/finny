@@ -175,7 +175,9 @@ export const BacktestRunTool = Tool.define(
             const fee = a.taker_fee_bps != null ? `${a.taker_fee_bps.toFixed(2)} bps taker` : `${(((a.fee_rate ?? 0) * 100).toFixed(3))}%`
             const slip = a.slippage_bps != null ? `${a.slippage_bps.toFixed(2)} bps + ATR/volume impact` : `${(((a.slippage ?? 0) * 100).toFixed(3))}%`
             lines.push(`Fill model: ${a.fill_model}  |  fee=${fee}  |  slippage=${slip}`)
-            lines.push(`Participation cap: ${a.participation_cap_pct.toFixed(1)}% of bar volume (binding)`)
+            if (a.participation_cap_pct != null) {
+              lines.push(`Participation cap: ${a.participation_cap_pct.toFixed(1)}% of bar volume (binding)`)
+            }
           }
           if (r.diagnostics?.participationWarningCount && r.diagnostics.participationWarningCount > 0) {
             lines.push(`[!] ${r.diagnostics.participationWarningCount} fills exceeded participation cap — review diagnostics`)
@@ -210,7 +212,7 @@ export const BacktestRunTool = Tool.define(
               interval: params.interval,
               capital: params.capital,
             },
-            results: r,
+            results: { ...r, v2: undefined },
           },
         }
       }),

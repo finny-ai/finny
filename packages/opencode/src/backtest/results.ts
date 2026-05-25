@@ -8,7 +8,7 @@
  */
 
 export namespace EngineV2 {
-  export const SCHEMA_VERSION_MAJOR = 2
+  export const SCHEMA_VERSION_MAJOR = 3
 
   export interface TradeRow {
     symbol: string

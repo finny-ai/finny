@@ -7,7 +7,7 @@ function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
     algorithmId: "algo_test",
     userId: "user",
     name: "test",
-    code: "class Strategy:\n    def __init__(self, broker): self.broker = broker\n    def on_bar(self, symbol, bar): pass\n",
+    code: "class Strategy:\n    def __init__(self, broker, params=None): self.broker = broker\n    def on_bar(self, symbol, bar): pass\n",
     language: "python",
     version: 1,
     status: "draft",

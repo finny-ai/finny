@@ -159,7 +159,7 @@ export const BacktestWalkforwardTool = Tool.define(
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
           `Total window: ${input.duration} (${fmt(start)} → ${fmt(end)})`,
-          `Rolling folds: ${walkForward.n_folds} | Train split: ${(input.splitRatio * 100).toFixed(0)}% per fold`,
+          `Rolling folds: ${walkForward.n_folds}`,
           ``,
           `IS Sharpe mean:        ${walkForward.is_sharpe_mean.toFixed(2)}`,
           `OOS Sharpe mean:       ${walkForward.oos_sharpe_mean.toFixed(2)}`,

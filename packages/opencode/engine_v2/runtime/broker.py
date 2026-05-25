@@ -49,6 +49,8 @@ class PortfolioBroker:
         self.orders: List = []   # Order queue
         self.fills_log: List[Fill] = []
         self.rejections: List[Dict[str, object]] = []
+        self.buy_attempts = 0
+        self.sell_attempts = 0
         self.interval = interval
         _, self.bars_per_year = interval_to_rule_and_bars_per_year(interval)
         # Funding cadence in bars
@@ -83,6 +85,10 @@ class PortfolioBroker:
     ) -> str:
         from ..execution.orders import Order
 
+        if side == "buy":
+            self.buy_attempts += 1
+        elif side == "sell":
+            self.sell_attempts += 1
         if side not in {"buy", "sell"}:
             self._reject(symbol, side, qty, "unsupported_side")
             return ""
@@ -147,6 +153,8 @@ class PortfolioBroker:
             reason = str(r.get("reason", "unknown"))
             reasons[reason] = reasons.get(reason, 0) + 1
         return {
+            "buy_attempts": self.buy_attempts,
+            "sell_attempts": self.sell_attempts,
             "rejected_orders": len(self.rejections),
             "rejection_reasons": reasons,
             "rejections": list(self.rejections[-100:]),
@@ -260,7 +268,8 @@ class PortfolioBroker:
         if not np.isfinite(price) or price <= 0:
             self._reject(symbol, side, qty, "invalid_decision_price")
             return False
-        volume = float(self.market.arrays[symbol].volume[self.market.i])
+        prev_i = self.market.i - 1
+        volume = float(self.market.arrays[symbol].volume[prev_i]) if prev_i >= 0 else np.nan
         if (spec is None or spec.volume_required) and (not np.isfinite(volume) or volume <= 0):
             self._reject(symbol, side, qty, "zero_volume_bar")
             return False
