@@ -21,6 +21,9 @@ import { Wildcard } from "@/util/wildcard"
 import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { Installation } from "@/installation"
+import { trace, context as otelContext, SpanKind, SpanStatusCode } from "@opentelemetry/api"
+import { setSession } from "@arizeai/openinference-core"
+import { SemanticConventions } from "@arizeai/openinference-semantic-conventions"
 
 export namespace LLM {
   const log = Log.create({ service: "llm" })
@@ -315,82 +318,126 @@ export namespace LLM {
       })
     }
 
-    return streamText({
-      onError(error) {
-        l.error("stream error", {
-          error,
-        })
-      },
-      async experimental_repairToolCall(failed) {
-        const lower = failed.toolCall.toolName.toLowerCase()
-        if (lower !== failed.toolCall.toolName && tools[lower]) {
-          l.info("repairing tool call", {
-            tool: failed.toolCall.toolName,
-            repaired: lower,
+    const sessionCtx = setSession(otelContext.active(), { sessionId: input.sessionID })
+
+    return otelContext.with(sessionCtx, () => {
+      const agentTracer = trace.getTracer("finny")
+      const agentSpan = agentTracer.startSpan(
+        "agent",
+        {
+          kind: SpanKind.INTERNAL,
+          attributes: {
+            [SemanticConventions.OPENINFERENCE_SPAN_KIND]: "agent",
+            [SemanticConventions.SESSION_ID]: input.sessionID,
+            [SemanticConventions.INPUT_VALUE]: JSON.stringify(
+              input.messages.filter((m) => m.role === "user").slice(-1)[0]?.content ?? "",
+            ),
+            "agent.name": input.agent.name,
+            "agent.mode": input.agent.mode,
+            "model.id": input.model.id,
+            "model.provider": input.model.providerID,
+          },
+        },
+        sessionCtx,
+      )
+      const activeCtx = trace.setSpan(sessionCtx, agentSpan)
+
+      let hadError = false
+
+      const result = otelContext.with(activeCtx, () => streamText({
+        onError({ error }) {
+          l.error("stream error", {
+            error,
           })
+          hadError = true
+          agentSpan.setStatus({ code: SpanStatusCode.ERROR, message: error instanceof Error ? error.message : String(error) })
+        },
+        onFinish(event) {
+          agentSpan.setAttribute(SemanticConventions.OUTPUT_VALUE, event.text)
+          agentSpan.setAttribute("ai.usage.promptTokens", event.usage?.inputTokens ?? 0)
+          agentSpan.setAttribute("ai.usage.completionTokens", event.usage?.outputTokens ?? 0)
+          if (!hadError) {
+            agentSpan.setStatus({ code: SpanStatusCode.OK })
+          }
+          agentSpan.end()
+        },
+        onAbort() {
+          agentSpan.setStatus({ code: SpanStatusCode.ERROR, message: "aborted" })
+          agentSpan.end()
+        },
+        async experimental_repairToolCall(failed) {
+          const lower = failed.toolCall.toolName.toLowerCase()
+          if (lower !== failed.toolCall.toolName && tools[lower]) {
+            l.info("repairing tool call", {
+              tool: failed.toolCall.toolName,
+              repaired: lower,
+            })
+            return {
+              ...failed.toolCall,
+              toolName: lower,
+            }
+          }
           return {
             ...failed.toolCall,
-            toolName: lower,
-          }
-        }
-        return {
-          ...failed.toolCall,
-          input: JSON.stringify({
-            tool: failed.toolCall.toolName,
-            error: failed.error.message,
-          }),
-          toolName: "invalid",
-        }
-      },
-      temperature: params.temperature,
-      topP: params.topP,
-      topK: params.topK,
-      providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-      activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
-      tools,
-      toolChoice: input.toolChoice,
-      maxOutputTokens: params.maxOutputTokens,
-      abortSignal: input.abort,
-      headers: {
-        ...(input.model.providerID.startsWith("opencode")
-          ? {
-              "x-opencode-project": Instance.project.id,
-              "x-opencode-session": input.sessionID,
-              "x-opencode-request": input.user.id,
-              "x-opencode-client": Flag.OPENCODE_CLIENT,
-            }
-          : {
-              "x-session-affinity": input.sessionID,
-              ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
-              "User-Agent": `opencode/${Installation.VERSION}`,
+            input: JSON.stringify({
+              tool: failed.toolCall.toolName,
+              error: failed.error.message,
             }),
-        ...input.model.headers,
-        ...headers,
-      },
-      maxRetries: input.retries ?? 0,
-      messages,
-      model: wrapLanguageModel({
-        model: language,
-        middleware: [
-          {
-            specificationVersion: "v3" as const,
-            async transformParams(args) {
-              if (args.type === "stream") {
-                // @ts-expect-error
-                args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
-              }
-              return args.params
-            },
-          },
-        ],
-      }),
-      experimental_telemetry: {
-        isEnabled: cfg.experimental?.openTelemetry,
-        metadata: {
-          userId: cfg.username ?? "unknown",
-          sessionId: input.sessionID,
+            toolName: "invalid",
+          }
         },
-      },
+        temperature: params.temperature,
+        topP: params.topP,
+        topK: params.topK,
+        providerOptions: ProviderTransform.providerOptions(input.model, params.options),
+        activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
+        tools,
+        toolChoice: input.toolChoice,
+        maxOutputTokens: params.maxOutputTokens,
+        abortSignal: input.abort,
+        headers: {
+          ...(input.model.providerID.startsWith("opencode")
+            ? {
+                "x-opencode-project": Instance.project.id,
+                "x-opencode-session": input.sessionID,
+                "x-opencode-request": input.user.id,
+                "x-opencode-client": Flag.OPENCODE_CLIENT,
+              }
+            : {
+                "x-session-affinity": input.sessionID,
+                ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),
+                "User-Agent": `opencode/${Installation.VERSION}`,
+              }),
+          ...input.model.headers,
+          ...headers,
+        },
+        maxRetries: input.retries ?? 0,
+        messages,
+        model: wrapLanguageModel({
+          model: language,
+          middleware: [
+            {
+              specificationVersion: "v3" as const,
+              async transformParams(args) {
+                if (args.type === "stream") {
+                  // @ts-expect-error
+                  args.params.prompt = ProviderTransform.message(args.params.prompt, input.model, options)
+                }
+                return args.params
+              },
+            },
+          ],
+        }),
+        experimental_telemetry: {
+          isEnabled: cfg.experimental?.openTelemetry,
+          metadata: {
+            userId: cfg.username ?? "unknown",
+            sessionId: input.sessionID,
+          },
+        },
+      }))
+
+      return result
     })
   }
 
