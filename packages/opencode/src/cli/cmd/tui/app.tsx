@@ -8,6 +8,7 @@ import {
   Match,
   createEffect,
   createMemo,
+  createRoot,
   ErrorBoundary,
   createSignal,
   onMount,
@@ -39,8 +40,8 @@ import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
-import { DialogExperienceLevel } from "@tui/component/dialog-experience-level"
-import { DialogBeginnerWelcome } from "@tui/component/dialog-beginner-welcome"
+import { DialogOnboardingProviders } from "@tui/component/dialog-onboarding-providers"
+import { DialogOnboardingChoosePath } from "@tui/component/dialog-onboarding-choose-path"
 import { Analytics } from "@/analytics/tracker"
 import { Classify } from "@/analytics/classify"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
@@ -493,33 +494,22 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
-  createEffect(
-    on(
-      () => sync.status === "complete" && sync.data.provider.length === 0,
-      (isEmpty, wasEmpty) => {
-        // only trigger when we transition into an empty-provider state
-        if (!isEmpty || wasEmpty) return
-        dialog.replace(() => <DialogProviderList />)
-      },
-    ),
-  )
-
   // First-launch email capture — fires once after sync completes, KV has
-  // finished loading, at least one provider is configured, and no other
-  // dialog is open. Honor the telemetry opt-out: if the user disabled
-  // telemetry we don't prompt (the email POST goes to the same Convex
-  // deployment as analytics).
+  // finished loading, and no other dialog is open. Honor the telemetry
+  // opt-out: if the user disabled telemetry we don't prompt (the email POST
+  // goes to the same Convex deployment as analytics). Skip if onboarding
+  // hasn't run yet — it would race and get auto-dismissed.
   createEffect(
     on(
       () =>
         sync.status === "complete" &&
         kv.ready &&
-        sync.data.provider.length > 0 &&
         dialog.stack.length === 0 &&
         Analytics.isEnabled(),
       (ready) => {
         if (!ready) return
         if (kv.get("email_capture_status")) return
+        if (!kv.get("onboarding_v2_status") && !kv.get("experience_level_status")) return
         // The dismiss callback runs whenever the dialog goes away — including
         // when the dialog is replaced by another one or cleared after a
         // successful submit. Only mark "skipped" if no terminal status has
@@ -533,35 +523,86 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     ),
   )
 
-  // First-launch experience-level prompt — independent of email capture so
-  // users who opt out of telemetry still get onboarded. Fires once after
-  // sync completes, KV is ready, a provider is configured, and no other
-  // dialog is open. The KV gate ensures we never re-prompt.
-  createEffect(
-    on(
-      () =>
-        sync.status === "complete" &&
-        kv.ready &&
-        sync.data.provider.length > 0 &&
-        dialog.stack.length === 0,
-      (ready) => {
-        if (!ready) return
-        if (kv.get("experience_level_status")) return
-        DialogExperienceLevel.show(
-          dialog,
-          (level) => {
-            kv.set("experience_level_status", level)
-          },
-          () => {
-            if (!kv.get("experience_level_status")) {
-              kv.set("experience_level_status", "skipped")
-            }
-          },
-        ).then((level) => {
-          if (level === "beginner") {
-            DialogBeginnerWelcome.show(dialog)
+  // Onboarding v2 — a two-step flow:
+  //   Step 1: show connected providers, let the user add more (no blocking).
+  //   Step 2: pick "trader" or "beginner"; clicking a card starts a real
+  //           session seeded with a visible user prompt and submits it via
+  //           the existing route.initialPrompt + autoSubmit channel.
+  // Grandfathered users (those with experience_level_status already set from
+  // the previous flow) skip onboarding v2 entirely.
+  //
+  // Transitions inside the flow (step1 ↔ step2, step1 → providerList) are
+  // done via dialog.replace so the stack length stays at 1. The prompt
+  // input has a reactive effect (prompt/index.tsx:500) that refocuses
+  // whenever dialog.stack.length === 0; if we let the stack drop to 0
+  // between steps, the prompt would briefly grab focus and the user could
+  // type behind the dialog.
+  let onboardingStarted = false
+
+  function waitDialogClosed(): Promise<void> {
+    if (dialog.stack.length === 0) return Promise.resolve()
+    return new Promise<void>((resolve) => {
+      createRoot((dispose) => {
+        createEffect(() => {
+          if (dialog.stack.length === 0) {
+            dispose()
+            resolve()
           }
         })
+      })
+    })
+  }
+
+  async function runOnboardingV2() {
+    while (true) {
+      const r1 = await DialogOnboardingProviders.show(dialog)
+      if (r1 === "addProvider") {
+        // Atomic step1 → providerList. When the provider dialog chain
+        // eventually closes (stack drops to 0), loop back to Step 1.
+        dialog.replace(() => <DialogProviderList />)
+        await waitDialogClosed()
+        continue
+      }
+      if (r1 === "dismissed") {
+        kv.set("onboarding_v2_status", "skipped")
+        return
+      }
+      // r1 === "next" — show step 2; .show() atomically replaces step1.
+      const r2 = await DialogOnboardingChoosePath.show(dialog)
+      if (r2.type === "back") continue
+      if (r2.type === "dismissed") {
+        kv.set("onboarding_v2_status", "skipped")
+        return
+      }
+      // Picked. setExperienceLevel already ran inside the dialog. Force
+      // chat agent for this welcome session so the reply is conversational
+      // — the saved preference (trader → build, beginner → chat) still
+      // drives subsequent /new sessions via local.tsx.
+      if (sync.data.agent.some((a) => a.name === "chat")) {
+        local.agent.set("chat")
+      }
+      kv.set("onboarding_v2_status", "completed")
+      kv.set("experience_level_status", r2.level)
+      dialog.clear()
+      route.navigate({
+        type: "home",
+        initialPrompt: { input: r2.prompt, parts: [] },
+        autoSubmit: true,
+      })
+      return
+    }
+  }
+
+  createEffect(
+    on(
+      () => sync.status === "complete" && kv.ready,
+      (ready) => {
+        if (!ready) return
+        if (kv.get("onboarding_v2_status")) return
+        if (kv.get("experience_level_status")) return
+        if (onboardingStarted) return
+        onboardingStarted = true
+        void runOnboardingV2()
       },
     ),
   )
