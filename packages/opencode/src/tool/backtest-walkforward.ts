@@ -46,14 +46,7 @@ export const BacktestWalkforwardTool = Tool.define(
       "before declaring a strategy 'good'.",
     parameters,
     execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
-      Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_backtest_walkforward",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
-
+      Effect.fn("backtest-walkforward.execute")(function* () {
         type WfMeta = {
           walkForward?: {
             n_folds: number
@@ -81,7 +74,16 @@ export const BacktestWalkforwardTool = Tool.define(
         }
         const EMPTY_META: WfMeta = {}
 
-        const algo = await Algorithm.get(input.algorithmName)
+        yield* Effect.promise(() =>
+          ctx.ask({
+            permission: "finny_backtest_walkforward",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
+
+        const algo = yield* Effect.promise(() => Algorithm.get(input.algorithmName))
         if (!algo) {
           return {
             title: "Walk-forward failed",
@@ -90,7 +92,7 @@ export const BacktestWalkforwardTool = Tool.define(
           }
         }
 
-        const validation = await Validate.run(algo.code, { config: algo.config })
+        const validation = yield* Effect.promise(() => Validate.run(algo.code, { config: algo.config }))
         if (!validation.valid) {
           return {
             title: "Walk-forward blocked by validation",
@@ -116,7 +118,7 @@ export const BacktestWalkforwardTool = Tool.define(
         const start = new Date(end)
         start.setUTCDate(start.getUTCDate() - totalDays)
 
-        const result = await BacktestRunner.run({
+        const result = yield* Effect.promise(() => BacktestRunner.run({
           algorithm: algo,
           duration: input.duration,
           interval: input.interval,
@@ -124,7 +126,7 @@ export const BacktestWalkforwardTool = Tool.define(
           startDate: fmt(start),
           endDate: fmt(end),
           robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
-        })
+        }))
 
         if (!result.ok) {
           return {
