@@ -14,21 +14,13 @@ const parameters = z.object({
     .regex(/^\d+[dwmy]$/i, "Duration must match <number><unit> where unit is d/w/m/y (e.g. '3m', '6m')")
     .default("3m")
     .describe(
-      "TOTAL window to split. The first part (in-sample) is used to assess the strategy's " +
-        "performance on the data the model was effectively designed against; the second part " +
-        "(out-of-sample) is held out and used to detect overfitting. Recommend ≥3m so each half has enough trades.",
+      "Total rolling walk-forward window. Recommend ≥3m so each fold has enough bars.",
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
     .default("5min")
     .describe("Bar interval. Should match the algorithm's designed interval."),
   capital: z.string().default("10000").describe("Starting capital in USD"),
-  splitRatio: z
-    .number()
-    .min(0.5)
-    .max(0.9)
-    .default(0.7)
-    .describe("Fraction of the window used as in-sample. Default 0.7 → 70% IS / 30% OOS."),
 })
 
 function fmt(d: Date): string {
@@ -39,14 +31,16 @@ export const BacktestWalkforwardTool = Tool.define(
   "finny_backtest_walkforward",
   Effect.succeed({
     description:
-      "Run a walk-forward backtest: splits the duration window into in-sample (first 70%) and " +
-      "out-of-sample (last 30%), runs the algorithm on each independently, and reports both metric " +
+      "Run a rolling walk-forward backtest across the requested duration and report the in-sample and out-of-sample metric " +
       "sets plus a robustness verdict. The strategy is OVERFIT if out-of-sample Sharpe is far below " +
       "in-sample Sharpe or if out-of-sample loses money. Use this as the primary overfitting gate " +
       "before declaring a strategy 'good'.",
     parameters,
-    execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
-      Effect.fn("backtest-walkforward.execute")(function* () {
+    execute: (() => {
+      const run = Effect.fn("BacktestWalkforwardTool.execute")(function* (
+        input: z.infer<typeof parameters>,
+        ctx: Tool.Context,
+      ) {
         type WfMeta = {
           walkForward?: {
             n_folds: number
@@ -183,6 +177,9 @@ export const BacktestWalkforwardTool = Tool.define(
           output: finalOutput,
           metadata: { walkForward, engineVersion: result.results.engineVersion, schemaVersion: result.results.schemaVersion },
         }
-      }),
+      })
+
+      return (input: z.infer<typeof parameters>, ctx: Tool.Context) => run(input, ctx)
+    })(),
   }),
 )
