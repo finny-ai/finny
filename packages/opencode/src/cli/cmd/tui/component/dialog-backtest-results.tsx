@@ -27,8 +27,8 @@ function formatCurrency(value: number): string {
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
-function formatNumber(value: number, decimals = 2): string {
-  return value.toFixed(decimals)
+function formatNumber(value: number | null | undefined, decimals = 2): string {
+  return value == null ? "N/A" : value.toFixed(decimals)
 }
 
 export function DialogBacktestResults(props: DialogBacktestResultsProps) {

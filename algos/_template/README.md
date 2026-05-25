@@ -110,10 +110,11 @@ strategy.**
 
 ```python
 bar = {
-    "open":      float,   # decision-time-safe
-    "high":      float,   # end-of-bar (lookahead if used for entry)
-    "low":       float,   # end-of-bar
-    "close":     float,   # end-of-bar
+    "open":       float,      # current decision-time-safe open
+    "prev_open":  float|None, # completed prior bar
+    "prev_high":  float|None,
+    "prev_low":   float|None,
+    "prev_close": float|None,
     "volume":    float,
     "timestamp": int,     # unix nanoseconds
     "symbol":    str,
@@ -122,8 +123,8 @@ bar = {
 
 ### Loader discovery order
 
-1. Module has a `Strategy` class whose `__init__` first param is `broker` → **Shape C**
-2. Module has `EthTrendBreakoutStrategy` → **Shape A** (v1 compat adapter)
+1. Strict v2: module has `Strategy(broker, params=None)` and `on_bar(self, symbol, bar)` → **Shape C**
+2. Explicit `v1_compat` only: module has `EthTrendBreakoutStrategy` → **Shape A**
 3. Neither found → error with helpful message
 
 ## Where algos live

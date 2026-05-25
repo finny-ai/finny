@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
+import { Validate } from "../algorithm/validate"
 
 const MAX_COMBOS = 27
 
@@ -105,6 +106,15 @@ export const BacktestSweepTool = Tool.define(
           }
         }
 
+        const validation = await Validate.run(algo.code, { config: algo.config })
+        if (!validation.valid) {
+          return {
+            title: "Sweep blocked by validation",
+            output: Validate.format(validation),
+            metadata: {},
+          }
+        }
+
         const combos = cartesian(input.paramGrid)
         if (combos.length === 0) {
           return {
@@ -135,6 +145,7 @@ export const BacktestSweepTool = Tool.define(
             interval: input.interval,
             capital: input.capital,
             configOverrides: { params: combo },
+            robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
           })
           if (r.ok) results.push({ params: combo, ok: true, metrics: r.results })
           else results.push({ params: combo, ok: false, error: r.error })
@@ -193,7 +204,7 @@ export const BacktestSweepTool = Tool.define(
               (m.maxDrawdown * 100).toFixed(2),
               String(m.totalTrades),
               (m.winRate * 100).toFixed(1),
-              m.profitFactor.toFixed(2),
+              m.profitFactor == null ? "N/A" : m.profitFactor.toFixed(2),
             ].join("\t"),
           )
         }
@@ -214,9 +225,12 @@ export const BacktestSweepTool = Tool.define(
           `Verdict: ${verdict.toUpperCase()} — ${verdictReason}`,
         ]
 
+        const riskBanner = Validate.formatRiskBanner(validation)
+
+        const finalOutput = riskBanner ? `${riskBanner}\n\n${lines.join("\n")}` : lines.join("\n")
         return {
           title: `Sweep: ${algo.name} (${verdict}, ${results.length} combos)`,
-          output: lines.join("\n"),
+          output: finalOutput,
           metadata: {},
         }
       }),

@@ -31,6 +31,9 @@ GROWTH_METHODS = {"append", "add", "update", "extend", "appendleft", "push"}
 # Entry methods in priority order — both the legacy on_tick and the broker-based on_bar
 # get checked. Strategies may define either one or, rarely, both.
 ENTRY_METHOD_NAMES = ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar")
+PRIVATE_STRATEGY_ATTRS = {"_broker", "_market", "_account", "account", "market"}
+REFLECTION_CALLS = {"getattr", "setattr", "delattr", "vars", "dir", "globals", "locals"}
+DISALLOWED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input"}
 
 
 def _find_class(tree, name):
@@ -55,6 +58,115 @@ def _find_entry_methods(cls):
         if m is not None:
             out.append(m)
     return out
+
+
+def _call_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _string_constant(node):
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def check_strict_security(tree, cls):
+    diagnostics = []
+    broker_aliases = {"broker"}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            value = node.value
+            is_broker_value = (
+                isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "self"
+                and value.attr == "broker"
+            ) or (
+                isinstance(value, ast.Name)
+                and value.id in broker_aliases
+            )
+            if not is_broker_value:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in broker_aliases:
+                    broker_aliases.add(target.id)
+                    changed = True
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name.split(".")[0] for a in getattr(node, "names", [])]
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names.append(node.module.split(".")[0])
+            for name in names:
+                if name in {"os", "sys", "subprocess", "socket", "requests", "pickle", "threading", "asyncio", "pathlib"}:
+                    diagnostics.append({
+                        "code": "FORBIDDEN_IMPORT",
+                        "severity": "error",
+                        "message": f"Forbidden import `{name}` in strict strategy code.",
+                        "line": node.lineno,
+                        "fix": "Remove filesystem, network, process, and runtime imports from strategy code.",
+                    })
+                    return diagnostics
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name in DISALLOWED_CALLS:
+                diagnostics.append({
+                    "code": "DANGEROUS_CALL",
+                    "severity": "error",
+                    "message": f"Dangerous call `{name}()` is not allowed in strict strategy code.",
+                    "line": node.lineno,
+                    "fix": "Remove dynamic code execution and filesystem calls.",
+                })
+                return diagnostics
+            if name == "getattr" and len(node.args) >= 2:
+                attr = _string_constant(node.args[1])
+                if attr and (attr.startswith("_") or attr in PRIVATE_STRATEGY_ATTRS):
+                    diagnostics.append({
+                        "code": "PRIVATE_BROKER_ACCESS",
+                        "severity": "error",
+                        "message": f"Private attribute access `{attr}` is not allowed.",
+                        "line": node.lineno,
+                        "fix": "Use only public broker methods.",
+                    })
+                    return diagnostics
+            if name in REFLECTION_CALLS:
+                diagnostics.append({
+                    "code": "FORBIDDEN_REFLECTION",
+                    "severity": "error",
+                    "message": f"Reflection call `{name}()` is not allowed because it can inspect or bypass broker internals.",
+                    "line": node.lineno,
+                    "fix": "Use only the public broker API: buy, sell, position, cash, equity, price, history.",
+                })
+                return diagnostics
+        if isinstance(node, ast.Attribute):
+            is_broker_private = (
+                isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr == "broker"
+                and node.attr.startswith("_")
+            )
+            is_broker_alias_private = (
+                isinstance(node.value, ast.Name)
+                and node.value.id in broker_aliases
+                and node.attr.startswith("_")
+            )
+            if is_broker_private or is_broker_alias_private or node.attr in PRIVATE_STRATEGY_ATTRS:
+                diagnostics.append({
+                    "code": "PRIVATE_BROKER_ACCESS",
+                    "severity": "error",
+                    "message": f"Private/internal attribute `.{node.attr}` is not allowed in strict strategy code.",
+                    "line": node.lineno,
+                    "fix": "Use only the strict broker proxy public API.",
+                })
+                return diagnostics
+    return diagnostics
 
 
 def _is_broker_trade_call(node):
@@ -601,6 +713,25 @@ def check_lookahead_bias_flow(entry_method):
             "fix": "Use `bar[\"open\"]` for entry/exit decisions; reserve close/high/low for end-of-bar state updates only.",
         })
         break  # one diagnostic per strategy is enough
+    return diagnostics
+
+
+def check_current_bar_post_fields(entry_method):
+    diagnostics = []
+    for node in ast.walk(entry_method):
+        if _is_bar_post_field(node):
+            field = node.slice.value
+            diagnostics.append({
+                "code": "LOOKAHEAD_BIAS_FLOW",
+                "severity": "error",
+                "message": (
+                    f"`bar[\"{field}\"]` is not exposed in strict v2. Current-bar high/low/close "
+                    "are only knowable after the decision."
+                ),
+                "line": node.lineno,
+                "fix": f"Use `bar[\"prev_{field}\"]` or completed rows from `self.broker.history(...)`.",
+            })
+            break
     return diagnostics
 
 
@@ -1185,6 +1316,7 @@ def analyze(code, symbol=None):
     diagnostics = []
     diagnostics += check_rms_not_stddev(tree)
     diagnostics += check_population_variance(tree)
+    diagnostics += check_strict_security(tree, cls)
     diagnostics += check_gains_losses_asymmetry(cls)
     diagnostics += check_missing_position_sizing(cls)
     diagnostics += check_equity_never_updated(cls)
@@ -1196,6 +1328,7 @@ def analyze(code, symbol=None):
     for entry in entry_methods:
         for check_fn, *args in (
             (check_state_reset_in_on_tick, entry),
+            (check_current_bar_post_fields, entry),
             (check_lookahead_bias_flow, entry),
             (check_same_bar_execution_bias, entry),
             (check_position_size_uncapped, entry),

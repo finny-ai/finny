@@ -108,7 +108,17 @@ class Broker:
 
 
 class SimBroker(Broker):
-    """In-memory simulated broker for backtests."""
+    """In-memory simulated broker for backtests.
+
+    Execution model: buy()/sell() ENQUEUE intents. Orders fill at the NEXT
+    bar's open via settle(), which the runner calls at the start of each bar
+    before invoking the strategy. This eliminates the same-bar-close lookahead
+    that lets strategies decide using the price they're about to fill at.
+
+    The first bar of a run produces no fills (no prior intents to settle).
+    Intents queued on the last bar of a run remain pending and surface in
+    diagnostics['pending_orders_at_end'].
+    """
 
     def __init__(self, starting_cash: float, fee_rate: float = 0.00075, slippage: float = 0.0001):
         self._starting_cash = float(starting_cash)
@@ -119,11 +129,26 @@ class SimBroker(Broker):
         self._fee_rate = float(fee_rate)
         self._slippage = float(slippage)
         self._orders: list = []
+        self._pending_orders: list = []  # queued intents awaiting settle()
         self._trade_pnls: list = []
         self._equity_curve: list = [float(starting_cash)]
         self._position_history: list = []
         self._order_counter = 0
         self._reject_log_count = 0
+        # Participation tracking — set by the runner before each settle() so
+        # we can warn when a single fill exceeds a fraction of bar volume.
+        self._bar_volume: Dict[str, float] = {}
+        self._participation_warnings: list = []
+        # Optional kill switch — when set, drops further fills once equity
+        # falls below starting_cash * (1 - killswitch_drawdown).
+        self._killswitch_drawdown: Optional[float] = None
+        self._killed: Optional[Dict[str, Any]] = None
+
+    def set_killswitch(self, drawdown_frac: Optional[float]) -> None:
+        self._killswitch_drawdown = float(drawdown_frac) if drawdown_frac is not None else None
+
+    def set_bar_volume(self, symbol: str, volume: float) -> None:
+        self._bar_volume[symbol] = float(volume)
 
     @property
     def starting_cash(self) -> float:
@@ -148,6 +173,14 @@ class SimBroker(Broker):
     def position_history(self) -> list:
         return list(self._position_history)
 
+    @property
+    def pending_orders(self) -> list:
+        return list(self._pending_orders)
+
+    @property
+    def killed(self) -> Optional[Dict[str, Any]]:
+        return dict(self._killed) if self._killed else None
+
     def mark_to_market(self) -> float:
         eq = self._cash
         total_pos = 0.0
@@ -156,64 +189,143 @@ class SimBroker(Broker):
             total_pos += abs(qty)
         self._equity_curve.append(eq)
         self._position_history.append(total_pos)
+        # Kill switch — checked after the latest mark so we trip exactly once
+        # the post-mark equity falls below the threshold.
+        if self._killswitch_drawdown is not None and self._killed is None:
+            threshold = self._starting_cash * (1.0 - self._killswitch_drawdown)
+            if eq <= threshold:
+                self._killed = {
+                    "reason": "drawdown",
+                    "equity": eq,
+                    "threshold": threshold,
+                    "drawdown_frac": self._killswitch_drawdown,
+                }
+                # Drop any pending orders — strategy is dead.
+                self._pending_orders.clear()
         return eq
 
-    def buy(self, symbol, qty=None, notional=None):
-        mark = self._last_price.get(symbol)
-        if mark is None or mark <= 0:
-            return self._reject(symbol, "buy", "no price")
+    def settle(self, symbol: str, fill_price: float) -> None:
+        """Fill queued buy/sell intents at the given price (next bar's open).
+
+        Called by the runner at the start of each bar. Slippage and fees are
+        applied here, not at intent time. After a kill-switch trip the queue
+        is emptied and this call is a no-op.
+        """
+        if self._killed is not None:
+            self._pending_orders.clear()
+            return
+        if fill_price is None or fill_price <= 0:
+            return
+        # Record the fill price so later strategy reads of broker.price() see
+        # decision-time-safe data, not the previous bar's close.
+        self._last_price[symbol] = float(fill_price)
+        if not self._pending_orders:
+            return
+        remaining: list = []
+        for order in self._pending_orders:
+            if order["symbol"] != symbol:
+                remaining.append(order)
+                continue
+            if order["side"] == "buy":
+                self._execute_buy(symbol, order, float(fill_price))
+            else:
+                self._execute_sell(symbol, order, float(fill_price))
+        self._pending_orders = remaining
+
+    def _execute_buy(self, symbol: str, order: Dict[str, Any], mark: float) -> None:
         fill = mark * (1 + self._slippage)
+        qty = order.get("qty")
+        notional = order.get("notional")
         if notional is not None and qty is None:
             qty = notional / fill
         if qty is None:
-            # Default: use all available cash
             qty = self._cash / (fill * (1 + self._fee_rate))
         if qty <= 0:
-            return self._reject(symbol, "buy", "invalid qty")
+            self._reject(symbol, "buy", "invalid qty")
+            return
         cost = qty * fill * (1 + self._fee_rate)
         if cost > self._cash:
             qty = self._cash / (fill * (1 + self._fee_rate))
             if qty <= 0:
-                return self._reject(symbol, "buy", "insufficient cash")
+                self._reject(symbol, "buy", "insufficient cash")
+                return
             cost = qty * fill * (1 + self._fee_rate)
-
+        self._check_participation(symbol, qty)
         prev_qty = self._positions.get(symbol, 0)
         prev_basis = self._cost_basis.get(symbol, 0)
         new_qty = prev_qty + qty
         new_basis = (prev_basis * prev_qty + fill * qty) / new_qty if new_qty > 0 else 0
-
         self._positions[symbol] = new_qty
         self._cost_basis[symbol] = new_basis
         self._cash -= cost
-        return self._record(symbol, "buy", qty, fill, "filled")
+        self._update_pending_order_record(order, qty, fill, "filled")
 
-    def sell(self, symbol, qty=None, notional=None):
-        mark = self._last_price.get(symbol)
-        if mark is None or mark <= 0:
-            return self._reject(symbol, "sell", "no price")
+    def _execute_sell(self, symbol: str, order: Dict[str, Any], mark: float) -> None:
         fill = mark * (1 - self._slippage)
         current = self._positions.get(symbol, 0)
         if current <= 0:
-            return self._reject(symbol, "sell", "no position")
+            self._reject(symbol, "sell", "no position")
+            return
+        qty = order.get("qty")
+        notional = order.get("notional")
         if qty is None and notional is None:
             qty = current
         elif notional is not None:
             qty = notional / fill
         qty = min(qty, current)
         if qty <= 0:
-            return self._reject(symbol, "sell", "invalid qty")
-
+            self._reject(symbol, "sell", "invalid qty")
+            return
+        self._check_participation(symbol, qty)
         proceeds = qty * fill * (1 - self._fee_rate)
         basis = self._cost_basis.get(symbol, fill) * qty
         pnl = proceeds - basis
         self._trade_pnls.append(pnl)
-
         new_qty = current - qty
         self._positions[symbol] = new_qty
         if new_qty == 0:
             self._cost_basis.pop(symbol, None)
         self._cash += proceeds
-        return self._record(symbol, "sell", qty, fill, "filled")
+        self._update_pending_order_record(order, qty, fill, "filled")
+
+    def _check_participation(self, symbol: str, qty: float) -> None:
+        # Don't reject — just warn. Preserves PnL while making the liquidity
+        # assumption visible to the user.
+        bar_vol = self._bar_volume.get(symbol)
+        if bar_vol is None or bar_vol <= 0:
+            return
+        if qty > bar_vol * 0.10:
+            self._participation_warnings.append({
+                "symbol": symbol,
+                "qty": qty,
+                "bar_volume": bar_vol,
+                "participation_pct": (qty / bar_vol) * 100,
+            })
+
+    def _update_pending_order_record(self, order: Dict[str, Any], qty: float, price: float, status: str) -> None:
+        rec: OrderRecord = order["record"]
+        rec.qty = qty
+        rec.price = price
+        rec.status = status
+
+    def _enqueue(self, symbol: str, side: str, qty: Optional[float], notional: Optional[float]) -> OrderRecord:
+        if self._killed is not None:
+            return self._reject(symbol, side, f"killed: {self._killed['reason']}")
+        rec = self._record(symbol, side, qty if qty is not None else 0.0, 0.0, "pending")
+        self._pending_orders.append({
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "notional": notional,
+            "record": rec,
+        })
+        return rec
+
+    def buy(self, symbol, qty=None, notional=None):
+        return self._enqueue(symbol, "buy", qty, notional)
+
+    def sell(self, symbol, qty=None, notional=None):
+        return self._enqueue(symbol, "sell", qty, notional)
 
     def position(self, symbol):
         return self._positions.get(symbol, 0)
@@ -263,21 +375,36 @@ class SimBroker(Broker):
     def diagnostics(self) -> Dict[str, Any]:
         filled = [o for o in self._orders if o.status == "filled"]
         rejected = [o for o in self._orders if o.status.startswith("rejected")]
+        pending = [o for o in self._orders if o.status == "pending"]
         buy_attempts = sum(1 for o in self._orders if o.side == "buy")
         sell_attempts = sum(1 for o in self._orders if o.side == "sell")
         rejection_reasons: Dict[str, int] = {}
         for o in rejected:
             reason = o.status.replace("rejected: ", "")
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        # Cap unbounded warning list when serializing — keep the first 20 +
+        # a count so a noisy strategy can't blow up the diag payload.
+        pw = self._participation_warnings
+        pw_serialized = pw[:20] if len(pw) <= 20 else pw[:20] + [{"truncated": len(pw) - 20}]
         return {
             "total_orders": len(self._orders),
             "filled_orders": len(filled),
             "rejected_orders": len(rejected),
+            "pending_orders_at_end": len(pending),
             "buy_attempts": buy_attempts,
             "sell_attempts": sell_attempts,
             "rejection_reasons": rejection_reasons,
             "final_cash": self._cash,
             "final_equity": self._equity_curve[-1] if self._equity_curve else self._cash,
+            "assumptions": {
+                "fee_rate": self._fee_rate,
+                "slippage": self._slippage,
+                "fill_model": "next_open",
+                "participation_cap_pct": 10.0,
+            },
+            "participation_warnings": pw_serialized,
+            "participation_warning_count": len(pw),
+            "killed": self.killed,
         }
 
 

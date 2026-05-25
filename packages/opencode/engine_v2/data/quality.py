@@ -1,5 +1,4 @@
-"""Data-quality detectors. Non-blocking — results are attached to the run
-report; user decides if they want to halt on warnings."""
+"""Data-quality detectors and hard gates for strict backtests."""
 
 from __future__ import annotations
 
@@ -37,7 +36,7 @@ def expected_step(interval: str) -> pd.Timedelta:
     return pd.Timedelta(minutes=1)
 
 
-def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto") -> QualityReport:
+def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot") -> QualityReport:
     if df.empty:
         return QualityReport(0, 0.0, 0, 0, 0, 0, 0, ["empty input"])
     # Sort by timestamp first — gap/coverage/outlier math is sequential and
@@ -67,12 +66,12 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto") -> Qua
     # Gaps: count bars where the diff exceeds expected step (crypto-only here;
     # equities skipped because we don't have a market calendar in scope).
     gaps = 0
-    if asset_class == "crypto" and len(ts) > 1:
+    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
         diffs = ts.diff().dropna()
         step = expected_step(interval)
         gaps = int((diffs > step * 1.5).sum())
     coverage = 1.0
-    if asset_class == "crypto" and len(ts) > 1:
+    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
         actual = len(ts)
         expected = max(1, int((ts.iloc[-1] - ts.iloc[0]) / expected_step(interval)) + 1)
         coverage = min(1.0, actual / expected)
@@ -94,3 +93,20 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto") -> Qua
         duplicate_ts_count=dupes, ohlc_violations=ohlc_viol,
         outlier_bars=outliers, zero_volume_bars=zero_vol, notes=notes,
     )
+
+
+def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold: float = 0.95) -> List[str]:
+    reasons: List[str] = []
+    if report.n_bars <= 0:
+        reasons.append("empty input")
+    if report.duplicate_ts_count > 0:
+        reasons.append(f"{report.duplicate_ts_count} duplicate timestamp(s)")
+    if report.ohlc_violations > 0:
+        reasons.append(f"{report.ohlc_violations} invalid OHLC bar(s)")
+    if report.coverage_pct < missing_threshold:
+        reasons.append(f"coverage {report.coverage_pct:.1%} below {missing_threshold:.0%} threshold")
+    if report.outlier_bars > 0:
+        reasons.append(f"{report.outlier_bars} severe outlier bar(s)")
+    if asset_class in {"crypto_spot", "crypto_perp", "equity", "future", "option"} and report.zero_volume_bars > 0:
+        reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")
+    return reasons

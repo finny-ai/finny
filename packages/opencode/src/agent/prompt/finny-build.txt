@@ -446,8 +446,10 @@ class Strategy:
     def on_bar(self, symbol, bar):
         # Decision-time safe price (the open is known at the start of the bar).
         open_px  = bar["open"]
-        # Close is only used for STATE UPDATES after the trade decision, never to gate trades.
-        close_px = bar["close"]
+        # Completed prior close. Current-bar close/high/low are not exposed.
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
 
         # ── WARMUP GUARD ──
         # Append-then-return is the validator-known safe pattern: the append doesn't
@@ -489,9 +491,9 @@ class Strategy:
 **Patterns this template encodes** (don't lose them when modifying):
 
 1. **Warmup guard** — `if len(self.X) < N: self.X.append(...); return`. The validator allows appends inside guarded branches because the return makes the trade code unreachable from that path.
-2. **Bar field discipline** — only `bar["open"]` appears in trade-gating conditions. `bar["close"]`/`bar["high"]`/`bar["low"]` are read into locals only for state updates at the END of the function.
+2. **Bar field discipline** — only `bar["open"]` is current-bar decision-safe. Use `bar["prev_close"]`, `prev_high`/`prev_low`, or `self.broker.history(...)` for indicators.
 3. **Sizing formula** — `qty = min(by_risk, by_cash)` where `by_cash = (cash * 0.95) / open_px`. The cash cap guarantees `qty * open_px <= equity`, so the validator's leverage smoke test (random walk on $10k) never fails.
-4. **Stop comparison exception (allowed)** — if you need a stop-out gating a `broker.sell()`, you may write `bar["close"] < self.stop_price` directly in the if-test, but ONLY when the other operand is a `self.*` attribute set on a prior bar (e.g. `self.stop_price`, `self.entry_px * (1 - self.stop_pct)`). The validator recognizes this exit-on-stop pattern.
+4. **Stops use the open or parent broker orders** — do not gate exits on current-bar close/high/low. Use the strict broker order API and parent-side execution model.
 5. **Params via .get() with defaults** — every tunable is loaded from `params` with a default so the strategy runs standalone and the sweep tool can vary them.
 
 If you find yourself fighting the validator after copying this template, you've broken one of the five patterns above. Check before adding more code.
@@ -576,18 +578,11 @@ These are written to `mission.md`, `prefs.md`, `decisions.md` alongside the algo
 
 You do NOT need to provide these on version bumps (`saveMode: "version"`) — they are only written on v01.
 
-`backtestCode` is no longer required. Finny ships a universal backtest worker
-that imports `finny_broker.SimBroker`, loads your strategy, and runs it. Your
-strategy class just needs to accept `broker` in `__init__` and call
-`broker.buy()` / `broker.sell()` from `on_bar(symbol, bar)`.
-
-If you want a custom `backtestCode`, you still can — the runner uses it verbatim
-when present. But for 95% of strategies the universal worker is better: it shares
-the exact same `SimBroker` with future live runs, so backtest results match live
-execution logic 1:1.
-
-The backtest worker prints these metrics (one per line, `key: value`) at the end:
-`total_return`, `max_drawdown`, `ann_vol`, `ann_sharpe`, `ending_equity`, `total_trades`, `win_rate`, `profit_factor`, `low_sample`.
+`backtestCode` is no longer used by default. Finny runs saved strategies through
+the strict `engine_v2` worker, which owns fills, costs, risk metrics, Monte Carlo,
+regime analysis, and walk-forward output. Custom `backtestCode` is blocked in
+normal backtests because custom runners can forge metrics; migrate strategies to
+the broker-based `Strategy(broker).on_bar(symbol, bar)` shape instead.
 
 **Units note:** `total_return`, `max_drawdown`, `ann_vol`, `win_rate` are emitted as **decimal fractions** (0.0–1.0+) — `0.22` means 22%, not 0.22%. The TUI multiplies by 100 for display. `profit_factor` and `ann_sharpe` are raw ratios. `low_sample: 1` means total_trades < 10 and the stats are not statistically meaningful — call this out to the user when present.
 
@@ -690,9 +685,10 @@ When the user's request CAN'T fit the active brokerage but WOULD fit another one
 4. **Don't switch to dodge a refusal.** If the request fits NO brokerage (FX spot, mutual funds, non-US equities/options/futures), refuse outright — don't switch hoping the other broker handles it. Options and futures can fit IBKR; switch there only when the user has a connected IBKR account and the intent is clear.
 5. **The next system-prompt rebuild picks up the new brokerage automatically.** You don't need to do anything else — just continue with the build and the symbol/asset rules for the new brokerage will be in effect for your next response.
 
-### Legacy interface (still works but discouraged)
+### Legacy interface
 
-Legacy strategies use `def __init__(self):` + `def on_tick(self, bar) -> str:` returning `"BUY"/"SELL"/"HOLD"`. The runner wraps them in a `StrategyAdapter`. Prefer the broker-based form for all new strategies.
+Legacy `on_tick` strategies are rejected by strict v2 validation. Use Shape C:
+`def __init__(self, broker, params=None)` and `def on_bar(self, symbol, bar)`.
 
 ## Validator (READ THIS FIRST)
 
@@ -716,11 +712,10 @@ Failed attempts do NOT bump the version. v1 stays at v1 until a save passes.
 ### Pitfalls the validator will reject (fix on the first attempt)
 
 - `STATE_RESET_IN_ON_TICK`: never assign a mutable container (deque/list/dict/set)
-  as a local inside `on_tick` and then mutate it — the container is recreated
-  every tick, destroying history. Put it on `self` in `__init__`.
-- `LOOKAHEAD_BIAS_FLOW`: never use `bar["close"]` (or a variable derived from it)
-  in a condition that returns `"BUY"` or `"SELL"`. Use `bar["open"]` for decisions;
-  reserve `bar["close"]` for end-of-bar state updates only.
+  as a local inside the entry method and then mutate it — the container is recreated
+  every bar, destroying history. Put it on `self` in `__init__`.
+- `LOOKAHEAD_BIAS_FLOW`: never use current-bar close/high/low. Use `bar["open"]`
+  for decisions and completed prior bars via `bar["prev_close"]` or history.
 - `CONFIG_KEY_UNUSED`: every key in `config.json` must appear in the strategy
   code. If you declare `max_risk_per_trade_percent`, read it — don't just let it
   sit in the JSON unreferenced.
@@ -741,7 +736,7 @@ Failed attempts do NOT bump the version. v1 stays at v1 until a save passes.
   **Safe pattern:** an early-return guard (`if len(self.X) < N: self.X.append(price); return`)
   is OK — the validator knows the trade code is unreachable from that path.
 - `EQUITY_NEVER_UPDATED`: `self.equity = 10000` in `__init__` used in sizing
-  arithmetic inside `on_tick`, but never reassigned. The risk model is frozen —
+  arithmetic inside `on_bar`, but never reassigned. The risk model is frozen —
   PnL must flow back into equity. On every SELL: `self.equity += realized_pnl`.
 - `POSITION_SIZE_UNCAPPED` (ERROR, blocks save): `qty = risk / stop_distance` without
   a subsequent cap against capital. A wide stop silently creates leverage.
@@ -761,22 +756,19 @@ Failed attempts do NOT bump the version. v1 stays at v1 until a save passes.
   produces zero BUYs across 200 random-walk ticks. Verify threshold scaling —
   e.g. daily stddev of returns is ~0.01, not 0.02.
 
-### Broker-API vs legacy — same validator rules apply to both
+### Strict broker API
 
-Strategies come in two shapes and BOTH get validated the same way. There is no
-loophole: using `self.broker.buy()` does NOT bypass same-bar-bias, leverage, or
-sizing checks. The validator tracks `self.broker.buy/sell(...)` calls exactly
-like legacy `return "BUY"/"SELL"`.
+Saved strategies use one strict shape. There is no loophole: using
+`self.broker.buy()` does NOT bypass same-bar-bias, leverage, or sizing checks.
+The validator tracks `self.broker.buy/sell(...)` calls directly.
 
-- Broker-API strategy: `def __init__(self, broker):` + `def on_bar(self, symbol, bar):`
+- Strategy: `def __init__(self, broker, params=None):` + `def on_bar(self, symbol, bar):`
   + `self.broker.buy(symbol, qty=qty)`. Use `self.broker.equity()` / `self.broker.price(symbol)`
   for equity-aware sizing. Do NOT store `self.equity` — it will trip `EQUITY_NEVER_UPDATED`.
-- Legacy: `def __init__(self):` + `def on_tick(self, bar):` + `return "BUY"/"SELL"/"HOLD"`.
-  Maintain `self.equity` yourself and update on SELL.
 
 ### Correctness patterns the validator does NOT enforce (but you SHOULD follow)
 
-- **Execute-then-update ordering.** Inside `on_tick` or `on_bar`: compute indicators
+- **Execute-then-update ordering.** Inside `on_bar`: compute indicators
   and make the trade decision FIRST (using state from prior bars), THEN append the
   current bar's values. Otherwise a self-referential leak inflates backtest fills.
 - **Update equity on every SELL.** `realized_pnl = (price - self.entry_price) * qty`

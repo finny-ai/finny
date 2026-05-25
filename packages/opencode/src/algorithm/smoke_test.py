@@ -62,6 +62,7 @@ class StubBroker:
         self._positions = {}      # symbol -> qty
         self._cost_basis = {}     # symbol -> avg entry price
         self._last_price = {}     # symbol -> last observed price
+        self._history = {}        # symbol -> completed bars
         self.calls = []           # [(side, symbol, qty, notional)]
 
     def set_price(self, symbol, price):
@@ -127,28 +128,45 @@ class StubBroker:
     def price(self, symbol):
         return self._last_price.get(symbol)
 
+    def set_history(self, symbol, rows):
+        self._history[symbol] = list(rows)
+
+    def history(self, symbol, limit=100):
+        safe_limit = max(0, int(limit))
+        rows = self._history.get(symbol, [])
+        return tuple(dict(r) for r in (rows[-safe_limit:] if safe_limit else []))
+
 
 def _instantiate_strategy(StrategyCls, broker):
-    """Try broker-injection constructor first, fall back to no-arg.
-    Returns (strategy, uses_broker_api)."""
+    """Instantiate the strict Shape-C strategy."""
     try:
         return StrategyCls(broker), True
     except TypeError:
-        return StrategyCls(), False
+        return StrategyCls(broker, params={}), True
 
 
 def _pick_entry(strategy):
     """Return (method_name, method_fn, accepts_symbol) for the strategy's entry point."""
-    for name in ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar"):
-        fn = getattr(strategy, name, None)
-        if callable(fn):
-            # on_bar(symbol, bar) takes symbol; on_tick(bar) doesn't.
-            accepts_symbol = name in ("on_bar", "handle_bar", "step", "process_bar")
-            return name, fn, accepts_symbol
-    raise AttributeError("Strategy has no recognised entry method")
+    fn = getattr(strategy, "on_bar", None)
+    if callable(fn):
+        return "on_bar", fn, True
+    raise AttributeError("Strict strategy has no on_bar method")
 
 
-def _make_bar(price, ts=0, symbol="TEST"):
+def _make_bar(price, ts=0, symbol="TEST", prev=None):
+    return {
+        "symbol": symbol,
+        "open": price,
+        "prev_open": None if prev is None else prev["open"],
+        "prev_high": None if prev is None else prev["high"],
+        "prev_low": None if prev is None else prev["low"],
+        "prev_close": None if prev is None else prev["close"],
+        "volume": 1_000_000,
+        "timestamp": ts,
+    }
+
+
+def _completed_row(price, ts=0, symbol="TEST"):
     return {
         "symbol": symbol,
         "open": price,
@@ -160,18 +178,30 @@ def _make_bar(price, ts=0, symbol="TEST"):
     }
 
 
-def _regimes(n=200):
+def _regime_prices(n=200, seed=42):
     base = 100.0
     constant = [base] * n
     up = [base * (1 + 0.005) ** i for i in range(n)]
     down = [base * (1 - 0.005) ** i for i in range(n)]
-    rng = random.Random(42)
+    rng = random.Random(seed)
     rw = []
     p = base
     for _ in range(n):
         p *= 1 + rng.gauss(0, 0.01)
         rw.append(p)
-    return {"constant": constant, "up": up, "down": down, "random": rw}
+    return constant, up, down, rw
+
+
+def _regimes(n=200):
+    constant, up, down, rw = _regime_prices(n, 42)
+    _, _, _, long_rw = _regime_prices(500, 4242)
+    return {
+        "constant": constant,
+        "up": up,
+        "down": down,
+        "random": rw,
+        "long_random": long_rw,
+    }
 
 
 def _snapshot_state(strategy):
@@ -246,10 +276,13 @@ def _run_regime(StrategyCls, prices):
     exc = None
 
     requested_qty_events = []  # [{tick, requested_qty, price, equity}]
+    completed = []
 
     for i, price in enumerate(prices):
-        bar = _make_bar(price, ts=i, symbol=SYMBOL)
+        prev = completed[-1] if completed else None
+        bar = _make_bar(price, ts=i, symbol=SYMBOL, prev=prev)
         broker.set_price(SYMBOL, price)
+        broker.set_history(SYMBOL, completed)
         equity_before = broker.equity()
         pre_calls = len(broker.calls)
         try:
@@ -305,6 +338,7 @@ def _run_regime(StrategyCls, prices):
             "position": current_position,
             "equity": current_equity,
         })
+        completed.append(_completed_row(price, ts=i, symbol=SYMBOL))
 
     # For broker-API strategies with no stored equity attribute, surface the
     # broker's equity as a pseudo-scalar so EQUITY_STATIC can reason about it.

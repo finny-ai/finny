@@ -5,12 +5,14 @@ import crypto from "crypto"
 import { Process } from "@/util/process"
 import { Log } from "@/util/log"
 import type { Algorithm } from "@/algorithm"
+import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind } from "./brokers"
 import { emit } from "@/analytics/emit"
 import { Plan } from "@/plan"
 import { requireBrokerTier } from "@/plan/brokers"
+import { Global } from "@/global"
 
 const log = Log.create({ service: "live" })
 
@@ -230,6 +232,7 @@ def main():
     signal.signal(signal.SIGINT, handle_stop)
 
     last_ts = None
+    prev_bar = None
 
     while not stopped["value"]:
         try:
@@ -250,13 +253,29 @@ def main():
             last_ts = bar["timestamp"]
 
             emit({"type": "bar", "symbol": symbol, **bar})
+            if prev_bar is None:
+                prev_bar = bar
+                emit({"type": "log", "level": "info", "message": "Stored first completed bar; waiting for prior-bar context before strategy decision"})
+                _sleep(poll_seconds, stopped)
+                continue
+
+            decision_bar = {
+                "timestamp": bar["timestamp"],
+                "symbol": symbol,
+                "open": bar["open"],
+                "prev_open": prev_bar["open"],
+                "prev_high": prev_bar["high"],
+                "prev_low": prev_bar["low"],
+                "prev_close": prev_bar["close"],
+                "volume": bar["volume"],
+            }
             try:
-                broker.set_price(symbol, bar["close"])
+                broker.set_price(symbol, decision_bar["open"])
             except AttributeError:
                 pass
 
             try:
-                step(symbol, bar)
+                step(symbol, decision_bar)
             except Exception as e:
                 emit({"type": "error", "message": f"Strategy error: {e}",
                       "trace": traceback.format_exc()})
@@ -269,6 +288,7 @@ def main():
             except Exception as e:
                 emit({"type": "log", "level": "warn", "message": f"Account refresh failed: {e}"})
 
+            prev_bar = bar
             _sleep(poll_seconds, stopped)
 
         except Exception as e:
@@ -299,6 +319,22 @@ if __name__ == "__main__":
 `
 
   export async function start(params: StartParams): Promise<Run> {
+    if (params.algorithm.backtestCode && params.algorithm.backtestCode.trim().length > 0) {
+      throw new Error("Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.")
+    }
+    const validation = await Validate.run(params.algorithm.code, {
+      config: {
+        symbol: params.symbol,
+      },
+    })
+    if (!validation.valid) {
+      throw new Error(`Strategy validation failed before live start.\n${Validate.format(validation)}`)
+    }
+    const eligibility = await latestEligibility(params.algorithm)
+    if (eligibility !== "paper_eligible" && eligibility !== "live_eligible") {
+      throw new Error(`Live trading is blocked until the latest immutable backtest run is paper/live eligible. Current eligibility: ${eligibility ?? "none"}.`)
+    }
+
     const tier = await Plan.getTier()
 
     // Tiered cap on simultaneous live algos.
@@ -618,5 +654,26 @@ if __name__ == "__main__":
 
   export function remove(id: string) {
     runs.delete(id)
+  }
+
+  async function latestEligibility(algorithm: Algorithm.Info): Promise<string | null> {
+    const version = Number((algorithm as any).version ?? 0) || 0
+    const runsDir = path.join(Global.Path.data, "algorithms", algorithm.algorithmId, `v${String(version).padStart(2, "0")}`, "runs")
+    try {
+      const entries = await fs.readdir(runsDir, { withFileTypes: true })
+      let newest: { mtime: number; status: string } | null = null
+      for (const entry of entries) {
+        if (!entry.isDirectory()) continue
+        const runPath = path.join(runsDir, entry.name, "run.json")
+        try {
+          const stat = await fs.stat(runPath)
+          const run = JSON.parse(await fs.readFile(runPath, "utf8")) as { eligibilityStatus?: string }
+          if (!newest || stat.mtimeMs > newest.mtime) newest = { mtime: stat.mtimeMs, status: run.eligibilityStatus ?? "prototype" }
+        } catch {}
+      }
+      return newest?.status ?? null
+    } catch {
+      return null
+    }
   }
 }

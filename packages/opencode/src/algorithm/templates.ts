@@ -42,9 +42,9 @@ export namespace Templates {
   //       def on_bar(self, symbol, bar): ...
   //
   // Conventions used everywhere:
-  //   - bar["open"] is the only price used in trade-gating conditions (no lookahead).
-  //   - bar["close"] / bar["high"] / bar["low"] are read AFTER the trade decision,
-  //     only to update rolling state for the next bar.
+  //   - bar["open"] is the only current-bar price exposed at decision time.
+  //   - Indicators use completed data via bar["prev_close"], prev_high/low,
+  //     or self.broker.history(symbol, limit).
   //   - Sizing uses qty = min(by_risk, by_cash) so the validator's leverage smoke
   //     test (10k starting equity) never sees qty * price > equity.
   //   - Warmup is an early-return guard before any indicator is read.
@@ -67,7 +67,9 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
-        close_px = bar["close"]
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
 
         # Warmup: collect RSI history from settled prior closes
         if len(self.gains) < self.period:
@@ -135,7 +137,9 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
-        close_px = bar["close"]
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
 
         # Warmup: fill prices buffer, no trade decisions yet
         if len(self.prices) < self.period:
@@ -187,9 +191,10 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
-        # bar["high"]/bar["low"] are read only for state, never for trade-gating
-        bar_high = bar["high"]
-        bar_low = bar["low"]
+        bar_high = bar["prev_high"]
+        bar_low = bar["prev_low"]
+        if bar_high is None or bar_low is None:
+            return
 
         if len(self.highs) < self.period:
             self.highs.append(bar_high)
@@ -271,7 +276,9 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
-        close_px = bar["close"]
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
 
         if len(self.prices) < self.slow_period:
             self.prices.append(close_px)
@@ -330,7 +337,9 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
-        close_px = bar["close"]
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
 
         if len(self.prices) < self.slow_period:
             self.prices.append(close_px)
@@ -377,7 +386,8 @@ class Strategy:
         self.broker.buy(symbol, qty=N)
         self.broker.sell(symbol, qty=N)
 
-    Bar dict keys: "symbol", "open", "high", "low", "close", "volume", "timestamp"
+    Bar dict keys: "symbol", "open", "volume", "timestamp", "prev_open",
+    "prev_high", "prev_low", "prev_close"
     """
     def __init__(self, broker, params=None):
         self.broker = broker
@@ -388,7 +398,9 @@ class Strategy:
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]    # decision-time safe
-        close_px = bar["close"]  # for state updates AFTER the trade decision
+        close_px = bar["prev_close"]  # completed prior close for indicators
+        if close_px is None:
+            return
 
         # Warmup
         if len(self.prices) < self.lookback:

@@ -5,10 +5,25 @@ import { z } from "zod"
 // outputs (returns, P&L) live elsewhere.
 export const StrategyParams = z.object({
   symbol: z.string().optional(),
-  asset_class: z.enum(["equity", "crypto"]).optional(),
+  asset_class: z.enum(["equity", "crypto", "crypto_spot", "crypto_perp", "future", "fx", "option"]).optional(),
   interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"]).optional(),
   equity_usd: z.number().positive().optional(),
   brokerage: z.enum(["alpaca", "binance"]).optional(),
+  execution: z
+    .object({
+      max_leverage: z.number().positive().optional(),
+      initial_margin_pct: z.number().positive().optional(),
+      maintenance_margin_pct: z.number().nonnegative().optional(),
+      funding_rate_bps: z.number().optional(),
+      funding_interval_hours: z.number().positive().optional(),
+      spread_enabled: z.boolean().optional(),
+      maker_fee_bps: z.number().nonnegative().optional(),
+      taker_fee_bps: z.number().nonnegative().optional(),
+      slippage_bps: z.number().nonnegative().optional(),
+    })
+    .passthrough()
+    .optional(),
+  asset_spec: z.record(z.string(), z.unknown()).optional(),
   backtest: z
     .object({
       duration: z.string().optional(), // "2w", "4w", "5d", "1m", "Ny", …
@@ -51,7 +66,7 @@ export function mergeConfig(prev: StrategyParams, patch: Partial<StrategyParams>
       delete (out as any)[key]
       continue
     }
-    if (key === "backtest" || key === "risk") {
+    if (key === "backtest" || key === "risk" || key === "execution" || key === "asset_spec") {
       const prevSub = (prev as any)[key] ?? {}
       const merged = { ...prevSub }
       for (const [k2, v2] of Object.entries(value)) {

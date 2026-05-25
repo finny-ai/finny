@@ -30,8 +30,13 @@ def run_loop(
     diags: List[Dict[str, Any]] = []
     for i in range(n):
         market.set_index(i)
-        broker.process_bar(i)
-        diag = on_bar() or {}
+        bar_fills = broker.process_open(i)
+        market.set_decision_phase(True)
+        try:
+            diag = on_bar() or {}
+        finally:
+            market.set_decision_phase(False)
+        broker.process_close(i, bar_fills)
         eq = broker.get_equity()
         diag["equity"] = eq
         diag["bar"] = i
