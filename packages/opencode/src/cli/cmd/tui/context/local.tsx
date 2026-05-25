@@ -44,7 +44,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       }>({
         current: agents()[0].name,
       })
-      // Beginners (chosen during onboarding via DialogExperienceLevel) default
+      // Beginners (chosen during onboarding via DialogOnboardingChoosePath) default
       // to the chat agent rather than build. KV is the source of truth, but
       // loads asynchronously — so apply the override once KV is ready, only
       // if the user hasn't manually picked an agent yet this session.
