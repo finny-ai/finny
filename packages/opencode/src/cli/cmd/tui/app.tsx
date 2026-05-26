@@ -1143,13 +1143,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       return
     }
 
-    await DialogAlert.show(
-      dialog,
-      "Update Complete",
-      `Finny has been updated to v${result.data.version}. Please restart to use the new version.`,
-    )
-
-    exit()
+    // Success dialog and exit are handled by the "installation.updated" event
+    // handler above — the server emits that event after a successful upgrade.
   })
 
   const plugin = createMemo(() => {
