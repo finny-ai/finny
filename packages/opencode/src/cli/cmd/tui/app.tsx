@@ -1095,6 +1095,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  event.on("installation.updated", async (evt) => {
+    const version = evt.properties.version
+    await DialogAlert.show(
+      dialog,
+      "Update Complete",
+      `Finny has been updated to v${version}. Please restart to use the new version.`,
+    )
+    exit()
+  })
+
   event.on("installation.update-available", async (evt) => {
     const version = evt.properties.version
 
@@ -1133,13 +1143,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       return
     }
 
-    await DialogAlert.show(
-      dialog,
-      "Update Complete",
-      `Successfully updated to OpenCode v${result.data.version}. Please restart the application.`,
-    )
-
-    exit()
+    // Success dialog and exit are handled by the "installation.updated" event
+    // handler above — the server emits that event after a successful upgrade.
   })
 
   const plugin = createMemo(() => {
