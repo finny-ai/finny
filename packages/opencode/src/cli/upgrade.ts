@@ -16,7 +16,7 @@ export async function upgrade() {
   }
 
   if (Installation.VERSION === latest) return
-  if (config.finny_autoupdate === false || Flag.FINNY_DISABLE_AUTOUPDATE) return
+  if (config.finny_autoupdate === false || config.autoupdate === false || Flag.FINNY_DISABLE_AUTOUPDATE || Flag.OPENCODE_DISABLE_AUTOUPDATE) return
 
   if (config.autoupdate === "notify") {
     await Bus.publish(Installation.Event.UpdateAvailable, { version: latest })
