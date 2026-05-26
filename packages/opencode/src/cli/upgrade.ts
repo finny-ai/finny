@@ -13,7 +13,7 @@ export async function upgrade() {
     config.autoupdate === false ||
     Flag.FINNY_DISABLE_AUTOUPDATE ||
     Flag.OPENCODE_DISABLE_AUTOUPDATE
-  if (disabled && !Flag.OPENCODE_ALWAYS_NOTIFY_UPDATE && config.autoupdate !== "notify") return
+  if (disabled) return
 
   const method = await AppRuntime.runPromise(Installation.Service.use((svc) => svc.method()))
   const latest = await AppRuntime.runPromise(Installation.Service.use((svc) => svc.latest(method))).catch(() => {})
@@ -25,7 +25,6 @@ export async function upgrade() {
   }
 
   if (Installation.VERSION === latest) return
-  if (disabled) return
 
   if (config.autoupdate === "notify") {
     await Bus.publish(Installation.Event.UpdateAvailable, { version: latest })
