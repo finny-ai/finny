@@ -103,6 +103,17 @@ def process_orders_for_bar(
     fills: List[Fill] = []
     drop_ids: List[str] = []
     spec = asset_specs.get(ba.symbol) if asset_specs else None
+    asset_class = spec.assetClass if spec else ""
+
+    # Options have wider bid-ask spreads than equities
+    effective_fill_cfg = fill_cfg
+    if asset_class == "option" and fill_cfg.spread is not None:
+        from copy import copy
+        effective_fill_cfg = copy(fill_cfg)
+        wider_spread = copy(fill_cfg.spread)
+        wider_spread.min_bps = max(wider_spread.min_bps, 30.0)  # ~5-10x equity
+        wider_spread.enabled = True
+        effective_fill_cfg.spread = wider_spread
 
     for order in list(queue):
         if order.symbol != ba.symbol:
@@ -144,12 +155,12 @@ def process_orders_for_bar(
                 base_px = c
             else:
                 base_px = o
-            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, fill_cfg.slippage)
-            spr = half_spread(_close_window(ba, i, fill_cfg.spread.lookback_bars), fill_cfg.spread, base_px)
+            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, effective_fill_cfg.slippage)
+            spr = half_spread(_close_window(ba, i, effective_fill_cfg.spread.lookback_bars), effective_fill_cfg.spread, base_px)
             fill_px = base_px + slip + (spr if order.side == "buy" else -spr)
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=False, cfg=costs)
+            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=False, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,
@@ -170,11 +181,11 @@ def process_orders_for_bar(
             if not traded_through:
                 continue
             base_px = lp
-            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, fill_cfg.slippage)
+            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, effective_fill_cfg.slippage)
             fill_px = base_px + slip
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=True, cfg=costs)
+            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=True, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,
@@ -211,11 +222,11 @@ def process_orders_for_bar(
             else:
                 base_px = trigger_px
                 is_maker = False
-            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, fill_cfg.slippage)
+            slip = slippage_price_delta(order.side, base_px, fill_qty_max, v, atr_v, effective_fill_cfg.slippage)
             fill_px = base_px + slip
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=is_maker, cfg=costs)
+            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=is_maker, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,

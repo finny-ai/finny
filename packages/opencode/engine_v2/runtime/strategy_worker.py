@@ -117,6 +117,18 @@ class WorkerBroker:
         view = rows[-safe_limit:] if safe_limit else []
         return tuple(MappingProxyType(dict(row)) for row in view)
 
+    def greeks(self, symbol: str) -> Dict[str, float]:
+        return dict(self._state.get("greeks", {}).get(str(symbol), {
+            "delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0,
+        }))
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        val = self._state.get("underlying_prices", {}).get(str(symbol))
+        return None if val is None else float(val)
+
+    def days_to_expiry(self, symbol: str) -> float:
+        return float(self._state.get("dte", {}).get(str(symbol), float("inf")))
+
 
 def _load_strategy(path: str):
     spec = importlib.util.spec_from_file_location("_finny_user_strategy", path)

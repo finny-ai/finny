@@ -19,8 +19,10 @@ import pandas as pd
 
 from .cache import CacheConfig, load_range
 from .providers.binance import BinanceProvider
+from .providers.synthetic_options import SyntheticOptionsProvider
 from .providers.yfinance import YFinanceProvider
 from .quality import QualityReport, analyze
+from ..options.symbols import is_option_symbol
 
 _CRYPTO_BASES = {
     "BTC", "ETH", "SOL", "DOGE", "XRP", "ADA", "AVAX", "DOT", "LINK",
@@ -32,6 +34,8 @@ _CRYPTO_BASES = {
 
 def _classify_asset(symbol: str) -> str:
     s = symbol.strip().upper()
+    if is_option_symbol(s):
+        return "option"
     base = s.split("/")[0].split("-")[0]
     if base in _CRYPTO_BASES:
         return "crypto"
@@ -141,7 +145,7 @@ def extract(
 ) -> ExtractResult:
     """Fetch from best source, write parquet, return digest."""
     asset_class = _classify_asset(symbol)
-    subdir = "crypto" if asset_class == "crypto" else "stock"
+    subdir = {"crypto": "crypto", "option": "option"}.get(asset_class, "stock")
     data_dir = Path(algo_dir) / "data" / subdir
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -154,7 +158,9 @@ def extract(
     best_quality: Optional[QualityReport] = None
     best_provider: Optional[str] = None
 
-    if asset_class == "crypto":
+    if asset_class == "option":
+        providers = [SyntheticOptionsProvider()]
+    elif asset_class == "crypto":
         providers = [BinanceProvider(), YFinanceProvider()]
     else:
         providers = [YFinanceProvider()]

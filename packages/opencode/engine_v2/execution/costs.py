@@ -12,9 +12,18 @@ class CostConfig:
     funding_rate_bps_per_interval: float = 0.0     # 0 = no perp funding
     funding_interval_hours: float = 8.0
     short_borrow_rate_annual: float = 0.0          # e.g. 0.02 = 2% annualized
+    option_per_contract_fee: float = 0.65          # IBKR-style per-contract commission
 
 
-def commission(notional: float, is_maker: bool, cfg: CostConfig) -> float:
+def commission(
+    notional: float,
+    is_maker: bool,
+    cfg: CostConfig,
+    asset_class: str = "",
+    qty: float = 0.0,
+) -> float:
+    if asset_class == "option" and cfg.option_per_contract_fee > 0:
+        return abs(qty) * cfg.option_per_contract_fee
     bps = cfg.maker_fee_bps if is_maker else cfg.taker_fee_bps
     return abs(notional) * (bps / 10_000.0)
 
