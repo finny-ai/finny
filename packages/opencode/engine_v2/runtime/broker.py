@@ -25,7 +25,7 @@ from ..options.symbols import is_option_symbol, parse_option_symbol
 from ..options.pricing import option_price
 from ..options.calendar import time_to_expiry_years
 from ..core.clock import interval_to_rule_and_bars_per_year
-from ..execution.costs import CostConfig, borrow_charge_per_bar, funding_charge
+from ..execution.costs import CostConfig, borrow_charge_per_bar, commission, funding_charge
 from ..execution.fills import Fill, FillConfig, process_orders_for_bar
 from ..portfolio.account import Account
 from ..portfolio.liquidation import liquidation_price
@@ -206,7 +206,7 @@ class PortfolioBroker:
                     continue
                 equity = self.get_equity()
                 curr = prices[sym]
-                liq = liquidation_price(pos, equity, curr, self.account.maintenance_margin_pct)
+                liq = liquidation_price(pos, equity, curr, self.account.maintenance_margin_pct_for_symbol(sym))
                 if liq is None:
                     continue
                 ba = self.market.arrays[sym]
@@ -301,14 +301,17 @@ class PortfolioBroker:
             projected_qty[qsym] = projected_qty.get(qsym, 0.0) + (qqty if qside == "buy" else -qqty)
             qspec = self.asset_specs.get(qsym)
             mult = qspec.multiplier if qspec is not None else 1.0
-            queued_fee += abs(qqty * qprice * mult) * (self.costs.taker_fee_bps / 10_000.0)
-        gross_after = 0.0
-        for sym, projected in projected_qty.items():
-            if projected == 0:
-                continue
-            gross_after += abs(projected) * self.latest_price(sym) * self._multiplier(sym)
-        allowed = self.account.equity(self.book.positions) * self.account.max_leverage
-        if gross_after + queued_fee > allowed + 1e-9:
+            queued_fee += commission(
+                abs(qqty * qprice * mult),
+                is_maker=False,
+                cfg=self.costs,
+                qty=qqty,
+                asset_class=qspec.assetClass if qspec is not None else "",
+            )
+        projected_prices = {sym: self.latest_price(sym) for sym in projected_qty}
+        required_margin = self.account.required_initial_margin_for_quantities(projected_qty, projected_prices)
+        allowed = self.account.equity(self.book.positions)
+        if required_margin + queued_fee > allowed + 1e-9:
             self._reject(symbol, side, qty, "insufficient_margin")
             return False
         return True
@@ -322,7 +325,14 @@ class PortfolioBroker:
         # Adverse slip on the wrong side: use base bps as worst-case extra.
         slip = liq_px * (self.fill_cfg.slippage.base_bps / 10_000.0)
         fill_px = liq_px - slip if side == "sell" else liq_px + slip
-        fee = abs(qty * fill_px * self._multiplier(symbol)) * (self.costs.taker_fee_bps / 10_000.0)
+        spec = self.asset_specs.get(symbol)
+        fee = commission(
+            abs(qty * fill_px * self._multiplier(symbol)),
+            is_maker=False,
+            cfg=self.costs,
+            qty=qty,
+            asset_class=spec.assetClass if spec is not None else "",
+        )
         realized = self.book.apply_fill(
             symbol=symbol, side=side, qty=qty, price=fill_px,
             fee=fee, ts_ns=int(self.market.arrays[symbol].ts[i]), tag="LIQUIDATION",

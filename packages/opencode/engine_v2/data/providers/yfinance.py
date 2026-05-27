@@ -8,6 +8,8 @@ from typing import Dict
 
 import pandas as pd
 
+from ...assets import to_yfinance_symbol
+
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
 _INTERVAL_MAP = {
@@ -17,8 +19,7 @@ _INTERVAL_MAP = {
 
 
 def _normalize_yf(symbol: str) -> str:
-    # "ETH/USD" → "ETH-USD"; "BTC/USDT" → "BTC-USDT" (yf accepts only -USD/-USDT)
-    return symbol.replace("/", "-")
+    return to_yfinance_symbol(symbol)
 
 
 class YFinanceProvider:

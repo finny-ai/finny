@@ -12,6 +12,7 @@ Generate a complete, validated trading strategy from a template. Returns product
 - **dca** — Dollar-cost averaging: buys at intervals, sells at profit target
 - **golden-cross** — SMA 50/200 crossover: buys golden cross, sells death cross
 - **scalping** — EMA with tight stops: quick entries and exits
+- **futures-trend** — Futures trend-following with whole-contract sizing
 - **custom** — Minimal skeleton: implement your own logic
 
 ## Output

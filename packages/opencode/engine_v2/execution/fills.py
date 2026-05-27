@@ -160,7 +160,13 @@ def process_orders_for_bar(
             fill_px = base_px + slip + (spr if order.side == "buy" else -spr)
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=False, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
+            fee = commission(
+                fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0),
+                is_maker=False,
+                cfg=costs,
+                qty=fill_qty_max,
+                asset_class=asset_class,
+            )
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,
@@ -185,7 +191,13 @@ def process_orders_for_bar(
             fill_px = base_px + slip
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=True, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
+            fee = commission(
+                fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0),
+                is_maker=True,
+                cfg=costs,
+                qty=fill_qty_max,
+                asset_class=asset_class,
+            )
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,
@@ -226,7 +238,13 @@ def process_orders_for_bar(
             fill_px = base_px + slip
             if spec is not None:
                 fill_px = spec.round_price(fill_px)
-            fee = commission(fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0), is_maker=is_maker, cfg=costs, asset_class=asset_class, qty=fill_qty_max)
+            fee = commission(
+                fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0),
+                is_maker=is_maker,
+                cfg=costs,
+                qty=fill_qty_max,
+                asset_class=asset_class,
+            )
             full = (fill_qty_max >= order.qty_remaining)
             order.qty_remaining -= fill_qty_max
             fills.append(Fill(order.id, order.symbol, order.side, fill_qty_max, fill_px,

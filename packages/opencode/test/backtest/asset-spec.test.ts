@@ -15,6 +15,21 @@ describe("AssetSpec registry", () => {
     expect(spec.multiplier).toBeGreaterThan(1)
   })
 
+  test("infers supported futures roots and applies per-contract specs", () => {
+    expect(normalizeAssetClass(undefined, "ES")).toBe("future")
+    const es = resolveAssetSpec({ symbol: "ES" }, "ES")
+    const nq = resolveAssetSpec({ symbol: "NQ" }, "NQ")
+    const cl = resolveAssetSpec({ symbol: "CL" }, "CL")
+    expect(es.assetClass).toBe("future")
+    expect(es.multiplier).toBe(50)
+    expect(es.initialMarginPct).toBe(0.05)
+    expect(es.maintenanceMarginPct).toBe(0.04)
+    expect(es.commissionPerContract).toBe(2.25)
+    expect(nq.multiplier).toBe(20)
+    expect(cl.multiplier).toBe(1000)
+    expect(cl.tickSize).toBe(0.01)
+  })
+
   test("represents options but marks them ineligible", () => {
     const spec = resolveAssetSpec({ symbol: "AAPL240621C00100000", asset_class: "option" }, "AAPL240621C00100000")
     expect(spec.assetClass).toBe("option")
