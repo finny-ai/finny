@@ -414,12 +414,32 @@ class StrictStrategyWorker:
 
 
 def _broker_state(broker: PortfolioBroker, snap: MarketSnapshot, symbol: str) -> Dict[str, Any]:
-    return {
+    state: Dict[str, Any] = {
         "positions": {s: float(broker.book.get(s).qty) for s in snap.symbols},
         "cash": float(broker.account.cash),
         "equity": float(broker.get_equity()),
         "prices": {s: float(broker.latest_price(s)) for s in snap.symbols},
     }
+    greeks_map: Dict[str, Any] = {}
+    underlying_map: Dict[str, Any] = {}
+    dte_map: Dict[str, float] = {}
+    for s in snap.symbols:
+        g = broker.greeks(s)
+        if any(v != 0.0 for v in g.values()):
+            greeks_map[s] = g
+        up = broker.underlying_price(s)
+        if up is not None:
+            underlying_map[s] = up
+        dte = broker.days_to_expiry(s)
+        if dte != float("inf"):
+            dte_map[s] = dte
+    if greeks_map:
+        state["greeks"] = greeks_map
+    if underlying_map:
+        state["underlying_prices"] = underlying_map
+    if dte_map:
+        state["dte"] = dte_map
+    return state
 
 
 def _submit_worker_intents(broker: PortfolioBroker, intents: List[Dict[str, Any]], symbol: str) -> None:

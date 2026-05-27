@@ -20,8 +20,10 @@ import pandas as pd
 from .cache import CacheConfig, load_range
 from ..assets import normalize_asset_class
 from .providers.binance import BinanceProvider
+from .providers.synthetic_options import SyntheticOptionsProvider
 from .providers.yfinance import YFinanceProvider
 from .quality import QualityReport, analyze
+from ..options.symbols import is_option_symbol
 
 def _classify_asset(symbol: str) -> str:
     return normalize_asset_class(None, symbol)
@@ -197,7 +199,7 @@ def extract(
 ) -> ExtractResult:
     """Fetch from best source, write parquet, return digest."""
     asset_class = _classify_asset(symbol)
-    subdir = {"crypto_spot": "crypto", "crypto_perp": "crypto", "future": "future"}.get(asset_class, "stock")
+    subdir = {"crypto_spot": "crypto", "crypto_perp": "crypto", "future": "future", "option": "option"}.get(asset_class, "stock")
     data_dir = Path(algo_dir) / "data" / subdir
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -210,7 +212,9 @@ def extract(
     best_quality: Optional[QualityReport] = None
     best_provider: Optional[str] = None
 
-    if asset_class in {"crypto_spot", "crypto_perp"}:
+    if asset_class == "option":
+        providers = [SyntheticOptionsProvider()]
+    elif asset_class in {"crypto_spot", "crypto_perp"}:
         providers = [BinanceProvider(), YFinanceProvider()]
     else:
         providers = [YFinanceProvider()]

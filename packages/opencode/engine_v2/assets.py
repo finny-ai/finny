@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
 
 
 AssetClass = str
+_OPTION_RE = re.compile(r"^[A-Z]{1,6}/\d{8}/\d+(?:\.\d+)?[CP]$", re.IGNORECASE)
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"}
 
 # Roots accepted as futures in backtest. yfinance serves these as e.g. "ES=F";
@@ -119,6 +121,8 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
     if raw in {"crypto_spot", "crypto_perp", "equity", "future", "fx", "option"}:
         return raw
     sym = str(symbol).upper()
+    if _OPTION_RE.match(sym):
+        return "option"
     if is_futures_root(sym):
         return "future"
     if len(sym) == 6 and sym.isalpha() and sym[:3] not in CRYPTO_BASES:
@@ -177,7 +181,7 @@ def _defaults(asset_class: AssetClass, symbol: str, exec_cfg: Dict[str, Any]) ->
     if asset_class == "option":
         return {**common, "assetClass": asset_class, "venue": "OPRA", "calendar": "US_OPTIONS",
                 "tickSize": 0.01, "lotSize": 1.0, "multiplier": 100.0,
-                "productionEligible": False,
-                "blockingReason": "Options require pricing, Greeks, exercise/assignment, IV surface, and liquidity models."}
+                "dataProvider": "synthetic_options",
+                "productionEligible": True}
     return {**common, "assetClass": "equity", "venue": "equity", "calendar": "US_EQUITIES",
             "tickSize": 0.01, "lotSize": 1.0, "multiplier": 1.0, "productionEligible": True}
