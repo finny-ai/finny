@@ -24,6 +24,7 @@ export namespace Algorithm {
     backtestCode: z.string().optional(),
     reasoning: z.string().optional(),
     brokerKind: BrokerKindSchema.optional(),
+    targetBrokerage: BrokerKindSchema.optional(),
     time_created: z.number(),
     time_updated: z.number(),
   })
@@ -64,6 +65,7 @@ export namespace Algorithm {
     prefs?: string
     decisions?: string
     brokerKind?: BrokerKind
+    targetBrokerage?: BrokerKind
     saveMode: SaveMode
   }
 
@@ -125,6 +127,7 @@ export namespace Algorithm {
       prefs: input.prefs,
       decisions: input.decisions,
       brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
+      targetBrokerage: input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
       time_created,
       time_updated: now,
     })) as Info

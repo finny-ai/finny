@@ -70,6 +70,13 @@ class StubBroker:
         self._last_price[symbol] = float(price)
 
     def buy(self, symbol, qty=None, notional=None):
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current >= 0: long entry or add (cap by cash)
+          - current  < 0: cover short — possibly with a residual that flips to long
+
+        Realized PnL on cover flows naturally into self._cash: short opened cash by
+        qty*basis, cover spends qty*mark, so the net change is qty*(basis - mark).
+        """
         mark = self._last_price.get(symbol, 0)
         # Record what the strategy ASKED for (before we cap) so leverage violations
         # are observable even if the real broker would silently cap.
@@ -79,39 +86,116 @@ class StubBroker:
         self.calls.append(("buy", symbol, requested_qty, notional))
         if mark <= 0:
             return None
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty if omitted
         if qty is None and notional is not None:
             qty = notional / mark
         if qty is None:
-            qty = self._cash / mark if mark > 0 else 0
-        cost = qty * mark
-        if cost > self._cash:
-            qty = self._cash / mark if mark > 0 else 0
+            # Default: cover the short if short; otherwise size to all cash.
+            qty = abs(current) if current < 0 else (self._cash / mark if mark > 0 else 0)
+        if qty <= 0:
+            return None
+
+        if current >= 0:
+            # Long entry or add — cap by cash, weighted-avg the basis
             cost = qty * mark
-        prev_qty = self._positions.get(symbol, 0)
-        prev_basis = self._cost_basis.get(symbol, 0)
-        new_qty = prev_qty + qty
-        new_basis = (prev_basis * prev_qty + mark * qty) / new_qty if new_qty > 0 else 0
-        self._positions[symbol] = new_qty
-        self._cost_basis[symbol] = new_basis
-        self._cash -= cost
+            if cost > self._cash:
+                qty = self._cash / mark if mark > 0 else 0
+                cost = qty * mark
+            if qty <= 0:
+                return None
+            prev_basis = self._cost_basis.get(symbol, 0)
+            new_qty = current + qty
+            new_basis = (prev_basis * current + mark * qty) / new_qty if new_qty > 0 else 0
+            self._positions[symbol] = new_qty
+            self._cost_basis[symbol] = new_basis
+            self._cash -= cost
+            return None
+
+        # current < 0: covering a short, possibly flipping to long with residual
+        cover_qty = min(qty, abs(current))
+        residual = qty - cover_qty
+        self._cash -= cover_qty * mark
+        new_current = current + cover_qty
+        self._positions[symbol] = new_current
+        if new_current == 0:
+            self._cost_basis.pop(symbol, None)
+
+        if residual > 0:
+            # Residual opens a long at mark, capped by remaining cash
+            cost = residual * mark
+            if cost > self._cash:
+                residual = self._cash / mark if mark > 0 else 0
+                cost = residual * mark
+            if residual > 0:
+                self._positions[symbol] = residual
+                self._cost_basis[symbol] = mark
+                self._cash -= cost
         return None
 
     def sell(self, symbol, qty=None, notional=None):
-        self.calls.append(("sell", symbol, qty, notional))
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current  > 0: long reduce/close — realize PnL via cash inflow
+          - current == 0: open short — receive proceeds, position goes negative
+          - current  < 0: add to short — weighted-avg basis on the short side
+
+        A sell that crosses zero (current > 0 and qty > current) is treated as
+        close-then-open-short on the residual.
+        """
+        requested_qty = qty
         mark = self._last_price.get(symbol, 0)
-        current = self._positions.get(symbol, 0)
-        if mark <= 0 or current <= 0:
+        if notional is not None and qty is None:
+            requested_qty = notional / mark if mark > 0 else 0
+        self.calls.append(("sell", symbol, requested_qty, notional))
+        if mark <= 0:
             return None
-        if qty is None and notional is None:
-            qty = current
-        elif notional is not None:
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty
+        if qty is None and notional is not None:
             qty = notional / mark
-        qty = min(qty, current)
-        proceeds = qty * mark
-        self._positions[symbol] = current - qty
-        if self._positions[symbol] == 0:
-            self._cost_basis.pop(symbol, None)
-        self._cash += proceeds
+        if qty is None:
+            # Default: close the long if long. From flat or short, require an
+            # explicit qty — refusing to open / add to a short on a bare sell()
+            # avoids silently magnifying exposure when the strategy is buggy.
+            if current > 0:
+                qty = current
+            else:
+                return None
+        if qty <= 0:
+            return None
+
+        if current > 0:
+            # Long reduce/close — proceed by min(qty, current), then handle residual
+            close_qty = min(qty, current)
+            self._cash += close_qty * mark
+            new_current = current - close_qty
+            self._positions[symbol] = new_current
+            if new_current == 0:
+                self._cost_basis.pop(symbol, None)
+            residual = qty - close_qty
+            if residual > 0:
+                # Flip to short with residual at mark
+                self._positions[symbol] = -residual
+                self._cost_basis[symbol] = mark
+                self._cash += residual * mark
+            return None
+
+        # current <= 0: open or add to short. Receive proceeds, average the basis.
+        self._cash += qty * mark
+        if current == 0:
+            self._positions[symbol] = -qty
+            self._cost_basis[symbol] = mark
+        else:
+            prev_basis = self._cost_basis.get(symbol, 0)
+            abs_prev = abs(current)
+            abs_new = abs_prev + qty
+            new_basis = (prev_basis * abs_prev + mark * qty) / abs_new
+            self._positions[symbol] = -abs_new
+            self._cost_basis[symbol] = new_basis
         return None
 
     def position(self, symbol):

@@ -19,6 +19,7 @@ export const StrategyParams = z.object({
       spread_enabled: z.boolean().optional(),
       maker_fee_bps: z.number().nonnegative().optional(),
       taker_fee_bps: z.number().nonnegative().optional(),
+      commission_per_contract: z.number().nonnegative().optional(),
       slippage_bps: z.number().nonnegative().optional(),
     })
     .passthrough()

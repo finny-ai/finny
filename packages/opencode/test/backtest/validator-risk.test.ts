@@ -162,6 +162,25 @@ describe("Validate strict Shape C gates", () => {
     expect(result.errors.map(e => e.code)).toContain("UNSUPPORTED_STRATEGY_CONTRACT")
   })
 
+  test("warns when futures use notional or fractional sizing", async () => {
+    const code = `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        qty = self.broker.equity() / open_px
+        self.broker.buy(symbol, notional=self.broker.equity() * 0.1)
+        self.broker.sell(symbol, qty=qty)
+`
+    const result = await Validate.run(code, {
+      config: { symbol: "ES", asset_class: "future" },
+      skipSmokeTest: true,
+    })
+    const warnings = result.warnings.map(w => w.code)
+    expect(warnings).toContain("FUTURES_NOTIONAL_SIZING")
+    expect(warnings).toContain("FUTURES_FRACTIONAL_QTY")
+  })
+
   test("rejects delayed oversized leverage after the old 200-bar smoke window", async () => {
     const code = `class Strategy:
     def __init__(self, broker, params=None):

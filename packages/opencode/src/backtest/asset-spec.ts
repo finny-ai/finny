@@ -14,6 +14,9 @@ export interface AssetSpec {
   marginModel: string
   dataProvider: string
   productionEligible: boolean
+  initialMarginPct?: number
+  maintenanceMarginPct?: number
+  commissionPerContract?: number
   expiry?: string
   rollPolicy?: string
   quoteCurrency?: string
@@ -22,6 +25,24 @@ export interface AssetSpec {
 }
 
 const CRYPTO_BASES = new Set(["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"])
+const FUTURES_SPECS = {
+  ES: { venue: "CME", tickSize: 0.25, multiplier: 50, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
+  NQ: { venue: "CME", tickSize: 0.25, multiplier: 20, currency: "USD", initialMarginPct: 0.06, maintenanceMarginPct: 0.05, commissionPerContract: 2.25 },
+  RTY: { venue: "CME", tickSize: 0.1, multiplier: 50, currency: "USD", initialMarginPct: 0.07, maintenanceMarginPct: 0.06, commissionPerContract: 2.25 },
+  YM: { venue: "CBOT", tickSize: 1, multiplier: 5, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
+  CL: { venue: "NYMEX", tickSize: 0.01, multiplier: 1000, currency: "USD", initialMarginPct: 0.1, maintenanceMarginPct: 0.08, commissionPerContract: 2.75 },
+  GC: { venue: "COMEX", tickSize: 0.1, multiplier: 100, currency: "USD", initialMarginPct: 0.08, maintenanceMarginPct: 0.06, commissionPerContract: 2.6 },
+  SI: { venue: "COMEX", tickSize: 0.005, multiplier: 5000, currency: "USD", initialMarginPct: 0.12, maintenanceMarginPct: 0.1, commissionPerContract: 2.9 },
+  HG: { venue: "COMEX", tickSize: 0.0005, multiplier: 25000, currency: "USD", initialMarginPct: 0.09, maintenanceMarginPct: 0.07, commissionPerContract: 2.75 },
+  ZN: { venue: "CBOT", tickSize: 0.015625, multiplier: 1000, currency: "USD", initialMarginPct: 0.03, maintenanceMarginPct: 0.025, commissionPerContract: 2.1 },
+  ZB: { venue: "CBOT", tickSize: 0.03125, multiplier: 1000, currency: "USD", initialMarginPct: 0.04, maintenanceMarginPct: 0.03, commissionPerContract: 2.1 },
+  "6E": { venue: "CME", tickSize: 0.00005, multiplier: 125000, currency: "USD", initialMarginPct: 0.04, maintenanceMarginPct: 0.03, commissionPerContract: 2.4 },
+} as const
+
+function futuresRoot(symbol: string): keyof typeof FUTURES_SPECS | undefined {
+  const root = symbol.toUpperCase().replace(/=F$/, "").replace(/\/CONT$/, "")
+  return root in FUTURES_SPECS ? root as keyof typeof FUTURES_SPECS : undefined
+}
 
 export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
@@ -30,6 +51,7 @@ export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass
     return raw
   }
   const sym = String(symbol ?? "").toUpperCase()
+  if (futuresRoot(sym)) return "future"
   if (/^[A-Z]{6}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
   if (/^[A-Z]{3}[/-][A-Z]{3}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
   if (sym.includes("/") || sym.includes("-") || sym.endsWith("USDT") || sym.endsWith("USD")) return "crypto_spot"
@@ -37,7 +59,7 @@ export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass
 }
 
 export function requiresExplicitAssetClass(assetClass: AssetClass): boolean {
-  return assetClass === "crypto_perp" || assetClass === "future" || assetClass === "fx" || assetClass === "option"
+  return assetClass === "crypto_perp" || assetClass === "fx" || assetClass === "option"
 }
 
 export function resolveAssetSpec(config: any, symbolFallback: string): AssetSpec {
@@ -90,14 +112,13 @@ function defaultsFor(assetClass: AssetClass, symbol: string, execution: Record<s
     }
   }
   if (assetClass === "future") {
+    const spec = FUTURES_SPECS[futuresRoot(symbol) ?? "ES"]
     return {
       ...common,
+      ...spec,
       assetClass,
-      venue: "CME",
       calendar: "US_FUTURES",
-      tickSize: 0.25,
       lotSize: 1,
-      multiplier: 50,
       productionEligible: true,
       rollPolicy: "continuous_contract_assumed",
     }
