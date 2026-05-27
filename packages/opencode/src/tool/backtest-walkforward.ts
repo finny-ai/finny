@@ -68,14 +68,12 @@ export const BacktestWalkforwardTool = Tool.define(
         }
         const EMPTY_META: WfMeta = {}
 
-        yield* Effect.promise(() =>
-          ctx.ask({
-            permission: "finny_backtest_walkforward",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          }),
-        )
+        yield* ctx.ask({
+          permission: "finny_backtest_walkforward",
+          patterns: ["*"],
+          always: ["*"],
+          metadata: {},
+        })
 
         const algo = yield* Effect.promise(() => Algorithm.get(input.algorithmName))
         if (!algo) {

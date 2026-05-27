@@ -352,9 +352,10 @@ export const AlgorithmSaveTool = Tool.define(
             }
 
             // Soft-warn when the strategy targets a different brokerage than the active one
-            const brokerageMismatch = params.targetBrokerage && activeBrokerKind && params.targetBrokerage !== activeBrokerKind
+            const target = params.targetBrokerage
+            const brokerageMismatch = target && activeBrokerKind && target !== activeBrokerKind
             if (brokerageMismatch) {
-              parts.push("", `⚠️ Saved for ${params.targetBrokerage.toUpperCase()}; cannot run live on ${activeBrokerKind}. Connect ${params.targetBrokerage.toUpperCase()} via Settings → Brokerages before deploying live. Backtesting works immediately.`)
+              parts.push("", `⚠️ Saved for ${target.toUpperCase()}; cannot run live on ${activeBrokerKind}. Connect ${target.toUpperCase()} via Settings → Brokerages before deploying live. Backtesting works immediately.`)
             }
 
             return {
