@@ -10,6 +10,57 @@ from typing import Any, Dict, Optional
 AssetClass = str
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"}
 
+# Roots accepted as futures in backtest. yfinance serves these as e.g. "ES=F";
+# IBKR live uses "ES/202612" or "ES/CONT". Canonical in config is the bare root.
+FUTURES_SPECS: Dict[str, Dict[str, Any]] = {
+    "ES": {"venue": "CME", "tickSize": 0.25, "multiplier": 50.0, "currency": "USD", "initialMarginPct": 0.05, "maintenanceMarginPct": 0.04, "commissionPerContract": 2.25},
+    "NQ": {"venue": "CME", "tickSize": 0.25, "multiplier": 20.0, "currency": "USD", "initialMarginPct": 0.06, "maintenanceMarginPct": 0.05, "commissionPerContract": 2.25},
+    "RTY": {"venue": "CME", "tickSize": 0.10, "multiplier": 50.0, "currency": "USD", "initialMarginPct": 0.07, "maintenanceMarginPct": 0.06, "commissionPerContract": 2.25},
+    "YM": {"venue": "CBOT", "tickSize": 1.0, "multiplier": 5.0, "currency": "USD", "initialMarginPct": 0.05, "maintenanceMarginPct": 0.04, "commissionPerContract": 2.25},
+    "CL": {"venue": "NYMEX", "tickSize": 0.01, "multiplier": 1000.0, "currency": "USD", "initialMarginPct": 0.10, "maintenanceMarginPct": 0.08, "commissionPerContract": 2.75},
+    "GC": {"venue": "COMEX", "tickSize": 0.10, "multiplier": 100.0, "currency": "USD", "initialMarginPct": 0.08, "maintenanceMarginPct": 0.06, "commissionPerContract": 2.60},
+    "SI": {"venue": "COMEX", "tickSize": 0.005, "multiplier": 5000.0, "currency": "USD", "initialMarginPct": 0.12, "maintenanceMarginPct": 0.10, "commissionPerContract": 2.90},
+    "HG": {"venue": "COMEX", "tickSize": 0.0005, "multiplier": 25000.0, "currency": "USD", "initialMarginPct": 0.09, "maintenanceMarginPct": 0.07, "commissionPerContract": 2.75},
+    "ZN": {"venue": "CBOT", "tickSize": 0.015625, "multiplier": 1000.0, "currency": "USD", "initialMarginPct": 0.03, "maintenanceMarginPct": 0.025, "commissionPerContract": 2.10},
+    "ZB": {"venue": "CBOT", "tickSize": 0.03125, "multiplier": 1000.0, "currency": "USD", "initialMarginPct": 0.04, "maintenanceMarginPct": 0.03, "commissionPerContract": 2.10},
+    "6E": {"venue": "CME", "tickSize": 0.00005, "multiplier": 125000.0, "currency": "USD", "initialMarginPct": 0.04, "maintenanceMarginPct": 0.03, "commissionPerContract": 2.40},
+}
+FUTURES_ROOTS = set(FUTURES_SPECS)
+
+
+def _strip_futures_suffix(symbol: str) -> str:
+    s = str(symbol).strip().upper()
+    if s.endswith("=F"):
+        return s[:-2]
+    if s.endswith("/CONT"):
+        return s[:-5]
+    return s
+
+
+def is_futures_root(symbol: str) -> bool:
+    return _strip_futures_suffix(symbol) in FUTURES_ROOTS
+
+
+def futures_root(symbol: str) -> Optional[str]:
+    root = _strip_futures_suffix(symbol)
+    return root if root in FUTURES_ROOTS else None
+
+
+def to_yfinance_symbol(symbol: str, asset_class: Optional[AssetClass] = None) -> str:
+    """Map a canonical symbol to the form yfinance expects.
+
+    - Futures: bare root (or `/CONT` form) → root + `=F`; existing `=F` preserved.
+    - Crypto pairs: `BTC/USD` → `BTC-USD` (yfinance uses dashes, not slashes).
+    - Everything else passes through uppercased.
+    """
+    s = str(symbol).strip().upper()
+    root = _strip_futures_suffix(s)
+    if (asset_class == "future") or (asset_class is None and root in FUTURES_ROOTS):
+        if root in FUTURES_ROOTS:
+            return root + "=F"
+        return s if s.endswith("=F") else s
+    return s.replace("/", "-")
+
 
 @dataclass(frozen=True)
 class AssetSpec:
@@ -24,6 +75,9 @@ class AssetSpec:
     marginModel: str
     dataProvider: str
     productionEligible: bool
+    initialMarginPct: Optional[float] = None
+    maintenanceMarginPct: Optional[float] = None
+    commissionPerContract: Optional[float] = None
     venue: Optional[str] = None
     expiry: Optional[str] = None
     rollPolicy: Optional[str] = None
@@ -65,6 +119,8 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
     if raw in {"crypto_spot", "crypto_perp", "equity", "future", "fx", "option"}:
         return raw
     sym = str(symbol).upper()
+    if is_futures_root(sym):
+        return "future"
     if len(sym) == 6 and sym.isalpha() and sym[:3] not in CRYPTO_BASES:
         return "fx"
     if len(sym) == 7 and sym[3] in {"/", "-"} and sym[:3].isalpha() and sym[4:].isalpha() and sym[:3] not in CRYPTO_BASES:
@@ -108,8 +164,9 @@ def _defaults(asset_class: AssetClass, symbol: str, exec_cfg: Dict[str, Any]) ->
                 "productionEligible": funding != 0.0 and maint > 0.0,
                 "blockingReason": None if funding != 0.0 and maint > 0.0 else "Perp production eligibility requires funding and maintenance margin."}
     if asset_class == "future":
-        return {**common, "assetClass": asset_class, "venue": "CME", "calendar": "US_FUTURES",
-                "tickSize": 0.25, "lotSize": 1.0, "multiplier": 50.0,
+        futures = FUTURES_SPECS.get(futures_root(symbol) or "", FUTURES_SPECS["ES"])
+        return {**common, **futures, "assetClass": asset_class, "calendar": "US_FUTURES",
+                "lotSize": 1.0,
                 "productionEligible": True, "rollPolicy": "continuous_contract_assumed"}
     if asset_class == "fx":
         quote = symbol[3:6] if len(symbol) >= 6 else "USD"

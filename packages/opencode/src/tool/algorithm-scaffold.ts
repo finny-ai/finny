@@ -7,7 +7,7 @@ import { Validate } from "../algorithm/validate"
 
 const parameters = z.object({
   template_type: z
-    .enum(["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "custom"])
+    .enum(["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "futures-trend", "custom"])
     .describe("The type of strategy template to generate"),
 })
 

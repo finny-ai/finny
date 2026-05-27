@@ -134,6 +134,7 @@ const parameters = z.object({
   mission: z.string().optional().describe("For new algorithms only. WHO: the hypothesis, scope, and exit conditions. Written to mission.md."),
   prefs: z.string().optional().describe("For new algorithms only. HOW: sizing, risk constraints, interval, target asset. Written to prefs.md."),
   decisions: z.string().optional().describe("For new algorithms only. Design decisions log: why this approach was chosen. Written to decisions.md."),
+  targetBrokerage: z.enum(["alpaca", "binance", "ibkr"]).optional().describe("Target brokerage for live deployment. Use when building a strategy for a brokerage the user hasn't connected yet (e.g. futures on Alpaca → target ibkr). Backtest runs immediately; live deploy requires the target brokerage to be connected later."),
 })
 
 // Payload the async body returns: the tool's ExecuteResult-shaped value, plus (optionally)
@@ -313,6 +314,7 @@ export const AlgorithmSaveTool = Tool.define(
                 prefs: params.prefs,
                 decisions: params.decisions,
                 brokerKind: activeBrokerKind ?? undefined,
+                targetBrokerage: params.targetBrokerage,
                 saveMode: params.saveMode,
               })
             } catch (err) {
@@ -349,6 +351,12 @@ export const AlgorithmSaveTool = Tool.define(
               parts.push("", Validate.format({ valid: true, errors: [], warnings: validation.warnings }))
             }
 
+            // Soft-warn when the strategy targets a different brokerage than the active one
+            const brokerageMismatch = params.targetBrokerage && activeBrokerKind && params.targetBrokerage !== activeBrokerKind
+            if (brokerageMismatch) {
+              parts.push("", `⚠️ Saved for ${params.targetBrokerage.toUpperCase()}; cannot run live on ${activeBrokerKind}. Connect ${params.targetBrokerage.toUpperCase()} via Settings → Brokerages before deploying live. Backtesting works immediately.`)
+            }
+
             return {
               result: {
                 title: `Saved "${algo.name}" v${algo.version}`,
@@ -357,8 +365,10 @@ export const AlgorithmSaveTool = Tool.define(
                   algorithmId: algo.algorithmId,
                   name: algo.name,
                   version: algo.version,
-                  warningCount: validation.warnings.length,
+                  warningCount: validation.warnings.length + (brokerageMismatch ? 1 : 0),
                   validationAttempts: validation.attempts,
+                  ...(params.targetBrokerage ? { targetBrokerage: params.targetBrokerage } : {}),
+                  ...(brokerageMismatch ? { brokerageMismatch: true } : {}),
                 },
               },
             }

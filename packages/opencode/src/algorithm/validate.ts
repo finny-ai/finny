@@ -49,6 +49,8 @@ export namespace Validate {
     | "MISSING_POSITION_SIZING"
     // Phase 2 AST-based warnings
     | "FRACTIONAL_SHARES_EQUITY"
+    | "FUTURES_FRACTIONAL_QTY"
+    | "FUTURES_NOTIONAL_SIZING"
     | "NEAR_ZERO_DIVISION"
     // Phase 1 smoke-test warnings
     | "INVARIANT_DIRECTIONAL_SANITY"
@@ -91,7 +93,7 @@ export namespace Validate {
     "calendar", "tickSize", "lotSize", "multiplier", "feeModel", "marginModel",
     "dataProvider", "productionEligible", "blockingReason", "execution",
     "max_leverage", "initial_margin_pct", "maintenance_margin_pct", "funding_rate_bps",
-    "funding_interval_hours", "spread_enabled", "maker_fee_bps", "taker_fee_bps",
+    "funding_interval_hours", "spread_enabled", "maker_fee_bps", "taker_fee_bps", "commission_per_contract",
     "slippage_bps", "participation_pct", "k_atr", "k_vol",
     "start_date", "end_date", "duration",
     "max_risk_per_trade_pct",

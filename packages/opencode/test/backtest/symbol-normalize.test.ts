@@ -52,6 +52,16 @@ describe("normalizeSymbol", () => {
     expect(normalizeSymbol("SPY")).toBe("SPY")
   })
 
+  test.each([
+    ["ES", "ES"],
+    ["es", "ES"],
+    ["ES=F", "ES"],
+    ["NQ=F", "NQ"],
+    ["6E=F", "6E"],
+  ])("futures roots canonicalize: %s -> %s", (input, expected) => {
+    expect(normalizeSymbol(input)).toBe(expected)
+  })
+
   test("empty input throws UnknownSymbolError", () => {
     expect(() => normalizeSymbol("")).toThrow(UnknownSymbolError)
     expect(() => normalizeSymbol("   ")).toThrow(UnknownSymbolError)

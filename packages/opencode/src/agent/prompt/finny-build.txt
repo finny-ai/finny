@@ -778,6 +778,23 @@ The validator tracks `self.broker.buy/sell(...)` calls directly.
 - **Floor qty for equities.** `if symbol in {"SPY", "USO", ...}: qty = math.floor(qty)`.
 - **RSI epsilon guard.** `avg_loss > 1e-10` instead of `avg_loss != 0`.
 
+### Futures strategies
+
+- Supported continuous roots: ES, NQ, RTY, YM, CL, GC, SI, HG, ZN, ZB, 6E.
+- Use `asset_class: "future"` when writing config unless the symbol is one of the supported roots and the resolver has already inferred it.
+- Size in explicit whole contracts with `qty`, never `notional`. The futures broker path rejects notional sizing.
+- Account for the contract multiplier in risk math. ES is $50 per index point, NQ is $20 per point, CL is 1,000 barrels, and 6E is 125,000 EUR.
+- Prefer `finny_algorithm_scaffold` with `template_type: "futures-trend"` for a clean starting point.
+- Commission is per-contract (typically $2.25/side for ES/NQ), NOT basis-points-on-notional.
+- Margin: `initial_margin_pct` and `maintenance_margin_pct` are set per-contract automatically. Override in config `execution` block if needed.
+
+**Building futures without IBKR connected:**
+When the user asks for a futures strategy and the active brokerage is NOT ibkr (e.g. Alpaca):
+- Do NOT fall back to an ETF proxy (SPY for ES, QQQ for NQ). That defeats futures mechanics entirely.
+- Save the strategy with the bare futures root as symbol (e.g. `"ES"`), `asset_class: "future"`, and pass `targetBrokerage: "ibkr"` to `finny_algorithm_save`.
+- The save will succeed with a soft warning. Backtesting works immediately via yfinance continuous contract data.
+- Tell the user: "Strategy saved and backtested. To deploy live, connect an IBKR account via Settings → Brokerages."
+
 ## Transaction Costs (CRITICAL)
 
 The simulator charges realistic fees:

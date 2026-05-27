@@ -1,7 +1,7 @@
 export namespace Templates {
-  export type TemplateType = "momentum" | "mean-reversion" | "breakout" | "dca" | "golden-cross" | "scalping" | "custom"
+  export type TemplateType = "momentum" | "mean-reversion" | "breakout" | "dca" | "golden-cross" | "scalping" | "futures-trend" | "custom"
 
-  export const TYPES: TemplateType[] = ["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "custom"]
+  export const TYPES: TemplateType[] = ["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "futures-trend", "custom"]
 
   const DESCRIPTIONS: Record<TemplateType, string> = {
     "momentum": "RSI momentum strategy — buys oversold, sells overbought",
@@ -10,6 +10,7 @@ export namespace Templates {
     "dca": "Dollar-cost averaging — systematic buying with profit-target exit",
     "golden-cross": "SMA 50/200 crossover — buys golden cross, sells death cross",
     "scalping": "EMA scalping with tight stops — quick entries and exits",
+    "futures-trend": "Futures trend-following — whole-contract sizing with prior-close indicators",
     "custom": "Minimal skeleton — implement your own logic",
   }
 
@@ -31,6 +32,8 @@ export namespace Templates {
         return GOLDEN_CROSS
       case "scalping":
         return SCALPING
+      case "futures-trend":
+        return FUTURES_TREND
       case "custom":
         return CUSTOM
     }
@@ -369,6 +372,50 @@ class Strategy:
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
+
+        self.prices.append(close_px)
+`
+
+  const FUTURES_TREND = `\
+from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.fast_period = int(p.get("fast_period", 12))
+        self.slow_period = int(p.get("slow_period", 48))
+        self.risk_pct = float(p.get("risk_pct", 0.02))
+        self.stop_pct = float(p.get("stop_pct", 0.01))
+        self.max_contracts = int(p.get("max_contracts", 2))
+        self.prices = deque(maxlen=self.slow_period)
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        close_px = bar["prev_close"]
+        if close_px is None:
+            return
+
+        if len(self.prices) < self.slow_period:
+            self.prices.append(close_px)
+            return
+
+        prices = list(self.prices)
+        fast = sum(prices[-self.fast_period:]) / self.fast_period
+        slow = sum(prices) / self.slow_period
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+
+        # Futures sizing uses whole contracts. The engine applies the contract
+        # multiplier from asset_spec; do not pass notional for futures.
+        stop_dist = open_px * self.stop_pct
+        raw_contracts = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+        qty = min(self.max_contracts, int(raw_contracts))
+
+        if pos == 0 and fast > slow and qty >= 1:
+            self.broker.buy(symbol, qty=qty)
+        elif pos > 0 and fast < slow:
+            self.broker.sell(symbol, qty=pos)
 
         self.prices.append(close_px)
 `
