@@ -866,7 +866,7 @@ The validator tracks `self.broker.buy/sell(...)` calls directly.
 - Use `asset_class: "future"` when writing config unless the symbol is one of the supported roots and the resolver has already inferred it.
 - Size in explicit whole contracts with `qty`, never `notional`. The futures broker path rejects notional sizing.
 - Account for the contract multiplier in risk math. ES is $50 per index point, NQ is $20 per point, CL is 1,000 barrels, and 6E is 125,000 EUR.
-- Prefer `finny_algorithm_scaffold` with `template_type: "futures-trend"` for a clean starting point.
+- Prefer `finny_algorithm_scaffold` with `template_type: "adx-trend"` (a trend-strength-filtered template that fits futures trend-following) as a clean starting point, then size in whole contracts and add the multiplier to risk math. There is no dedicated `futures-trend` template.
 - Commission is per-contract (typically $2.25/side for ES/NQ), NOT basis-points-on-notional.
 - Margin: `initial_margin_pct` and `maintenance_margin_pct` are set per-contract automatically. Override in config `execution` block if needed.
 

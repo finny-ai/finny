@@ -892,9 +892,12 @@ def main():
     _min_trades = max(3, min(30, int(bar_count * 0.01)))
     low_sample = 1 if total_trades < _min_trades else 0
 
-    # ── Trade significance: t-test on trade PnLs ──
+    # ── Trade significance: one-sample t-statistic on trade PnLs ──
     # Answers "are these returns distinguishable from random?" regardless of count.
-    # t = mean(pnls) / (std(pnls) / sqrt(n)).  p-value from two-tailed t-distribution.
+    # t = mean(pnls) / (std(pnls) / sqrt(n)).  The p-value is a two-tailed
+    # NORMAL (z) approximation — exact for large n, slightly anti-conservative
+    # for small n (true Student-t has fatter tails). Treat p near the 0.05
+    # boundary with caution when total_trades is small.
     trade_tstat = None
     trade_pvalue = None
     if total_trades >= 2:
@@ -903,8 +906,7 @@ def main():
         _std_pnl = math.sqrt(_var_pnl) if _var_pnl > 0 else 0.0
         if _std_pnl > 0:
             trade_tstat = _mean_pnl / (_std_pnl / math.sqrt(total_trades))
-            # Approximate two-tailed p-value using the normal CDF for large-ish n,
-            # and a simple rational approximation for the standard normal CDF.
+            # Two-tailed p-value from the standard normal CDF (z-approximation).
             _z = abs(trade_tstat)
             # Abramowitz & Stegun 26.2.17 — max error 7.5e-8
             _p = 0.2316419

@@ -78,7 +78,7 @@ export const alpacaSpec: BrokerSpec = {
     "**Asset classes (refuse mismatches):**",
     "- US equities and ETFs — `AAPL`, `SPY`, `TSLA`, `QQQ`, etc.",
     "- Crypto — USD-quoted only.",
-    "- Futures (ES, NQ, CL, GC, etc.): Alpaca cannot execute futures live, but you CAN still build and backtest the strategy. Save with `asset_class: \"future\"` and `target_brokerage: \"ibkr\"` in the config. Tell the user: \"Strategy saved and backtested. To deploy live, connect an IBKR account via Settings → Brokerages.\" Do NOT fall back to ETF proxies (SPY for ES, QQQ for NQ) — that defeats futures mechanics (multiplier, margin, contract sizing).",
+    "- Futures (ES, NQ, CL, GC, etc.): Alpaca cannot execute futures live, but you CAN still build and backtest the strategy. Save with `asset_class: \"future\"` and pass `targetBrokerage: \"ibkr\"` to `finny_algorithm_save`. Tell the user: \"Strategy saved and backtested. To deploy live, connect an IBKR account via Settings → Brokerages.\" Do NOT fall back to ETF proxies (SPY for ES, QQQ for NQ) — that defeats futures mechanics (multiplier, margin, contract sizing).",
     "- Refuse: options, FX, non-US equities. If the user asks, say Alpaca can't trade these and there's no supported path yet.",
     "",
     "**`config.symbol` format:**",

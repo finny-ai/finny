@@ -5,19 +5,33 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from typing import Union
 
-# Fixed NYSE holidays (month, day). New Year's, Independence Day, Christmas.
-_FIXED_HOLIDAYS_MD = {(1, 1), (7, 4), (12, 25)}
+# Fixed-date NYSE holidays (month, day). New Year's, Juneteenth, Independence
+# Day, Christmas. Subject to weekend-observance rules (see _observed below).
+_FIXED_HOLIDAYS_MD = {(1, 1), (6, 19), (7, 4), (12, 25)}
 
 # NYSE holidays that fall on specific weekday-of-month patterns.
-# (month, weekday, occurrence)  weekday: 0=Mon
+# (month, weekday, occurrence)  weekday: 0=Mon. These always land on a weekday,
+# so no weekend observance applies.
 _FLOATING_HOLIDAYS = [
     (1, 0, 3),   # MLK Day: 3rd Monday of January
     (2, 0, 3),   # Presidents' Day: 3rd Monday of February
     (5, 0, -1),  # Memorial Day: last Monday of May
-    (6, 2, 3),   # Juneteenth: June 19 (approximated as 3rd Wed — handled separately)
     (9, 0, 1),   # Labor Day: 1st Monday of September
     (11, 3, 4),  # Thanksgiving: 4th Thursday of November
 ]
+
+
+def _observed(d: date) -> date:
+    """Apply NYSE weekend-observance rule to a fixed-date holiday.
+
+    When a fixed holiday falls on Saturday it is observed the preceding Friday;
+    when it falls on Sunday it is observed the following Monday.
+    """
+    if d.weekday() == 5:  # Saturday -> observed Friday
+        return d - timedelta(days=1)
+    if d.weekday() == 6:  # Sunday -> observed Monday
+        return d + timedelta(days=1)
+    return d
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -38,14 +52,13 @@ def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
 def _holidays_for_year(year: int) -> set[date]:
     holidays: set[date] = set()
     for m, d in _FIXED_HOLIDAYS_MD:
-        holidays.add(date(year, m, d))
-    # Juneteenth is a fixed date: June 19
-    holidays.add(date(year, 6, 19))
+        # Apply weekend observance so a Sat/Sun holiday closes the adjacent
+        # weekday instead of being silently dropped (it lands on a weekend,
+        # which is_trading_day already treats as closed).
+        holidays.add(_observed(date(year, m, d)))
     for m, wd, n in _FLOATING_HOLIDAYS:
-        if m == 6:
-            continue  # Juneteenth handled above
         holidays.add(_nth_weekday(year, m, wd, n))
-    # Good Friday — 2 days before Easter Sunday
+    # Good Friday — 2 days before Easter Sunday (always a Friday)
     holidays.add(_easter(year) - timedelta(days=2))
     return holidays
 
@@ -69,7 +82,14 @@ def _easter(year: int) -> date:
 def is_trading_day(d: date) -> bool:
     if d.weekday() >= 5:
         return False
-    return d not in _holidays_for_year(d.year)
+    # Union neighboring years so an observance shift across a year boundary
+    # (e.g. Jan 1 on Saturday observed the preceding Dec 31) is still caught.
+    holidays = (
+        _holidays_for_year(d.year - 1)
+        | _holidays_for_year(d.year)
+        | _holidays_for_year(d.year + 1)
+    )
+    return d not in holidays
 
 
 def trading_days_between(start: date, end: date) -> int:

@@ -23,6 +23,37 @@ export type MessageWithParts = {
   parts: Part[]
 }
 
+// Common secret shapes that can leak through tool inputs/outputs when a full
+// transcript (tool details included) is copied to the clipboard. This is a
+// best-effort scrub, not a guarantee — it masks the obvious high-risk tokens
+// (provider API keys, bearer/auth headers, cloud keys) before the text leaves
+// the app.
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+  // Provider API keys: sk-..., sk-ant-..., etc.
+  [/\bsk-[A-Za-z0-9-_]{16,}\b/g, "sk-[REDACTED]"],
+  // OpenAI project/org-scoped keys and GitHub tokens (ghp_, gho_, ghs_, ...)
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "gh_[REDACTED]"],
+  // AWS access key IDs
+  [/\bAKIA[0-9A-Z]{16}\b/g, "AKIA[REDACTED]"],
+  // Bearer / Authorization header values
+  [/\b([Bb]earer\s+)[A-Za-z0-9\-._~+/]{12,}=*/g, "$1[REDACTED]"],
+  // JSON key/value pairs whose key name looks sensitive
+  [
+    /("(?:[^"]*(?:api[_-]?key|secret|token|password|passwd|authorization|access[_-]?key)[^"]*)"\s*:\s*")[^"]+(")/gi,
+    "$1[REDACTED]$2",
+  ],
+  // Shell/env-style assignments for sensitive names: API_KEY=..., SECRET=...
+  [/\b([A-Z0-9_]*(?:API_KEY|SECRET|TOKEN|PASSWORD|AUTH)[A-Z0-9_]*\s*=\s*)\S+/g, "$1[REDACTED]"],
+]
+
+export function redactSecrets(text: string): string {
+  let out = text
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement)
+  }
+  return out
+}
+
 export function formatTranscript(
   session: SessionInfo,
   messages: MessageWithParts[],
@@ -40,7 +71,10 @@ export function formatTranscript(
     transcript += `---\n\n`
   }
 
-  return transcript
+  // Best-effort scrub of common secret patterns before the transcript can be
+  // copied/shared. Applied to the assembled output so it covers tool inputs,
+  // tool outputs, and free text uniformly.
+  return redactSecrets(transcript)
 }
 
 export function formatMessage(

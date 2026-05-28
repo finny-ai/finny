@@ -78,8 +78,10 @@ def compute(trades: List[ClosedTrade]) -> Dict:
     if payoff > 0 and win_rate > 0:
         kelly = float(win_rate - (1.0 - win_rate) / payoff)
 
-    # Trade significance: t-test on PnLs — "are these returns distinguishable
-    # from random?" regardless of trade count.
+    # Trade significance: one-sample t-statistic on PnLs — "are these returns
+    # distinguishable from random?" regardless of trade count. The p-value below
+    # is a two-tailed NORMAL (z) approximation — exact for large n, slightly
+    # anti-conservative for small n (true Student-t has fatter tails).
     trade_tstat = None
     trade_pvalue = None
     if n >= 2:
@@ -87,7 +89,7 @@ def compute(trades: List[ClosedTrade]) -> Dict:
         _std = float(pnls.std(ddof=1))
         if _std > 0:
             trade_tstat = _mean / (_std / float(np.sqrt(n)))
-            # Abramowitz & Stegun 26.2.17 — normal CDF approximation (max err 7.5e-8)
+            # Abramowitz & Stegun 26.2.17 — standard normal CDF approx (max err 7.5e-8)
             _z = abs(trade_tstat)
             _p = 0.2316419
             _b1, _b2, _b3, _b4, _b5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429

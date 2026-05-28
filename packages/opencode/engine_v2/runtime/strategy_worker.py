@@ -24,6 +24,15 @@ DENIED_IMPORT_ROOTS = {
     "asyncio", "importlib", "io", "os", "pathlib", "pickle", "requests",
     "shutil", "socket", "subprocess", "sys", "tempfile", "threading",
 }
+# Underscore-prefixed C extension modules that grant the same dangerous
+# capabilities as their public wrappers (network, subprocess, FFI, raw IO).
+# We allow most internal modules through so Python's own import machinery can
+# load user code, but these specific ones are escape hatches around the
+# DENIED_IMPORT_ROOTS protections and must stay blocked.
+DENIED_INTERNAL_IMPORT_ROOTS = {
+    "_socket", "_ssl", "_ctypes", "_posixsubprocess", "_winapi",
+    "_asyncio", "_multiprocessing", "_multibytecodec", "_pickle",
+}
 SAFE_IMPORT_ROOTS = {
     "abc", "array", "bisect", "collections", "copy", "dataclasses", "datetime",
     "decimal", "enum", "functools", "heapq", "itertools", "math", "numbers",
@@ -38,11 +47,16 @@ def _strategy_runtime_guards():
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         root = str(name).split(".", 1)[0]
-        # Allow CPython internal modules (underscore-prefixed like _io, _collections_abc,
-        # _stat, _frozen_importlib, etc.) — these are imported by Python's own import
-        # machinery when loading any .py file and cannot be blocked without breaking
-        # module loading entirely.
+        # CPython internal modules (underscore-prefixed like _io, _collections_abc,
+        # _stat, _frozen_importlib, etc.) are imported by Python's own import
+        # machinery when loading any .py file and can't be blocked wholesale
+        # without breaking module loading. But a blanket allow would let user
+        # strategies reach C extensions like _socket/_ssl/_ctypes that bypass the
+        # network/FS/subprocess sandbox — so we allow internals EXCEPT the known
+        # dangerous ones.
         if root.startswith("_"):
+            if root in DENIED_INTERNAL_IMPORT_ROOTS:
+                raise ImportError(f"Import {root!r} is not allowed in strict strategy runtime")
             return original_import(name, globals, locals, fromlist, level)
         if level == 0 and (root in DENIED_IMPORT_ROOTS or root not in SAFE_IMPORT_ROOTS):
             raise ImportError(f"Import {root!r} is not allowed in strict strategy runtime")

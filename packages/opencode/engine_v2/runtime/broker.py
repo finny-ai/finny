@@ -383,11 +383,15 @@ class PortfolioBroker:
         return None
 
     def days_to_expiry(self, symbol: str) -> float:
+        # Calendar days to expiry, matching live IBKRBroker.days_to_expiry()
+        # semantics. (Trading-day count is used internally for BS pricing via
+        # time_to_expiry_years(use_trading_days=True), but the strategy-facing
+        # value here is calendar days so backtest and live agree.)
         if not is_option_symbol(symbol):
             return float("inf")
         opt = parse_option_symbol(symbol)
         ts_ns = int(self.market.arrays[symbol].ts[self.market.i])
-        return time_to_expiry_years(opt.expiry, ts_ns) * 252.0
+        return time_to_expiry_years(opt.expiry, ts_ns, use_trading_days=False) * 365.0
 
     # ---------- Options: internal ----------
 
