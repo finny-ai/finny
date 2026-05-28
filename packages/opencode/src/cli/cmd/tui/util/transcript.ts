@@ -31,8 +31,15 @@ export type MessageWithParts = {
 const SECRET_PATTERNS: Array<[RegExp, string]> = [
   // Provider API keys: sk-..., sk-ant-..., etc.
   [/\bsk-[A-Za-z0-9-_]{16,}\b/g, "sk-[REDACTED]"],
-  // OpenAI project/org-scoped keys and GitHub tokens (ghp_, gho_, ghs_, ...)
+  // GitHub fine-grained PATs: github_pat_<22>_<59> (longest prefix first so the
+  // classic-token rule below doesn't partially match it).
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "github_pat_[REDACTED]"],
+  // GitHub classic tokens: ghp_, gho_, ghu_, ghs_, ghr_
   [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, "gh_[REDACTED]"],
+  // Slack tokens: xoxb-, xoxp-, xoxa-, xoxr-
+  [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "xox-[REDACTED]"],
+  // Google API keys
+  [/\bAIza[A-Za-z0-9\-_]{35}\b/g, "AIza[REDACTED]"],
   // AWS access key IDs
   [/\bAKIA[0-9A-Z]{16}\b/g, "AKIA[REDACTED]"],
   // Bearer / Authorization header values

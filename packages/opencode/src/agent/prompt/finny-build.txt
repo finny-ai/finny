@@ -857,7 +857,10 @@ The validator tracks `self.broker.buy/sell(...)` calls directly.
 - **Cap size at capital.** `qty = min(qty, self.equity / price)`. Prevent silent
   leverage from wide stops or small `self.equity`.
 - **Floor qty for equities.** `if symbol in {"SPY", "USO", ...}: qty = math.floor(qty)`.
-- **⚠ HIGH-PRICED ASSET CHECK.** Before choosing `risk_pct`, verify that `equity × risk_pct / asset_price ≥ 1`. SPY at ~$550 means you need `risk_pct ≥ 5.5%` on $10k capital just to buy 1 share. If `math.floor(qty) = 0`, you get **zero trades with zero diagnostics** — the strategy looks broken when it's actually a sizing problem. When `risk_pct × capital < asset_price`, either raise `risk_pct`, raise capital, or use `qty = round(qty, 2)` for fractional shares.
+- **⚠ HIGH-PRICED ASSET CHECK.** A high share price relative to capital can make `math.floor(qty) = 0` → **zero trades with zero obvious cause**. How small `qty` gets depends on your sizing pattern, so check the right thing:
+  - **Allocation sizing** (`qty ≈ equity * alloc_pct / price`): a high price directly shrinks `qty`. Verify `equity * alloc_pct / price ≥ 1`. SPY at ~$550 on $10k needs `alloc_pct ≥ 5.5%` to afford 1 share.
+  - **Risk-based sizing** (the templates' default: `qty = (equity * risk_pct) / stop_dist`, then cash-capped with `qty = min(qty, equity / price)`): whether `floor(qty) = 0` depends on the **stop distance**, not just `price/capital`. With a tight `stop_pct`, even a small `risk_pct` can clear 1 share; with a very small `risk_pct` it still floors to 0.
+  - If you get zero trades, print/inspect the computed `qty` BEFORE and AFTER the cash cap to see which constraint binds. FIX: adjust `risk_pct`/`alloc_pct`, widen the stop, raise capital, or use `qty = round(qty, 2)` for fractional shares where supported.
 - **RSI epsilon guard.** `avg_loss > 1e-10` instead of `avg_loss != 0`.
 
 ### Futures strategies

@@ -139,6 +139,20 @@ def resolve_asset_spec(cfg: Dict[str, Any]) -> AssetSpec:
     asset_class = normalize_asset_class(cfg.get("asset_class") or cfg.get("assetClass"), symbol)
     spec_cfg = dict(cfg.get("asset_spec") or cfg.get("assetSpec") or {})
     exec_cfg = cfg.get("execution", {}) or {}
+
+    # Guard unknown futures roots: silently simulating an unsupported/typo'd
+    # contract with ES specs would produce wrong margin/tick/multiplier (and
+    # thus wrong sizing, fees, and liquidation) with no warning. Require an
+    # explicit asset_spec override (multiplier + tickSize at minimum) instead.
+    if asset_class == "future" and futures_root(symbol) is None:
+        if not (spec_cfg.get("multiplier") and spec_cfg.get("tickSize")):
+            raise ValueError(
+                f"Unsupported futures root for symbol {symbol!r}. "
+                f"Supported roots: {', '.join(sorted(FUTURES_ROOTS))}. "
+                f"To backtest another contract, pass an explicit asset_spec with at "
+                f"least multiplier and tickSize."
+            )
+
     base = _defaults(asset_class, symbol, exec_cfg)
     base.update(spec_cfg)
     base["assetClass"] = asset_class
@@ -179,9 +193,14 @@ def _defaults(asset_class: AssetClass, symbol: str, exec_cfg: Dict[str, Any]) ->
                 "lotSize": 1000.0, "multiplier": 1.0, "productionEligible": True,
                 "baseCurrency": symbol[:3] if len(symbol) >= 3 else None, "quoteCurrency": quote}
     if asset_class == "option":
+        # Keep options NOT production-eligible to match the TS validator, which
+        # hard-blocks assetClass === "option" unless FINNY_ALLOW_EXPERIMENTAL_OPTIONS=1.
+        # Marking them eligible here created a cross-language mismatch (engine
+        # said "eligible" while the toolchain rejected the strategy).
         return {**common, "assetClass": asset_class, "venue": "OPRA", "calendar": "US_OPTIONS",
                 "tickSize": 0.01, "lotSize": 1.0, "multiplier": 100.0,
                 "dataProvider": "synthetic_options",
-                "productionEligible": True}
+                "productionEligible": False,
+                "blockingReason": "Options remain experimental and are not production-eligible in engine_v2."}
     return {**common, "assetClass": "equity", "venue": "equity", "calendar": "US_EQUITIES",
             "tickSize": 0.01, "lotSize": 1.0, "multiplier": 1.0, "productionEligible": True}

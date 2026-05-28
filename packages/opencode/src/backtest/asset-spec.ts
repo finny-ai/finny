@@ -72,6 +72,22 @@ export function resolveAssetSpec(config: any, symbolFallback: string): AssetSpec
 
   const specOverrides = (config?.asset_spec ?? config?.assetSpec ?? {}) as Record<string, unknown>
   const execution = (config?.execution ?? {}) as Record<string, unknown>
+
+  // Guard unknown futures roots: silently simulating an unsupported/typo'd
+  // contract with ES specs would produce wrong margin/tick/multiplier (and thus
+  // wrong sizing, fees, and liquidation) with no warning. Require an explicit
+  // asset_spec override (multiplier + tickSize at minimum) instead.
+  if (assetClass === "future" && !futuresRoot(symbol)) {
+    const hasOverride = specOverrides.multiplier != null && specOverrides.tickSize != null
+    if (!hasOverride) {
+      throw new Error(
+        `Unsupported futures root for symbol "${symbol}". ` +
+          `Supported roots: ${Object.keys(FUTURES_SPECS).join(", ")}. ` +
+          `To backtest another contract, pass an explicit asset_spec with at least multiplier and tickSize.`,
+      )
+    }
+  }
+
   const base = defaultsFor(assetClass, symbol, execution)
   const merged = { ...base, ...specOverrides, assetClass, symbol }
   validateAssetSpec(merged)

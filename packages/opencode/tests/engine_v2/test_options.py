@@ -35,8 +35,10 @@ def test_option_symbol_roundtrip_and_asset_detection():
     assert asset.assetClass == "option"
     assert asset.multiplier == 100.0
     assert asset.dataProvider == "synthetic_options"
-    assert asset.productionEligible is True
-    assert asset.blockingReason is None
+    # Options stay NOT production-eligible to match the TS validator, which
+    # hard-blocks option strategies unless FINNY_ALLOW_EXPERIMENTAL_OPTIONS=1.
+    assert asset.productionEligible is False
+    assert asset.blockingReason is not None
 
 
 def test_black_scholes_price_and_greeks_are_reasonable():
