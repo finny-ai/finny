@@ -37,7 +37,7 @@ from engine_v2.execution.spread import SpreadConfig
 from engine_v2.portfolio.account import Account
 from engine_v2.report import emit, schema as S
 from engine_v2.robustness.monte_carlo import trade_shuffle
-from engine_v2.robustness.regime import classify_bars, breakdown
+from engine_v2.robustness.regime import classify_bars, classify_trend, breakdown
 from engine_v2.robustness.walkforward import run_walk_forward
 from engine_v2.metrics import ratios as M_ratios
 from engine_v2.metrics import returns as M_returns
@@ -566,6 +566,13 @@ def main() -> None:
     ba = from_dataframe(df, symbol=symbol, atr_period=14)
     snap = MarketSnapshot({symbol: ba})
 
+    # Pre-compute regime labels so strategies can read bar["vol_regime"] and
+    # bar["trend_regime"] at decision time. Uses only settled data (lookback
+    # windows on prior closes) — no lookahead.
+    _vol_labels = classify_bars(ba.close, lookback=30)
+    _trend_labels = classify_trend(ba.close, lookback=50)
+    snap.attach_regime_labels(symbol, _vol_labels, _trend_labels)
+
     seed = args.seed if args.seed else derive_seed(cfg, str(df["timestamp"].iloc[0]),
                                                    str(df["timestamp"].iloc[-1]),
                                                    args.interval)
@@ -597,6 +604,11 @@ def main() -> None:
             fold_df = df.iloc[start_idx:end_idx].reset_index(drop=True)
             fold_ba = from_dataframe(fold_df, symbol=symbol, atr_period=14)
             fold_snap = MarketSnapshot({symbol: fold_ba})
+            fold_snap.attach_regime_labels(
+                symbol,
+                classify_bars(fold_ba.close, lookback=30),
+                classify_trend(fold_ba.close, lookback=50),
+            )
             fold_broker = _build_broker(fold_snap, cfg, args.interval, args.mode, asset_spec)
             if args.mode == "v2":
                 fold_result = _run_shapec_strict_worker(fold_broker, fold_snap, strategy_path, symbol, params)

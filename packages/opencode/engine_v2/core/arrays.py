@@ -23,13 +23,6 @@ class BarArrays:
     close: np.ndarray
     volume: np.ndarray
     atr: np.ndarray  # precomputed; nan until period
-    # Options metadata (populated by SyntheticOptionsProvider)
-    underlying_close: np.ndarray | None = None
-    iv: np.ndarray | None = None
-    delta: np.ndarray | None = None
-    gamma: np.ndarray | None = None
-    theta: np.ndarray | None = None
-    vega: np.ndarray | None = None
 
     def __len__(self) -> int:
         return int(self.ts.shape[0])
@@ -74,11 +67,7 @@ def from_dataframe(df: pd.DataFrame, symbol: str, atr_period: int = 14) -> BarAr
     low = df["low"].to_numpy(dtype=np.float64)
     c = df["close"].to_numpy(dtype=np.float64)
     v = df["volume"].to_numpy(dtype=np.float64)
-    kwargs = {}
-    for col in ("underlying_close", "iv", "delta", "gamma", "theta", "vega"):
-        if col in df.columns:
-            kwargs[col] = df[col].to_numpy(dtype=np.float64)
-    return BarArrays(symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v, atr=_atr(h, low, c, atr_period), **kwargs)
+    return BarArrays(symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v, atr=_atr(h, low, c, atr_period))
 
 
 class MarketSnapshot:
@@ -124,7 +113,26 @@ class MarketSnapshot:
     def visible_price(self, symbol: str) -> float:
         return self.decision_price(symbol) if self._decision_phase else self.last_close(symbol)
 
+    def attach_regime_labels(
+        self,
+        symbol: str,
+        vol_labels: "np.ndarray",
+        trend_labels: "np.ndarray",
+    ) -> None:
+        """Pre-attach regime classification arrays for a symbol.
+
+        Called once before the loop starts. The labels are looked up per-bar
+        in decision_safe_bar() so strategies can read bar["vol_regime"] and
+        bar["trend_regime"] at decision time.
+        """
+        key = f"_regime_vol_{symbol}"
+        setattr(self, key, vol_labels)
+        key2 = f"_regime_trend_{symbol}"
+        setattr(self, key2, trend_labels)
+
     def decision_safe_bar(self, symbol: str) -> Dict[str, object]:
+        from ..robustness.regime import VOL_LABELS, TREND_LABELS
+
         ba = self.arrays[symbol]
         prev = self._i - 1
         prev_open = float(ba.open[prev]) if prev >= 0 else None
@@ -132,7 +140,14 @@ class MarketSnapshot:
         prev_low = float(ba.low[prev]) if prev >= 0 else None
         prev_close = float(ba.close[prev]) if prev >= 0 else None
         prev_volume = float(ba.volume[prev]) if prev >= 0 else None
-        bar = {
+
+        # Regime labels — injected by attach_regime_labels() before the loop.
+        vol_arr = getattr(self, f"_regime_vol_{symbol}", None)
+        trend_arr = getattr(self, f"_regime_trend_{symbol}", None)
+        vol_regime = VOL_LABELS.get(int(vol_arr[self._i]), "warmup") if vol_arr is not None else "warmup"
+        trend_regime = TREND_LABELS.get(int(trend_arr[self._i]), "warmup") if trend_arr is not None else "warmup"
+
+        return {
             "timestamp": int(ba.ts[self._i]),
             "symbol": symbol,
             "open": float(ba.open[self._i]),
@@ -141,13 +156,9 @@ class MarketSnapshot:
             "prev_low": prev_low,
             "prev_close": prev_close,
             "volume": prev_volume,
+            "vol_regime": vol_regime,
+            "trend_regime": trend_regime,
         }
-        if prev >= 0:
-            for field in ("underlying_close", "iv", "delta", "gamma", "theta", "vega"):
-                arr = getattr(ba, field, None)
-                if arr is not None:
-                    bar[field] = float(arr[prev])
-        return bar
 
     def history_records(self, symbol: str, limit: int) -> Tuple[Mapping[str, object], ...]:
         """Immutable completed-bar records ending before the current decision."""
@@ -157,7 +168,7 @@ class MarketSnapshot:
         start = max(0, end - safe_limit)
         out: List[Mapping[str, object]] = []
         for j in range(start, end):
-            rec: Dict[str, object] = {
+            out.append({
                 "timestamp": int(ba.ts[j]),
                 "symbol": symbol,
                 "open": float(ba.open[j]),
@@ -165,12 +176,7 @@ class MarketSnapshot:
                 "low": float(ba.low[j]),
                 "close": float(ba.close[j]),
                 "volume": float(ba.volume[j]),
-            }
-            for field in ("underlying_close", "iv", "delta", "gamma", "theta", "vega"):
-                arr = getattr(ba, field, None)
-                if arr is not None:
-                    rec[field] = float(arr[j])
-            out.append(rec)
+            })
         return tuple(out)
 
     def history(self, symbol: str, limit: int) -> pd.DataFrame:

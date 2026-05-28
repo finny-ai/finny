@@ -128,6 +128,8 @@ class TradeMetrics:
     mfe_max: float
     kelly_fraction: float
     kelly_confidence: str  # "low" | "medium" | "high"
+    trade_tstat: Optional[float] = None
+    trade_pvalue: Optional[float] = None
 
 
 @dataclass

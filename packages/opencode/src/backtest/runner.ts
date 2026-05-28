@@ -884,7 +884,35 @@ def main():
 
     # No Sharpe / Sortino / Calmar / vol caps — they distort honest evaluation.
 
-    low_sample = 1 if total_trades < 10 else 0
+    # Low-sample threshold scales with bar count — a 1h strat over 90d (~450 bars)
+    # shouldn't need the same trade count as a 1min strat over a year (~525k bars).
+    # Heuristic: flag when trades < 1% of bars, with a floor of 3 (even 3 trades
+    # give you a mean and variance) and a ceiling of 30 (beyond that, more bars
+    # don't demand proportionally more trades).
+    _min_trades = max(3, min(30, int(bar_count * 0.01)))
+    low_sample = 1 if total_trades < _min_trades else 0
+
+    # ── Trade significance: t-test on trade PnLs ──
+    # Answers "are these returns distinguishable from random?" regardless of count.
+    # t = mean(pnls) / (std(pnls) / sqrt(n)).  p-value from two-tailed t-distribution.
+    trade_tstat = None
+    trade_pvalue = None
+    if total_trades >= 2:
+        _mean_pnl = sum(pnls) / total_trades
+        _var_pnl = sum((p - _mean_pnl) ** 2 for p in pnls) / (total_trades - 1)
+        _std_pnl = math.sqrt(_var_pnl) if _var_pnl > 0 else 0.0
+        if _std_pnl > 0:
+            trade_tstat = _mean_pnl / (_std_pnl / math.sqrt(total_trades))
+            # Approximate two-tailed p-value using the normal CDF for large-ish n,
+            # and a simple rational approximation for the standard normal CDF.
+            _z = abs(trade_tstat)
+            # Abramowitz & Stegun 26.2.17 — max error 7.5e-8
+            _p = 0.2316419
+            _b1, _b2, _b3, _b4, _b5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429
+            _t = 1.0 / (1.0 + _p * _z)
+            _phi = (1.0 / math.sqrt(2.0 * math.pi)) * math.exp(-0.5 * _z * _z)
+            _norm_cdf = 1.0 - _phi * (_b1*_t + _b2*_t**2 + _b3*_t**3 + _b4*_t**4 + _b5*_t**5)
+            trade_pvalue = 2.0 * (1.0 - _norm_cdf)
 
     def _emit(key, val, fmt="{:.6f}"):
         # None  -> "nan" (TS parser records parse_warning rather than dropping)
@@ -913,6 +941,9 @@ def main():
     _emit("win_rate", win_rate)
     _emit("profit_factor", profit_factor, "{:.4f}")
     print(f"low_sample: {low_sample}")
+    print(f"min_trades_threshold: {_min_trades}")
+    _emit("trade_tstat", trade_tstat, "{:.4f}")
+    _emit("trade_pvalue", trade_pvalue, "{:.6f}")
 
     # ── Extended metrics ──
     _emit("sortino", sortino, "{:.4f}")

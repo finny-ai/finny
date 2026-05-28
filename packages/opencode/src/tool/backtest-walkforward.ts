@@ -27,6 +27,34 @@ function fmt(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+type WfMeta = {
+  walkForward?: {
+    n_folds: number
+    is_sharpe_mean: number
+    oos_sharpe_mean: number
+    oos_decay: number
+    flag_threshold: number
+    flagged: boolean
+    deflated_sharpe: number
+    probabilistic_sharpe: number
+    folds: Array<{
+      fold: number
+      train_start: string
+      train_end: string
+      test_start: string
+      test_end: string
+      is_sharpe: number
+      oos_sharpe: number
+      is_return: number
+      oos_return: number
+    }>
+  }
+  engineVersion?: string
+  schemaVersion?: number
+}
+
+const EMPTY_META: WfMeta = {}
+
 export const BacktestWalkforwardTool = Tool.define(
   "finny_backtest_walkforward",
   Effect.succeed({
@@ -36,55 +64,25 @@ export const BacktestWalkforwardTool = Tool.define(
       "in-sample Sharpe or if out-of-sample loses money. Use this as the primary overfitting gate " +
       "before declaring a strategy 'good'.",
     parameters,
-    execute: (() => {
-      const run = Effect.fn("BacktestWalkforwardTool.execute")(function* (
-        input: z.infer<typeof parameters>,
-        ctx: Tool.Context,
-      ) {
-        type WfMeta = {
-          walkForward?: {
-            n_folds: number
-            is_sharpe_mean: number
-            oos_sharpe_mean: number
-            oos_decay: number
-            flag_threshold: number
-            flagged: boolean
-            deflated_sharpe: number
-            probabilistic_sharpe: number
-            folds: Array<{
-              fold: number
-              train_start: string
-              train_end: string
-              test_start: string
-              test_end: string
-              is_sharpe: number
-              oos_sharpe: number
-              is_return: number
-              oos_return: number
-            }>
-          }
-          engineVersion?: string
-          schemaVersion?: number
-        }
-        const EMPTY_META: WfMeta = {}
-
-        yield* ctx.ask({
+    execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
+      Effect.promise(async () => {
+        await ctx.ask({
           permission: "finny_backtest_walkforward",
           patterns: ["*"],
           always: ["*"],
           metadata: {},
         })
 
-        const algo = yield* Effect.promise(() => Algorithm.get(input.algorithmName))
+        const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
           return {
             title: "Walk-forward failed",
-            output: `Algorithm "${input.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
+            output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
             metadata: EMPTY_META,
           }
         }
 
-        const validation = yield* Effect.promise(() => Validate.run(algo.code, { config: algo.config }))
+        const validation = await Validate.run(algo.code, { config: algo.config })
         if (!validation.valid) {
           return {
             title: "Walk-forward blocked by validation",
@@ -94,12 +92,12 @@ export const BacktestWalkforwardTool = Tool.define(
         }
         const riskBanner = Validate.formatRiskBanner(validation)
 
-        const totalDays = BacktestRunner.parseDurationDays(input.duration)
+        const totalDays = BacktestRunner.parseDurationDays(params.duration)
         if (!totalDays || totalDays < 14) {
           return {
             title: "Walk-forward failed",
             output:
-              `Duration "${input.duration}" is too short for a walk-forward split. ` +
+              `Duration "${params.duration}" is too short for a walk-forward split. ` +
               `Use at least 2w (14 days) so each half has enough bars; 3m or longer is recommended.`,
             metadata: EMPTY_META,
           }
@@ -110,15 +108,15 @@ export const BacktestWalkforwardTool = Tool.define(
         const start = new Date(end)
         start.setUTCDate(start.getUTCDate() - totalDays)
 
-        const result = yield* Effect.promise(() => BacktestRunner.run({
+        const result = await BacktestRunner.run({
           algorithm: algo,
-          duration: input.duration,
-          interval: input.interval,
-          capital: input.capital,
+          duration: params.duration,
+          interval: params.interval,
+          capital: params.capital,
           startDate: fmt(start),
           endDate: fmt(end),
           robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
-        }))
+        })
 
         if (!result.ok) {
           return {
@@ -152,7 +150,7 @@ export const BacktestWalkforwardTool = Tool.define(
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
-          `Total window: ${input.duration} (${fmt(start)} → ${fmt(end)})`,
+          `Total window: ${params.duration} (${fmt(start)} → ${fmt(end)})`,
           `Rolling folds: ${walkForward.n_folds}`,
           ``,
           `IS Sharpe mean:        ${walkForward.is_sharpe_mean.toFixed(2)}`,
@@ -175,9 +173,6 @@ export const BacktestWalkforwardTool = Tool.define(
           output: finalOutput,
           metadata: { walkForward, engineVersion: result.results.engineVersion, schemaVersion: result.results.schemaVersion },
         }
-      })
-
-      return (input: z.infer<typeof parameters>, ctx: Tool.Context) => run(input, ctx)
-    })(),
+      }),
   }),
 )

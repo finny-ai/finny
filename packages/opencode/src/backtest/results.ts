@@ -112,6 +112,8 @@ export namespace EngineV2 {
     mfe_max: number
     kelly_fraction: number
     kelly_confidence: "low" | "medium" | "high"
+    trade_tstat: number | null
+    trade_pvalue: number | null
   }
 
   export interface ExposureMetrics {

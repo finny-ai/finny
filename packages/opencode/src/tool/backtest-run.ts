@@ -128,6 +128,29 @@ export const BacktestRunTool = Tool.define(
           )
         }
 
+        // Trade significance — surface t-stat, p-value, and dynamic low_sample
+        const tradeBlock = r.v2?.trade
+        if (tradeBlock && r.totalTrades > 0) {
+          const tstat = tradeBlock.trade_tstat
+          const pval = tradeBlock.trade_pvalue
+          const barCount = r.diagnostics?.barsProcessed ?? r.v2?.bars_processed ?? 0
+          const minTrades = Math.max(3, Math.min(30, Math.floor(barCount * 0.01)))
+          const lowSample = r.totalTrades < minTrades
+          lines.push(
+            `├──────────────────────┼───────────────────────────┤`,
+          )
+          if (tstat != null) {
+            lines.push(`│  Trade t-stat        │  ${fmt(tstat, 3).padStart(24)} │`)
+          }
+          if (pval != null) {
+            const sig = pval < 0.01 ? "***" : pval < 0.05 ? "**" : pval < 0.10 ? "*" : ""
+            lines.push(`│  Trade p-value       │  ${(fmt(pval, 4) + " " + sig).padStart(24)} │`)
+          }
+          if (lowSample) {
+            lines.push(`│  Sample size         │  ${(`⚠ LOW (${r.totalTrades}/${minTrades} min)`).padStart(24)} │`)
+          }
+        }
+
         lines.push(`└──────────────────────┴───────────────────────────┘`)
 
         if (r.totalTrades === 0 && r.diagnostics) {
@@ -151,8 +174,22 @@ export const BacktestRunTool = Tool.define(
           if (d.strategyErrors > 0) {
             lines.push(`Strategy errors: ${d.strategyErrors} (check stderr for details)`)
           }
+          // Sizing check: if asset price is too high for the position size, math.floor(qty) = 0
+          const capital = parseFloat(params.capital) || 10000
+          if (d.priceFirst > 0) {
+            const minPctForOneShare = (d.priceFirst / capital) * 100
+            if (minPctForOneShare > 3) {
+              lines.push(
+                ``,
+                `⚠ POSITION SIZING ISSUE: ${r.v2?.symbols?.[0] ?? "Asset"} trades at ~$${fmt(d.priceFirst, 0)}/share.`,
+                `  With $${fmt(capital, 0)} capital, you need risk_pct ≥ ${fmt(minPctForOneShare, 1)}% to buy 1 share.`,
+                `  If your strategy uses math.floor(qty) and risk_pct < ${fmt(minPctForOneShare, 1)}%, qty floors to 0 → zero trades.`,
+                `  FIX: raise risk_pct, raise starting capital, or use fractional shares (qty = round(qty, 2)).`,
+              )
+            }
+          }
           if (d.buyAttempts === 0 && d.strategyErrors === 0) {
-            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered.`,`Thresholds may be too restrictive for this asset/regime.`)
+            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered, OR position size too small (see above).`,`Check risk_pct vs asset price — math.floor(qty) may be rounding to 0.`)
           } else if (d.rejectedOrders > 0 && d.rejectedOrders === d.buyAttempts) {
             lines.push(``, `LIKELY CAUSE: All buy orders were rejected (${Object.keys(d.rejectionReasons).join(", ")}).`)
           } else if (d.strategyErrors > 0) {

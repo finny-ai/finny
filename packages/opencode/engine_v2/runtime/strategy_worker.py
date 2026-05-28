@@ -38,6 +38,12 @@ def _strategy_runtime_guards():
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
         root = str(name).split(".", 1)[0]
+        # Allow CPython internal modules (underscore-prefixed like _io, _collections_abc,
+        # _stat, _frozen_importlib, etc.) — these are imported by Python's own import
+        # machinery when loading any .py file and cannot be blocked without breaking
+        # module loading entirely.
+        if root.startswith("_"):
+            return original_import(name, globals, locals, fromlist, level)
         if level == 0 and (root in DENIED_IMPORT_ROOTS or root not in SAFE_IMPORT_ROOTS):
             raise ImportError(f"Import {root!r} is not allowed in strict strategy runtime")
         return original_import(name, globals, locals, fromlist, level)
