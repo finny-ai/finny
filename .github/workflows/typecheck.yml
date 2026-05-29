@@ -21,8 +21,16 @@ jobs:
         run: bun typecheck
 
   cli-publish-build:
-    name: cli publish build smoke
-    runs-on: ubuntu-latest
+    name: cli publish build smoke (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: linux-x64
+            runner: ubuntu-latest
+          - arch: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       MODELS_DEV_API_JSON: ${{ github.workspace }}/packages/opencode/test/tool/fixtures/models-api.json
