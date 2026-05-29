@@ -4,7 +4,7 @@ import { createSignal, onMount } from "solid-js"
 import { selectedForeground, useTheme } from "@tui/context/theme"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useToast } from "@tui/ui/toast"
-import { setExperienceLevel, type ExperienceLevel } from "@finny-ai/core"
+import { setExperienceLevel, type ExperienceLevel } from "../../../../../../finny-core/src/prefs"
 
 export type DialogExperienceLevelProps = {
   onSelect?: (level: ExperienceLevel) => void
