@@ -494,8 +494,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
 
   // First TUI launch — runs once per install (KV: onboarding_v2_status).
   // Grandfathered users with experience_level_status from the old flow skip.
-  // Sequence: optional email (telemetry on) → choose path → welcome session on a
-  // free OpenCode model. Provider setup stays in the Home prompt capsules.
+  // Sequence: email (required submit) → choose path → welcome session on a free
+  // OpenCode model. Provider setup stays in the Home prompt capsules.
   let firstLaunchOnboardingStarted = false
 
   function ensureWelcomeFreeModel() {
@@ -515,12 +515,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   }
 
   async function runFirstLaunchOnboarding() {
-    if (Analytics.isEnabled() && !kv.get("email_capture_status")) {
-      await DialogEmailCapture.show(dialog, () => {
-        if (!kv.get("email_capture_status")) {
-          kv.set("email_capture_status", "skipped")
-        }
-      })
+    while (!kv.get("email_capture_status")) {
+      await DialogEmailCapture.show(dialog, undefined, { allowSkip: false })
     }
 
     const path = await DialogOnboardingChoosePath.show(dialog)
@@ -819,15 +815,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "subscribe",
       },
       category: "System",
-      // Hide unless telemetry is enabled; the email POST hits the same Convex
-      // deployment as analytics, so the opt-in covers both.
-      hidden: !Analytics.isEnabled(),
       onSelect: () => {
-        if (!Analytics.isEnabled()) {
-          toast.show({ variant: "info", message: "Telemetry is disabled (set FINNY_TELEMETRY=1 to enable)", duration: 3000 })
-          return
-        }
-        DialogEmailCapture.show(dialog)
+        DialogEmailCapture.show(dialog, () => {
+          if (!kv.get("email_capture_status")) {
+            kv.set("email_capture_status", "skipped")
+          }
+        })
       },
     },
     {

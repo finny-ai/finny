@@ -1,6 +1,6 @@
 import { RGBA, TextAttributes, type InputRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import { createSignal, Show, onMount } from "solid-js"
+import { createMemo, createSignal, Show, onMount } from "solid-js"
 import { selectedForeground, useTheme } from "@tui/context/theme"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useToast } from "@tui/ui/toast"
@@ -12,6 +12,8 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
 export type DialogEmailCaptureProps = {
   onClose?: () => void
+  /** When false, hide skip/esc — used during first-launch onboarding. */
+  allowSkip?: boolean
 }
 
 export function DialogEmailCapture(props: DialogEmailCaptureProps) {
@@ -21,9 +23,12 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
   const toast = useToast()
   const kv = useKV()
 
+  const allowSkip = () => props.allowSkip !== false
+  const buttonCount = createMemo(() => (allowSkip() ? 3 : 2))
+
   const [email, setEmail] = createSignal("")
   const [busy, setBusy] = createSignal(false)
-  const [focusIdx, setFocusIdx] = createSignal(0) // 0 = input, 1 = submit, 2 = skip
+  const [focusIdx, setFocusIdx] = createSignal(0) // 0 = input, 1 = submit, (2 = skip)
   let inputRef: InputRenderable | undefined
 
   const submit = async () => {
@@ -43,9 +48,6 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
         platform: process.platform,
       })
       kv.set("email_capture_status", "submitted")
-      // Intentionally NOT persisting the email address locally — it lives in
-      // Convex (the source of truth) and we have no product use for a local
-      // copy, so storing it would just be unnecessary PII retention.
       toast.show({ variant: "info", message: "Thanks — you're on the list.", duration: 3000 })
       props.onClose?.()
       dialog.clear()
@@ -60,6 +62,7 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
   }
 
   const skip = () => {
+    if (!allowSkip()) return
     kv.set("email_capture_status", "skipped")
     props.onClose?.()
     dialog.clear()
@@ -67,9 +70,16 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
 
   useKeyboard((evt) => {
     if (busy()) return
+    if (evt.name === "escape") {
+      if (allowSkip()) skip()
+      evt.preventDefault?.()
+      return
+    }
+    const count = buttonCount()
     if (evt.name === "tab") {
+      const dir = evt.shift ? -1 : 1
       setFocusIdx((i) => {
-        const next = (i + (evt.shift ? 2 : 1)) % 3
+        let next = (i + dir + count) % count
         if (next === 0) inputRef?.focus()
         else inputRef?.blur()
         return next
@@ -80,7 +90,7 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
     if (evt.name === "return") {
       const i = focusIdx()
       if (i === 0 || i === 1) submit()
-      else skip()
+      else if (allowSkip()) skip()
     }
   })
 
@@ -112,13 +122,17 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
           Stay in the loop?
         </text>
-        <text fg={theme.textMuted} onMouseUp={skip}>
-          esc
-        </text>
+        <Show when={allowSkip()}>
+          <text fg={theme.textMuted} onMouseUp={skip}>
+            esc
+          </text>
+        </Show>
       </box>
 
       <text fg={theme.textMuted}>
-        Drop your email for release notes. Optional — skip any time.
+        {allowSkip()
+          ? "Drop your email for release notes. Optional — skip any time."
+          : "Drop your email for release notes to continue."}
       </text>
 
       <box
@@ -144,12 +158,17 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
       </box>
 
       <box flexDirection="row" justifyContent="flex-end" gap={1} paddingBottom={1}>
-        <Show when={busy()} fallback={
-          <>
-            <Btn label="submit" index={1} onClick={submit} primary />
-            <Btn label="skip" index={2} onClick={skip} />
-          </>
-        }>
+        <Show
+          when={busy()}
+          fallback={
+            <>
+              <Btn label="submit" index={1} onClick={submit} primary />
+              <Show when={allowSkip()}>
+                <Btn label="skip" index={2} onClick={skip} />
+              </Show>
+            </>
+          }
+        >
           <text fg={theme.textMuted}>saving…</text>
         </Show>
       </box>
@@ -157,12 +176,22 @@ export function DialogEmailCapture(props: DialogEmailCaptureProps) {
   )
 }
 
-DialogEmailCapture.show = (dialog: DialogContext, onDismiss?: () => void) => {
+DialogEmailCapture.show = (
+  dialog: DialogContext,
+  onDismiss?: () => void,
+  options?: { allowSkip?: boolean },
+) => {
   return new Promise<void>((resolve) => {
+    const allowSkip = options?.allowSkip !== false
     dialog.replace(
-      () => <DialogEmailCapture onClose={() => resolve()} />,
+      () => (
+        <DialogEmailCapture
+          allowSkip={allowSkip}
+          onClose={() => resolve()}
+        />
+      ),
       () => {
-        onDismiss?.()
+        if (allowSkip) onDismiss?.()
         resolve()
       },
     )
