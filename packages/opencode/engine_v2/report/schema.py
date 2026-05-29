@@ -8,6 +8,7 @@ schema_version semver rules:
 CHANGELOG:
   2.0.0  initial engine_v2 release.
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
+  3.1.0  asset spec adds optional margin/commission metadata.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "3.0.0"
+SCHEMA_VERSION = "3.1.0"
 
 
 @dataclass
@@ -127,6 +128,8 @@ class TradeMetrics:
     mfe_max: float
     kelly_fraction: float
     kelly_confidence: str  # "low" | "medium" | "high"
+    trade_tstat: Optional[float] = None
+    trade_pvalue: Optional[float] = None
 
 
 @dataclass
@@ -255,6 +258,9 @@ class AssetSpecReport:
     marginModel: str
     dataProvider: str
     productionEligible: bool
+    initialMarginPct: Optional[float] = None
+    maintenanceMarginPct: Optional[float] = None
+    commissionPerContract: Optional[float] = None
     venue: Optional[str] = None
     expiry: Optional[str] = None
     rollPolicy: Optional[str] = None

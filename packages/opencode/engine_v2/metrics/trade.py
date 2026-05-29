@@ -34,6 +34,7 @@ def compute(trades: List[ClosedTrade]) -> Dict:
             "longest_trade_bars": 0, "shortest_trade_bars": 0, "avg_hold_bars": 0.0,
             "mae_avg": 0.0, "mae_max": 0.0, "mfe_avg": 0.0, "mfe_max": 0.0,
             "kelly_fraction": 0.0, "kelly_confidence": "low",
+            "trade_tstat": None, "trade_pvalue": None,
         }
     pnls = np.array([t.pnl for t in trades], dtype=np.float64)
     wins = pnls[pnls > 0]
@@ -77,6 +78,26 @@ def compute(trades: List[ClosedTrade]) -> Dict:
     if payoff > 0 and win_rate > 0:
         kelly = float(win_rate - (1.0 - win_rate) / payoff)
 
+    # Trade significance: one-sample t-statistic on PnLs — "are these returns
+    # distinguishable from random?" regardless of trade count. The p-value below
+    # is a two-tailed NORMAL (z) approximation — exact for large n, slightly
+    # anti-conservative for small n (true Student-t has fatter tails).
+    trade_tstat = None
+    trade_pvalue = None
+    if n >= 2:
+        _mean = float(pnls.mean())
+        _std = float(pnls.std(ddof=1))
+        if _std > 0:
+            trade_tstat = _mean / (_std / float(np.sqrt(n)))
+            # Abramowitz & Stegun 26.2.17 — standard normal CDF approx (max err 7.5e-8)
+            _z = abs(trade_tstat)
+            _p = 0.2316419
+            _b1, _b2, _b3, _b4, _b5 = 0.319381530, -0.356563782, 1.781477937, -1.821255978, 1.330274429
+            _t = 1.0 / (1.0 + _p * _z)
+            _phi = (1.0 / np.sqrt(2.0 * np.pi)) * np.exp(-0.5 * _z * _z)
+            _norm_cdf = 1.0 - _phi * (_b1*_t + _b2*_t**2 + _b3*_t**3 + _b4*_t**4 + _b5*_t**5)
+            trade_pvalue = float(2.0 * (1.0 - _norm_cdf))
+
     return {
         "total_trades": int(n),
         "win_rate": win_rate, "loss_rate": loss_rate, "breakeven_rate": be_rate,
@@ -92,4 +113,6 @@ def compute(trades: List[ClosedTrade]) -> Dict:
         "mfe_max": float(mfes.max()) if mfes.size else 0.0,
         "kelly_fraction": kelly,
         "kelly_confidence": kelly_confidence(n),
+        "trade_tstat": trade_tstat,
+        "trade_pvalue": trade_pvalue,
     }

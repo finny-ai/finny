@@ -291,7 +291,7 @@ def assemble(
         diagnostics={
             **broker.diagnostics(),
             "bar_diagnostics_count": len(diagnostics),
-            "margin_used": float(broker.account.gross_notional(broker.book.positions)),
+            "margin_used": float(broker.account.required_initial_margin(broker.book.positions)),
             "free_margin": float(broker.account.free_margin(broker.book.positions)),
         },
         run_metadata=run_metadata,

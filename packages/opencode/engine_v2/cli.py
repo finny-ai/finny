@@ -37,7 +37,7 @@ from engine_v2.execution.spread import SpreadConfig
 from engine_v2.portfolio.account import Account
 from engine_v2.report import emit, schema as S
 from engine_v2.robustness.monte_carlo import trade_shuffle
-from engine_v2.robustness.regime import classify_bars, breakdown
+from engine_v2.robustness.regime import classify_bars, classify_trend, breakdown
 from engine_v2.robustness.walkforward import run_walk_forward
 from engine_v2.metrics import ratios as M_ratios
 from engine_v2.metrics import returns as M_returns
@@ -99,18 +99,33 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
 def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, asset_spec: AssetSpec) -> PortfolioBroker:
     exec_cfg = cfg.get("execution", {})
     risk_cfg = cfg.get("risk", {})
+    default_initial_margin = (
+        float(asset_spec.initialMarginPct)
+        if asset_spec.initialMarginPct is not None
+        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+    )
     max_leverage = float(exec_cfg.get("max_leverage", 1.0))
     if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
-        initial_margin = float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
-        max_leverage = 1.0 / initial_margin if initial_margin > 0 else 1.0
+        max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     account = Account.new(
         starting_cash=float(risk_cfg.get("starting_equity_usd", 10000.0)),
         max_leverage=max_leverage,
-        maintenance_margin_pct=float(exec_cfg.get("maintenance_margin_pct", 0.0)),
+        maintenance_margin_pct=float(
+            exec_cfg.get(
+                "maintenance_margin_pct",
+                asset_spec.maintenanceMarginPct if asset_spec.maintenanceMarginPct is not None else 0.0,
+            )
+        ),
     )
     costs = CostConfig(
         maker_fee_bps=float(exec_cfg.get("maker_fee_bps", 2.0)),
         taker_fee_bps=float(exec_cfg.get("taker_fee_bps", 7.0)),
+        commission_per_contract=float(
+            exec_cfg.get(
+                "commission_per_contract",
+                asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
+            )
+        ),
         funding_rate_bps_per_interval=float(exec_cfg.get("funding_rate_bps", 0.0)),
         funding_interval_hours=float(exec_cfg.get("funding_interval_hours", 8.0)),
         short_borrow_rate_annual=float(exec_cfg.get("short_borrow_rate_annual", 0.0)),
@@ -134,15 +149,30 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, ass
 
 def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, Any]:
     exec_cfg = cfg.get("execution", {})
+    default_initial_margin = (
+        float(asset_spec.initialMarginPct)
+        if asset_spec.initialMarginPct is not None
+        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+    )
+    default_maintenance_margin = (
+        float(asset_spec.maintenanceMarginPct)
+        if asset_spec.maintenanceMarginPct is not None
+        else float(exec_cfg.get("maintenance_margin_pct", 0.0))
+    )
     max_leverage = float(exec_cfg.get("max_leverage", 1.0))
     if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
-        initial_margin = float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
-        max_leverage = 1.0 / initial_margin if initial_margin > 0 else 1.0
+        max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     return {
         "fill_model": "engine_v2.next_open" if mode == "v2" else "engine_v2.v1_compat",
         "participation_pct": float(exec_cfg.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
         "maker_fee_bps": float(exec_cfg.get("maker_fee_bps", 2.0)),
         "taker_fee_bps": float(exec_cfg.get("taker_fee_bps", 7.0)),
+        "commission_per_contract": float(
+            exec_cfg.get(
+                "commission_per_contract",
+                asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
+            )
+        ),
         "slippage_bps": float(exec_cfg.get("slippage_bps", 1.0)),
         "k_atr": float(exec_cfg.get("k_atr", 0.5 if mode == "v2" else 0.0)),
         "k_vol": float(exec_cfg.get("k_vol", 5.0 if mode == "v2" else 0.0)),
@@ -150,12 +180,12 @@ def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, 
         "spread_k": float(exec_cfg.get("spread_k", 0.5)),
         "spread_lookback": int(exec_cfg.get("spread_lookback", 30)),
         "max_leverage": max_leverage,
-        "initial_margin_pct": float(exec_cfg.get("initial_margin_pct", 1.0 / max_leverage if max_leverage > 0 else 1.0)),
-        "maintenance_margin_pct": float(exec_cfg.get("maintenance_margin_pct", 0.0)),
+        "initial_margin_pct": float(exec_cfg.get("initial_margin_pct", default_initial_margin)),
+        "maintenance_margin_pct": float(exec_cfg.get("maintenance_margin_pct", default_maintenance_margin)),
         "funding_enabled": float(exec_cfg.get("funding_rate_bps", 0.0)) != 0.0,
         "funding_rate_bps": float(exec_cfg.get("funding_rate_bps", 0.0)),
         "funding_interval_hours": float(exec_cfg.get("funding_interval_hours", 8.0)),
-        "liquidation_enabled": max_leverage > 1.0 and float(exec_cfg.get("maintenance_margin_pct", 0.0)) > 0.0,
+        "liquidation_enabled": max_leverage > 1.0 and default_maintenance_margin > 0.0,
         "asset_class": asset_spec.assetClass,
         "multiplier": asset_spec.multiplier,
         "tick_size": asset_spec.tickSize,
@@ -384,12 +414,32 @@ class StrictStrategyWorker:
 
 
 def _broker_state(broker: PortfolioBroker, snap: MarketSnapshot, symbol: str) -> Dict[str, Any]:
-    return {
+    state: Dict[str, Any] = {
         "positions": {s: float(broker.book.get(s).qty) for s in snap.symbols},
         "cash": float(broker.account.cash),
         "equity": float(broker.get_equity()),
         "prices": {s: float(broker.latest_price(s)) for s in snap.symbols},
     }
+    greeks_map: Dict[str, Any] = {}
+    underlying_map: Dict[str, Any] = {}
+    dte_map: Dict[str, float] = {}
+    for s in snap.symbols:
+        g = broker.greeks(s)
+        if any(v != 0.0 for v in g.values()):
+            greeks_map[s] = g
+        up = broker.underlying_price(s)
+        if up is not None:
+            underlying_map[s] = up
+        dte = broker.days_to_expiry(s)
+        if dte != float("inf"):
+            dte_map[s] = dte
+    if greeks_map:
+        state["greeks"] = greeks_map
+    if underlying_map:
+        state["underlying_prices"] = underlying_map
+    if dte_map:
+        state["dte"] = dte_map
+    return state
 
 
 def _submit_worker_intents(broker: PortfolioBroker, intents: List[Dict[str, Any]], symbol: str) -> None:
@@ -516,6 +566,13 @@ def main() -> None:
     ba = from_dataframe(df, symbol=symbol, atr_period=14)
     snap = MarketSnapshot({symbol: ba})
 
+    # Pre-compute regime labels so strategies can read bar["vol_regime"] and
+    # bar["trend_regime"] at decision time. Uses only settled data (lookback
+    # windows on prior closes) — no lookahead.
+    _vol_labels = classify_bars(ba.close, lookback=30)
+    _trend_labels = classify_trend(ba.close, lookback=50)
+    snap.attach_regime_labels(symbol, _vol_labels, _trend_labels)
+
     seed = args.seed if args.seed else derive_seed(cfg, str(df["timestamp"].iloc[0]),
                                                    str(df["timestamp"].iloc[-1]),
                                                    args.interval)
@@ -547,6 +604,11 @@ def main() -> None:
             fold_df = df.iloc[start_idx:end_idx].reset_index(drop=True)
             fold_ba = from_dataframe(fold_df, symbol=symbol, atr_period=14)
             fold_snap = MarketSnapshot({symbol: fold_ba})
+            fold_snap.attach_regime_labels(
+                symbol,
+                classify_bars(fold_ba.close, lookback=30),
+                classify_trend(fold_ba.close, lookback=50),
+            )
             fold_broker = _build_broker(fold_snap, cfg, args.interval, args.mode, asset_spec)
             if args.mode == "v2":
                 fold_result = _run_shapec_strict_worker(fold_broker, fold_snap, strategy_path, symbol, params)

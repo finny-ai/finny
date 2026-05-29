@@ -21,8 +21,11 @@ import numpy as np
 
 from ..core.arrays import MarketSnapshot
 from ..assets import AssetSpec
+from ..options.symbols import is_option_symbol, parse_option_symbol
+from ..options.pricing import option_price
+from ..options.calendar import time_to_expiry_years
 from ..core.clock import interval_to_rule_and_bars_per_year
-from ..execution.costs import CostConfig, borrow_charge_per_bar, funding_charge
+from ..execution.costs import CostConfig, borrow_charge_per_bar, commission, funding_charge
 from ..execution.fills import Fill, FillConfig, process_orders_for_bar
 from ..portfolio.account import Account
 from ..portfolio.liquidation import liquidation_price
@@ -187,6 +190,12 @@ class PortfolioBroker:
             bar_fills = []
 
         prices = {sym: float(self.market.arrays[sym].close[i]) for sym in self.market.symbols}
+
+        # Option mark-to-model: re-price options via BS before marking.
+        # This naturally captures theta decay and delta P&L.
+        expiry_fills = self._apply_option_marks(i, prices)
+        bar_fills.extend(expiry_fills)
+
         self.account.mark_prices(prices)
 
         # Intra-bar liquidation check (using bar high/low) — only when
@@ -197,7 +206,7 @@ class PortfolioBroker:
                     continue
                 equity = self.get_equity()
                 curr = prices[sym]
-                liq = liquidation_price(pos, equity, curr, self.account.maintenance_margin_pct)
+                liq = liquidation_price(pos, equity, curr, self.account.maintenance_margin_pct_for_symbol(sym))
                 if liq is None:
                     continue
                 ba = self.market.arrays[sym]
@@ -292,14 +301,17 @@ class PortfolioBroker:
             projected_qty[qsym] = projected_qty.get(qsym, 0.0) + (qqty if qside == "buy" else -qqty)
             qspec = self.asset_specs.get(qsym)
             mult = qspec.multiplier if qspec is not None else 1.0
-            queued_fee += abs(qqty * qprice * mult) * (self.costs.taker_fee_bps / 10_000.0)
-        gross_after = 0.0
-        for sym, projected in projected_qty.items():
-            if projected == 0:
-                continue
-            gross_after += abs(projected) * self.latest_price(sym) * self._multiplier(sym)
-        allowed = self.account.equity(self.book.positions) * self.account.max_leverage
-        if gross_after + queued_fee > allowed + 1e-9:
+            queued_fee += commission(
+                abs(qqty * qprice * mult),
+                is_maker=False,
+                cfg=self.costs,
+                qty=qqty,
+                asset_class=qspec.assetClass if qspec is not None else "",
+            )
+        projected_prices = {sym: self.latest_price(sym) for sym in projected_qty}
+        required_margin = self.account.required_initial_margin_for_quantities(projected_qty, projected_prices)
+        allowed = self.account.equity(self.book.positions)
+        if required_margin + queued_fee > allowed + 1e-9:
             self._reject(symbol, side, qty, "insufficient_margin")
             return False
         return True
@@ -313,7 +325,14 @@ class PortfolioBroker:
         # Adverse slip on the wrong side: use base bps as worst-case extra.
         slip = liq_px * (self.fill_cfg.slippage.base_bps / 10_000.0)
         fill_px = liq_px - slip if side == "sell" else liq_px + slip
-        fee = abs(qty * fill_px * self._multiplier(symbol)) * (self.costs.taker_fee_bps / 10_000.0)
+        spec = self.asset_specs.get(symbol)
+        fee = commission(
+            abs(qty * fill_px * self._multiplier(symbol)),
+            is_maker=False,
+            cfg=self.costs,
+            qty=qty,
+            asset_class=spec.assetClass if spec is not None else "",
+        )
         realized = self.book.apply_fill(
             symbol=symbol, side=side, qty=qty, price=fill_px,
             fee=fee, ts_ns=int(self.market.arrays[symbol].ts[i]), tag="LIQUIDATION",
@@ -329,6 +348,124 @@ class PortfolioBroker:
             order_id="LIQ", symbol=symbol, side=side, qty=qty, price=fill_px,
             fee=fee, bar_index=i, ts_ns=int(self.market.arrays[symbol].ts[i]),
             tag="LIQUIDATION", is_maker=False, full=True, stop_distance=None,
+        )
+
+    # ---------- Options: strategy-facing ----------
+
+    def greeks(self, symbol: str) -> Dict[str, float]:
+        ba = self.market.arrays.get(symbol)
+        if ba is None:
+            return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0}
+        i = max(self.market.i - 1, 0) if self.market._decision_phase else self.market.i
+        spec = self.asset_specs.get(symbol)
+        if spec is not None and spec.assetClass == "option" and ba.delta is not None:
+            return {
+                "delta": float(ba.delta[i]),
+                "gamma": float(ba.gamma[i]),
+                "theta": float(ba.theta[i]),
+                "vega": float(ba.vega[i]),
+                "iv": float(ba.iv[i]) if ba.iv is not None else 0.0,
+            }
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0}
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        ba = self.market.arrays.get(symbol)
+        if ba is None:
+            return None
+        i = max(self.market.i - 1, 0) if self.market._decision_phase else self.market.i
+        if ba.underlying_close is not None:
+            return float(ba.underlying_close[i])
+        if is_option_symbol(symbol):
+            opt = parse_option_symbol(symbol)
+            und_ba = self.market.arrays.get(opt.underlying)
+            if und_ba is not None:
+                return float(und_ba.close[i])
+        return None
+
+    def days_to_expiry(self, symbol: str) -> float:
+        # Calendar days to expiry, matching live IBKRBroker.days_to_expiry()
+        # semantics. (Trading-day count is used internally for BS pricing via
+        # time_to_expiry_years(use_trading_days=True), but the strategy-facing
+        # value here is calendar days so backtest and live agree.)
+        if not is_option_symbol(symbol):
+            return float("inf")
+        opt = parse_option_symbol(symbol)
+        ts_ns = int(self.market.arrays[symbol].ts[self.market.i])
+        return time_to_expiry_years(opt.expiry, ts_ns, use_trading_days=False) * 365.0
+
+    # ---------- Options: internal ----------
+
+    def _apply_option_marks(self, i: int, prices: Dict[str, float]) -> List[Fill]:
+        """Re-price open option positions via BS mark-to-model. Handles expiry."""
+        expiry_fills: List[Fill] = []
+        for sym, pos in list(self.book.positions.items()):
+            if pos.qty == 0:
+                continue
+            spec = self.asset_specs.get(sym)
+            if spec is None or spec.assetClass != "option":
+                continue
+            if not is_option_symbol(sym):
+                continue
+
+            opt = parse_option_symbol(sym)
+            ba = self.market.arrays[sym]
+            ts_ns = int(ba.ts[i])
+            T = time_to_expiry_years(opt.expiry, ts_ns)
+
+            # Resolve underlying price
+            S = None
+            if ba.underlying_close is not None:
+                S = float(ba.underlying_close[i])
+            else:
+                und_ba = self.market.arrays.get(opt.underlying)
+                if und_ba is not None:
+                    S = float(und_ba.close[i])
+            if S is None:
+                continue
+
+            if T <= 0:
+                fill = self._handle_expiry(sym, pos, opt, S, i)
+                if fill is not None:
+                    expiry_fills.append(fill)
+                continue
+
+            iv_val = float(ba.iv[i]) if ba.iv is not None else 0.25
+            model_price = option_price(S, opt.strike, T, 0.05, iv_val, opt.right)
+            model_price = max(model_price, 0.0)
+            prices[sym] = model_price
+
+        return expiry_fills
+
+    def _handle_expiry(self, sym: str, pos, opt, underlying_price: float, i: int) -> Optional[Fill]:
+        """Exercise ITM or expire OTM at expiry."""
+        K = opt.strike
+        is_itm = (opt.is_call and underlying_price > K) or (opt.is_put and underlying_price < K)
+
+        if is_itm:
+            exercise_val = abs(underlying_price - K)
+            tag = "EXERCISE"
+        else:
+            exercise_val = 0.0
+            tag = "EXPIRY"
+
+        side = "sell" if pos.qty > 0 else "buy"
+        qty = abs(pos.qty)
+        fill_price = exercise_val
+        mult = self._multiplier(sym)
+        fee = abs(qty) * self.costs.option_per_contract_fee if self.costs.option_per_contract_fee > 0 else 0.0
+
+        realized = self.book.apply_fill(
+            symbol=sym, side=side, qty=qty, price=fill_price,
+            fee=fee, ts_ns=int(self.market.arrays[sym].ts[i]), tag=tag,
+            stop_distance=None, liquidation=False, multiplier=mult,
+        )
+        self.account.apply_realized(realized)
+        self.account.apply_fee(fee)
+
+        return Fill(
+            order_id=tag, symbol=sym, side=side, qty=qty, price=fill_price,
+            fee=fee, bar_index=i, ts_ns=int(self.market.arrays[sym].ts[i]),
+            tag=tag, is_maker=False, full=True, stop_distance=None,
         )
 
     def _apply_periodic_costs(self, i: int) -> None:

@@ -7,7 +7,7 @@ pandas.iloc overhead in the hot loop.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List, Mapping, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -23,6 +23,16 @@ class BarArrays:
     close: np.ndarray
     volume: np.ndarray
     atr: np.ndarray  # precomputed; nan until period
+    # Optional option-chain arrays. Populated only for option symbols (when the
+    # source dataframe carries these columns); None for equities/crypto/futures.
+    # The option broker path guards every access with `is not None`, so these
+    # defaults keep equity backtests working without AttributeError.
+    delta: Optional[np.ndarray] = None
+    gamma: Optional[np.ndarray] = None
+    theta: Optional[np.ndarray] = None
+    vega: Optional[np.ndarray] = None
+    iv: Optional[np.ndarray] = None
+    underlying_close: Optional[np.ndarray] = None
 
     def __len__(self) -> int:
         return int(self.ts.shape[0])
@@ -67,7 +77,19 @@ def from_dataframe(df: pd.DataFrame, symbol: str, atr_period: int = 14) -> BarAr
     low = df["low"].to_numpy(dtype=np.float64)
     c = df["close"].to_numpy(dtype=np.float64)
     v = df["volume"].to_numpy(dtype=np.float64)
-    return BarArrays(symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v, atr=_atr(h, low, c, atr_period))
+
+    # Hydrate optional option-chain columns when present so the option broker
+    # path can read precomputed greeks / IV / underlying without recomputing.
+    def _opt_col(name: str) -> "Optional[np.ndarray]":
+        return df[name].to_numpy(dtype=np.float64) if name in df.columns else None
+
+    return BarArrays(
+        symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v,
+        atr=_atr(h, low, c, atr_period),
+        delta=_opt_col("delta"), gamma=_opt_col("gamma"), theta=_opt_col("theta"),
+        vega=_opt_col("vega"), iv=_opt_col("iv"),
+        underlying_close=_opt_col("underlying_close"),
+    )
 
 
 class MarketSnapshot:
@@ -113,7 +135,26 @@ class MarketSnapshot:
     def visible_price(self, symbol: str) -> float:
         return self.decision_price(symbol) if self._decision_phase else self.last_close(symbol)
 
+    def attach_regime_labels(
+        self,
+        symbol: str,
+        vol_labels: "np.ndarray",
+        trend_labels: "np.ndarray",
+    ) -> None:
+        """Pre-attach regime classification arrays for a symbol.
+
+        Called once before the loop starts. The labels are looked up per-bar
+        in decision_safe_bar() so strategies can read bar["vol_regime"] and
+        bar["trend_regime"] at decision time.
+        """
+        key = f"_regime_vol_{symbol}"
+        setattr(self, key, vol_labels)
+        key2 = f"_regime_trend_{symbol}"
+        setattr(self, key2, trend_labels)
+
     def decision_safe_bar(self, symbol: str) -> Dict[str, object]:
+        from ..robustness.regime import VOL_LABELS, TREND_LABELS
+
         ba = self.arrays[symbol]
         prev = self._i - 1
         prev_open = float(ba.open[prev]) if prev >= 0 else None
@@ -121,7 +162,14 @@ class MarketSnapshot:
         prev_low = float(ba.low[prev]) if prev >= 0 else None
         prev_close = float(ba.close[prev]) if prev >= 0 else None
         prev_volume = float(ba.volume[prev]) if prev >= 0 else None
-        return {
+
+        # Regime labels — injected by attach_regime_labels() before the loop.
+        vol_arr = getattr(self, f"_regime_vol_{symbol}", None)
+        trend_arr = getattr(self, f"_regime_trend_{symbol}", None)
+        vol_regime = VOL_LABELS.get(int(vol_arr[self._i]), "warmup") if vol_arr is not None else "warmup"
+        trend_regime = TREND_LABELS.get(int(trend_arr[self._i]), "warmup") if trend_arr is not None else "warmup"
+
+        bar: Dict[str, object] = {
             "timestamp": int(ba.ts[self._i]),
             "symbol": symbol,
             "open": float(ba.open[self._i]),
@@ -130,7 +178,26 @@ class MarketSnapshot:
             "prev_low": prev_low,
             "prev_close": prev_close,
             "volume": prev_volume,
+            "vol_regime": vol_regime,
+            "trend_regime": trend_regime,
         }
+
+        # Option metadata — present only for option symbols. Read from the
+        # settled (previous) bar so it's decision-time-safe with no lookahead,
+        # matching the prev_* OHLCV discipline above. Omitted entirely for
+        # equities/crypto/futures so the bar schema stays clean.
+        if prev >= 0:
+            if ba.underlying_close is not None:
+                bar["underlying_close"] = float(ba.underlying_close[prev])
+            if ba.iv is not None:
+                bar["iv"] = float(ba.iv[prev])
+            if ba.delta is not None:
+                bar["delta"] = float(ba.delta[prev])
+                bar["gamma"] = float(ba.gamma[prev]) if ba.gamma is not None else 0.0
+                bar["theta"] = float(ba.theta[prev]) if ba.theta is not None else 0.0
+                bar["vega"] = float(ba.vega[prev]) if ba.vega is not None else 0.0
+
+        return bar
 
     def history_records(self, symbol: str, limit: int) -> Tuple[Mapping[str, object], ...]:
         """Immutable completed-bar records ending before the current decision."""

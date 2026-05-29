@@ -15,6 +15,8 @@ Diagnostic codes:
   MISSING_POSITION_SIZING   (warning) self.position only set to 0/1 with no sizing arithmetic
   POSITION_SIZE_UNCAPPED    (warning) qty sized from risk/stop with no cap against equity
   FRACTIONAL_SHARES_EQUITY  (warning) symbol looks like an equity ticker but qty is a float
+  FUTURES_FRACTIONAL_QTY    (warning) futures contracts require whole-number qty
+  FUTURES_NOTIONAL_SIZING   (warning) futures strategies should size by explicit contract qty
   NEAR_ZERO_DIVISION        (warning) RSI-shaped division guarded only by != 0 / > 0
 
 Exits 0 on success (diagnostics on stdout). Exits non-zero only on parse failure.
@@ -1158,6 +1160,18 @@ def check_position_size_uncapped(on_tick):
 
 EQUITY_TICKER_RE = None  # computed lazily
 CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT")
+FUTURES_ROOTS = {"ES", "NQ", "RTY", "YM", "CL", "GC", "SI", "HG", "ZN", "ZB", "6E"}
+
+
+def _symbol_is_future(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return False
+    s = symbol.strip().upper()
+    if s.endswith("=F"):
+        s = s[:-2]
+    if s.endswith("/CONT"):
+        s = s[:-5]
+    return s in FUTURES_ROOTS
 
 
 def _symbol_is_equity(symbol):
@@ -1166,6 +1180,8 @@ def _symbol_is_equity(symbol):
         return False
     s = symbol.strip().upper()
     if any(suf in s for suf in CRYPTO_SUFFIXES):
+        return False
+    if _symbol_is_future(s):
         return False
     if "/" in s or "-" in s:
         return False
@@ -1206,6 +1222,69 @@ def check_fractional_shares_equity(on_tick, symbol):
         })
         break
     return diagnostics
+
+
+def check_futures_order_sizing(on_tick, symbol):
+    """Futures require explicit whole-contract qty; notional and division-sized qty are unsafe."""
+    diagnostics = []
+    if not _symbol_is_future(symbol):
+        return diagnostics
+
+    emitted_notional = False
+    emitted_fractional = False
+    for node in ast.walk(on_tick):
+        if isinstance(node, ast.Call) and _is_broker_trade_call(node):
+            for kw in node.keywords:
+                if kw.arg == "notional" and not emitted_notional:
+                    diagnostics.append({
+                        "code": "FUTURES_NOTIONAL_SIZING",
+                        "severity": "warning",
+                        "message": (
+                            f"Symbol `{symbol}` is a futures contract; notional sizing is rejected by the futures broker path."
+                        ),
+                        "line": node.lineno,
+                        "fix": "Compute and pass an explicit whole-contract `qty`, e.g. `qty = max(1, int(...))`.",
+                    })
+                    emitted_notional = True
+                if kw.arg == "qty" and _contains_floaty_division(kw.value) and not emitted_fractional:
+                    diagnostics.append({
+                        "code": "FUTURES_FRACTIONAL_QTY",
+                        "severity": "warning",
+                        "message": (
+                            f"Symbol `{symbol}` is a futures contract; order qty must be whole contracts."
+                        ),
+                        "line": node.lineno,
+                        "fix": "Floor or round down to an integer contract count before submitting the order.",
+                    })
+                    emitted_fractional = True
+        if isinstance(node, ast.Assign) and _contains_floaty_division(node.value) and not emitted_fractional:
+            value = node.value
+            floored = isinstance(value, ast.BinOp) and isinstance(value.op, ast.FloorDiv)
+            for inner in ast.walk(value):
+                if isinstance(inner, ast.Call):
+                    if isinstance(inner.func, ast.Name) and inner.func.id in {"int", "round"}:
+                        floored = True
+                    if isinstance(inner.func, ast.Attribute) and inner.func.attr in {"floor"}:
+                        floored = True
+            if not floored:
+                diagnostics.append({
+                    "code": "FUTURES_FRACTIONAL_QTY",
+                    "severity": "warning",
+                    "message": f"Symbol `{symbol}` is a futures contract, but position size may be fractional.",
+                    "line": node.lineno,
+                    "fix": "Convert sizing to whole contracts and cap against equity/margin before order submission.",
+                })
+                emitted_fractional = True
+        if emitted_notional and emitted_fractional:
+            break
+    return diagnostics
+
+
+def _contains_floaty_division(node):
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Div):
+            return True
+    return False
 
 
 RSI_DENOM_HINTS = ("avg_loss", "avg_gain", "loss_avg", "gain_avg", "denom")
@@ -1348,6 +1427,7 @@ def analyze(code, symbol=None):
             (check_position_size_uncapped, entry),
             (check_near_zero_division, entry),
             (check_fractional_shares_equity, entry, symbol),
+            (check_futures_order_sizing, entry, symbol),
         ):
             for d in check_fn(*args):
                 # Dedupe across multiple entry methods — emit each diagnostic code once.

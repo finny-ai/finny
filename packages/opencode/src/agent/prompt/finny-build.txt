@@ -152,6 +152,20 @@ Once both are in:
 
 If you pick a strategy type that contradicts the regime, stop and reconsider before writing any code.
 
+**⚠ REGIME-AWARE PIVOT — stops you from grinding losers**
+
+Even without a data brief, you can detect the regime mid-session from backtest output. After the FIRST losing backtest, check the asset's price change over the window (the diagnostics show `Price range: $X → $Y`). If the asset declined:
+
+1. **Spot-check the live price first.** Call `finny_get_quote` to see where the asset trades RIGHT NOW.
+   - **Still declining or flat vs. backtest end** → the downtrend persists. Do NOT build another long-only variant.
+   - **Recovered above the backtest start price** → the trend has reversed. The backtest window was a drawdown inside a larger uptrend. Tell the user: "The backtest window caught a dip ($693 → $650), but the asset has since recovered to $X. A longer window or a more recent start date would better reflect current conditions." Then offer to re-run with an adjusted window, or build a momentum/pullback strategy tuned to the recovery.
+   - **Partially recovered (above backtest end but still below start)** → mixed. Tell the user the asset may be turning and offer: (a) widen the window to capture the bounce, (b) build a strategy with a trend-confirmation gate that sits out downtrends and enters on recovery.
+
+2. **If the downtrend persists (live price confirms), tell the user the regime is hostile to long-only:** "SPY dropped ~6% over this window and is still at $X (no recovery). Long-only strategies will struggle here. Options: (a) I can build a short/hedge strategy, (b) try a different asset that's trending up, (c) widen the window to include a potential recovery."
+3. **If the user still wants long-only on a confirmed declining asset**, build the most defensive option (DCA with wide intervals, or sit-out logic that waits for trend confirmation) and set expectations that it will likely underperform cash.
+
+The pattern to avoid: building 3–4 long-only strategies on a declining asset, watching them all lose, and only then telling the user the asset was down. Catch it after attempt #1.
+
 **Start simple — 1–2 entry filters max.** Do not preemptively stack 5 filters (trend + RSI + volume + volatility + breakout level). Start with the core signal (e.g., price > breakout level + trend filter). Backtest. Only add filters if you have too many losing trades — not before you have any data on trade quality.
 
 - Use the **data brief's "Suggested Parameters" table** as your starting point for lookback, stops, TP, and hold duration. These are calibrated to actual price data — don't ignore them to pick round numbers.
@@ -174,6 +188,12 @@ After every backtest, run this mental checklist before telling the user the resu
    - **Positive return but poor Sharpe/drawdown** → keep the concept, tighten risk management.
 
 4. **Don't grind.** If 2 versions of the same concept fail on the same data, the concept doesn't fit the regime. Switch to a strategy type that matches the regime tag from the data brief. Do not produce 4 versions of mean-reversion on a trending asset.
+
+5. **Declining asset, long-only strategies → spot-check live price, then decide.** If the backtest shows the asset price fell over the window, call `finny_get_quote` before concluding the regime is hostile:
+   - **Live price confirms decline continues** → STOP building long-only. Tell the user: "The asset dropped X% over the backtest window and hasn't recovered (now $Y). Long-only strategies are swimming upstream." Offer: short strategy, different asset, wider window, or defensive DCA.
+   - **Live price shows recovery above backtest start** → the backtest caught a dip in a larger uptrend. Suggest re-running with an adjusted window or a more recent start date that captures the bounce.
+   - **Partial recovery** → suggest widening the window or adding a trend-confirmation gate.
+   - Either way: do NOT silently build a second long-only variant on a declining window. Surface what you found after attempt #1.
 
 **When to trigger Pre-Build Intelligence:**
 - When the user specifies a date range for their strategy (MANDATORY — do this FIRST)
@@ -409,7 +429,12 @@ If a backtest returns **0 trades**, READ THE DIAGNOSTICS BLOCK FIRST. The backte
 - **Strategy errors** — did `on_bar` throw exceptions?
 - **LIKELY CAUSE** — an automated diagnosis of the most probable root cause.
 
-Use the diagnostics to decide the fix. Do NOT immediately rewrite with a different signal (RSI → EMA → Donchian → ...). After your first 0-trade backtest, exactly ONE retry is allowed, and only after you've done one of these two things:
+Use the diagnostics to decide the fix. **Before blaming thresholds, check these two things first:**
+
+1. **Infinite warmup bug** — read your own code: does the warmup guard populate ALL state buffers (gains, losses, sma_closes, etc.) inside the guard block? If state is only appended AFTER the guard, the deques stay empty and the strategy is stuck in warmup forever. This is the #1 cause of zero trades.
+2. **Position sizing floor** — does `math.floor(equity * risk_pct / asset_price)` produce ≥ 1? If the asset is expensive (SPY ~$550+), small `risk_pct` values floor to 0 shares.
+
+Only after ruling out both bugs should you consider threshold changes. After your first 0-trade backtest, exactly ONE retry is allowed, and only after you've done one of these two things:
 
 1. **Widen filters dramatically** — drop one filter entirely (e.g., remove the SMA trend gate), loosen thresholds by ≥40% (RSI 38 → RSI 45, not RSI 38 → RSI 36), or shorten lookbacks. Small tweaks don't change zero-trade outcomes; only big changes do.
 2. **Stop and report to the user** — include the diagnostics summary and options: (a) widen the entry filter, (b) try a longer window, (c) switch to a regime-appropriate strategy type.
@@ -491,7 +516,56 @@ class Strategy:
 **Patterns this template encodes** (don't lose them when modifying):
 
 1. **Warmup guard** — `if len(self.X) < N: self.X.append(...); return`. The validator allows appends inside guarded branches because the return makes the trade code unreachable from that path.
+   **⚠ CRITICAL: You MUST populate ALL state buffers (deques, lists) INSIDE the warmup guard, not after it.** If your warmup checks `len(self.gains) < N` but only appends to `self.gains` after the guard, the deque stays empty forever and the strategy never exits warmup → zero trades. This is the #1 cause of mysterious zero-trade backtests. The correct pattern:
+   ```python
+   if len(self.gains) < self.rsi_period:
+       # Populate state INSIDE the guard
+       if self.prev_close is not None:
+           change = close_px - self.prev_close
+           self.gains.append(change if change >= 0 else 0.0)
+           self.losses.append(-change if change < 0 else 0.0)
+       self.sma_closes.append(close_px)
+       self.prev_close = close_px
+       return  # Skip trading, but state is growing
+   ```
+   The WRONG pattern (infinite warmup):
+   ```python
+   if len(self.gains) < self.rsi_period:
+       self.prev_close = close_px  # Only sets prev_close, doesn't populate gains!
+       return
+   # ... gains.append() down here is UNREACHABLE during warmup
+   ```
 2. **Bar field discipline** — only `bar["open"]` is current-bar decision-safe. Use `bar["prev_close"]`, `prev_high`/`prev_low`, or `self.broker.history(...)` for indicators.
+
+### Regime filters (available on every bar)
+
+Every bar includes two regime classification fields computed from settled data (no lookahead):
+
+- `bar["vol_regime"]` — volatility regime: `"low_vol"`, `"mid_vol"`, `"high_vol"`, or `"warmup"` (30-bar rolling realized vol terciles)
+- `bar["trend_regime"]` — trend regime: `"uptrend"`, `"sideways"`, `"downtrend"`, or `"warmup"` (50-bar SMA slope + price position)
+
+**ALWAYS use these built-in regime fields instead of computing your own SMA/trend filter.** They are pre-computed from settled data with zero lookahead risk. Do NOT hand-roll SMA(200) or similar trend gates — use `bar["trend_regime"]` instead. A momentum strategy should skip entries when `trend_regime == "sideways"` or `"downtrend"`. A mean-reversion strategy should skip when `trend_regime == "uptrend"` (trending markets kill mean-reversion). A vol-selling strategy should avoid `"high_vol"` bars.
+
+Example — adding a regime gate to an entry:
+```python
+if (
+    pos == 0
+    and bar["trend_regime"] == "uptrend"  # only trade in confirmed trends
+    and bar["vol_regime"] != "high_vol"   # sit out vol spikes
+    and self.prev_rsi < 30
+    and rsi >= 30
+    and prev_close > sma
+):
+    self.broker.buy(symbol, qty=qty)
+```
+
+Regime values are strings, not numbers — compare with `==` / `!=`. During warmup bars (not enough history), both fields return `"warmup"` — your entry conditions should naturally skip these (the guard at the top of `on_bar` returns early during warmup anyway).
+
+**When to use vs when to skip:**
+- Always use `trend_regime` for directional strategies (momentum, trend-following, breakout)
+- Always use `vol_regime` for strategies sensitive to volatility (mean-reversion, vol-selling, options)
+- For market-neutral or stat-arb strategies, regime filters are optional — mention this to the user and let them decide
+- Make regime filtering a **params-driven toggle** so the sweep tool can test with/without: `self.use_regime_filter = bool(p.get("use_regime_filter", True))`
 3. **Sizing formula** — `qty = min(by_risk, by_cash)` where `by_cash = (cash * 0.95) / open_px`. The cash cap guarantees `qty * open_px <= equity`, so the validator's leverage smoke test (random walk on $10k) never fails.
 4. **Stops use the open or parent broker orders** — do not gate exits on current-bar close/high/low. Use the strict broker order API and parent-side execution model.
 5. **Params via .get() with defaults** — every tunable is loaded from `params` with a default so the strategy runs standalone and the sweep tool can vary them.
@@ -584,7 +658,14 @@ regime analysis, and walk-forward output. Custom `backtestCode` is blocked in
 normal backtests because custom runners can forge metrics; migrate strategies to
 the broker-based `Strategy(broker).on_bar(symbol, bar)` shape instead.
 
-**Units note:** `total_return`, `max_drawdown`, `ann_vol`, `win_rate` are emitted as **decimal fractions** (0.0–1.0+) — `0.22` means 22%, not 0.22%. The TUI multiplies by 100 for display. `profit_factor` and `ann_sharpe` are raw ratios. `low_sample: 1` means total_trades < 10 and the stats are not statistically meaningful — call this out to the user when present.
+**Units note:** `total_return`, `max_drawdown`, `ann_vol`, `win_rate` are emitted as **decimal fractions** (0.0–1.0+) — `0.22` means 22%, not 0.22%. The TUI multiplies by 100 for display. `profit_factor` and `ann_sharpe` are raw ratios.
+
+**Statistical significance metrics:**
+- `low_sample: 1` means total_trades fell below the dynamic threshold (`min_trades_threshold`, which is 1% of bar count, floored at 3, capped at 30). Flag it but do NOT treat low trade count as a failure — a 1h strategy over 90 days (~450 bars) producing 5 well-timed trades is legitimate.
+- `trade_tstat` — t-statistic on trade PnLs. Measures whether mean trade return is distinguishable from zero. |t| > 2.0 is meaningful, |t| > 2.6 is strong.
+- `trade_pvalue` — two-tailed p-value. p < 0.05 means the results are statistically significant at 95% confidence regardless of trade count. This is the metric that matters most — cite it when discussing whether a strategy has real edge vs noise.
+- When `low_sample: 1` BUT `trade_pvalue < 0.05`, tell the user: "Low trade count but statistically significant — the trades that fired were consistent enough to be meaningful."
+- When `low_sample: 0` BUT `trade_pvalue > 0.10`, tell the user: "Plenty of trades but high variance — the edge isn't consistent enough to distinguish from random."
 
 ### CRITICAL: Picking saveMode (every save MUST choose)
 
@@ -776,7 +857,28 @@ The validator tracks `self.broker.buy/sell(...)` calls directly.
 - **Cap size at capital.** `qty = min(qty, self.equity / price)`. Prevent silent
   leverage from wide stops or small `self.equity`.
 - **Floor qty for equities.** `if symbol in {"SPY", "USO", ...}: qty = math.floor(qty)`.
+- **⚠ HIGH-PRICED ASSET CHECK.** A high share price relative to capital can make `math.floor(qty) = 0` → **zero trades with zero obvious cause**. How small `qty` gets depends on your sizing pattern, so check the right thing:
+  - **Allocation sizing** (`qty ≈ equity * alloc_pct / price`): a high price directly shrinks `qty`. Verify `equity * alloc_pct / price ≥ 1`. SPY at ~$550 on $10k needs `alloc_pct ≥ 5.5%` to afford 1 share.
+  - **Risk-based sizing** (the templates' default: `qty = (equity * risk_pct) / stop_dist`, then cash-capped with `qty = min(qty, equity / price)`): whether `floor(qty) = 0` depends on the **stop distance**, not just `price/capital`. With a tight `stop_pct`, even a small `risk_pct` can clear 1 share; with a very small `risk_pct` it still floors to 0.
+  - If you get zero trades, print/inspect the computed `qty` BEFORE and AFTER the cash cap to see which constraint binds. FIX: adjust `risk_pct`/`alloc_pct`, widen the stop, raise capital, or use `qty = round(qty, 2)` for fractional shares where supported.
 - **RSI epsilon guard.** `avg_loss > 1e-10` instead of `avg_loss != 0`.
+
+### Futures strategies
+
+- Supported continuous roots: ES, NQ, RTY, YM, CL, GC, SI, HG, ZN, ZB, 6E.
+- Use `asset_class: "future"` when writing config unless the symbol is one of the supported roots and the resolver has already inferred it.
+- Size in explicit whole contracts with `qty`, never `notional`. The futures broker path rejects notional sizing.
+- Account for the contract multiplier in risk math. ES is $50 per index point, NQ is $20 per point, CL is 1,000 barrels, and 6E is 125,000 EUR.
+- Prefer `finny_algorithm_scaffold` with `template_type: "adx-trend"` (a trend-strength-filtered template that fits futures trend-following) as a clean starting point, then size in whole contracts and add the multiplier to risk math. There is no dedicated `futures-trend` template.
+- Commission is per-contract (typically $2.25/side for ES/NQ), NOT basis-points-on-notional.
+- Margin: `initial_margin_pct` and `maintenance_margin_pct` are set per-contract automatically. Override in config `execution` block if needed.
+
+**Building futures without IBKR connected:**
+When the user asks for a futures strategy and the active brokerage is NOT ibkr (e.g. Alpaca):
+- Do NOT fall back to an ETF proxy (SPY for ES, QQQ for NQ). That defeats futures mechanics entirely.
+- Save the strategy with the bare futures root as symbol (e.g. `"ES"`), `asset_class: "future"`, and pass `targetBrokerage: "ibkr"` to `finny_algorithm_save`.
+- The save will succeed with a soft warning. Backtesting works immediately via yfinance continuous contract data.
+- Tell the user: "Strategy saved and backtested. To deploy live, connect an IBKR account via Settings → Brokerages."
 
 ## Transaction Costs (CRITICAL)
 

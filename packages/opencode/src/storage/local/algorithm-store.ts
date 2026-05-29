@@ -24,6 +24,7 @@ interface AlgorithmRow {
   backtestCode?: string
   reasoning?: string
   brokerKind?: BrokerKind
+  targetBrokerage?: BrokerKind
   time_created: number
   time_updated: number
 }
@@ -35,6 +36,7 @@ interface AlgorithmMeta {
   language: string
   status: string
   brokerKind?: BrokerKind
+  targetBrokerage?: BrokerKind
   latestVersion: number
   time_created: number
   time_updated: number
@@ -197,6 +199,7 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
       backtestCode,
       reasoning,
       brokerKind: meta.brokerKind,
+      targetBrokerage: meta.targetBrokerage,
       time_created: meta.time_created,
       time_updated: meta.time_updated,
     }
@@ -221,6 +224,7 @@ export namespace LocalAlgorithmStore {
     prefs?: string
     decisions?: string
     brokerKind?: BrokerKind
+    targetBrokerage?: BrokerKind
     time_created: number
     time_updated: number
   }): Promise<AlgorithmRow> {
@@ -265,6 +269,7 @@ export namespace LocalAlgorithmStore {
             backtestCode: values.backtestCode,
             reasoning: values.reasoning,
             brokerKind: values.brokerKind,
+            targetBrokerage: values.targetBrokerage,
             time_created: values.time_created,
             time_updated: values.time_updated,
           }
@@ -322,6 +327,7 @@ export namespace LocalAlgorithmStore {
       language: values.language,
       status: values.status,
       brokerKind: values.brokerKind,
+      targetBrokerage: values.targetBrokerage,
       latestVersion: nextVersion,
       time_created: values.time_created,
       time_updated: values.time_updated,
@@ -350,6 +356,7 @@ export namespace LocalAlgorithmStore {
       backtestCode: values.backtestCode,
       reasoning: values.reasoning,
       brokerKind: values.brokerKind,
+      targetBrokerage: values.targetBrokerage,
       time_created: values.time_created,
       time_updated: values.time_updated,
     }

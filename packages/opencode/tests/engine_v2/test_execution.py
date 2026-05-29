@@ -281,6 +281,22 @@ def test_future_multiplier_affects_pnl_and_rejects_notional_intent():
     assert broker.book.trades[0].multiplier == 50
 
 
+def test_future_commission_per_contract_applies_to_fills():
+    ba = _bars((100, 101, 99, 100, 1_000_000), (100, 101, 99, 100, 1_000_000))
+    snap = MarketSnapshot({"X": ba})
+    spec = resolve_asset_spec({"symbol": "X", "asset_class": "future", "asset_spec": {"multiplier": 50, "tickSize": 0.25, "lotSize": 1}})
+    acct = Account.new(starting_cash=100_000.0, max_leverage=10.0, maintenance_margin_pct=0.0)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0, commission_per_contract=2.25)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m", asset_specs={"X": spec})
+    snap.set_index(0)
+    broker.submit_intent(side="buy", symbol="X", qty=2)
+    broker.process_bar(1)
+    assert len(broker.fills_log) == 1
+    assert broker.fills_log[0].fee == 4.5
+
+
 def test_asset_spec_rounds_qty_price_and_enables_spread_defaults():
     spec = resolve_asset_spec({"symbol": "BTC-USD", "asset_class": "crypto_perp", "execution": {"funding_rate_bps": 1, "maintenance_margin_pct": 0.05}})
     assert spec.productionEligible is True

@@ -101,6 +101,18 @@ class Broker:
         """
         return True
 
+    def greeks(self, symbol: str) -> Dict[str, Any]:
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0}
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        return None
+
+    def days_to_expiry(self, symbol: str) -> float:
+        return float("inf")
+
+    def option_chain(self, underlying: str, expiry: str = None):
+        return []
+
     @staticmethod
     def is_crypto(symbol: str) -> bool:
         u = symbol.upper()
@@ -1082,11 +1094,12 @@ class IBKRBroker(Broker):
         if existing is not None:
             return existing
         contract = self._contract(symbol)
-        # '' = default tick types (last/bid/ask/volume). snapshot=False keeps
-        # the subscription alive so subsequent reads are instant.
-        ticker = self._ib.reqMktData(contract, "", False, False)
-        # First request needs a moment for the initial tick to arrive.
-        self._ib.sleep(1.0)
+        # For options, request tick type 106 (option model computation) to get
+        # modelGreeks (delta, gamma, vega, theta, impliedVol, undPrice).
+        generic_ticks = "106" if self.is_option(symbol) else ""
+        ticker = self._ib.reqMktData(contract, generic_ticks, False, False)
+        # Options need longer for model computation to arrive.
+        self._ib.sleep(2.0 if self.is_option(symbol) else 1.0)
         self._tickers[norm] = ticker
         return ticker
 
@@ -1130,6 +1143,114 @@ class IBKRBroker(Broker):
         except Exception:
             return True
 
+    def greeks(self, symbol: str) -> Dict[str, Any]:
+        """Return live Greeks from IBKR's option model (tick type 106)."""
+        empty = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0, "underlying_price": 0.0}
+        if not self.is_option(symbol):
+            return empty
+        try:
+            ticker = self._ticker(symbol)
+            mg = getattr(ticker, "modelGreeks", None)
+            if mg is None:
+                return empty
+            return {
+                "delta": float(getattr(mg, "delta", 0.0) or 0.0),
+                "gamma": float(getattr(mg, "gamma", 0.0) or 0.0),
+                "theta": float(getattr(mg, "theta", 0.0) or 0.0),
+                "vega": float(getattr(mg, "vega", 0.0) or 0.0),
+                "iv": float(getattr(mg, "impliedVol", 0.0) or 0.0),
+                "underlying_price": float(getattr(mg, "undPrice", 0.0) or 0.0),
+            }
+        except Exception as e:
+            log_err(f"[IBKRBroker.greeks] {symbol}: {e}")
+            return empty
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        """Return the underlying price for an option from modelGreeks or direct lookup."""
+        if not self.is_option(symbol):
+            return None
+        g = self.greeks(symbol)
+        if g["underlying_price"] > 0:
+            return g["underlying_price"]
+        m = self._OPTION_RE.match(symbol.upper())
+        if m:
+            return self.price(m.group(1))
+        return None
+
+    def days_to_expiry(self, symbol: str) -> float:
+        """Return calendar days until option expiry."""
+        if not self.is_option(symbol):
+            return float("inf")
+        m = self._OPTION_RE.match(symbol.upper())
+        if not m:
+            return float("inf")
+        expiry_str = m.group(2)
+        exp_date = datetime(int(expiry_str[:4]), int(expiry_str[4:6]), int(expiry_str[6:8]), tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return max((exp_date - now).total_seconds() / 86400.0, 0.0)
+
+    def option_chain(self, underlying: str, expiry: str = None):
+        """Discover available option strikes and expirations for an underlying."""
+        try:
+            from ib_insync import Stock
+            contract = Stock(underlying.upper(), "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+            chains = self._ib.reqSecDefOptParams(underlying.upper(), "", "STK", contract.conId)
+            results = []
+            for chain in chains:
+                if chain.exchange != "SMART":
+                    continue
+                for exp in sorted(chain.expirations):
+                    if expiry is not None and exp != expiry:
+                        continue
+                    results.append({
+                        "expiry": exp,
+                        "strikes": sorted(float(s) for s in chain.strikes),
+                        "rights": ["C", "P"],
+                    })
+            return results
+        except Exception as e:
+            log_err(f"[IBKRBroker.option_chain] {underlying}: {e}")
+            return []
+
+    def _prev_option_positions(self):
+        """Track option positions for assignment detection."""
+        if not hasattr(self, "_option_pos_snapshot"):
+            self._option_pos_snapshot = {}
+        return self._option_pos_snapshot
+
+    def _assignment_check(self):
+        """Detect assignment/exercise events by comparing position snapshots."""
+        prev = self._prev_option_positions()
+        current = {}
+        for p in self._ib.positions(self._account):
+            sym = getattr(p.contract, "localSymbol", "") or str(p.contract.conId)
+            if hasattr(p.contract, "right") and p.contract.right in ("C", "P"):
+                current[sym] = float(p.position)
+        for sym, old_qty in prev.items():
+            new_qty = current.get(sym, 0.0)
+            if old_qty != 0.0 and new_qty == 0.0:
+                log_err(json.dumps({"event": "assignment", "symbol": sym, "qty_before": old_qty, "qty_after": 0.0}))
+        self._option_pos_snapshot = current
+
+    def _expiry_warning_check(self):
+        """Warn when held options are near expiry (DTE <= 3)."""
+        for p in self._ib.positions(self._account):
+            if not hasattr(p.contract, "right") or p.contract.right not in ("C", "P"):
+                continue
+            if float(p.position) == 0.0:
+                continue
+            exp_str = getattr(p.contract, "lastTradeDateOrContractMonth", "")
+            if len(exp_str) >= 8:
+                try:
+                    exp_date = datetime(int(exp_str[:4]), int(exp_str[4:6]), int(exp_str[6:8]), tzinfo=timezone.utc)
+                    dte = (exp_date - datetime.now(timezone.utc)).days
+                    if dte <= 3:
+                        sym = getattr(p.contract, "localSymbol", str(p.contract.conId))
+                        log_err(f"[EXPIRY_WARNING] {sym}: {dte} days to expiry, position={p.position}")
+                except Exception:
+                    pass
+
     def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
         """Return the most recent completed bar for symbol at interval.
 
@@ -1145,9 +1266,14 @@ class IBKRBroker(Broker):
         bar_size, duration = params
 
         contract = self._contract(symbol)
-        # PAXOS crypto bars stream on AGGTRADES; equities on TRADES. Anything
-        # else and IBKR returns an empty result.
-        what_to_show = "AGGTRADES" if self.is_crypto(symbol) else "TRADES"
+        # PAXOS crypto bars stream on AGGTRADES; options use MIDPOINT (sparse
+        # trade data); equities on TRADES.
+        if self.is_option(symbol):
+            what_to_show = "MIDPOINT"
+        elif self.is_crypto(symbol):
+            what_to_show = "AGGTRADES"
+        else:
+            what_to_show = "TRADES"
         # useRTH=False so after-hours equity bars also come through (live algos
         # may want to see the pre-/post-market action even if they don't
         # actually trade then).
@@ -1178,7 +1304,7 @@ class IBKRBroker(Broker):
             ts_iso = ts.isoformat()
         else:
             ts_iso = str(ts)
-        return {
+        bar = {
             "timestamp": ts_iso,
             "open": float(latest.open),
             "high": float(latest.high),
@@ -1186,6 +1312,16 @@ class IBKRBroker(Broker):
             "close": float(latest.close),
             "volume": float(latest.volume),
         }
+        if self.is_option(symbol):
+            g = self.greeks(symbol)
+            bar["underlying_close"] = float(g.get("underlying_price") or 0.0)
+            bar["iv"] = float(g.get("iv") or 0.0)
+            bar["delta"] = float(g.get("delta") or 0.0)
+            bar["gamma"] = float(g.get("gamma") or 0.0)
+            bar["theta"] = float(g.get("theta") or 0.0)
+            bar["vega"] = float(g.get("vega") or 0.0)
+            bar["dte"] = float(self.days_to_expiry(symbol))
+        return bar
 
     # --- account state ---
 

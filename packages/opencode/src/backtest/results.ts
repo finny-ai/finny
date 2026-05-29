@@ -112,6 +112,8 @@ export namespace EngineV2 {
     mfe_max: number
     kelly_fraction: number
     kelly_confidence: "low" | "medium" | "high"
+    trade_tstat: number | null
+    trade_pvalue: number | null
   }
 
   export interface ExposureMetrics {
@@ -214,6 +216,7 @@ export namespace EngineV2 {
     participation_pct: number
     maker_fee_bps: number
     taker_fee_bps: number
+    commission_per_contract?: number
     slippage_bps: number
     k_atr: number
     k_vol: number
@@ -245,6 +248,9 @@ export namespace EngineV2 {
     marginModel: string
     dataProvider: string
     productionEligible: boolean
+    initialMarginPct?: number | null
+    maintenanceMarginPct?: number | null
+    commissionPerContract?: number | null
     venue?: string | null
     expiry?: string | null
     rollPolicy?: string | null

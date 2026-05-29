@@ -1,6 +1,7 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { Selection } from "@tui/util/selection"
+import { formatTranscript } from "@tui/util/transcript"
 import { createCliRenderer, MouseButton, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
@@ -1006,6 +1007,53 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         const current = kv.get("diff_wrap_mode", "word")
         kv.set("diff_wrap_mode", current === "word" ? "none" : "word")
         dialog.clear()
+      },
+    },
+    {
+      title: "Copy session transcript",
+      value: "session.copy",
+      category: "Session",
+      slash: {
+        name: "copy",
+        aliases: ["transcript"],
+      },
+      description: "Copy the full session (prompts, thinking, tools, results) as markdown to clipboard",
+      onSelect: async (dialog) => {
+        dialog.clear()
+        if (route.data.type !== "session") {
+          toast.show({ variant: "warning", message: "No active session to copy" })
+          return
+        }
+        const sessionID = route.data.sessionID
+        const session = sync.session.get(sessionID)
+        if (!session) {
+          toast.show({ variant: "warning", message: "Session not found" })
+          return
+        }
+        const messages = sync.data.message[sessionID] ?? []
+        if (messages.length === 0) {
+          toast.show({ variant: "warning", message: "Session has no messages" })
+          return
+        }
+        const transcript = formatTranscript(
+          {
+            id: session.id,
+            title: session.title ?? "Untitled",
+            time: session.time,
+          },
+          messages.map((msg) => ({
+            info: msg,
+            parts: sync.data.part[msg.id] ?? [],
+          })),
+          {
+            thinking: true,
+            toolDetails: true,
+            assistantMetadata: true,
+            providers: sync.data.provider,
+          },
+        )
+        await Clipboard.copy(transcript)
+        toast.show({ variant: "success", message: `Copied ${messages.length} messages to clipboard` })
       },
     },
   ])
