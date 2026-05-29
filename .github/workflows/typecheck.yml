@@ -9,7 +9,7 @@ on:
 
 jobs:
   typecheck:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -19,3 +19,24 @@ jobs:
 
       - name: Run typecheck
         run: bun typecheck
+
+  cli-publish-build:
+    name: cli publish build smoke
+    runs-on: ubuntu-latest
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      MODELS_DEV_API_JSON: ${{ github.workspace }}/packages/opencode/test/tool/fixtures/models-api.json
+      OPENCODE_VERSION: 0.0.0-pr-${{ github.run_id }}
+      OPENCODE_CHANNEL: pr
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Install cross-platform native deps
+        run: bun install --os="*" --cpu="*"
+
+      - name: Build CLI package
+        run: ./packages/opencode/script/build.ts --single --skip-install --skip-embed-web-ui
