@@ -1095,6 +1095,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  event.on("installation.updated", async (evt) => {
+    const version = evt.properties.version
+    await DialogAlert.show(
+      dialog,
+      "Update Complete",
+      `Finny has been updated to v${version}. Please restart to use the new version.`,
+    )
+    exit()
+  })
+
   event.on("installation.update-available", async (evt) => {
     const version = evt.properties.version
 
@@ -1136,7 +1146,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     await DialogAlert.show(
       dialog,
       "Update Complete",
-      `Successfully updated to OpenCode v${result.data.version}. Please restart the application.`,
+      `Finny has been updated to v${result.data.version}. Please restart to use the new version.`,
     )
 
     exit()
