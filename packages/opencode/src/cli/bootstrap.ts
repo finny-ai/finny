@@ -2,13 +2,16 @@ import { InstanceBootstrap } from "../project/bootstrap"
 import { Instance } from "../project/instance"
 import { Analytics } from "../analytics/tracker"
 
-// Telemetry is enabled by default; users can disable with FINNY_TELEMETRY=0
-// (or OPENCODE_TELEMETRY=0). The env opt-out is also enforced inside the
-// tracker module itself so non-bootstrap entrypoints (TUI worker, etc.)
-// honor it without needing this call.
+function telemetryEnabled() {
+  const finny = process.env["FINNY_TELEMETRY"]?.toLowerCase()
+  const opencode = process.env["OPENCODE_TELEMETRY"]?.toLowerCase()
+  return finny === "1" || finny === "true" || opencode === "1" || opencode === "true"
+}
+
+// Telemetry is disabled by default; users can opt in with FINNY_TELEMETRY=1
+// (or OPENCODE_TELEMETRY=1). FINNY_TELEMETRY=0 remains a hard kill switch.
 Analytics.configure({
-  analytics:
-    process.env["FINNY_TELEMETRY"] === "0" || process.env["OPENCODE_TELEMETRY"] === "0" ? "disabled" : "enabled",
+  analytics: telemetryEnabled() ? "enabled" : "disabled",
 })
 
 export async function bootstrap<T>(directory: string, cb: () => Promise<T>) {
