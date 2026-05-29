@@ -5,20 +5,39 @@ import { DeviceProfile } from "../device"
 
 const log = Log.create({ service: "analytics" })
 
-// Read opt-out at module load so every importer (TUI worker, server, CLI)
-// honors FINNY_TELEMETRY=0 without needing to call configure() first.
+// Read telemetry env at module load so every importer (TUI worker, server,
+// CLI) defaults to private/off unless the user explicitly opts in.
 function envDisabled() {
-  return process.env["FINNY_TELEMETRY"] === "0" || process.env["OPENCODE_TELEMETRY"] === "0"
+  const finny = process.env["FINNY_TELEMETRY"]?.toLowerCase()
+  const opencode = process.env["OPENCODE_TELEMETRY"]?.toLowerCase()
+  return (
+    finny === "0" ||
+    finny === "false" ||
+    opencode === "0" ||
+    opencode === "false"
+  )
 }
-let enabled = !envDisabled()
+
+function envEnabled() {
+  const finny = process.env["FINNY_TELEMETRY"]?.toLowerCase()
+  const opencode = process.env["OPENCODE_TELEMETRY"]?.toLowerCase()
+  return (
+    finny === "1" ||
+    finny === "true" ||
+    opencode === "1" ||
+    opencode === "true"
+  )
+}
+
+let enabled = envEnabled() && !envDisabled()
 const debug = process.env["FINNY_TELEMETRY_DEBUG"] === "1"
 const inFlight = new Set<Promise<unknown>>()
 let drainScheduled = false
 
 export namespace Analytics {
   export function configure(config: { analytics?: "enabled" | "disabled" }) {
-    // Explicit disable wins; explicit enable still respects env opt-out so the
-    // env var remains a hard kill switch.
+    // Explicit disable wins; explicit enable still respects env disable so
+    // FINNY_TELEMETRY=0 remains a hard kill switch.
     if (config.analytics === "disabled") enabled = false
     else if (!envDisabled()) enabled = true
   }

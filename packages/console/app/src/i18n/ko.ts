@@ -175,12 +175,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "모델",
   "home.faq.a7.p2.and": "및",
   "home.faq.a7.p2.shareLink": "공유 페이지",
-  "home.faq.q8": "OpenCode는 오픈 소스인가요?",
-  "home.faq.a8.p1": "네, OpenCode는 완전히 오픈 소스입니다. 소스 코드는",
-  "home.faq.a8.p2": "에 공개되어 있으며,",
-  "home.faq.a8.mitLicense": "MIT 라이선스",
+  "home.faq.q8": "Is Finny open source?",
+  "home.faq.a8.p1": "Finny source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
   "home.faq.a8.p3":
-    "를 따릅니다. 즉, 누구나 사용, 수정 또는 개발에 기여할 수 있습니다. 커뮤니티의 누구든지 이슈를 등록하고, 풀 리퀘스트를 제출하고, 기능을 확장할 수 있습니다.",
+    ", which permits noncommercial use. Commercial or enterprise use, resale, hosted offerings, bundling, or commercial forks require prior written approval from Finny and a separate commercial license agreement.",
 
   "home.zenCta.title": "코딩 에이전트를 위한 신뢰할 수 있고 최적화된 모델",
   "home.zenCta.body":
