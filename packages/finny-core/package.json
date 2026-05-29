@@ -18,7 +18,7 @@
     "@finny-ai/integrations": "workspace:*",
     "@finny-ai/registry": "workspace:*",
     "@opencode-ai/plugin": "workspace:*",
-    "yaml": "catalog:",
+    "yaml": "2.6.1",
     "zod": "catalog:"
   },
   "devDependencies": {
