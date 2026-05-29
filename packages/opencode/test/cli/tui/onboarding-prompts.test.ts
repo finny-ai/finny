@@ -5,7 +5,7 @@ import {
 } from "../../../src/cli/cmd/tui/component/dialog-onboarding-choose-path"
 
 // The two prompt constants are the visible first message of a real model
-// session — see `app.tsx` onboarding-v2 orchestration. If either one is
+// session — see `app.tsx` first-launch onboarding orchestration. If either one is
 // emptied or made identical to the other, the welcome session becomes
 // confusing (or, for empty, never gets submitted). This guards both.
 
