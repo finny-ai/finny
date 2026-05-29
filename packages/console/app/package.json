@@ -2,7 +2,7 @@
   "name": "@opencode-ai/console-app",
   "version": "1.4.3",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "dev": "vite dev --host 0.0.0.0",

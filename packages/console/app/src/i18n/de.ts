@@ -178,12 +178,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "unsere Modelle",
   "home.faq.a7.p2.and": "und",
   "home.faq.a7.p2.shareLink": "Share-Pages",
-  "home.faq.q8": "Ist OpenCode Open Source?",
-  "home.faq.a8.p1": "Ja, OpenCode ist vollständig Open Source. Der Quellcode ist öffentlich auf",
-  "home.faq.a8.p2": "unter der",
-  "home.faq.a8.mitLicense": "MIT Lizenz",
+  "home.faq.q8": "Is Finny open source?",
+  "home.faq.a8.p1": "Finny source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
   "home.faq.a8.p3":
-    ", was bedeutet, dass jeder ihn nutzen, modifizieren oder zu seiner Entwicklung beitragen kann. Jeder aus der Community kann Issues melden, Pull Requests einreichen und die Funktionalität erweitern.",
+    ", which permits noncommercial use. Commercial or enterprise use, resale, hosted offerings, bundling, or commercial forks require prior written approval from Finny and a separate commercial license agreement.",
 
   "home.zenCta.title": "Zugriff auf zuverlässige, optimierte Modelle für Coding-Agents",
   "home.zenCta.body":

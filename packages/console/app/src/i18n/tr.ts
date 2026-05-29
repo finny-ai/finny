@@ -176,12 +176,12 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "modellerimiz",
   "home.faq.a7.p2.and": "ve",
   "home.faq.a7.p2.shareLink": "paylaşım sayfaları",
-  "home.faq.q8": "OpenCode açık kaynak mı?",
-  "home.faq.a8.p1": "Evet, OpenCode tamamen açık kaynaktır. Kaynak kodu",
-  "home.faq.a8.p2": "'da",
-  "home.faq.a8.mitLicense": "MIT Lisansı",
+  "home.faq.q8": "Is Finny open source?",
+  "home.faq.a8.p1": "Finny source code is public on",
+  "home.faq.a8.p2": "under the",
+  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
   "home.faq.a8.p3":
-    "altında herkese açıktır, yani herkes kullanabilir, değiştirebilir veya geliştirmeye katkıda bulunabilir. Topluluktan herkes issue açabilir, pull request gönderebilir ve işlevselliği genişletebilir.",
+    ", which permits noncommercial use. Commercial or enterprise use, resale, hosted offerings, bundling, or commercial forks require prior written approval from Finny and a separate commercial license agreement.",
 
   "home.zenCta.title": "Kodlama ajanları için güvenilir, optimize modeller",
   "home.zenCta.body":
