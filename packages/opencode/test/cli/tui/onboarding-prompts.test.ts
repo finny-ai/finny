@@ -8,6 +8,10 @@ import {
 // session — see `app.tsx` first-launch onboarding orchestration. If either one is
 // emptied or made identical to the other, the welcome session becomes
 // confusing (or, for empty, never gets submitted). This guards both.
+//
+// Manual QA — reset first-launch KV (no in-app slash command):
+//   rm -f ~/.local/state/finny/kv.json
+// Then restart the TUI (`bun run dev` from packages/opencode).
 
 test("trader and beginner prompts are non-empty", () => {
   expect(ONBOARDING_TRADER_PROMPT.trim().length).toBeGreaterThan(0)
