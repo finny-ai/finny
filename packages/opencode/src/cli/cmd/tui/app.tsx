@@ -39,8 +39,7 @@ import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
 import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
-import { DialogExperienceLevel } from "@tui/component/dialog-experience-level"
-import { DialogBeginnerWelcome } from "@tui/component/dialog-beginner-welcome"
+import { DialogOnboardingChoosePath } from "@tui/component/dialog-onboarding-choose-path"
 import { Analytics } from "@/analytics/tracker"
 import { Classify } from "@/analytics/classify"
 import { KeybindProvider, useKeybind } from "@tui/context/keybind"
@@ -493,75 +492,63 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
-  createEffect(
-    on(
-      () => sync.status === "complete" && sync.data.provider.length === 0,
-      (isEmpty, wasEmpty) => {
-        // only trigger when we transition into an empty-provider state
-        if (!isEmpty || wasEmpty) return
-        dialog.replace(() => <DialogProviderList />)
-      },
-    ),
-  )
+  // First TUI launch — runs once per install (KV: onboarding_v2_status).
+  // Grandfathered users with experience_level_status from the old flow skip.
+  // Sequence: email (required submit) → choose path → welcome session on a free
+  // OpenCode model. Provider setup stays in the Home prompt capsules.
+  let firstLaunchOnboardingStarted = false
 
-  // First-launch email capture — fires once after sync completes, KV has
-  // finished loading, at least one provider is configured, and no other
-  // dialog is open. Honor telemetry opt-in: if telemetry is not enabled we
-  // don't prompt (the email POST goes to the same Convex deployment as
-  // analytics).
+  function ensureWelcomeFreeModel() {
+    const ordered = [
+      sync.data.provider.find((x) => x.id === "opencode"),
+      ...sync.data.provider.filter((x) => x.id !== "opencode"),
+    ].filter((x): x is NonNullable<typeof x> => !!x)
+
+    for (const provider of ordered) {
+      const free = Object.values(provider.models).find(
+        (m) => (m.cost?.input ?? 1) === 0 && !m.id.includes("-nano"),
+      )
+      if (!free) continue
+      local.model.set({ providerID: provider.id, modelID: free.id }, { recent: true })
+      return
+    }
+  }
+
+  async function runFirstLaunchOnboarding() {
+    while (!kv.get("email_capture_status")) {
+      await DialogEmailCapture.show(dialog, undefined, { allowSkip: false })
+    }
+
+    const path = await DialogOnboardingChoosePath.show(dialog)
+    if (path.type === "dismissed") {
+      kv.set("onboarding_v2_status", "skipped")
+      return
+    }
+
+    if (sync.data.agent.some((a) => a.name === "chat")) {
+      local.agent.set("chat")
+    }
+    ensureWelcomeFreeModel()
+    kv.set("onboarding_v2_status", "completed")
+    kv.set("experience_level_status", path.level)
+    dialog.clear()
+    route.navigate({
+      type: "home",
+      initialPrompt: { input: path.prompt, parts: [] },
+      autoSubmit: true,
+    })
+  }
+
   createEffect(
     on(
-      () =>
-        sync.status === "complete" &&
-        kv.ready &&
-        sync.data.provider.length > 0 &&
-        dialog.stack.length === 0 &&
-        Analytics.isEnabled(),
+      () => sync.status === "complete" && kv.ready && dialog.stack.length === 0,
       (ready) => {
         if (!ready) return
-        if (kv.get("email_capture_status")) return
-        // The dismiss callback runs whenever the dialog goes away — including
-        // when the dialog is replaced by another one or cleared after a
-        // successful submit. Only mark "skipped" if no terminal status has
-        // been set in the meantime, otherwise we'd overwrite "submitted".
-        DialogEmailCapture.show(dialog, () => {
-          if (!kv.get("email_capture_status")) {
-            kv.set("email_capture_status", "skipped")
-          }
-        })
-      },
-    ),
-  )
-
-  // First-launch experience-level prompt — independent of email capture so
-  // users who opt out of telemetry still get onboarded. Fires once after
-  // sync completes, KV is ready, a provider is configured, and no other
-  // dialog is open. The KV gate ensures we never re-prompt.
-  createEffect(
-    on(
-      () =>
-        sync.status === "complete" &&
-        kv.ready &&
-        sync.data.provider.length > 0 &&
-        dialog.stack.length === 0,
-      (ready) => {
-        if (!ready) return
+        if (kv.get("onboarding_v2_status")) return
         if (kv.get("experience_level_status")) return
-        DialogExperienceLevel.show(
-          dialog,
-          (level) => {
-            kv.set("experience_level_status", level)
-          },
-          () => {
-            if (!kv.get("experience_level_status")) {
-              kv.set("experience_level_status", "skipped")
-            }
-          },
-        ).then((level) => {
-          if (level === "beginner") {
-            DialogBeginnerWelcome.show(dialog)
-          }
-        })
+        if (firstLaunchOnboardingStarted) return
+        firstLaunchOnboardingStarted = true
+        void runFirstLaunchOnboarding()
       },
     ),
   )
@@ -828,15 +815,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "subscribe",
       },
       category: "System",
-      // Hide unless telemetry is enabled; the email POST hits the same Convex
-      // deployment as analytics, so the opt-in covers both.
-      hidden: !Analytics.isEnabled(),
       onSelect: () => {
-        if (!Analytics.isEnabled()) {
-          toast.show({ variant: "info", message: "Telemetry is disabled (set FINNY_TELEMETRY=1 to enable)", duration: 3000 })
-          return
-        }
-        DialogEmailCapture.show(dialog)
+        DialogEmailCapture.show(dialog, () => {
+          if (!kv.get("email_capture_status")) {
+            kv.set("email_capture_status", "skipped")
+          }
+        })
       },
     },
     {
