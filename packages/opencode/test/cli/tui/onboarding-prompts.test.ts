@@ -9,9 +9,8 @@ import {
 // emptied or made identical to the other, the welcome session becomes
 // confusing (or, for empty, never gets submitted). This guards both.
 //
-// Manual QA — reset first-launch KV (no in-app slash command):
-//   rm -f ~/.local/state/finny/kv.json
-// Then restart the TUI (`bun run dev` from packages/opencode).
+// Manual QA — reset first-launch KV (no in-app slash command), then restart TUI:
+//   rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/finny/kv.json"
 
 test("trader and beginner prompts are non-empty", () => {
   expect(ONBOARDING_TRADER_PROMPT.trim().length).toBeGreaterThan(0)

@@ -41,13 +41,16 @@ bun test test/cli/tui/onboarding-prompts.test.ts
 bun run typecheck
 ```
 
-**Reset first-launch state for manual QA** (no slash command — delete the KV file and restart the TUI):
+**Reset first-launch state for manual QA** (no slash command):
 
 ```bash
-rm -f ~/.local/state/finny/kv.json
+# Default path (XDG state dir + finny/kv.json). Override with XDG_STATE_HOME if set.
+rm -f "${XDG_STATE_HOME:-$HOME/.local/state}/finny/kv.json"
 ```
 
-On Linux the file lives under `~/.local/state/finny/kv.json` (`Global.Path.state` + `finny`).
+Then **fully quit and restart** the TUI (`finny` or `bun run dev` from `packages/opencode`). Deleting the file while the app is running does nothing until restart.
+
+If you never see onboarding after that, check you are not grandfathered (`onboarding_v2_status` / `experience_level_status` already set) — inspect the file or delete the whole `finny` state dir under the same parent path.
 
 ### Screenshots / recordings
 
