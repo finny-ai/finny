@@ -224,6 +224,16 @@ class RegimeBreakdown:
 
 
 @dataclass
+class OutlierDetail:
+    timestamp: str
+    previous_close: float
+    current_close: float
+    log_return: float
+    z_score: float
+    provider: str = "unknown"
+
+
+@dataclass
 class DataQualityReport:
     n_bars: int
     coverage_pct: float
@@ -233,6 +243,9 @@ class DataQualityReport:
     outlier_bars: int
     zero_volume_bars: int
     notes: List[str]
+    outlier_details: List[OutlierDetail] = field(default_factory=list)
+    repaired_outliers: int = 0
+    repair_applied: bool = False
 
 
 @dataclass

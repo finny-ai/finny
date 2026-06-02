@@ -19,6 +19,7 @@ import pandas as pd
 
 from .cache import CacheConfig, load_range
 from ..assets import normalize_asset_class
+from .providers.alpaca import AlpacaProvider
 from .providers.binance import BinanceProvider
 from .providers.synthetic_options import SyntheticOptionsProvider
 from .providers.yfinance import YFinanceProvider
@@ -213,9 +214,11 @@ def extract(
     best_provider: Optional[str] = None
 
     if asset_class == "option":
-        providers = [SyntheticOptionsProvider()]
+        providers = [AlpacaProvider(), SyntheticOptionsProvider()]
     elif asset_class in {"crypto_spot", "crypto_perp"}:
         providers = [BinanceProvider(), YFinanceProvider()]
+    elif asset_class == "equity":
+        providers = [AlpacaProvider(), YFinanceProvider()]
     else:
         providers = [YFinanceProvider()]
 

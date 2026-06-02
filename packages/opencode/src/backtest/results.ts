@@ -171,8 +171,8 @@ export namespace EngineV2 {
     train_end: string
     test_start: string
     test_end: string
-    is_sharpe: number
-    oos_sharpe: number
+    is_sharpe: number | null
+    oos_sharpe: number | null
     is_return: number
     oos_return: number
   }
@@ -184,8 +184,8 @@ export namespace EngineV2 {
     oos_decay: number
     flag_threshold: number
     flagged: boolean
-    deflated_sharpe: number
-    probabilistic_sharpe: number
+    deflated_sharpe: number | null
+    probabilistic_sharpe: number | null
     folds: WalkForwardFold[]
   }
 
@@ -209,6 +209,16 @@ export namespace EngineV2 {
     outlier_bars: number
     zero_volume_bars: number
     notes: string[]
+    outlier_details?: Array<{
+      timestamp: string
+      previous_close: number
+      current_close: number
+      log_return: number
+      z_score: number
+      provider?: string
+    }>
+    repaired_outliers?: number
+    repair_applied?: boolean
   }
 
   export interface ExecutionConfig {

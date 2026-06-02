@@ -13,6 +13,8 @@ import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
 import { Global } from "@/global"
 import { resolveAssetSpec } from "./asset-spec"
+import { BrokerRegistry } from "@/live/brokers"
+import { evaluateBacktestQuality } from "./evaluation"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -35,6 +37,7 @@ export namespace BacktestRunner {
     // interval, dates) so identical runs are reproducible by default.
     seed?: number
     engineMode?: "strict_v2" | "legacy_unsafe"
+    dataQualityMode?: "strict" | "repair_outliers"
     robustness?: {
       monteCarloPaths?: number
       regimes?: boolean
@@ -131,6 +134,7 @@ export namespace BacktestRunner {
     | "unknown_symbol"
     | "empty_window"
     | "network"
+    | "auth"
     | "python_env"
     | "config_invalid"
     | "validation_failed"
@@ -186,9 +190,16 @@ export namespace BacktestRunner {
 
   const PRODUCT_ALLOW_LEGACY_ENV = "FINNY_ALLOW_LEGACY_BACKTEST"
 
-  function toYfinanceSymbol(symbol: string): string {
-    // "ETH/USD" → "ETH-USD"
-    return symbol.replace("/", "-")
+  async function alpacaDataEnv(): Promise<Record<string, string>> {
+    const accounts = await BrokerRegistry.listAccounts("alpaca")
+    if (accounts.length === 0) return {}
+    const creds = await BrokerRegistry.readCredentials(accounts[0]!.providerID)
+    if (!creds) return {}
+    return {
+      ALPACA_API_KEY_ID: creds.keyId,
+      ALPACA_API_SECRET_KEY: creds.secret,
+      ALPACA_DATA_FEED: process.env.ALPACA_DATA_FEED || "iex",
+    }
   }
 
   // Parse a duration token of the form `<int><unit>` where unit is one of
@@ -232,37 +243,64 @@ export namespace BacktestRunner {
     }
   }
 
-  function makeFetchDataScript(symbol: string, start: string, end: string, interval: string, csvPath: string): string {
+  function makeFetchDataScript(
+    symbol: string,
+    assetClass: string,
+    start: string,
+    end: string,
+    interval: string,
+    csvPath: string,
+  ): string {
     // Sentinels parsed by classifyFetchError() — keep prefix and field order stable.
     return `
 import sys
 
+sys.path.insert(0, ".")
+
 try:
-    import yfinance as yf
-except ImportError as e:
-    print(f"__FINNY_FETCH_ERROR__: python_env: yfinance import failed: {e}", file=sys.stderr)
+    from engine_v2.data.providers.alpaca import AlpacaProvider
+    from engine_v2.data.providers.binance import BinanceProvider
+    from engine_v2.data.providers.synthetic_options import SyntheticOptionsProvider
+    from engine_v2.data.providers.yfinance import YFinanceProvider
+except Exception as e:
+    print(f"__FINNY_FETCH_ERROR__: python_env: provider import failed: {e}", file=sys.stderr)
     sys.exit(2)
 
-ticker = yf.Ticker("${symbol}")
-try:
-    df = ticker.history(start="${start}", end="${end}", interval="${interval}")
-except Exception as e:
-    msg = str(e).lower()
-    if "404" in msg or "delisted" in msg or "not found" in msg:
-        print(f"__FINNY_FETCH_ERROR__: unknown_symbol: ${symbol}: {e}", file=sys.stderr)
-        sys.exit(3)
-    if "timeout" in msg or "connection" in msg or "network" in msg or "max retries" in msg:
-        print(f"__FINNY_FETCH_ERROR__: network: ${symbol}: {e}", file=sys.stderr)
-        sys.exit(4)
-    # Unknown exception class -- emit "internal" instead of misclassifying
-    # as network. classifyFetchError on the TS side maps the kind into the
-    # user-visible message; "network" implied a connectivity issue we do
-    # not actually know about.
-    print(f"__FINNY_FETCH_ERROR__: internal: ${symbol}: {e}", file=sys.stderr)
-    sys.exit(6)
+symbol = ${JSON.stringify(symbol)}
+asset_class = ${JSON.stringify(assetClass)}
+start = ${JSON.stringify(start)}
+end = ${JSON.stringify(end)}
+interval = ${JSON.stringify(interval)}
 
-if df.empty:
-    print(f"__FINNY_FETCH_ERROR__: empty_window: ${symbol}: no bars between ${start} and ${end} at ${interval}", file=sys.stderr)
+if asset_class == "equity":
+    providers = [AlpacaProvider(), YFinanceProvider()]
+elif asset_class == "option":
+    providers = [AlpacaProvider(), SyntheticOptionsProvider()]
+elif asset_class in ("crypto_spot", "crypto_perp"):
+    providers = [BinanceProvider(), YFinanceProvider()]
+else:
+    providers = [YFinanceProvider()]
+
+df = None
+provider_used = "unknown"
+errors = []
+for provider in providers:
+    try:
+        if not provider.supports_interval(interval):
+            errors.append(f"{provider.name}: unsupported interval {interval}")
+            continue
+        candidate = provider.fetch(symbol, start, end, interval)
+        if candidate is not None and not candidate.empty:
+            df = candidate
+            provider_used = provider.name
+            print(f"Downloaded {len(candidate)} rows from {provider.name}")
+            break
+        errors.append(f"{provider.name}: empty result")
+    except Exception as e:
+        errors.append(f"{provider.name}: {e}")
+
+if df is None or df.empty:
+    print(f"__FINNY_FETCH_ERROR__: empty_window: {symbol}: no bars between {start} and {end} at {interval}. Tried: {'; '.join(errors)}", file=sys.stderr)
     sys.exit(5)
 
 df = df.reset_index()
@@ -297,7 +335,8 @@ if missing:
     sys.exit(1)
 
 df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv("${csvPath}", index=False)
-print(f"Downloaded {len(df)} rows")
+with open("_data_provider.txt", "w") as f:
+    f.write(provider_used)
 `
   }
 
@@ -1231,22 +1270,10 @@ if __name__ == "__main__":
     if (spec?.assetClass === "option" || spec?.productionEligible === false) return "backtested"
     const exec = results.v2?.execution_config as any
     if (spec?.assetClass === "crypto_perp" && (!exec?.funding_enabled || !exec?.liquidation_enabled)) return "backtested"
-    if (results.totalTrades <= 0) return "backtested"
-    const rejected = results.diagnostics?.rejectedOrders ?? 0
-    const mc = results.v2?.monte_carlo
-    const wf = results.v2?.walk_forward
-    const mcOk = !mc || (Number(mc.sharpe_p5 ?? -Infinity) > -1 && Math.abs(Number(mc.max_dd_p95 ?? -1)) < 0.75)
-    const wfOk = !wf || Number(wf.oos_sharpe_mean ?? -Infinity) > -1
-    if (
-      results.sharpeRatio > 0 &&
-      results.maxDrawdown < 0.5 &&
-      rejected <= Math.max(5, results.totalTrades * 2) &&
-      mcOk &&
-      wfOk
-    ) {
-      return "paper_eligible"
-    }
-    return "robustness_passed"
+    const quality = evaluateBacktestQuality(results)
+    if (quality.label === "paper_eligible") return "paper_eligible"
+    if (quality.label === "candidate") return "robustness_passed"
+    return "backtested"
   }
 
   async function copyIfExists(src: string, dst: string): Promise<boolean> {
@@ -1355,6 +1382,7 @@ if __name__ == "__main__":
       configOverrides,
       seed,
       engineMode = "strict_v2",
+      dataQualityMode = "strict",
       robustness = {},
     } = params
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
@@ -1405,6 +1433,13 @@ if __name__ == "__main__":
       }
     }
     applyConfigOverrides(effectiveConfig, configOverrides)
+    if (!effectiveConfig.symbol || typeof effectiveConfig.symbol !== "string" || effectiveConfig.symbol.trim() === "") {
+      return {
+        ok: false,
+        error: "Missing symbol. Set params or save config with symbol before backtest.",
+        kind: "config_invalid",
+      }
+    }
     if (effectiveConfig.symbol) {
       try {
         effectiveConfig.symbol = normalizeSymbol(String(effectiveConfig.symbol))
@@ -1486,8 +1521,9 @@ if __name__ == "__main__":
       const computed = computeDateRange(duration)
       const start = startDate ?? computed.start
       const end = endDate ?? computed.end
-      const symbol = toYfinanceSymbol(config.symbol ?? "ETH/USD")
-      const yfinanceInterval = INTERVAL_MAP[interval] ?? "1h"
+      const symbol = String(config.symbol)
+      const assetClass = String(config.asset_class ?? config.assetClass ?? assetSpec.assetClass)
+      const providerInterval = INTERVAL_MAP[interval] ?? "1h"
       const csvPath = "ohlcv.csv"
       const effectiveSeed = seed ?? hashSeed(
         algorithm.algorithmId,
@@ -1502,16 +1538,17 @@ if __name__ == "__main__":
       )
 
       // Write and run fetch data script
-      const fetchScript = makeFetchDataScript(symbol, start, end, yfinanceInterval, csvPath)
+      const fetchScript = makeFetchDataScript(symbol, assetClass, start, end, providerInterval, csvPath)
       await fs.writeFile(path.join(tmpDir, "_fetch_data.py"), fetchScript)
 
-      // Use the managed venv. yfinance is installed once, lazily, on first use.
+      // Use the managed venv. Data-provider packages are installed once, lazily, on first use.
       let pythonCmd: string
       try {
         const env = await ensurePythonEnv([
           { spec: "numpy", importCheck: "numpy" },
           { spec: "pandas", importCheck: "pandas" },
           { spec: "yfinance", importCheck: "yfinance" },
+          { spec: "requests", importCheck: "requests" },
           { spec: "scipy", importCheck: "scipy" },
           { spec: "pyarrow", importCheck: "pyarrow" },
         ])
@@ -1524,11 +1561,13 @@ if __name__ == "__main__":
         }
       }
 
-      // Fetch market data — wall-clock cap so a stalled yfinance pull can't
+      // Fetch market data — wall-clock cap so a stalled provider pull can't
       // hang the tool executor indefinitely. 2 minutes is generous for a
       // single fetch; healthy ones complete in under 5 seconds.
+      const dataEnv = await alpacaDataEnv()
       const fetchResult = await Process.run([pythonCmd, "_fetch_data.py"], {
         cwd: tmpDir,
+        env: dataEnv,
         nothrow: true,
         timeout: 120_000,
       })
@@ -1541,9 +1580,11 @@ if __name__ == "__main__":
             ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
               `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
             : kind === "empty_window"
-              ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${yfinanceInterval}. Try a wider duration or a coarser interval.`
+              ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
               : kind === "network"
                 ? `Backtest failed (network): could not reach the market data provider. ${detail}`
+                : kind === "auth"
+                  ? `Backtest failed (auth): Alpaca credentials/feed access were rejected. ${detail}`
                 : kind === "python_env"
                   ? `Backtest failed (python_env): ${detail}`
                   : `Backtest failed: ${detail || "unknown error"}`
@@ -1553,6 +1594,15 @@ if __name__ == "__main__":
           kind,
           suggestions: kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
         }
+      }
+
+      const providerUsed = (await fs.readFile(path.join(tmpDir, "_data_provider.txt"), "utf8").catch(() => "")).trim()
+      if (providerUsed) {
+        config.data_provider = providerUsed
+        if (config.asset_spec && typeof config.asset_spec === "object") {
+          config.asset_spec.dataProvider = providerUsed
+        }
+        await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(config, null, 2))
       }
 
       const childEnv = { FINNY_SEED: String(effectiveSeed) }
@@ -1577,6 +1627,8 @@ if __name__ == "__main__":
           String(effectiveSeed),
           "--mc-paths",
           String(robustness.monteCarloPaths ?? 500),
+          "--data-quality-mode",
+          dataQualityMode,
         ]
         if (robustness.regimes ?? true) engineArgs.push("--regimes")
         if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {

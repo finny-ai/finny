@@ -221,6 +221,19 @@ def assemble(
             gap_count=data_quality.gap_count, duplicate_ts_count=data_quality.duplicate_ts_count,
             ohlc_violations=data_quality.ohlc_violations, outlier_bars=data_quality.outlier_bars,
             zero_volume_bars=data_quality.zero_volume_bars, notes=data_quality.notes,
+            outlier_details=[
+                S.OutlierDetail(
+                    timestamp=d.timestamp,
+                    previous_close=d.previous_close,
+                    current_close=d.current_close,
+                    log_return=d.log_return,
+                    z_score=d.z_score,
+                    provider=d.provider,
+                )
+                for d in getattr(data_quality, "outlier_details", [])
+            ],
+            repaired_outliers=getattr(data_quality, "repaired_outliers", 0),
+            repair_applied=getattr(data_quality, "repair_applied", False),
         )
 
     # Monte-Carlo

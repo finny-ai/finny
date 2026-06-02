@@ -1,8 +1,10 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "../../src/config/config"
+import PROMPT_DATA_EXTRACTOR from "../../src/agent/prompt/finny-data-extractor.txt"
 import * as CrossSpawnSpawner from "../../src/effect/cross-spawn-spawner"
+import { Permission } from "../../src/permission"
 import { Instance } from "../../src/project/instance"
 import { Session } from "../../src/session"
 import { TaskTool } from "../../src/tool/task"
@@ -74,6 +76,20 @@ describe("data_extractor subagent", () => {
     ),
   )
 
+  it.live("data_extractor can write only under template data", () =>
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const agent = yield* Agent.Service
+        const info = yield* agent.get("data_extractor")
+        expect(Permission.evaluate("read", "algos/_template/data/crypto/btc.md", info.permission).action).toBe("allow")
+        expect(Permission.evaluate("edit", "algos/_template/data/crypto/btc.md", info.permission).action).toBe("allow")
+        expect(Permission.evaluate("edit", "algos/_template/data/news/body/btc.md", info.permission).action).toBe("allow")
+        expect(Permission.evaluate("edit", "algos/_template/README.md", info.permission).action).toBe("deny")
+        expect(Permission.evaluate("edit", "algos/live-strategy/data/crypto/btc.md", info.permission).action).toBe("deny")
+      }),
+    ),
+  )
+
   it.live("data_extractor has steps limit set", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
@@ -84,6 +100,41 @@ describe("data_extractor subagent", () => {
       }),
     ),
   )
+})
+
+describe("data_extractor prompt contract", () => {
+  test("blocks instead of silently assuming missing required inputs", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`symbol` and `interval` are required")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`BLOCKED: missing symbol`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`BLOCKED: missing interval`")
+    expect(PROMPT_DATA_EXTRACTOR).not.toContain("make the narrowest reasonable assumption")
+  })
+
+  test("uses explicit date defaults", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("intervals under 1 hour: last 30 calendar days")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("hourly or multi-hour intervals: last 6 months")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("daily or higher intervals: last 2 years")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("ending on the current run date")
+  })
+
+  test("reports actual tool source instead of a fixed provider order", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("actual selected source")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("selected data source and tool digest")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Do not claim a fixed source order")
+    expect(PROMPT_DATA_EXTRACTOR).not.toContain("Expected order is Alpaca")
+  })
+
+  test("requires digest quality, regime, and suggestions", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("quality notes")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("regime summary")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("suggestions from the digest")
+  })
+
+  test("can persist compact notes under template data only", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("algos/_template/data/")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Only write inside `algos/_template/data/`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Return any written path")
+  })
 })
 
 describe("finny_extract_data tool", () => {
@@ -155,7 +206,7 @@ describe("data_extractor in task tool description", () => {
     ),
   )
 
-  it.live("data_extractor appears in task tool for chat agent", () =>
+  it.live("data_extractor is hidden from chat agent task tool", () =>
     provideTmpdirInstance(() =>
       Effect.gen(function* () {
         const agent = yield* Agent.Service
@@ -168,7 +219,8 @@ describe("data_extractor in task tool description", () => {
         })
         const taskTool = tools.find((t) => t.id === TaskTool.id)
         expect(taskTool).toBeDefined()
-        expect(taskTool!.description).toContain("data_extractor")
+        expect(taskTool!.description).not.toContain("data_extractor")
+        expect(taskTool!.description).toContain("researcher")
       }),
     ),
   )

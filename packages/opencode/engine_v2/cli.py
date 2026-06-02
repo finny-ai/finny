@@ -85,7 +85,15 @@ def _quality_failure(
         f"outliers={report.outlier_bars}",
         f"zero_volume={report.zero_volume_bars}",
     ])
-    return f"{prefix}: {'; '.join(reasons)} ({', '.join(fields)})"
+    detail_lines = []
+    for d in report.outlier_details[:5]:
+        detail_lines.append(
+            f"outlier ts={d.timestamp} prev_close={d.previous_close:.6g} "
+            f"close={d.current_close:.6g} log_return={d.log_return:.6g} "
+            f"z={d.z_score:.2f} provider={d.provider}"
+        )
+    suffix = "\n" + "\n".join(detail_lines) if detail_lines else ""
+    return f"{prefix}: {'; '.join(reasons)} ({', '.join(fields)}){suffix}"
 
 
 def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
@@ -494,6 +502,7 @@ def main() -> None:
                     help="If >0, run Monte-Carlo trade-shuffle with N paths")
     ap.add_argument("--wf-folds", type=int, default=0,
                     help="If >0, run N rolling walk-forward folds")
+    ap.add_argument("--data-quality-mode", choices=["strict", "repair_outliers"], default="strict")
     ap.add_argument("--regimes", action="store_true")
     ap.add_argument("--start-date", default=None)
     ap.add_argument("--end-date", default=None)
@@ -520,21 +529,49 @@ def main() -> None:
         raise SystemExit("No bars after date filter")
     raw_rows = int(len(df))
     provider = str(asset_spec.dataProvider or cfg.get("data_provider") or "unknown")
-    raw_dq = DQ.analyze(df, args.interval, asset_spec.assetClass)
+    repaired_details_total = []
+    raw_dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
     raw_blocking = [
         reason for reason in DQ.blocking_reasons(raw_dq, asset_spec.assetClass)
         if "duplicate timestamp" in reason or "invalid OHLC" in reason or "severe outlier" in reason
     ]
     if raw_blocking:
-        raise SystemExit(_quality_failure(
-            "Data quality failed before resample",
-            raw_blocking,
-            raw_dq,
-            provider=provider,
-            symbol=str(symbol),
-            interval=str(args.interval),
-            raw_rows=raw_rows,
-        ))
+        can_repair_raw = (
+            args.data_quality_mode == "repair_outliers"
+            and raw_dq.outlier_bars > 0
+            and raw_dq.duplicate_ts_count == 0
+            and raw_dq.ohlc_violations == 0
+            and all("severe outlier" in reason for reason in raw_blocking)
+        )
+        if can_repair_raw:
+            repaired_df, repaired_details = DQ.repair_isolated_outliers(df, provider=provider)
+            if repaired_details and len(repaired_df) < len(df):
+                repaired_details_total.extend(repaired_details)
+                df = repaired_df
+                raw_dq = DQ.report_with_repair(
+                    DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider),
+                    repaired_details,
+                )
+                raw_blocking = [
+                    reason for reason in DQ.blocking_reasons(raw_dq, asset_spec.assetClass)
+                    if "duplicate timestamp" in reason or "invalid OHLC" in reason or "severe outlier" in reason
+                ]
+        if raw_blocking:
+            for d in raw_dq.outlier_details[:5]:
+                print(
+                    f"__FINNY_OUTLIER__: ts={d.timestamp} prev_close={d.previous_close} "
+                    f"close={d.current_close} log_return={d.log_return} z={d.z_score:.2f} provider={provider}",
+                    file=sys.stderr,
+                )
+            raise SystemExit(_quality_failure(
+                "Data quality failed before resample",
+                raw_blocking,
+                raw_dq,
+                provider=provider,
+                symbol=str(symbol),
+                interval=str(args.interval),
+                raw_rows=raw_rows,
+            ))
 
     # Match v1 — resample to interval (CSV may be at different resolution).
     try:
@@ -549,19 +586,45 @@ def main() -> None:
     _, bars_per_year = interval_to_rule_and_bars_per_year(args.interval)
 
     # Data quality is a hard gate for strict engine runs.
-    dq = DQ.analyze(df, args.interval, asset_spec.assetClass)
+    dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+    if repaired_details_total:
+        dq = DQ.report_with_repair(dq, repaired_details_total)
     blocking_quality = DQ.blocking_reasons(dq, asset_spec.assetClass)
     if blocking_quality:
-        raise SystemExit(_quality_failure(
-            "Data quality failed after resample",
-            blocking_quality,
-            dq,
-            provider=provider,
-            symbol=str(symbol),
-            interval=str(args.interval),
-            raw_rows=raw_rows,
-            post_rows=int(len(df)),
-        ))
+        can_repair = (
+            args.data_quality_mode == "repair_outliers"
+            and dq.outlier_bars > 0
+            and dq.duplicate_ts_count == 0
+            and dq.ohlc_violations == 0
+            and all("severe outlier" in reason for reason in blocking_quality)
+        )
+        if can_repair:
+            repaired_df, repaired_details = DQ.repair_isolated_outliers(df, provider=provider)
+            if repaired_details and len(repaired_df) < len(df):
+                repaired_details_total.extend(repaired_details)
+                df = repaired_df
+                dq = DQ.report_with_repair(
+                    DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider),
+                    repaired_details_total,
+                )
+                blocking_quality = DQ.blocking_reasons(dq, asset_spec.assetClass)
+        if blocking_quality:
+            for d in dq.outlier_details[:5]:
+                print(
+                    f"__FINNY_OUTLIER__: ts={d.timestamp} prev_close={d.previous_close} "
+                    f"close={d.current_close} log_return={d.log_return} z={d.z_score:.2f} provider={provider}",
+                    file=sys.stderr,
+                )
+            raise SystemExit(_quality_failure(
+                "Data quality failed after resample",
+                blocking_quality,
+                dq,
+                provider=provider,
+                symbol=str(symbol),
+                interval=str(args.interval),
+                raw_rows=raw_rows,
+                post_rows=int(len(df)),
+            ))
 
     ba = from_dataframe(df, symbol=symbol, atr_period=14)
     snap = MarketSnapshot({symbol: ba})
