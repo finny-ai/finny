@@ -31,6 +31,17 @@ function fmtNum(value: number | null | undefined, decimals = 2): string {
   return value == null ? "N/A" : value.toFixed(decimals)
 }
 
+export function formatBacktestPlainMetrics(results: BacktestRunner.Results): string {
+  return [
+    `return ${fmtSignedPct(results.totalReturn)}`,
+    `Sharpe ${fmtNum(results.sharpeRatio)}`,
+    `max DD ${fmtPct(results.maxDrawdown)}`,
+    `trades ${results.totalTrades}`,
+    `win rate ${fmtPct(results.winRate)}`,
+    `profit factor ${fmtNum(results.profitFactor)}`,
+  ].join(", ")
+}
+
 // Fixed-width columns: label = 22 chars, value = 16 chars
 const LW = 22
 const VW = 16

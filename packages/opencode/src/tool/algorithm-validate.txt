@@ -11,11 +11,11 @@ Validate a trading algorithm's Python code without saving it. Finny's validator 
 - `SYNTAX_ERROR`: Python syntax errors
 - `MISSING_STRATEGY_CLASS`: no `class Strategy` defined
 - `MISSING_INIT_METHOD`: no strict `__init__(self, broker, params=None)` method
-- `MISSING_ON_TICK_METHOD` / `ON_TICK_BAD_PARAMS`: `on_bar(self, symbol, bar)` is missing or has wrong signature
+- `MISSING_ON_BAR_METHOD` / `ON_BAR_BAD_PARAMS`: `on_bar(self, symbol, bar)` is missing or has wrong signature
 - `STRICT_SHAPE_REQUIRED`: legacy `on_tick` or non-broker constructors are rejected in strict v2
 - `FORBIDDEN_IMPORT`: `os`, `subprocess`, `sys`, `socket`, `requests`, `pickle`, `threading`, `asyncio`
 - `DANGEROUS_CALL`: `exec`, `eval`, `__import__`, `compile`, `open`
-- `STATE_RESET_IN_ON_TICK`: a mutable container (`deque`/`list`/`dict`/`set`) is created as a local variable inside the entry method and then mutated — its history is lost every bar. Move the container into `__init__` as `self.<name>`.
+- `STATE_RESET_IN_ON_BAR`: a mutable container (`deque`/`list`/`dict`/`set`) is created as a local variable inside the entry method and then mutated — its history is lost every bar. Move the container into `__init__` as `self.<name>`.
 - `GAINS_LOSSES_ASYMMETRY`: gains are persisted as `self.*` but losses are only a local (or vice versa). Both must be persisted the same way.
 - `LOOKAHEAD_BIAS_FLOW`: current-bar `close`/`high`/`low` use is blocked. Use `bar["open"]` for decisions and `bar["prev_close"]` / broker history for indicators.
 - `CONFIG_KEY_UNUSED`: a key declared in `config.json` is never referenced in the strategy. Either use it or drop it from config.
@@ -39,7 +39,7 @@ Validate a trading algorithm's Python code without saving it. Finny's validator 
 - `CONFIG_KEY_VALUE_MATCH`: a config key's name isn't in the code but its value is, as a literal. Rename the attribute to match for self-documentation.
 - `INVARIANT_DIRECTIONAL_SANITY`: mean-reversion-style BUYs firing on a rising market suggest inverted logic.
 - `CONFIG_KEY_UNDECLARED`: magic number in code that looks like it should be a config key.
-- Plus the original regex-based checks: `UNBOUNDED_LIST`, `DIVISION_NO_ZERO_CHECK`, `NO_RETURN_IN_ON_TICK`, `ON_TICK_BAD_RETURN`, `LOOKAHEAD_BIAS`.
+- Plus the original regex-based checks: `UNBOUNDED_LIST`, `DIVISION_NO_ZERO_CHECK`, `NO_RETURN_IN_ON_BAR`, `ON_BAR_BAD_RETURN`, `LOOKAHEAD_BIAS`.
 
 ## Output
 Returns validation results with error/warning codes, line numbers, and fix suggestions.

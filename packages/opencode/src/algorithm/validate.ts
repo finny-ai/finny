@@ -738,13 +738,24 @@ export namespace Validate {
   }
 
   /** Formatted risk-warning banner — empty string when none. */
+  function displayCode(code: ErrorCode | WarningCode): string {
+    const aliases: Partial<Record<ErrorCode | WarningCode, string>> = {
+      MISSING_ON_TICK_METHOD: "MISSING_ON_BAR_METHOD",
+      ON_TICK_BAD_PARAMS: "ON_BAR_BAD_PARAMS",
+      STATE_RESET_IN_ON_TICK: "STATE_RESET_IN_ON_BAR",
+      NO_RETURN_IN_ON_TICK: "NO_RETURN_IN_ON_BAR",
+      ON_TICK_BAD_RETURN: "ON_BAR_BAD_RETURN",
+    }
+    return aliases[code] ?? code
+  }
+
   export function formatRiskBanner(result: Result): string {
     const risky = [...result.errors, ...result.warnings].filter(w => RISK_HARD_CODES.has(w.code))
     if (risky.length === 0) return ""
     const lines: string[] = [`[!] RISK DIAGNOSTICS (${risky.length}) — backtest results may overstate edge or understate drawdown:`]
     for (const w of risky) {
       const loc = w.line ? ` (line ${w.line})` : ""
-      lines.push(`  - ${w.code}${loc}: ${w.message}`)
+      lines.push(`  - ${displayCode(w.code)}${loc}: ${w.message}`)
       if (w.fix) lines.push(`    Fix: ${w.fix}`)
     }
     return lines.join("\n")
@@ -770,7 +781,7 @@ export namespace Validate {
         parts.push(`Validation FAILED — ${result.errors.length} error(s):\n`)
         for (const e of result.errors) {
           const loc = e.line ? ` (line ${e.line})` : ""
-          parts.push(`  [ERROR] ${e.code}${loc}: ${e.message}`)
+          parts.push(`  [ERROR] ${displayCode(e.code)}${loc}: ${e.message}`)
           if (e.fix) parts.push(`          Fix: ${e.fix}`)
         }
       } else {
@@ -785,7 +796,7 @@ export namespace Validate {
       parts.push(`${nonRiskWarnings.length} warning(s):\n`)
       for (const w of nonRiskWarnings) {
         const loc = w.line ? ` (line ${w.line})` : ""
-        parts.push(`  [WARN] ${w.code}${loc}: ${w.message}`)
+        parts.push(`  [WARN] ${displayCode(w.code)}${loc}: ${w.message}`)
         if (w.fix) parts.push(`         Fix: ${w.fix}`)
       }
     }

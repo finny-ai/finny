@@ -16,6 +16,19 @@ function alpacaEndpointForMode(mode: BrokerMode): string {
   return mode === "live" ? LIVE_ENDPOINT : PAPER_ENDPOINT
 }
 
+export function normalizeAlpacaEndpoint(endpoint: string | undefined, mode: BrokerMode = DEFAULT_MODE): string {
+  const fallback = alpacaEndpointForMode(mode)
+  if (!endpoint) return fallback
+  const cleaned = endpoint.trim().replace(/\/+$/, "").replace(/\/v\d+$/i, "")
+  return cleaned || fallback
+}
+
+function inferAlpacaMode(rawMode: unknown, endpoint: string | undefined): BrokerMode {
+  if (isAlpacaMode(rawMode)) return rawMode
+  const normalized = normalizeAlpacaEndpoint(endpoint, DEFAULT_MODE)
+  return normalized.includes("paper-api.") ? "paper" : "live"
+}
+
 const CRYPTO_BASES = new Set([
   "BTC", "ETH", "SOL", "DOGE", "AVAX", "MATIC", "LINK", "DOT", "ADA",
   "XRP", "LTC", "BCH", "UNI", "AAVE", "SUSHI", "SHIB",
@@ -149,16 +162,21 @@ export async function listAlpacaAccounts(): Promise<BrokerAccount[]> {
     if (!isAlpacaKey(key)) continue
     if (info.type !== "api") continue
     const meta = (info as any).metadata ?? {}
-    const mode = isAlpacaMode(meta.mode) ? meta.mode : DEFAULT_MODE
+    const mode = inferAlpacaMode(meta.mode, meta.endpoint)
     accounts.push({
       providerID: key,
       brokerKind: "alpaca",
       label: meta.label ?? "Default",
       keyId: meta.keyId ?? "",
-      endpoint: meta.endpoint ?? alpacaEndpointForMode(mode),
+      endpoint: normalizeAlpacaEndpoint(meta.endpoint, mode),
       mode,
     })
   }
+  accounts.sort((a, b) => {
+    const aLegacy = a.providerID === ALPACA_PROVIDER_PREFIX ? 1 : 0
+    const bLegacy = b.providerID === ALPACA_PROVIDER_PREFIX ? 1 : 0
+    return aLegacy - bLegacy
+  })
   return accounts
 }
 
@@ -168,11 +186,11 @@ export async function readAlpacaCredentials(providerID: string): Promise<BrokerC
   const meta = (info as any).metadata ?? {}
   const keyId = meta.keyId
   if (!keyId || !info.key) return null
-  const mode = isAlpacaMode(meta.mode) ? meta.mode : DEFAULT_MODE
+  const mode = inferAlpacaMode(meta.mode, meta.endpoint)
   return {
     keyId,
     secret: info.key,
-    endpoint: meta.endpoint ?? alpacaEndpointForMode(mode),
+    endpoint: normalizeAlpacaEndpoint(meta.endpoint, mode),
     mode,
   }
 }

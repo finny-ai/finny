@@ -27,6 +27,10 @@ function fmt(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+function fmtNum(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "N/A"
+}
+
 type WfMeta = {
   walkForward?: {
     n_folds: number
@@ -35,16 +39,16 @@ type WfMeta = {
     oos_decay: number
     flag_threshold: number
     flagged: boolean
-    deflated_sharpe: number
-    probabilistic_sharpe: number
+    deflated_sharpe: number | null
+    probabilistic_sharpe: number | null
     folds: Array<{
       fold: number
       train_start: string
       train_end: string
       test_start: string
       test_end: string
-      is_sharpe: number
-      oos_sharpe: number
+      is_sharpe: number | null
+      oos_sharpe: number | null
       is_return: number
       oos_return: number
     }>
@@ -54,6 +58,37 @@ type WfMeta = {
 }
 
 const EMPTY_META: WfMeta = {}
+
+export function formatWalkForwardLines(input: {
+  algorithmName: string
+  version: number
+  duration: string
+  start: string
+  end: string
+  walkForward: NonNullable<WfMeta["walkForward"]>
+  verdict: string
+  verdictReason: string
+}): string[] {
+  const walkForward = input.walkForward
+  return [
+    `Algorithm: ${input.algorithmName} (v${input.version})`,
+    `Total window: ${input.duration} (${input.start} → ${input.end})`,
+    `Rolling folds: ${walkForward.n_folds}`,
+    ``,
+    `IS Sharpe mean:        ${fmtNum(walkForward.is_sharpe_mean)}`,
+    `OOS Sharpe mean:       ${fmtNum(walkForward.oos_sharpe_mean)}`,
+    `OOS decay ratio:       ${fmtNum(walkForward.oos_decay)}`,
+    `Deflated Sharpe prob:  ${fmtNum(walkForward.deflated_sharpe, 3)}`,
+    `Prob. Sharpe ratio:    ${fmtNum(walkForward.probabilistic_sharpe, 3)}`,
+    ``,
+    `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return`,
+    ...walkForward.folds.map(f =>
+      `${f.fold}\t${f.train_start.slice(0, 10)}→${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}→${f.test_end.slice(0, 10)}\t${fmtNum(f.is_sharpe)}\t${fmtNum(f.oos_sharpe)}\t${(f.oos_return * 100).toFixed(2)}%`,
+    ),
+    ``,
+    `Verdict: ${input.verdict.toUpperCase()} — ${input.verdictReason}`,
+  ]
+}
 
 export const BacktestWalkforwardTool = Tool.define(
   "finny_backtest_walkforward",
@@ -148,24 +183,16 @@ export const BacktestWalkforwardTool = Tool.define(
           verdictReason = "Rolling OOS performance is within the robustness threshold."
         }
 
-        const lines = [
-          `Algorithm: ${algo.name} (v${algo.version})`,
-          `Total window: ${params.duration} (${fmt(start)} → ${fmt(end)})`,
-          `Rolling folds: ${walkForward.n_folds}`,
-          ``,
-          `IS Sharpe mean:        ${walkForward.is_sharpe_mean.toFixed(2)}`,
-          `OOS Sharpe mean:       ${walkForward.oos_sharpe_mean.toFixed(2)}`,
-          `OOS decay ratio:       ${walkForward.oos_decay.toFixed(2)}`,
-          `Deflated Sharpe prob:  ${walkForward.deflated_sharpe.toFixed(3)}`,
-          `Prob. Sharpe ratio:    ${walkForward.probabilistic_sharpe.toFixed(3)}`,
-          ``,
-          `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return`,
-          ...walkForward.folds.map(f =>
-            `${f.fold}\t${f.train_start.slice(0, 10)}→${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}→${f.test_end.slice(0, 10)}\t${f.is_sharpe.toFixed(2)}\t${f.oos_sharpe.toFixed(2)}\t${(f.oos_return * 100).toFixed(2)}%`,
-          ),
-          ``,
-          `Verdict: ${verdict.toUpperCase()} — ${verdictReason}`,
-        ]
+        const lines = formatWalkForwardLines({
+          algorithmName: algo.name,
+          version: algo.version,
+          duration: params.duration,
+          start: fmt(start),
+          end: fmt(end),
+          walkForward,
+          verdict,
+          verdictReason,
+        })
 
         const finalOutput = riskBanner ? `${riskBanner}\n\n${lines.join("\n")}` : lines.join("\n")
         return {

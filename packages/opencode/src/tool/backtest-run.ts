@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
+import { evaluateBacktestQuality } from "../backtest/evaluation"
 
 const parameters = z.object({
   algorithmName: z
@@ -26,7 +27,43 @@ const parameters = z.object({
     .string()
     .default("10000")
     .describe("Starting capital in USD (e.g. '10000')"),
+  dataQualityMode: z
+    .enum(["strict", "repair_outliers"])
+    .default("strict")
+    .describe("Strict by default. Use repair_outliers only for explicit research-only reruns after severe isolated outlier diagnostics."),
 })
+
+type BacktestMessageLike = {
+  parts?: Array<{
+    type?: string
+    tool?: string
+    state?: {
+      status?: string
+      input?: Record<string, any>
+      output?: string
+      metadata?: Record<string, any>
+    }
+  }>
+}
+
+export function countConsecutiveFailedBacktests(messages: BacktestMessageLike[], algorithmName: string) {
+  let count = 0
+  for (const msg of [...messages].reverse()) {
+    for (const part of [...(msg.parts ?? [])].reverse()) {
+      if (part.type !== "tool" || part.tool !== "finny_backtest_run") continue
+      if (part.state?.status !== "completed") continue
+      if (part.state.input?.algorithmName !== algorithmName) continue
+
+      const output = part.state.output ?? ""
+      if (output.includes("Verdict: failed")) {
+        count++
+        continue
+      }
+      return count
+    }
+  }
+  return count
+}
 
 export const BacktestRunTool = Tool.define(
   "finny_backtest_run",
@@ -47,6 +84,17 @@ export const BacktestRunTool = Tool.define(
           algorithmName: undefined as string | undefined,
           params: undefined as { duration: string; interval: string; capital: string } | undefined,
           results: undefined as BacktestRunner.Results | undefined,
+        }
+
+        const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName)
+        if (consecutiveFailures >= 2) {
+          return {
+            title: "Backtest blocked by failure budget",
+            output:
+              `Backtest blocked: "${params.algorithmName}" already has ${consecutiveFailures} consecutive failed backtests in this session.\n\n` +
+              `Stop and summarize the blocker before trying another version. If the next attempt changes concept, asset, timeframe, or venue, ask the user for approval first.`,
+            metadata: { ...emptyMeta },
+          }
         }
 
         const algo = await Algorithm.get(params.algorithmName)
@@ -84,6 +132,7 @@ export const BacktestRunTool = Tool.define(
           duration: params.duration,
           interval: params.interval,
           capital: params.capital,
+          dataQualityMode: params.dataQualityMode,
           robustness: { monteCarloPaths: 500, regimes: true },
         })
 
@@ -96,12 +145,14 @@ export const BacktestRunTool = Tool.define(
         }
 
         const r = result.results
+        const quality = evaluateBacktestQuality(r)
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
           `Duration: ${params.duration} | Interval: ${params.interval} | Capital: $${params.capital}`,
+          params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
           ``,
           `┌──────────────────────────────────────────────────┐`,
           `│  BACKTEST RESULTS                                │`,
@@ -152,6 +203,23 @@ export const BacktestRunTool = Tool.define(
         }
 
         lines.push(`└──────────────────────┴───────────────────────────┘`)
+
+        lines.push(
+          ``,
+          `── QUALITY GATE ───────────────────────────────────`,
+          `Verdict: ${quality.label}`,
+        )
+        if (r.totalReturn > 0 && !quality.paperEligible) {
+          lines.push(`Positive ROI, but NOT paper eligible.`)
+        }
+        if (quality.reasons.length > 0) {
+          lines.push(`Reasons: ${quality.reasons.join("; ")}`)
+        }
+        lines.push(`Minimum trades for this window: ${quality.minTrades}`)
+        if (r.v2?.data_quality?.repair_applied) {
+          lines.push(`REPAIRED DATA BACKTEST — research-only until rerun on strict clean data.`)
+        }
+        lines.push(`────────────────────────────────────────────────────`)
 
         if (r.totalTrades === 0 && r.diagnostics) {
           const d = r.diagnostics

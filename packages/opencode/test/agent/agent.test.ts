@@ -23,7 +23,8 @@ test("returns default native agents when no config", async () => {
       const agents = await Agent.list()
       const names = agents.map((a) => a.name)
       expect(names).toContain("build")
-      expect(names).toContain("plan")
+      expect(names).toContain("research")
+      expect(names).toContain("chat")
       expect(names).toContain("general")
       expect(names).toContain("explore")
       expect(names).toContain("compaction")
@@ -42,23 +43,25 @@ test("build agent has correct default properties", async () => {
       expect(build).toBeDefined()
       expect(build?.mode).toBe("primary")
       expect(build?.native).toBe(true)
-      expect(evalPerm(build, "edit")).toBe("allow")
-      expect(evalPerm(build, "bash")).toBe("allow")
+      expect(evalPerm(build, "edit")).toBe("deny")
+      expect(evalPerm(build, "bash")).toBe("deny")
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
     },
   })
 })
 
-test("plan agent denies edits except .opencode/plans/*", async () => {
+test("research agent denies generic coding tools and allows research tools", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      const plan = await Agent.get("plan")
-      expect(plan).toBeDefined()
-      // Wildcard is denied
-      expect(evalPerm(plan, "edit")).toBe("deny")
-      // But specific path is allowed
-      expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+      const research = await Agent.get("research")
+      expect(research).toBeDefined()
+      expect(evalPerm(research, "edit")).toBe("deny")
+      expect(evalPerm(research, "bash")).toBe("deny")
+      expect(evalPerm(research, "finny_get_history")).toBe("allow")
+      expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
     },
   })
 })
@@ -219,8 +222,9 @@ test("agent permission config merges with defaults", async () => {
       expect(build).toBeDefined()
       // Specific pattern is denied
       expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("deny")
-      // Edit still allowed
-      expect(evalPerm(build, "edit")).toBe("allow")
+      // Finny build tools remain allowed while generic coding tools stay denied.
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+      expect(evalPerm(build, "edit")).toBe("deny")
     },
   })
 })
@@ -389,7 +393,7 @@ test("multiple custom agents can be defined", async () => {
 test("Agent.list keeps the default agent first and sorts the rest by name", async () => {
   await using tmp = await tmpdir({
     config: {
-      default_agent: "plan",
+      default_agent: "chat",
       agent: {
         zebra: {
           description: "Zebra",
@@ -406,7 +410,7 @@ test("Agent.list keeps the default agent first and sorts the rest by name", asyn
     directory: tmp.path,
     fn: async () => {
       const names = (await Agent.list()).map((a) => a.name)
-      expect(names[0]).toBe("plan")
+      expect(names[0]).toBe("chat")
       expect(names.slice(1)).toEqual(names.slice(1).toSorted((a, b) => a.localeCompare(b)))
     },
   })
@@ -423,14 +427,14 @@ test("Agent.get returns undefined for non-existent agent", async () => {
   })
 })
 
-test("default permission includes doom_loop and external_directory as ask", async () => {
+test("Finny build denies non-bundled default tools", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const build = await Agent.get("build")
-      expect(evalPerm(build, "doom_loop")).toBe("ask")
-      expect(evalPerm(build, "external_directory")).toBe("ask")
+      expect(evalPerm(build, "doom_loop")).toBe("deny")
+      expect(evalPerm(build, "external_directory")).toBe("deny")
     },
   })
 })
@@ -581,10 +585,10 @@ description: Permission skill.
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        const build = await Agent.get("build")
+        const explore = await Agent.get("explore")
         const skillDir = path.join(tmp.path, ".opencode", "skill", "perm-skill")
         const target = path.join(skillDir, "reference", "notes.md")
-        expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("allow")
+        expect(Permission.evaluate("external_directory", target, explore!.permission).action).toBe("allow")
       },
     })
   } finally {
@@ -603,17 +607,17 @@ test("defaultAgent returns build when no default_agent config", async () => {
   })
 })
 
-test("defaultAgent respects default_agent config set to plan", async () => {
+test("defaultAgent respects default_agent config set to chat", async () => {
   await using tmp = await tmpdir({
     config: {
-      default_agent: "plan",
+      default_agent: "chat",
     },
   })
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      expect(agent).toBe("plan")
+      expect(agent).toBe("chat")
     },
   })
 })
@@ -680,7 +684,7 @@ test("defaultAgent throws when default_agent points to non-existent agent", asyn
   })
 })
 
-test("defaultAgent returns plan when build is disabled and default_agent not set", async () => {
+test("defaultAgent returns research when build is disabled and default_agent not set", async () => {
   await using tmp = await tmpdir({
     config: {
       agent: {
@@ -692,8 +696,8 @@ test("defaultAgent returns plan when build is disabled and default_agent not set
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      // build is disabled, so it should return plan (next primary agent)
-      expect(agent).toBe("plan")
+      // build is disabled, so it should return research (next primary agent)
+      expect(agent).toBe("research")
     },
   })
 })
@@ -703,14 +707,15 @@ test("defaultAgent throws when all primary agents are disabled", async () => {
     config: {
       agent: {
         build: { disable: true },
-        plan: { disable: true },
+        research: { disable: true },
+        chat: { disable: true },
       },
     },
   })
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
-      // build and plan are disabled, no primary-capable agents remain
+      // build, research, and chat are disabled, so no visible primary agent remains
       await expect(Agent.defaultAgent()).rejects.toThrow("no primary visible agent found")
     },
   })
