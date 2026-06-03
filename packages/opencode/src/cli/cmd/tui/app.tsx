@@ -40,7 +40,6 @@ import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
-import { DialogEmailCapture } from "@tui/component/dialog-email-capture"
 import { DialogOnboardingProviders } from "@tui/component/dialog-onboarding-providers"
 import { DialogOnboardingChoosePath } from "@tui/component/dialog-onboarding-choose-path"
 import { Analytics } from "@/analytics/tracker"
@@ -495,35 +494,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
-  // First-launch email capture — fires once after sync completes, KV has
-  // finished loading, and no other dialog is open. Honor the telemetry
-  // opt-out: if the user disabled telemetry we don't prompt (the email POST
-  // goes to the same Convex deployment as analytics). Skip if onboarding
-  // hasn't run yet — it would race and get auto-dismissed.
-  createEffect(
-    on(
-      () =>
-        sync.status === "complete" &&
-        kv.ready &&
-        dialog.stack.length === 0 &&
-        Analytics.isEnabled(),
-      (ready) => {
-        if (!ready) return
-        if (kv.get("email_capture_status")) return
-        if (!kv.get("onboarding_v2_status") && !kv.get("experience_level_status")) return
-        // The dismiss callback runs whenever the dialog goes away — including
-        // when the dialog is replaced by another one or cleared after a
-        // successful submit. Only mark "skipped" if no terminal status has
-        // been set in the meantime, otherwise we'd overwrite "submitted".
-        DialogEmailCapture.show(dialog, () => {
-          if (!kv.get("email_capture_status")) {
-            kv.set("email_capture_status", "skipped")
-          }
-        })
-      },
-    ),
-  )
-
   // Onboarding v2 — a two-step flow:
   //   Step 1: show connected providers, let the user add more (no blocking).
   //   Step 2: pick "trader" or "beginner"; clicking a card starts a real
@@ -862,24 +832,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         dialog.replace(() => <DialogExamples />)
       },
       category: "System",
-    },
-    {
-      title: "Subscribe to release notes",
-      value: "subscribe.release_notes",
-      slash: {
-        name: "subscribe",
-      },
-      category: "System",
-      // Hide unless telemetry is enabled; the email POST hits the same Convex
-      // deployment as analytics, so the opt-in covers both.
-      hidden: !Analytics.isEnabled(),
-      onSelect: () => {
-        if (!Analytics.isEnabled()) {
-          toast.show({ variant: "info", message: "Telemetry is disabled (set FINNY_TELEMETRY=1 to enable)", duration: 3000 })
-          return
-        }
-        DialogEmailCapture.show(dialog)
-      },
     },
     {
       title: "Go to Home",
