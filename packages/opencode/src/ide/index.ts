@@ -52,7 +52,7 @@ export namespace Ide {
     const cmd = SUPPORTED_IDES.find((i) => i.name === ide)?.cmd
     if (!cmd) throw new Error(`Unknown IDE: ${ide}`)
 
-    const p = await Process.run([cmd, "--install-extension", "sst-dev.opencode"], {
+    const p = await Process.run([cmd, "--install-extension", "sst-dev.finny"], {
       nothrow: true,
     })
     const stdout = p.stdout.toString()

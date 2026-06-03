@@ -53,10 +53,11 @@ process.on("uncaughtException", (e) => {
 })
 
 const args = hideBin(process.argv)
+const cliName = "finny"
 
 function show(out: string) {
   const text = out.trimStart()
-  if (!text.startsWith("opencode ")) {
+  if (!text.startsWith(`${cliName} `) && !text.startsWith("opencode ")) {
     process.stderr.write(UI.logo() + EOL + EOL)
     process.stderr.write(text)
     return
@@ -66,7 +67,7 @@ function show(out: string) {
 
 const cli = yargs(args)
   .parserConfiguration({ "populate--": true })
-  .scriptName("finny")
+  .scriptName(cliName)
   .wrap(100)
   .help("help", "show help")
   .alias("help", "h")
