@@ -61,6 +61,58 @@ def classify_bars(close: np.ndarray, lookback: int = 30) -> np.ndarray:
     return out
 
 
+# ── Volatility regime labels (human-readable) ──
+VOL_LABELS = {-1: "warmup", 0: "low_vol", 1: "mid_vol", 2: "high_vol"}
+
+
+def classify_trend(close: np.ndarray, lookback: int = 50) -> np.ndarray:
+    """Trend regime based on SMA slope direction and price position.
+
+    Returns int8 array same length as close:
+      1  = uptrend   (close > SMA AND SMA slope > 0)
+      0  = sideways  (mixed signals or warmup-adjacent)
+     -1  = downtrend (close < SMA AND SMA slope < 0)
+     -2  = warmup    (not enough bars)
+
+    Uses only settled data — SMA at bar i is computed from closes[0..i-1]
+    (excludes current bar) so it's safe at decision time.
+    """
+    n = close.size
+    out = np.full(n, -2, dtype=np.int8)
+    if n < lookback + 2:
+        return out
+
+    # Rolling SMA of settled closes (shifted by 1 so SMA[i] uses bars before i)
+    sma = np.full(n, np.nan)
+    cs = np.cumsum(close)
+    for i in range(lookback, n):
+        # SMA of closes from [i-lookback .. i-1] — all settled before bar i
+        sma[i] = (cs[i - 1] - (cs[i - lookback - 1] if i > lookback else 0.0)) / lookback
+
+    # Slope: SMA change over last 5 bars (smoothed so noise doesn't flip regime)
+    slope_window = 5
+    for i in range(lookback + slope_window, n):
+        if np.isnan(sma[i]) or np.isnan(sma[i - slope_window]):
+            continue
+        slope = sma[i] - sma[i - slope_window]
+        prev_close = close[i - 1]  # Settled close, not current bar
+        above_sma = prev_close > sma[i]
+        below_sma = prev_close < sma[i]
+
+        if slope > 0 and above_sma:
+            out[i] = 1   # uptrend
+        elif slope < 0 and below_sma:
+            out[i] = -1  # downtrend
+        else:
+            out[i] = 0   # sideways / conflicting signals
+
+    return out
+
+
+# ── Trend regime labels (human-readable) ──
+TREND_LABELS = {-2: "warmup", -1: "downtrend", 0: "sideways", 1: "uptrend"}
+
+
 def breakdown(
     equity: np.ndarray, bar_labels: np.ndarray,
     ts_ns: np.ndarray, trades: List[ClosedTrade], bars_per_year: float,

@@ -22,7 +22,7 @@ def per_symbol(trades: List[ClosedTrade], positions: Dict[str, Position],
         d = by.setdefault(sym, {"realized": 0.0, "n_trades": 0, "wins": 0})
         px = last_prices.get(sym, pos.avg_price)
         d.setdefault("unrealized", 0.0)
-        d["unrealized"] = pos.qty * (px - pos.avg_price)
+        d["unrealized"] = pos.qty * (px - pos.avg_price) * pos.multiplier
 
     out = []
     for sym, d in sorted(by.items()):

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict
+from typing import TYPE_CHECKING, Dict, Optional
 
 if TYPE_CHECKING:
     from .positions import Position
+    from ..assets import AssetSpec
 
 
 @dataclass
@@ -17,6 +18,7 @@ class Account:
     max_leverage: float = 1.0  # 1.0 = spot, no leverage
     maintenance_margin_pct: float = 0.05  # fraction of notional at which liq triggers
     last_prices: Dict[str, float] = field(default_factory=dict)
+    asset_specs: Dict[str, "AssetSpec"] = field(default_factory=dict)
 
     @classmethod
     def new(cls, starting_cash: float, max_leverage: float = 1.0,
@@ -41,13 +43,29 @@ class Account:
         for k, v in prices.items():
             self.last_prices[k] = float(v)
 
+    def _multiplier(self, sym: str) -> float:
+        spec = self.asset_specs.get(sym)
+        return float(spec.multiplier) if spec is not None else 1.0
+
+    def _initial_margin_pct(self, sym: str) -> float:
+        spec = self.asset_specs.get(sym)
+        if spec is not None and spec.initialMarginPct is not None:
+            return float(spec.initialMarginPct)
+        return 1.0 / self.max_leverage if self.max_leverage > 0 else 1.0
+
+    def maintenance_margin_pct_for_symbol(self, sym: str) -> float:
+        spec = self.asset_specs.get(sym)
+        if spec is not None and spec.maintenanceMarginPct is not None:
+            return float(spec.maintenanceMarginPct)
+        return float(self.maintenance_margin_pct)
+
     def equity(self, positions: Dict[str, Position]) -> float:
         unrealized = 0.0
         for sym, pos in positions.items():
             if pos.qty == 0:
                 continue
             px = self.last_prices.get(sym, pos.avg_price)
-            unrealized += pos.qty * (px - pos.avg_price)
+            unrealized += pos.qty * (px - pos.avg_price) * self._multiplier(sym)
         return self.cash + unrealized
 
     def gross_notional(self, positions: Dict[str, Position]) -> float:
@@ -56,11 +74,33 @@ class Account:
             if pos.qty == 0:
                 continue
             px = self.last_prices.get(sym, pos.avg_price)
-            n += abs(pos.qty) * px
+            n += abs(pos.qty) * px * self._multiplier(sym)
         return n
 
+    def required_initial_margin(self, positions: Dict[str, Position]) -> float:
+        margin = 0.0
+        for sym, pos in positions.items():
+            if pos.qty == 0:
+                continue
+            px = self.last_prices.get(sym, pos.avg_price)
+            margin += abs(pos.qty) * px * self._multiplier(sym) * self._initial_margin_pct(sym)
+        return margin
+
+    def required_initial_margin_for_quantities(
+        self,
+        qty_by_symbol: Dict[str, float],
+        prices: Dict[str, float],
+    ) -> float:
+        margin = 0.0
+        for sym, qty in qty_by_symbol.items():
+            if qty == 0:
+                continue
+            px = float(prices[sym])
+            margin += abs(qty) * px * self._multiplier(sym) * self._initial_margin_pct(sym)
+        return margin
+
     def free_margin(self, positions: Dict[str, Position]) -> float:
-        return self.equity(positions) * self.max_leverage - self.gross_notional(positions)
+        return self.equity(positions) - self.required_initial_margin(positions)
 
     def can_open(self, notional: float, positions: Dict[str, "Position"]) -> bool:  # type: ignore[name-defined]
         return self.free_margin(positions) >= notional - 1e-9

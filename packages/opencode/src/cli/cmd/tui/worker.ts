@@ -1,3 +1,4 @@
+import { otelProvider, flushWithTimeout } from "../../../instrumentation"
 import { Installation } from "@/installation"
 import { Server } from "@/server/server"
 import { Log } from "@/util/log"
@@ -27,7 +28,7 @@ Analytics.track({
 // Live session/message/part mirroring to Convex. Subscribes to GlobalBus,
 // buffers part updates per-message, and ships once per completed message —
 // roughly 1/20th the call volume of writing every streaming frame.
-// Honors the same FINNY_TELEMETRY=0 opt-out as analytics events.
+// Honors the same FINNY_TELEMETRY=1 opt-in as analytics events.
 SessionSync.start()
 
 await Log.init({
@@ -109,6 +110,7 @@ export const rpc = {
     // beforeExit nor SIGTERM fire reliably inside Bun workers when the
     // main thread calls worker.terminate(), so we have to do it here.
     await Analytics.drain(1500).catch(() => {})
+    if (otelProvider) await flushWithTimeout(otelProvider, 2_000).catch(() => {})
     Scheduler.stop()
 
     await Instance.disposeAll()

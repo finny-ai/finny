@@ -15,6 +15,8 @@ Diagnostic codes:
   MISSING_POSITION_SIZING   (warning) self.position only set to 0/1 with no sizing arithmetic
   POSITION_SIZE_UNCAPPED    (warning) qty sized from risk/stop with no cap against equity
   FRACTIONAL_SHARES_EQUITY  (warning) symbol looks like an equity ticker but qty is a float
+  FUTURES_FRACTIONAL_QTY    (warning) futures contracts require whole-number qty
+  FUTURES_NOTIONAL_SIZING   (warning) futures strategies should size by explicit contract qty
   NEAR_ZERO_DIVISION        (warning) RSI-shaped division guarded only by != 0 / > 0
 
 Exits 0 on success (diagnostics on stdout). Exits non-zero only on parse failure.
@@ -31,6 +33,9 @@ GROWTH_METHODS = {"append", "add", "update", "extend", "appendleft", "push"}
 # Entry methods in priority order — both the legacy on_tick and the broker-based on_bar
 # get checked. Strategies may define either one or, rarely, both.
 ENTRY_METHOD_NAMES = ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar")
+PRIVATE_STRATEGY_ATTRS = {"_broker", "_market", "_account", "account", "market"}
+REFLECTION_CALLS = {"getattr", "setattr", "delattr", "vars", "dir", "globals", "locals"}
+DISALLOWED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input"}
 
 
 def _find_class(tree, name):
@@ -55,6 +60,129 @@ def _find_entry_methods(cls):
         if m is not None:
             out.append(m)
     return out
+
+
+def _call_name(node):
+    if isinstance(node, ast.Name):
+        return node.id
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id in {"builtins", "__builtins__"}
+    ):
+        return node.attr
+    return None
+
+
+def _string_constant(node):
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def check_strict_security(tree, cls):
+    diagnostics = []
+    broker_aliases = {"broker"}
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Assign):
+                continue
+            value = node.value
+            is_broker_value = (
+                isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "self"
+                and value.attr == "broker"
+            ) or (
+                isinstance(value, ast.Name)
+                and value.id in broker_aliases
+            )
+            if not is_broker_value:
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id not in broker_aliases:
+                    broker_aliases.add(target.id)
+                    changed = True
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name.split(".")[0] for a in getattr(node, "names", [])]
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names.append(node.module.split(".")[0])
+            for name in names:
+                if name in {"os", "sys", "subprocess", "socket", "requests", "pickle", "threading", "asyncio", "pathlib"}:
+                    diagnostics.append({
+                        "code": "FORBIDDEN_IMPORT",
+                        "severity": "error",
+                        "message": f"Forbidden import `{name}` in strict strategy code.",
+                        "line": node.lineno,
+                        "fix": "Remove filesystem, network, process, and runtime imports from strategy code.",
+                    })
+                    return diagnostics
+        if isinstance(node, ast.Call):
+            name = _call_name(node.func)
+            if name in DISALLOWED_CALLS:
+                diagnostics.append({
+                    "code": "DANGEROUS_CALL",
+                    "severity": "error",
+                    "message": f"Dangerous call `{name}()` is not allowed in strict strategy code.",
+                    "line": node.lineno,
+                    "fix": "Remove dynamic code execution and filesystem calls.",
+                })
+                return diagnostics
+            if name == "getattr" and len(node.args) >= 2:
+                attr = _string_constant(node.args[1])
+                if attr and (attr.startswith("_") or attr in PRIVATE_STRATEGY_ATTRS):
+                    diagnostics.append({
+                        "code": "PRIVATE_BROKER_ACCESS",
+                        "severity": "error",
+                        "message": f"Private attribute access `{attr}` is not allowed.",
+                        "line": node.lineno,
+                        "fix": "Use only public broker methods.",
+                    })
+                    return diagnostics
+            if name in REFLECTION_CALLS:
+                diagnostics.append({
+                    "code": "FORBIDDEN_REFLECTION",
+                    "severity": "error",
+                    "message": f"Reflection call `{name}()` is not allowed because it can inspect or bypass broker internals.",
+                    "line": node.lineno,
+                    "fix": "Use only the public broker API: buy, sell, position, cash, equity, price, history.",
+                })
+                return diagnostics
+        if isinstance(node, ast.Attribute):
+            receiver_is_self_broker = (
+                isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr == "broker"
+            )
+            receiver_is_broker_alias = (
+                isinstance(node.value, ast.Name)
+                and node.value.id in broker_aliases
+            )
+            is_broker_private = (
+                receiver_is_self_broker
+                and node.attr.startswith("_")
+            )
+            is_broker_alias_private = (
+                receiver_is_broker_alias
+                and node.attr.startswith("_")
+            )
+            is_private_strategy_attr = (
+                node.attr in PRIVATE_STRATEGY_ATTRS
+                and (receiver_is_self_broker or receiver_is_broker_alias)
+            )
+            if is_broker_private or is_broker_alias_private or is_private_strategy_attr:
+                diagnostics.append({
+                    "code": "PRIVATE_BROKER_ACCESS",
+                    "severity": "error",
+                    "message": f"Private/internal attribute `.{node.attr}` is not allowed in strict strategy code.",
+                    "line": node.lineno,
+                    "fix": "Use only the strict broker proxy public API.",
+                })
+                return diagnostics
+    return diagnostics
 
 
 def _is_broker_trade_call(node):
@@ -604,6 +732,25 @@ def check_lookahead_bias_flow(entry_method):
     return diagnostics
 
 
+def check_current_bar_post_fields(entry_method):
+    diagnostics = []
+    for node in ast.walk(entry_method):
+        if _is_bar_post_field(node):
+            field = node.slice.value
+            diagnostics.append({
+                "code": "LOOKAHEAD_BIAS_FLOW",
+                "severity": "error",
+                "message": (
+                    f"`bar[\"{field}\"]` is not exposed in strict v2. Current-bar high/low/close "
+                    "are only knowable after the decision."
+                ),
+                "line": node.lineno,
+                "fix": f"Use `bar[\"prev_{field}\"]` or completed rows from `self.broker.history(...)`.",
+            })
+            break
+    return diagnostics
+
+
 def check_missing_position_sizing(cls):
     """self.position only assigned 0/1 with no arithmetic using price or risk."""
     diagnostics = []
@@ -1013,6 +1160,18 @@ def check_position_size_uncapped(on_tick):
 
 EQUITY_TICKER_RE = None  # computed lazily
 CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT")
+FUTURES_ROOTS = {"ES", "NQ", "RTY", "YM", "CL", "GC", "SI", "HG", "ZN", "ZB", "6E"}
+
+
+def _symbol_is_future(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return False
+    s = symbol.strip().upper()
+    if s.endswith("=F"):
+        s = s[:-2]
+    if s.endswith("/CONT"):
+        s = s[:-5]
+    return s in FUTURES_ROOTS
 
 
 def _symbol_is_equity(symbol):
@@ -1021,6 +1180,8 @@ def _symbol_is_equity(symbol):
         return False
     s = symbol.strip().upper()
     if any(suf in s for suf in CRYPTO_SUFFIXES):
+        return False
+    if _symbol_is_future(s):
         return False
     if "/" in s or "-" in s:
         return False
@@ -1061,6 +1222,69 @@ def check_fractional_shares_equity(on_tick, symbol):
         })
         break
     return diagnostics
+
+
+def check_futures_order_sizing(on_tick, symbol):
+    """Futures require explicit whole-contract qty; notional and division-sized qty are unsafe."""
+    diagnostics = []
+    if not _symbol_is_future(symbol):
+        return diagnostics
+
+    emitted_notional = False
+    emitted_fractional = False
+    for node in ast.walk(on_tick):
+        if isinstance(node, ast.Call) and _is_broker_trade_call(node):
+            for kw in node.keywords:
+                if kw.arg == "notional" and not emitted_notional:
+                    diagnostics.append({
+                        "code": "FUTURES_NOTIONAL_SIZING",
+                        "severity": "warning",
+                        "message": (
+                            f"Symbol `{symbol}` is a futures contract; notional sizing is rejected by the futures broker path."
+                        ),
+                        "line": node.lineno,
+                        "fix": "Compute and pass an explicit whole-contract `qty`, e.g. `qty = max(1, int(...))`.",
+                    })
+                    emitted_notional = True
+                if kw.arg == "qty" and _contains_floaty_division(kw.value) and not emitted_fractional:
+                    diagnostics.append({
+                        "code": "FUTURES_FRACTIONAL_QTY",
+                        "severity": "warning",
+                        "message": (
+                            f"Symbol `{symbol}` is a futures contract; order qty must be whole contracts."
+                        ),
+                        "line": node.lineno,
+                        "fix": "Floor or round down to an integer contract count before submitting the order.",
+                    })
+                    emitted_fractional = True
+        if isinstance(node, ast.Assign) and _contains_floaty_division(node.value) and not emitted_fractional:
+            value = node.value
+            floored = isinstance(value, ast.BinOp) and isinstance(value.op, ast.FloorDiv)
+            for inner in ast.walk(value):
+                if isinstance(inner, ast.Call):
+                    if isinstance(inner.func, ast.Name) and inner.func.id in {"int", "round"}:
+                        floored = True
+                    if isinstance(inner.func, ast.Attribute) and inner.func.attr in {"floor"}:
+                        floored = True
+            if not floored:
+                diagnostics.append({
+                    "code": "FUTURES_FRACTIONAL_QTY",
+                    "severity": "warning",
+                    "message": f"Symbol `{symbol}` is a futures contract, but position size may be fractional.",
+                    "line": node.lineno,
+                    "fix": "Convert sizing to whole contracts and cap against equity/margin before order submission.",
+                })
+                emitted_fractional = True
+        if emitted_notional and emitted_fractional:
+            break
+    return diagnostics
+
+
+def _contains_floaty_division(node):
+    for inner in ast.walk(node):
+        if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.Div):
+            return True
+    return False
 
 
 RSI_DENOM_HINTS = ("avg_loss", "avg_gain", "loss_avg", "gain_avg", "denom")
@@ -1185,6 +1409,7 @@ def analyze(code, symbol=None):
     diagnostics = []
     diagnostics += check_rms_not_stddev(tree)
     diagnostics += check_population_variance(tree)
+    diagnostics += check_strict_security(tree, cls)
     diagnostics += check_gains_losses_asymmetry(cls)
     diagnostics += check_missing_position_sizing(cls)
     diagnostics += check_equity_never_updated(cls)
@@ -1196,11 +1421,13 @@ def analyze(code, symbol=None):
     for entry in entry_methods:
         for check_fn, *args in (
             (check_state_reset_in_on_tick, entry),
+            (check_current_bar_post_fields, entry),
             (check_lookahead_bias_flow, entry),
             (check_same_bar_execution_bias, entry),
             (check_position_size_uncapped, entry),
             (check_near_zero_division, entry),
             (check_fractional_shares_equity, entry, symbol),
+            (check_futures_order_sizing, entry, symbol),
         ):
             for d in check_fn(*args):
                 # Dedupe across multiple entry methods — emit each diagnostic code once.

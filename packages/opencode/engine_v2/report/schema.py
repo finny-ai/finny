@@ -7,6 +7,8 @@ schema_version semver rules:
 
 CHANGELOG:
   2.0.0  initial engine_v2 release.
+  3.0.0  trade rows require multiplier; omega/profit_factor may be null.
+  3.1.0  asset spec adds optional margin/commission metadata.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "2.0.0"
+SCHEMA_VERSION = "3.1.0"
 
 
 @dataclass
@@ -26,6 +28,7 @@ class TradeRow:
     qty: float
     entry_price: float
     exit_price: float
+    multiplier: float
     pnl: float
     pnl_pct: float
     r_multiple: Optional[float]
@@ -85,7 +88,7 @@ class RatioMetrics:
     sharpe: float
     sortino: float
     calmar: Optional[float]
-    omega: float
+    omega: Optional[float]
     mar: Optional[float]
     sterling: Optional[float]
     k_ratio: float
@@ -113,7 +116,7 @@ class TradeMetrics:
     payoff_ratio: float
     expectancy: float
     expectancy_r: Optional[float]
-    profit_factor: float
+    profit_factor: Optional[float]
     max_consecutive_wins: int
     max_consecutive_losses: int
     longest_trade_bars: int
@@ -125,6 +128,8 @@ class TradeMetrics:
     mfe_max: float
     kelly_fraction: float
     kelly_confidence: str  # "low" | "medium" | "high"
+    trade_tstat: Optional[float] = None
+    trade_pvalue: Optional[float] = None
 
 
 @dataclass
@@ -219,6 +224,16 @@ class RegimeBreakdown:
 
 
 @dataclass
+class OutlierDetail:
+    timestamp: str
+    previous_close: float
+    current_close: float
+    log_return: float
+    z_score: float
+    provider: str = "unknown"
+
+
+@dataclass
 class DataQualityReport:
     n_bars: int
     coverage_pct: float
@@ -228,6 +243,9 @@ class DataQualityReport:
     outlier_bars: int
     zero_volume_bars: int
     notes: List[str]
+    outlier_details: List[OutlierDetail] = field(default_factory=list)
+    repaired_outliers: int = 0
+    repair_applied: bool = False
 
 
 @dataclass
@@ -238,6 +256,30 @@ class PerSymbolAttribution:
     n_trades: int
     win_rate: float
     contribution_pct: float
+
+
+@dataclass
+class AssetSpecReport:
+    assetClass: str
+    symbol: str
+    currency: str
+    calendar: str
+    tickSize: float
+    lotSize: float
+    multiplier: float
+    feeModel: str
+    marginModel: str
+    dataProvider: str
+    productionEligible: bool
+    initialMarginPct: Optional[float] = None
+    maintenanceMarginPct: Optional[float] = None
+    commissionPerContract: Optional[float] = None
+    venue: Optional[str] = None
+    expiry: Optional[str] = None
+    rollPolicy: Optional[str] = None
+    quoteCurrency: Optional[str] = None
+    baseCurrency: Optional[str] = None
+    blockingReason: Optional[str] = None
 
 
 @dataclass
@@ -260,7 +302,7 @@ class Results:
     ann_sharpe: float
     total_trades: int
     win_rate: float
-    profit_factor: float
+    profit_factor: Optional[float]
 
     # New structured blocks.
     returns: ReturnMetrics
@@ -279,6 +321,10 @@ class Results:
     monte_carlo: Optional[MonteCarloSummary] = None
     walk_forward: Optional[WalkForwardSummary] = None
     regimes: Optional[List[RegimeBreakdown]] = None
+    execution_config: Optional[Dict[str, Any]] = None
+    diagnostics: Optional[Dict[str, Any]] = None
+    run_metadata: Optional[Dict[str, Any]] = None
+    asset_spec: Optional[AssetSpecReport] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

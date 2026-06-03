@@ -91,7 +91,7 @@ Press `Tab` to switch between modes.
 Every generated strategy is checked for:
 
 - **Python syntax** errors
-- **Strategy class structure** — requires `__init__` and `on_tick` methods
+- **Strategy class structure** — strict v2 requires `Strategy(broker, params=None)` and `on_bar(self, symbol, bar)`
 - **Forbidden imports** — `os`, `subprocess`, `socket`, `requests`, etc.
 - **Dangerous calls** — `exec`, `eval`, `compile`, `__import__`
 - **Trading pitfalls** — lookahead bias, unbounded lists, division by zero

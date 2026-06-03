@@ -3,6 +3,8 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
+import { Validate } from "../algorithm/validate"
+import { evaluateBacktestQuality } from "../backtest/evaluation"
 
 const parameters = z.object({
   algorithmName: z
@@ -25,7 +27,43 @@ const parameters = z.object({
     .string()
     .default("10000")
     .describe("Starting capital in USD (e.g. '10000')"),
+  dataQualityMode: z
+    .enum(["strict", "repair_outliers"])
+    .default("strict")
+    .describe("Strict by default. Use repair_outliers only for explicit research-only reruns after severe isolated outlier diagnostics."),
 })
+
+type BacktestMessageLike = {
+  parts?: Array<{
+    type?: string
+    tool?: string
+    state?: {
+      status?: string
+      input?: Record<string, any>
+      output?: string
+      metadata?: Record<string, any>
+    }
+  }>
+}
+
+export function countConsecutiveFailedBacktests(messages: BacktestMessageLike[], algorithmName: string) {
+  let count = 0
+  for (const msg of [...messages].reverse()) {
+    for (const part of [...(msg.parts ?? [])].reverse()) {
+      if (part.type !== "tool" || part.tool !== "finny_backtest_run") continue
+      if (part.state?.status !== "completed") continue
+      if (part.state.input?.algorithmName !== algorithmName) continue
+
+      const output = part.state.output ?? ""
+      if (output.includes("Verdict: failed")) {
+        count++
+        continue
+      }
+      return count
+    }
+  }
+  return count
+}
 
 export const BacktestRunTool = Tool.define(
   "finny_backtest_run",
@@ -48,6 +86,17 @@ export const BacktestRunTool = Tool.define(
           results: undefined as BacktestRunner.Results | undefined,
         }
 
+        const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName)
+        if (consecutiveFailures >= 2) {
+          return {
+            title: "Backtest blocked by failure budget",
+            output:
+              `Backtest blocked: "${params.algorithmName}" already has ${consecutiveFailures} consecutive failed backtests in this session.\n\n` +
+              `Stop and summarize the blocker before trying another version. If the next attempt changes concept, asset, timeframe, or venue, ask the user for approval first.`,
+            metadata: { ...emptyMeta },
+          }
+        }
+
         const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
           return {
@@ -57,11 +106,34 @@ export const BacktestRunTool = Tool.define(
           }
         }
 
+        let riskBanner = ""
+        try {
+          const v = await Validate.run(algo.code, {
+            config: algo.config,
+          })
+          if (!v.valid) {
+            return {
+              title: "Backtest blocked by validation",
+              output: Validate.format(v),
+              metadata: { ...emptyMeta },
+            }
+          }
+          riskBanner = Validate.formatRiskBanner(v)
+        } catch (e: any) {
+          return {
+            title: "Backtest blocked by validation",
+            output: `Validation failed to run: ${e?.message ?? String(e)}`,
+            metadata: { ...emptyMeta },
+          }
+        }
+
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
           interval: params.interval,
           capital: params.capital,
+          dataQualityMode: params.dataQualityMode,
+          robustness: { monteCarloPaths: 500, regimes: true },
         })
 
         if (!result.ok) {
@@ -73,12 +145,14 @@ export const BacktestRunTool = Tool.define(
         }
 
         const r = result.results
-        const fmt = (v: number, d = 2) => v.toFixed(d)
+        const quality = evaluateBacktestQuality(r)
+        const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
           `Duration: ${params.duration} | Interval: ${params.interval} | Capital: $${params.capital}`,
+          params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
           ``,
           `┌──────────────────────────────────────────────────┐`,
           `│  BACKTEST RESULTS                                │`,
@@ -105,7 +179,47 @@ export const BacktestRunTool = Tool.define(
           )
         }
 
+        // Trade significance — surface t-stat, p-value, and dynamic low_sample
+        const tradeBlock = r.v2?.trade
+        if (tradeBlock && r.totalTrades > 0) {
+          const tstat = tradeBlock.trade_tstat
+          const pval = tradeBlock.trade_pvalue
+          const barCount = r.diagnostics?.barsProcessed ?? r.v2?.bars_processed ?? 0
+          const minTrades = Math.max(3, Math.min(30, Math.floor(barCount * 0.01)))
+          const lowSample = r.totalTrades < minTrades
+          lines.push(
+            `├──────────────────────┼───────────────────────────┤`,
+          )
+          if (tstat != null) {
+            lines.push(`│  Trade t-stat        │  ${fmt(tstat, 3).padStart(24)} │`)
+          }
+          if (pval != null) {
+            const sig = pval < 0.01 ? "***" : pval < 0.05 ? "**" : pval < 0.10 ? "*" : ""
+            lines.push(`│  Trade p-value       │  ${(fmt(pval, 4) + " " + sig).padStart(24)} │`)
+          }
+          if (lowSample) {
+            lines.push(`│  Sample size         │  ${(`⚠ LOW (${r.totalTrades}/${minTrades} min)`).padStart(24)} │`)
+          }
+        }
+
         lines.push(`└──────────────────────┴───────────────────────────┘`)
+
+        lines.push(
+          ``,
+          `── QUALITY GATE ───────────────────────────────────`,
+          `Verdict: ${quality.label}`,
+        )
+        if (r.totalReturn > 0 && !quality.paperEligible) {
+          lines.push(`Positive ROI, but NOT paper eligible.`)
+        }
+        if (quality.reasons.length > 0) {
+          lines.push(`Reasons: ${quality.reasons.join("; ")}`)
+        }
+        lines.push(`Minimum trades for this window: ${quality.minTrades}`)
+        if (r.v2?.data_quality?.repair_applied) {
+          lines.push(`REPAIRED DATA BACKTEST — research-only until rerun on strict clean data.`)
+        }
+        lines.push(`────────────────────────────────────────────────────`)
 
         if (r.totalTrades === 0 && r.diagnostics) {
           const d = r.diagnostics
@@ -128,8 +242,29 @@ export const BacktestRunTool = Tool.define(
           if (d.strategyErrors > 0) {
             lines.push(`Strategy errors: ${d.strategyErrors} (check stderr for details)`)
           }
+          // Sizing check: when the share price is large relative to capital,
+          // floor(qty) can round to 0. HOW small qty gets depends on the sizing
+          // pattern, so we describe both rather than prescribing a single
+          // risk_pct threshold (which only applies to allocation sizing).
+          const capital = parseFloat(params.capital) || 10000
+          if (d.priceFirst > 0) {
+            const minPctForOneShare = (d.priceFirst / capital) * 100
+            if (minPctForOneShare > 3) {
+              const sym = r.v2?.symbols?.[0] ?? "Asset"
+              lines.push(
+                ``,
+                `⚠ POSITION SIZING CHECK: ${sym} trades at ~$${fmt(d.priceFirst, 0)}/share against $${fmt(capital, 0)} capital.`,
+                `  • Allocation sizing (qty = equity × alloc_pct / price): you need alloc_pct ≥ ${fmt(minPctForOneShare, 1)}% just to afford 1 share.`,
+                `  • Risk-based sizing (qty = equity × risk_pct / stop_dist, then cash-capped): whether floor(qty)=0`,
+                `    depends on the STOP DISTANCE, not just price. A tight stop_pct needs a far smaller risk_pct than ${fmt(minPctForOneShare, 1)}%`,
+                `    to reach 1 share — but a very small risk_pct still floors to 0.`,
+                `  Inspect the computed qty before AND after the cash cap. FIX: raise the sizing %, widen the stop,`,
+                `  raise starting capital, or use fractional shares (qty = round(qty, 2)) where supported.`,
+              )
+            }
+          }
           if (d.buyAttempts === 0 && d.strategyErrors === 0) {
-            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered.`,`Thresholds may be too restrictive for this asset/regime.`)
+            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered, OR position size too small (see above).`,`Check the computed qty against the asset price/stop distance — math.floor(qty) may be rounding to 0.`)
           } else if (d.rejectedOrders > 0 && d.rejectedOrders === d.buyAttempts) {
             lines.push(``, `LIKELY CAUSE: All buy orders were rejected (${Object.keys(d.rejectionReasons).join(", ")}).`)
           } else if (d.strategyErrors > 0) {
@@ -138,9 +273,50 @@ export const BacktestRunTool = Tool.define(
           lines.push(`────────────────────────────────────────────────────`)
         }
 
+        // Engine + assumptions footer — surfaces fill model, fee/slippage
+        // assumptions, kill-switch trips, and parse-warning fallout so
+        // consumers don't silently miss them.
+        if (r.engineVersion || r.diagnostics?.assumptions) {
+          lines.push(``, `── ENGINE & ASSUMPTIONS ────────────────────────────`)
+          if (r.engineVersion) lines.push(`Engine: ${r.engineVersion} (schema_version=${r.schemaVersion ?? "?"})`)
+          if (r.runId) lines.push(`Run ID: ${r.runId}`)
+          if (r.artifactDir) lines.push(`Artifacts: ${r.artifactDir}`)
+          if (r.eligibilityStatus) lines.push(`Eligibility: ${r.eligibilityStatus}`)
+          if (r.diagnostics?.assumptions) {
+            const a = r.diagnostics.assumptions
+            const fee = a.taker_fee_bps != null ? `${a.taker_fee_bps.toFixed(2)} bps taker` : `${(((a.fee_rate ?? 0) * 100).toFixed(3))}%`
+            const slip = a.slippage_bps != null ? `${a.slippage_bps.toFixed(2)} bps + ATR/volume impact` : `${(((a.slippage ?? 0) * 100).toFixed(3))}%`
+            lines.push(`Fill model: ${a.fill_model}  |  fee=${fee}  |  slippage=${slip}`)
+            if (a.participation_cap_pct != null) {
+              lines.push(`Participation cap: ${a.participation_cap_pct.toFixed(1)}% of bar volume (binding)`)
+            }
+          }
+          if (r.diagnostics?.participationWarningCount && r.diagnostics.participationWarningCount > 0) {
+            lines.push(`[!] ${r.diagnostics.participationWarningCount} fills exceeded participation cap — review diagnostics`)
+          }
+          if (r.diagnostics?.killed) {
+            const k = r.diagnostics.killed
+            lines.push(`[!] KILL SWITCH TRIPPED — ${k.reason}` + (k.equity !== undefined ? ` (equity=${k.equity.toFixed(2)}, threshold=${(k.threshold ?? 0).toFixed(2)})` : ""))
+          }
+          if (r.diagnostics?.pendingOrdersAtEnd && r.diagnostics.pendingOrdersAtEnd > 0) {
+            lines.push(`${r.diagnostics.pendingOrdersAtEnd} order(s) remained pending at end of window (placed on the last bar, never filled).`)
+          }
+          if (r.diagnostics?.sharpeUndefinedReason) {
+            lines.push(`Sharpe undefined — reason: ${r.diagnostics.sharpeUndefinedReason}`)
+          }
+          if (r.diagnostics?.parseWarnings && r.diagnostics.parseWarnings.length > 0) {
+            lines.push(`Parse warnings: ${r.diagnostics.parseWarnings.join(", ")}`)
+          }
+          lines.push(`────────────────────────────────────────────────────`)
+        }
+
+        const finalOutput = riskBanner
+          ? `${riskBanner}\n\n${lines.join("\n")}`
+          : lines.join("\n")
+
         return {
           title: `Backtest: ${algo.name} (${params.duration}, ${params.interval})`,
-          output: lines.join("\n"),
+          output: finalOutput,
           metadata: {
             algorithmName: algo.name,
             params: {
@@ -148,7 +324,6 @@ export const BacktestRunTool = Tool.define(
               interval: params.interval,
               capital: params.capital,
             },
-            // Omit v2 blob from metadata to keep session payload lean
             results: { ...r, v2: undefined },
           },
         }

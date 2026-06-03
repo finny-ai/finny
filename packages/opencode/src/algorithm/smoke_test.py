@@ -20,6 +20,7 @@ Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emit
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
 """
 import importlib.util
+import inspect
 import json
 import math
 import random
@@ -62,12 +63,20 @@ class StubBroker:
         self._positions = {}      # symbol -> qty
         self._cost_basis = {}     # symbol -> avg entry price
         self._last_price = {}     # symbol -> last observed price
+        self._history = {}        # symbol -> completed bars
         self.calls = []           # [(side, symbol, qty, notional)]
 
     def set_price(self, symbol, price):
         self._last_price[symbol] = float(price)
 
     def buy(self, symbol, qty=None, notional=None):
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current >= 0: long entry or add (cap by cash)
+          - current  < 0: cover short — possibly with a residual that flips to long
+
+        Realized PnL on cover flows naturally into self._cash: short opened cash by
+        qty*basis, cover spends qty*mark, so the net change is qty*(basis - mark).
+        """
         mark = self._last_price.get(symbol, 0)
         # Record what the strategy ASKED for (before we cap) so leverage violations
         # are observable even if the real broker would silently cap.
@@ -77,39 +86,116 @@ class StubBroker:
         self.calls.append(("buy", symbol, requested_qty, notional))
         if mark <= 0:
             return None
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty if omitted
         if qty is None and notional is not None:
             qty = notional / mark
         if qty is None:
-            qty = self._cash / mark if mark > 0 else 0
-        cost = qty * mark
-        if cost > self._cash:
-            qty = self._cash / mark if mark > 0 else 0
+            # Default: cover the short if short; otherwise size to all cash.
+            qty = abs(current) if current < 0 else (self._cash / mark if mark > 0 else 0)
+        if qty <= 0:
+            return None
+
+        if current >= 0:
+            # Long entry or add — cap by cash, weighted-avg the basis
             cost = qty * mark
-        prev_qty = self._positions.get(symbol, 0)
-        prev_basis = self._cost_basis.get(symbol, 0)
-        new_qty = prev_qty + qty
-        new_basis = (prev_basis * prev_qty + mark * qty) / new_qty if new_qty > 0 else 0
-        self._positions[symbol] = new_qty
-        self._cost_basis[symbol] = new_basis
-        self._cash -= cost
+            if cost > self._cash:
+                qty = self._cash / mark if mark > 0 else 0
+                cost = qty * mark
+            if qty <= 0:
+                return None
+            prev_basis = self._cost_basis.get(symbol, 0)
+            new_qty = current + qty
+            new_basis = (prev_basis * current + mark * qty) / new_qty if new_qty > 0 else 0
+            self._positions[symbol] = new_qty
+            self._cost_basis[symbol] = new_basis
+            self._cash -= cost
+            return None
+
+        # current < 0: covering a short, possibly flipping to long with residual
+        cover_qty = min(qty, abs(current))
+        residual = qty - cover_qty
+        self._cash -= cover_qty * mark
+        new_current = current + cover_qty
+        self._positions[symbol] = new_current
+        if new_current == 0:
+            self._cost_basis.pop(symbol, None)
+
+        if residual > 0:
+            # Residual opens a long at mark, capped by remaining cash
+            cost = residual * mark
+            if cost > self._cash:
+                residual = self._cash / mark if mark > 0 else 0
+                cost = residual * mark
+            if residual > 0:
+                self._positions[symbol] = residual
+                self._cost_basis[symbol] = mark
+                self._cash -= cost
         return None
 
     def sell(self, symbol, qty=None, notional=None):
-        self.calls.append(("sell", symbol, qty, notional))
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current  > 0: long reduce/close — realize PnL via cash inflow
+          - current == 0: open short — receive proceeds, position goes negative
+          - current  < 0: add to short — weighted-avg basis on the short side
+
+        A sell that crosses zero (current > 0 and qty > current) is treated as
+        close-then-open-short on the residual.
+        """
+        requested_qty = qty
         mark = self._last_price.get(symbol, 0)
-        current = self._positions.get(symbol, 0)
-        if mark <= 0 or current <= 0:
+        if notional is not None and qty is None:
+            requested_qty = notional / mark if mark > 0 else 0
+        self.calls.append(("sell", symbol, requested_qty, notional))
+        if mark <= 0:
             return None
-        if qty is None and notional is None:
-            qty = current
-        elif notional is not None:
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty
+        if qty is None and notional is not None:
             qty = notional / mark
-        qty = min(qty, current)
-        proceeds = qty * mark
-        self._positions[symbol] = current - qty
-        if self._positions[symbol] == 0:
-            self._cost_basis.pop(symbol, None)
-        self._cash += proceeds
+        if qty is None:
+            # Default: close the long if long. From flat or short, require an
+            # explicit qty — refusing to open / add to a short on a bare sell()
+            # avoids silently magnifying exposure when the strategy is buggy.
+            if current > 0:
+                qty = current
+            else:
+                return None
+        if qty <= 0:
+            return None
+
+        if current > 0:
+            # Long reduce/close — proceed by min(qty, current), then handle residual
+            close_qty = min(qty, current)
+            self._cash += close_qty * mark
+            new_current = current - close_qty
+            self._positions[symbol] = new_current
+            if new_current == 0:
+                self._cost_basis.pop(symbol, None)
+            residual = qty - close_qty
+            if residual > 0:
+                # Flip to short with residual at mark
+                self._positions[symbol] = -residual
+                self._cost_basis[symbol] = mark
+                self._cash += residual * mark
+            return None
+
+        # current <= 0: open or add to short. Receive proceeds, average the basis.
+        self._cash += qty * mark
+        if current == 0:
+            self._positions[symbol] = -qty
+            self._cost_basis[symbol] = mark
+        else:
+            prev_basis = self._cost_basis.get(symbol, 0)
+            abs_prev = abs(current)
+            abs_new = abs_prev + qty
+            new_basis = (prev_basis * abs_prev + mark * qty) / abs_new
+            self._positions[symbol] = -abs_new
+            self._cost_basis[symbol] = new_basis
         return None
 
     def position(self, symbol):
@@ -127,28 +213,49 @@ class StubBroker:
     def price(self, symbol):
         return self._last_price.get(symbol)
 
+    def set_history(self, symbol, rows):
+        self._history[symbol] = list(rows)
+
+    def history(self, symbol, limit=100):
+        safe_limit = max(0, int(limit))
+        rows = self._history.get(symbol, [])
+        return tuple(dict(r) for r in (rows[-safe_limit:] if safe_limit else []))
+
 
 def _instantiate_strategy(StrategyCls, broker):
-    """Try broker-injection constructor first, fall back to no-arg.
-    Returns (strategy, uses_broker_api)."""
-    try:
-        return StrategyCls(broker), True
-    except TypeError:
-        return StrategyCls(), False
+    """Instantiate the strict Shape-C strategy."""
+    sig = inspect.signature(StrategyCls)
+    accepts_params = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "params"
+        for p in sig.parameters.values()
+    )
+    if accepts_params:
+        return StrategyCls(broker, params={}), True
+    return StrategyCls(broker), True
 
 
 def _pick_entry(strategy):
     """Return (method_name, method_fn, accepts_symbol) for the strategy's entry point."""
-    for name in ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar"):
-        fn = getattr(strategy, name, None)
-        if callable(fn):
-            # on_bar(symbol, bar) takes symbol; on_tick(bar) doesn't.
-            accepts_symbol = name in ("on_bar", "handle_bar", "step", "process_bar")
-            return name, fn, accepts_symbol
-    raise AttributeError("Strategy has no recognised entry method")
+    fn = getattr(strategy, "on_bar", None)
+    if callable(fn):
+        return "on_bar", fn, True
+    raise AttributeError("Strict strategy has no on_bar method")
 
 
-def _make_bar(price, ts=0, symbol="TEST"):
+def _make_bar(price, ts=0, symbol="TEST", prev=None):
+    return {
+        "symbol": symbol,
+        "open": price,
+        "prev_open": None if prev is None else prev["open"],
+        "prev_high": None if prev is None else prev["high"],
+        "prev_low": None if prev is None else prev["low"],
+        "prev_close": None if prev is None else prev["close"],
+        "volume": 1_000_000,
+        "timestamp": ts,
+    }
+
+
+def _completed_row(price, ts=0, symbol="TEST"):
     return {
         "symbol": symbol,
         "open": price,
@@ -160,18 +267,30 @@ def _make_bar(price, ts=0, symbol="TEST"):
     }
 
 
-def _regimes(n=200):
+def _regime_prices(n=200, seed=42):
     base = 100.0
     constant = [base] * n
     up = [base * (1 + 0.005) ** i for i in range(n)]
     down = [base * (1 - 0.005) ** i for i in range(n)]
-    rng = random.Random(42)
+    rng = random.Random(seed)
     rw = []
     p = base
     for _ in range(n):
         p *= 1 + rng.gauss(0, 0.01)
         rw.append(p)
-    return {"constant": constant, "up": up, "down": down, "random": rw}
+    return constant, up, down, rw
+
+
+def _regimes(n=200):
+    constant, up, down, rw = _regime_prices(n, 42)
+    _, _, _, long_rw = _regime_prices(500, 4242)
+    return {
+        "constant": constant,
+        "up": up,
+        "down": down,
+        "random": rw,
+        "long_random": long_rw,
+    }
 
 
 def _snapshot_state(strategy):
@@ -246,10 +365,13 @@ def _run_regime(StrategyCls, prices):
     exc = None
 
     requested_qty_events = []  # [{tick, requested_qty, price, equity}]
+    completed = []
 
     for i, price in enumerate(prices):
-        bar = _make_bar(price, ts=i, symbol=SYMBOL)
+        prev = completed[-1] if completed else None
+        bar = _make_bar(price, ts=i, symbol=SYMBOL, prev=prev)
         broker.set_price(SYMBOL, price)
+        broker.set_history(SYMBOL, completed)
         equity_before = broker.equity()
         pre_calls = len(broker.calls)
         try:
@@ -305,6 +427,7 @@ def _run_regime(StrategyCls, prices):
             "position": current_position,
             "equity": current_equity,
         })
+        completed.append(_completed_row(price, ts=i, symbol=SYMBOL))
 
     # For broker-API strategies with no stored equity attribute, surface the
     # broker's equity as a pseudo-scalar so EQUITY_STATIC can reason about it.

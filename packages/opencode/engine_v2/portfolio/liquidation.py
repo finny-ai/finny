@@ -12,26 +12,33 @@ from .positions import Position
 def liquidation_price(
     pos: Position, equity: float, curr_price: float, maintenance_pct: float
 ) -> Optional[float]:
-    """Price at which `equity_at_P ≈ maintenance_pct * |qty| * P`.
+    """Price at which `equity_at_P ≈ maintenance_pct * |qty| * P * M`,
+    where M is the contract multiplier (50 for ES, 100 for options, 1 for spot).
 
     Derivation:
-      equity_at_P = equity + qty*(P - curr)
-      Set equal to mp * |qty| * P, then solve for P:
-        equity + qty*P - qty*curr = mp*|qty|*P
-        P * (qty - mp*|qty|*sign(qty)) = qty*curr - equity
-        P = (qty*curr - equity) / (qty - mp*|qty|*sign(qty))
+      equity_at_P     = equity + qty*(P - curr)*M
+      maintenance@P   = mp * |qty| * P * M
+      Setting equal and solving for P:
+        equity + qty*P*M - qty*curr*M = mp*|qty|*P*M
+        P*M*(qty - mp*|qty|) = qty*curr*M - equity
+        P = (qty*curr*M - equity) / (M*(qty - mp*|qty|))
 
-    For longs (qty>0), denominator simplifies to qty*(1 - mp); P < curr when
-    equity > 0. For shorts (qty<0), liq is above curr.
+      For longs  (qty>0, |qty|=qty):   denom = M*qty*(1 - mp), positive → P < curr
+      For shorts (qty<0, |qty|=-qty):  denom = M*qty*(1 + mp), negative → P > curr
+
+    Note: an earlier version applied `* sign(qty)` to the |qty| term inside the
+    denominator. That cancelled the sign correctly for longs but produced the
+    wrong factor (1-mp instead of 1+mp) for shorts, and the multiplier was
+    missing on both sides, so liquidation prices for leveraged futures were
+    silently off by ~50× and for shorts in the wrong direction. Both fixed here.
     """
     if pos.qty == 0:
         return None
-    abs_qty = abs(pos.qty)
-    sgn = 1.0 if pos.qty > 0 else -1.0
-    denom = pos.qty - maintenance_pct * abs_qty * sgn
+    M = float(pos.multiplier) if pos.multiplier else 1.0
+    denom = M * (pos.qty - maintenance_pct * abs(pos.qty))
     if denom == 0:
         return None
-    p = (pos.qty * curr_price - equity) / denom
+    p = (pos.qty * curr_price * M - equity) / denom
     if p <= 0:
         return None
     return float(p)

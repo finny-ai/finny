@@ -78,3 +78,6 @@ class ShapeCBrokerAdapter:
 
     def price(self, symbol: str) -> float:
         return float(self._broker.latest_price(symbol))
+
+    def history(self, symbol: str, limit: int):
+        return self._market.history(symbol, limit)

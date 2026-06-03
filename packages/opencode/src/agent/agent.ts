@@ -3,7 +3,6 @@ import z from "zod"
 import { Provider } from "../provider/provider"
 import { ModelID, ProviderID } from "../provider/schema"
 import { generateObject, streamObject, type ModelMessage } from "ai"
-import { Instance } from "../project/instance"
 import { Truncate } from "../tool/truncate"
 import { Auth } from "../auth"
 import { ProviderTransform } from "../provider/transform"
@@ -29,7 +28,6 @@ const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
-import { Global } from "@/global"
 import path from "path"
 import { Plugin } from "@/plugin"
 import { Skill } from "../skill"
@@ -135,17 +133,78 @@ export namespace Agent {
             list: "deny",
             bash: "deny",
             external_directory: "deny",
-            // `websearch` is denied so the runtime matches what the prompts
-            // already advertise ("there is no websearch tool"). Without this,
-            // websearch was registered + allowed by the default `*: allow`
-            // and the model would intermittently call it, breaking when no
-            // search-API key was configured.
             websearch: "deny",
-            // `webfetch` stays allowed — useful for grounding decisions in
-            // a known news/docs URL the user provided.
-            // `task` (subagent spawn), `todowrite`, `skill`, and the
-            // finny_* tools have their own permission keys and are not
-            // restricted here.
+          })
+
+          function finnyToolBundle(tools: string[], taskAgents: string[] = []) {
+            const permission: Record<string, any> = { "*": "deny" }
+            for (const tool of tools) permission[tool] = "allow"
+            if (taskAgents.length > 0) {
+              permission.task = {
+                "*": "deny",
+                ...Object.fromEntries(taskAgents.map((agent) => [agent, "allow"])),
+              }
+            }
+            return Permission.fromConfig(permission)
+          }
+
+          const finnyBuildTools = [
+            "question",
+            "task",
+            "finny_algorithm_scaffold",
+            "finny_algorithm_save",
+            "finny_algorithm_validate",
+            "finny_algorithm_get",
+            "finny_algorithm_list",
+            "finny_algorithm_versions",
+            "finny_algorithm_export",
+            "finny_algorithm_set_params",
+            "finny_backtest_run",
+            "finny_backtest_walkforward",
+            "finny_get_quote",
+            "finny_get_history",
+            "finny_extract_data",
+            "webfetch",
+          ]
+          const finnyResearchTools = [
+            "question",
+            "task",
+            "finny_get_quote",
+            "finny_get_history",
+            "finny_extract_data",
+            "webfetch",
+            "finny_algorithm_set_params",
+          ]
+          const finnyChatTools = [
+            "question",
+            "task",
+            "finny_get_quote",
+            "finny_get_history",
+            "finny_algorithm_list",
+            "finny_algorithm_get",
+            "finny_backtest_history",
+            "webfetch",
+          ]
+          const finnyTemplateReadAccess = Permission.fromConfig({
+            read: {
+              "algos/_template/*": "allow",
+            },
+          })
+          const finnyTemplateDataAccess = Permission.fromConfig({
+            read: {
+              "algos/_template/data/*": "allow",
+            },
+            edit: {
+              "algos/_template/data/*": "allow",
+            },
+          })
+          const finnyTemplateNewsAccess = Permission.fromConfig({
+            read: {
+              "algos/_template/data/news/*": "allow",
+            },
+            edit: {
+              "algos/_template/data/news/*": "allow",
+            },
           })
 
           const agents: Record<string, Info> = {
@@ -158,44 +217,32 @@ export namespace Agent {
               permission: Permission.merge(
                 defaults,
                 finnyFileSystemSandbox,
+                finnyToolBundle(finnyBuildTools, ["data_extractor", "researcher"]),
+                finnyTemplateReadAccess,
                 Permission.fromConfig({
                   question: "allow",
-                  plan_enter: "allow",
                 }),
                 user,
               ),
               mode: "primary",
               native: true,
-              // Sized for: scaffold + write/save (with up-to-3 validation retries)
-              // + backtest + walk-forward + a couple of tweak/re-run cycles +
-              // summary. Without an explicit cap maxSteps defaults to Infinity
-              // and the MAX_STEPS safety net never fires.
-              steps: 25,
+              // Sized for: mandatory data/news subagents + scaffold + write/save
+              // (with up-to-3 validation retries) + backtest + walk-forward +
+              // a couple of tweak/re-run cycles + summary. Without an explicit
+              // cap maxSteps defaults to Infinity and the MAX_STEPS safety net
+              // never fires.
+              steps: 35,
             },
             research: {
               name: "research",
-              description: "Research mode. Asks questions first, researches strategy, then builds.",
+              description: "Research mode. Asks questions first, researches strategy, then hands off to Build.",
               color: "#a78bfa",
               options: {},
               prompt: PROMPT_FINNY_RESEARCH,
               permission: Permission.merge(
                 defaults,
                 finnyFileSystemSandbox,
-                Permission.fromConfig({
-                  question: "allow",
-                  plan_exit: "allow",
-                  // Research mode is allowed to write its plan markdown files
-                  // — a narrow exception to the sandbox above.
-                  external_directory: {
-                    [path.join(Global.Path.data, "plans", "*")]: "allow",
-                  },
-                  edit: {
-                    "*": "deny",
-                    [path.join(".opencode", "plans", "*.md")]: "allow",
-                    [path.relative(Instance.worktree, path.join(Global.Path.data, path.join("plans", "*.md")))]:
-                      "allow",
-                  },
-                }),
+                finnyToolBundle(finnyResearchTools, ["data_extractor", "researcher"]),
                 user,
               ),
               mode: "primary",
@@ -213,10 +260,7 @@ export namespace Agent {
               permission: Permission.merge(
                 defaults,
                 finnyFileSystemSandbox,
-                Permission.fromConfig({
-                  question: "allow",
-                  edit: "deny",
-                }),
+                finnyToolBundle(finnyChatTools, ["researcher"]),
                 user,
               ),
               mode: "primary",
@@ -292,7 +336,7 @@ export namespace Agent {
               name: "data_extractor",
               description:
                 "Data extraction subagent. Fetches historical OHLCV data from the best available source " +
-                "(Binance for crypto, yfinance for stocks/ETFs), writes parquet files into the active " +
+                "(Alpaca when configured, Binance for crypto, yfinance fallback), writes parquet files into the active " +
                 "algorithm's data/ folder, and returns a structured digest with price stats, performance " +
                 "metrics, and data quality — not raw bars. Use this when the main agent needs market " +
                 "data for strategy design, backtesting, or analysis.",
@@ -301,10 +345,9 @@ export namespace Agent {
               prompt: PROMPT_FINNY_DATA_EXTRACTOR,
               permission: Permission.merge(
                 defaults,
-                Permission.fromConfig({
-                  "*": "deny",
-                  finny_extract_data: "allow",
-                }),
+                finnyFileSystemSandbox,
+                finnyToolBundle(["finny_extract_data"]),
+                finnyTemplateDataAccess,
                 user,
               ),
               mode: "subagent",
@@ -314,17 +357,16 @@ export namespace Agent {
             researcher: {
               name: "researcher",
               description:
-                "News research subagent. Searches the web for recent news, sentiment, and market " +
-                "context, then writes structured findings to the algorithm's data/news/ directory. " +
-                "Use this when the main agent needs current market context for strategy design.",
+                "News research subagent. Fetches known URLs and optional configured news channels, then returns " +
+                "a concise cited context brief. Use only when the main agent needs current market context.",
               color: "#8b5cf6",
               options: {},
               prompt: PROMPT_FINNY_RESEARCHER,
               permission: Permission.merge(
                 defaults,
-                Permission.fromConfig({
-                  todowrite: "deny",
-                }),
+                finnyFileSystemSandbox,
+                finnyToolBundle(["webfetch", "websearch", "finny_discord_read"]),
+                finnyTemplateNewsAccess,
                 user,
               ),
               mode: "subagent",

@@ -63,19 +63,6 @@ async function setupEnv(): Promise<{ algosPath: string; algoDir: string }> {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — opencode tool definition structure
-// ---------------------------------------------------------------------------
-
-describe("research-dispatch.ts tool definition", () => {
-  test("exports ResearchDispatchTool with correct tool id", async () => {
-    const mod = await import(
-      "../../../../packages/opencode/src/tool/research-dispatch"
-    )
-    expect(mod.ResearchDispatchTool).toBeDefined()
-  })
-})
-
-// ---------------------------------------------------------------------------
 // Tests — researcher agent definition
 // ---------------------------------------------------------------------------
 

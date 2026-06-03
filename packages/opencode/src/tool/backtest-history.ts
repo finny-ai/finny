@@ -18,7 +18,7 @@ interface BacktestHistoryEntry {
     endingEquity: number
     totalTrades: number
     winRate: number
-    profitFactor: number
+    profitFactor: number | null
   }
   symbol?: string
   timestamp: number
@@ -97,7 +97,7 @@ export const BacktestHistoryTool = Tool.define(
             `Ending Equity: $${r.endingEquity.toFixed(2)}`,
             `Total Trades: ${r.totalTrades}`,
             `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
-            `Profit Factor: ${r.profitFactor.toFixed(2)}`,
+            `Profit Factor: ${r.profitFactor == null ? "N/A" : r.profitFactor.toFixed(2)}`,
             ``,
           ]
             .filter(Boolean)

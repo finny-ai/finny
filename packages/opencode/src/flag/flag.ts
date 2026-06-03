@@ -13,6 +13,9 @@ function falsy(key: string) {
 export namespace Flag {
   export const OTEL_EXPORTER_OTLP_ENDPOINT = process.env["OTEL_EXPORTER_OTLP_ENDPOINT"]
   export const OTEL_EXPORTER_OTLP_HEADERS = process.env["OTEL_EXPORTER_OTLP_HEADERS"]
+  export const OPENCODE_TELEMETRY_URL = process.env["OPENCODE_TELEMETRY_URL"] ?? process.env["FINNY_TELEMETRY_URL"]
+  export const OPENCODE_TELEMETRY_TOKEN =
+    process.env["OPENCODE_TELEMETRY_TOKEN"] ?? process.env["FINNY_TELEMETRY_TOKEN"]
 
   export const OPENCODE_AUTO_SHARE = truthy("OPENCODE_AUTO_SHARE")
   export const OPENCODE_AUTO_HEAP_SNAPSHOT = truthy("OPENCODE_AUTO_HEAP_SNAPSHOT")
@@ -24,6 +27,7 @@ export namespace Flag {
   export declare const OPENCODE_PLUGIN_META_FILE: string | undefined
   export const OPENCODE_CONFIG_CONTENT = process.env["OPENCODE_CONFIG_CONTENT"]
   export const OPENCODE_DISABLE_AUTOUPDATE = truthy("OPENCODE_DISABLE_AUTOUPDATE")
+  export const FINNY_DISABLE_AUTOUPDATE = truthy("FINNY_DISABLE_AUTOUPDATE")
   export const OPENCODE_ALWAYS_NOTIFY_UPDATE = truthy("OPENCODE_ALWAYS_NOTIFY_UPDATE")
   export const OPENCODE_DISABLE_PRUNE = truthy("OPENCODE_DISABLE_PRUNE")
   export const OPENCODE_DISABLE_TERMINAL_TITLE = truthy("OPENCODE_DISABLE_TERMINAL_TITLE")

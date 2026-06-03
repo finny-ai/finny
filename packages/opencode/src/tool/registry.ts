@@ -33,7 +33,6 @@ import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
 import { ExtractDataTool } from "./extract-data"
-// ResearchDispatchTool removed — Build agent constructs researcher prompts inline
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -73,13 +72,26 @@ import { AppFileSystem } from "../filesystem"
 import { Bus } from "../bus"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
-import { Permission } from "@/permission"
+import { evaluate as evaluatePermissionRule } from "../permission/evaluate"
+import { Wildcard } from "@/util/wildcard"
 
 export namespace ToolRegistry {
   const log = Log.create({ service: "tool.registry" })
 
   type TaskDef = Tool.InferDef<typeof TaskTool>
   type ReadDef = Tool.InferDef<typeof ReadTool>
+  const EDIT_TOOLS = ["edit", "write", "apply_patch", "multiedit"]
+
+  function disabledTools(tools: string[], ruleset: Agent.Info["permission"]): Set<string> {
+    const result = new Set<string>()
+    for (const tool of tools) {
+      const permission = EDIT_TOOLS.includes(tool) ? "edit" : tool
+      const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
+      if (!rule) continue
+      if (rule.pattern === "*" && rule.action === "deny") result.add(tool)
+    }
+    return result
+  }
 
   type State = {
     custom: Tool.Def[]
@@ -173,7 +185,6 @@ export namespace ToolRegistry {
       const portfoliobacktest = yield* PortfolioBacktestTool
       const discordread = yield* DiscordReadTool
       const extractdata = yield* ExtractDataTool
-      // researchdispatch removed — prompt constructed inline by Build agent
 
       const state = yield* InstanceState.make<State>(
         Effect.fn("ToolRegistry.state")(function* (ctx) {
@@ -276,7 +287,6 @@ export namespace ToolRegistry {
             portfoliobacktest: Tool.init(portfoliobacktest),
             discordread: Tool.init(discordread),
             extractdata: Tool.init(extractdata),
-            // researchdispatch removed
           })
 
           return {
@@ -322,7 +332,6 @@ export namespace ToolRegistry {
               tool.portfoliobacktest,
               tool.discordread,
               tool.extractdata,
-              // tool.researchdispatch removed
               ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
               ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
             ],
@@ -363,7 +372,7 @@ export namespace ToolRegistry {
       const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
         const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
         const filtered = items.filter(
-          (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
+          (item) => evaluatePermissionRule("task", item.name, agent.permission).action !== "deny",
         )
         const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
         const description = list
@@ -376,7 +385,7 @@ export namespace ToolRegistry {
       })
 
       const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-        const filtered = (yield* all()).filter((tool) => {
+        const providerFiltered = (yield* all()).filter((tool) => {
           if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
             return input.providerID === ProviderID.opencode || Flag.OPENCODE_ENABLE_EXA
           }
@@ -389,6 +398,11 @@ export namespace ToolRegistry {
 
           return true
         })
+        const disabled = disabledTools(
+          providerFiltered.map((tool) => tool.id),
+          input.agent.permission,
+        )
+        const filtered = providerFiltered.filter((tool) => !disabled.has(tool.id))
 
         return yield* Effect.forEach(
           filtered,

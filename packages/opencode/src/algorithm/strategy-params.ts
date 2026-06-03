@@ -4,11 +4,28 @@ import { z } from "zod"
 // JSON string in Algorithm.Info.config. Only the inputs the user supplies —
 // outputs (returns, P&L) live elsewhere.
 export const StrategyParams = z.object({
+  params: z.record(z.string(), z.unknown()).optional(),
   symbol: z.string().optional(),
-  asset_class: z.enum(["equity", "crypto"]).optional(),
+  asset_class: z.enum(["equity", "crypto", "crypto_spot", "crypto_perp", "future", "fx", "option"]).optional(),
   interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"]).optional(),
   equity_usd: z.number().positive().optional(),
   brokerage: z.enum(["alpaca", "binance"]).optional(),
+  execution: z
+    .object({
+      max_leverage: z.number().positive().optional(),
+      initial_margin_pct: z.number().positive().optional(),
+      maintenance_margin_pct: z.number().nonnegative().optional(),
+      funding_rate_bps: z.number().optional(),
+      funding_interval_hours: z.number().positive().optional(),
+      spread_enabled: z.boolean().optional(),
+      maker_fee_bps: z.number().nonnegative().optional(),
+      taker_fee_bps: z.number().nonnegative().optional(),
+      commission_per_contract: z.number().nonnegative().optional(),
+      slippage_bps: z.number().nonnegative().optional(),
+    })
+    .passthrough()
+    .optional(),
+  asset_spec: z.record(z.string(), z.unknown()).optional(),
   backtest: z
     .object({
       duration: z.string().optional(), // "2w", "4w", "5d", "1m", "Ny", …
@@ -25,6 +42,32 @@ export const StrategyParams = z.object({
     .optional(),
 })
 export type StrategyParams = z.infer<typeof StrategyParams>
+
+const EXECUTION_KEYS = new Set([
+  "symbol",
+  "asset_class",
+  "interval",
+  "equity_usd",
+  "brokerage",
+  "execution",
+  "asset_spec",
+  "backtest",
+  "risk",
+])
+
+function parseRawObject(json: string | undefined | null): Record<string, any> {
+  if (!json) return {}
+  try {
+    const parsed = JSON.parse(json)
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+}
 
 // Tolerant parser: bad / missing JSON returns {}. Unknown keys are dropped by
 // the schema so this always yields a clean object.
@@ -51,7 +94,7 @@ export function mergeConfig(prev: StrategyParams, patch: Partial<StrategyParams>
       delete (out as any)[key]
       continue
     }
-    if (key === "backtest" || key === "risk") {
+    if (key === "params" || key === "backtest" || key === "risk" || key === "execution" || key === "asset_spec") {
       const prevSub = (prev as any)[key] ?? {}
       const merged = { ...prevSub }
       for (const [k2, v2] of Object.entries(value)) {
@@ -69,4 +112,61 @@ export function mergeConfig(prev: StrategyParams, patch: Partial<StrategyParams>
 
 export function serializeConfig(p: StrategyParams): string {
   return JSON.stringify(p)
+}
+
+/**
+ * Normalize agent-supplied config before persistence.
+ *
+ * Generated strategies historically mixed execution inputs (`symbol`,
+ * `interval`, capital) and strategy knobs (`fast_ma`, `stop_loss`) at the top
+ * level. The backtest engine needs execution inputs top-level, while strategy
+ * code receives knobs through `params`. On version saves, preserve execution
+ * inputs from the previous version unless explicitly overridden or cleared.
+ */
+export function normalizeConfigForSave(input: {
+  incoming?: string | null
+  previous?: string | null
+  preserveExecution?: boolean
+}): string | undefined {
+  const incoming = parseRawObject(input.incoming)
+  const previous = parseRawObject(input.previous)
+  const normalized: Record<string, any> = {}
+
+  if (input.preserveExecution) {
+    for (const key of EXECUTION_KEYS) {
+      if (previous[key] !== undefined) normalized[key] = previous[key]
+    }
+  }
+
+  const incomingParams = isPlainObject(incoming.params) ? incoming.params : undefined
+  const topLevelStrategyParams: Record<string, any> = {}
+  let sawIncomingStrategyParams = false
+
+  for (const [key, value] of Object.entries(incoming)) {
+    if (key === "params") {
+      sawIncomingStrategyParams = true
+      continue
+    }
+    if (EXECUTION_KEYS.has(key)) {
+      if (value === null) delete normalized[key]
+      else normalized[key] = value
+      continue
+    }
+    if (value !== undefined && value !== null) {
+      sawIncomingStrategyParams = true
+      topLevelStrategyParams[key] = value
+    }
+  }
+
+  const params =
+    sawIncomingStrategyParams || incomingParams
+      ? { ...(incomingParams ?? {}), ...topLevelStrategyParams }
+      : isPlainObject(previous.params)
+        ? previous.params
+        : undefined
+
+  if (params && Object.keys(params).length > 0) normalized.params = params
+
+  if (Object.keys(normalized).length === 0) return undefined
+  return JSON.stringify(normalized)
 }

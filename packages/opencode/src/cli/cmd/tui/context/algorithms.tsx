@@ -1,6 +1,7 @@
-import { createResource, createSignal, type Resource } from "solid-js"
+import { createResource, createSignal, onCleanup, type Resource } from "solid-js"
 import { Algorithm } from "@/algorithm"
 import { createSimpleContext } from "./helper"
+import { useEvent } from "./event"
 
 type AlgorithmsState = {
   data: Resource<Algorithm.Info[]>
@@ -10,6 +11,7 @@ type AlgorithmsState = {
 export const { use: useAlgorithms, provider: AlgorithmsProvider } = createSimpleContext<AlgorithmsState, {}>({
   name: "Algorithms",
   init: () => {
+    const event = useEvent()
     const [tick, setTick] = createSignal(0)
     const [data] = createResource(
       tick,
@@ -27,6 +29,17 @@ export const { use: useAlgorithms, provider: AlgorithmsProvider } = createSimple
       },
       { initialValue: [] },
     )
+    const unsubscribe = event.subscribe((rawEvt) => {
+      const type = (rawEvt as { type?: string }).type
+      if (
+        type === "algorithm.saved" ||
+        type === "algorithm.removed" ||
+        type === "algorithm.config_patched"
+      ) {
+        setTick((t) => t + 1)
+      }
+    })
+    onCleanup(() => unsubscribe())
     return {
       data,
       refetch: () => setTick((t) => t + 1),

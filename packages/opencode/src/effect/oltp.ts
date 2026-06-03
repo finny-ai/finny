@@ -6,7 +6,7 @@ import { Flag } from "@/flag/flag"
 import { CHANNEL, VERSION } from "@/installation/meta"
 
 export namespace Observability {
-  const base = Flag.OTEL_EXPORTER_OTLP_ENDPOINT
+  const base = Flag.OTEL_EXPORTER_OTLP_ENDPOINT ?? Flag.OPENCODE_TELEMETRY_URL
   export const enabled = !!base
 
   const resource = {
@@ -18,16 +18,9 @@ export namespace Observability {
     },
   }
 
-  const headers = Flag.OTEL_EXPORTER_OTLP_HEADERS
-    ? Flag.OTEL_EXPORTER_OTLP_HEADERS.split(",").reduce(
-        (acc, x) => {
-          const [key, value] = x.split("=")
-          acc[key] = value
-          return acc
-        },
-        {} as Record<string, string>,
-      )
-    : undefined
+  const headers =
+    parseHeaders(Flag.OTEL_EXPORTER_OTLP_HEADERS) ??
+    (Flag.OPENCODE_TELEMETRY_TOKEN ? { Authorization: `Bearer ${Flag.OPENCODE_TELEMETRY_TOKEN}` } : undefined)
 
   export const layer = !base
     ? EffectLogger.layer
@@ -38,4 +31,19 @@ export namespace Observability {
         resource,
         headers,
       }).pipe(Layer.provide(EffectLogger.layer), Layer.provide(FetchHttpClient.layer))
+
+  function parseHeaders(input: string | undefined) {
+    if (!input) return
+    return input.split(",").reduce(
+      (acc, item) => {
+        const index = item.indexOf("=")
+        if (index === -1) return acc
+        const key = item.slice(0, index).trim()
+        const value = item.slice(index + 1).trim()
+        if (key) acc[key] = value
+        return acc
+      },
+      {} as Record<string, string>,
+    )
+  }
 }

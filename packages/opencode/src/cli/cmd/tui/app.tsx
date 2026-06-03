@@ -1,6 +1,7 @@
 import { render, TimeToFirstDraw, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/solid"
 import { Clipboard } from "@tui/util/clipboard"
 import { Selection } from "@tui/util/selection"
+import { formatTranscript } from "@tui/util/transcript"
 import { createCliRenderer, MouseButton, type CliRendererConfig } from "@opentui/core"
 import { RouteProvider, useRoute } from "@tui/context/route"
 import {
@@ -869,12 +870,12 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         name: "subscribe",
       },
       category: "System",
-      // Hide when telemetry is disabled; the email POST hits the same Convex
-      // deployment as analytics, so the opt-out covers both.
+      // Hide unless telemetry is enabled; the email POST hits the same Convex
+      // deployment as analytics, so the opt-in covers both.
       hidden: !Analytics.isEnabled(),
       onSelect: () => {
         if (!Analytics.isEnabled()) {
-          toast.show({ variant: "info", message: "Telemetry is disabled (FINNY_TELEMETRY=0)", duration: 3000 })
+          toast.show({ variant: "info", message: "Telemetry is disabled (set FINNY_TELEMETRY=1 to enable)", duration: 3000 })
           return
         }
         DialogEmailCapture.show(dialog)
@@ -1049,6 +1050,53 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         dialog.clear()
       },
     },
+    {
+      title: "Copy session transcript",
+      value: "session.copy",
+      category: "Session",
+      slash: {
+        name: "copy",
+        aliases: ["transcript"],
+      },
+      description: "Copy the full session (prompts, thinking, tools, results) as markdown to clipboard",
+      onSelect: async (dialog) => {
+        dialog.clear()
+        if (route.data.type !== "session") {
+          toast.show({ variant: "warning", message: "No active session to copy" })
+          return
+        }
+        const sessionID = route.data.sessionID
+        const session = sync.session.get(sessionID)
+        if (!session) {
+          toast.show({ variant: "warning", message: "Session not found" })
+          return
+        }
+        const messages = sync.data.message[sessionID] ?? []
+        if (messages.length === 0) {
+          toast.show({ variant: "warning", message: "Session has no messages" })
+          return
+        }
+        const transcript = formatTranscript(
+          {
+            id: session.id,
+            title: session.title ?? "Untitled",
+            time: session.time,
+          },
+          messages.map((msg) => ({
+            info: msg,
+            parts: sync.data.part[msg.id] ?? [],
+          })),
+          {
+            thinking: true,
+            toolDetails: true,
+            assistantMetadata: true,
+            providers: sync.data.provider,
+          },
+        )
+        await Clipboard.copy(transcript)
+        toast.show({ variant: "success", message: `Copied ${messages.length} messages to clipboard` })
+      },
+    },
   ])
 
   event.on(TuiEvent.CommandExecute.type, (evt) => {
@@ -1136,6 +1184,16 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     })
   })
 
+  event.on("installation.updated", async (evt) => {
+    const version = evt.properties.version
+    await DialogAlert.show(
+      dialog,
+      "Update Complete",
+      `Finny has been updated to v${version}. Please restart to use the new version.`,
+    )
+    exit()
+  })
+
   event.on("installation.update-available", async (evt) => {
     const version = evt.properties.version
 
@@ -1174,13 +1232,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
       return
     }
 
-    await DialogAlert.show(
-      dialog,
-      "Update Complete",
-      `Successfully updated to OpenCode v${result.data.version}. Please restart the application.`,
-    )
-
-    exit()
+    // Success dialog and exit are handled by the "installation.updated" event
+    // handler above — the server emits that event after a successful upgrade.
   })
 
   const plugin = createMemo(() => {

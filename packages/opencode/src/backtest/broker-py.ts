@@ -101,6 +101,18 @@ class Broker:
         """
         return True
 
+    def greeks(self, symbol: str) -> Dict[str, Any]:
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0}
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        return None
+
+    def days_to_expiry(self, symbol: str) -> float:
+        return float("inf")
+
+    def option_chain(self, underlying: str, expiry: str = None):
+        return []
+
     @staticmethod
     def is_crypto(symbol: str) -> bool:
         u = symbol.upper()
@@ -108,7 +120,17 @@ class Broker:
 
 
 class SimBroker(Broker):
-    """In-memory simulated broker for backtests."""
+    """In-memory simulated broker for backtests.
+
+    Execution model: buy()/sell() ENQUEUE intents. Orders fill at the NEXT
+    bar's open via settle(), which the runner calls at the start of each bar
+    before invoking the strategy. This eliminates the same-bar-close lookahead
+    that lets strategies decide using the price they're about to fill at.
+
+    The first bar of a run produces no fills (no prior intents to settle).
+    Intents queued on the last bar of a run remain pending and surface in
+    diagnostics['pending_orders_at_end'].
+    """
 
     def __init__(self, starting_cash: float, fee_rate: float = 0.00075, slippage: float = 0.0001):
         self._starting_cash = float(starting_cash)
@@ -119,11 +141,26 @@ class SimBroker(Broker):
         self._fee_rate = float(fee_rate)
         self._slippage = float(slippage)
         self._orders: list = []
+        self._pending_orders: list = []  # queued intents awaiting settle()
         self._trade_pnls: list = []
         self._equity_curve: list = [float(starting_cash)]
         self._position_history: list = []
         self._order_counter = 0
         self._reject_log_count = 0
+        # Participation tracking — set by the runner before each settle() so
+        # we can warn when a single fill exceeds a fraction of bar volume.
+        self._bar_volume: Dict[str, float] = {}
+        self._participation_warnings: list = []
+        # Optional kill switch — when set, drops further fills once equity
+        # falls below starting_cash * (1 - killswitch_drawdown).
+        self._killswitch_drawdown: Optional[float] = None
+        self._killed: Optional[Dict[str, Any]] = None
+
+    def set_killswitch(self, drawdown_frac: Optional[float]) -> None:
+        self._killswitch_drawdown = float(drawdown_frac) if drawdown_frac is not None else None
+
+    def set_bar_volume(self, symbol: str, volume: float) -> None:
+        self._bar_volume[symbol] = float(volume)
 
     @property
     def starting_cash(self) -> float:
@@ -148,6 +185,14 @@ class SimBroker(Broker):
     def position_history(self) -> list:
         return list(self._position_history)
 
+    @property
+    def pending_orders(self) -> list:
+        return list(self._pending_orders)
+
+    @property
+    def killed(self) -> Optional[Dict[str, Any]]:
+        return dict(self._killed) if self._killed else None
+
     def mark_to_market(self) -> float:
         eq = self._cash
         total_pos = 0.0
@@ -156,64 +201,147 @@ class SimBroker(Broker):
             total_pos += abs(qty)
         self._equity_curve.append(eq)
         self._position_history.append(total_pos)
+        # Kill switch — checked after the latest mark so we trip exactly once
+        # the post-mark equity falls below the threshold.
+        if self._killswitch_drawdown is not None and self._killed is None:
+            threshold = self._starting_cash * (1.0 - self._killswitch_drawdown)
+            if eq <= threshold:
+                self._killed = {
+                    "reason": "drawdown",
+                    "equity": eq,
+                    "threshold": threshold,
+                    "drawdown_frac": self._killswitch_drawdown,
+                }
+                # Drop any pending orders — strategy is dead.
+                for order in self._pending_orders:
+                    self._update_pending_order_record(order, 0.0, 0.0, "canceled")
+                self._pending_orders.clear()
         return eq
 
-    def buy(self, symbol, qty=None, notional=None):
-        mark = self._last_price.get(symbol)
-        if mark is None or mark <= 0:
-            return self._reject(symbol, "buy", "no price")
+    def settle(self, symbol: str, fill_price: float) -> None:
+        """Fill queued buy/sell intents at the given price (next bar's open).
+
+        Called by the runner at the start of each bar. Slippage and fees are
+        applied here, not at intent time. After a kill-switch trip the queue
+        is emptied and this call is a no-op.
+        """
+        if self._killed is not None:
+            for order in self._pending_orders:
+                self._update_pending_order_record(order, 0.0, 0.0, "canceled")
+            self._pending_orders.clear()
+            return
+        if fill_price is None or fill_price <= 0:
+            return
+        # Record the fill price so later strategy reads of broker.price() see
+        # decision-time-safe data, not the previous bar's close.
+        self._last_price[symbol] = float(fill_price)
+        if not self._pending_orders:
+            return
+        remaining: list = []
+        for order in self._pending_orders:
+            if order["symbol"] != symbol:
+                remaining.append(order)
+                continue
+            if order["side"] == "buy":
+                self._execute_buy(symbol, order, float(fill_price))
+            else:
+                self._execute_sell(symbol, order, float(fill_price))
+        self._pending_orders = remaining
+
+    def _execute_buy(self, symbol: str, order: Dict[str, Any], mark: float) -> None:
         fill = mark * (1 + self._slippage)
+        qty = order.get("qty")
+        notional = order.get("notional")
         if notional is not None and qty is None:
             qty = notional / fill
         if qty is None:
-            # Default: use all available cash
             qty = self._cash / (fill * (1 + self._fee_rate))
         if qty <= 0:
-            return self._reject(symbol, "buy", "invalid qty")
+            self._reject(symbol, "buy", "invalid qty")
+            return
         cost = qty * fill * (1 + self._fee_rate)
         if cost > self._cash:
             qty = self._cash / (fill * (1 + self._fee_rate))
             if qty <= 0:
-                return self._reject(symbol, "buy", "insufficient cash")
+                self._reject(symbol, "buy", "insufficient cash")
+                return
             cost = qty * fill * (1 + self._fee_rate)
-
+        self._check_participation(symbol, qty)
         prev_qty = self._positions.get(symbol, 0)
         prev_basis = self._cost_basis.get(symbol, 0)
         new_qty = prev_qty + qty
         new_basis = (prev_basis * prev_qty + fill * qty) / new_qty if new_qty > 0 else 0
-
         self._positions[symbol] = new_qty
         self._cost_basis[symbol] = new_basis
         self._cash -= cost
-        return self._record(symbol, "buy", qty, fill, "filled")
+        self._update_pending_order_record(order, qty, fill, "filled")
 
-    def sell(self, symbol, qty=None, notional=None):
-        mark = self._last_price.get(symbol)
-        if mark is None or mark <= 0:
-            return self._reject(symbol, "sell", "no price")
+    def _execute_sell(self, symbol: str, order: Dict[str, Any], mark: float) -> None:
         fill = mark * (1 - self._slippage)
         current = self._positions.get(symbol, 0)
         if current <= 0:
-            return self._reject(symbol, "sell", "no position")
+            self._reject(symbol, "sell", "no position")
+            return
+        qty = order.get("qty")
+        notional = order.get("notional")
         if qty is None and notional is None:
             qty = current
         elif notional is not None:
             qty = notional / fill
         qty = min(qty, current)
         if qty <= 0:
-            return self._reject(symbol, "sell", "invalid qty")
-
+            self._reject(symbol, "sell", "invalid qty")
+            return
+        self._check_participation(symbol, qty)
         proceeds = qty * fill * (1 - self._fee_rate)
         basis = self._cost_basis.get(symbol, fill) * qty
         pnl = proceeds - basis
         self._trade_pnls.append(pnl)
-
         new_qty = current - qty
         self._positions[symbol] = new_qty
         if new_qty == 0:
             self._cost_basis.pop(symbol, None)
         self._cash += proceeds
-        return self._record(symbol, "sell", qty, fill, "filled")
+        self._update_pending_order_record(order, qty, fill, "filled")
+
+    def _check_participation(self, symbol: str, qty: float) -> None:
+        # Don't reject — just warn. Preserves PnL while making the liquidity
+        # assumption visible to the user.
+        bar_vol = self._bar_volume.get(symbol)
+        if bar_vol is None or bar_vol <= 0:
+            return
+        if qty > bar_vol * 0.10:
+            self._participation_warnings.append({
+                "symbol": symbol,
+                "qty": qty,
+                "bar_volume": bar_vol,
+                "participation_pct": (qty / bar_vol) * 100,
+            })
+
+    def _update_pending_order_record(self, order: Dict[str, Any], qty: float, price: float, status: str) -> None:
+        rec: OrderRecord = order["record"]
+        rec.qty = qty
+        rec.price = price
+        rec.status = status
+
+    def _enqueue(self, symbol: str, side: str, qty: Optional[float], notional: Optional[float]) -> OrderRecord:
+        if self._killed is not None:
+            return self._reject(symbol, side, f"killed: {self._killed['reason']}")
+        rec = self._record(symbol, side, qty if qty is not None else 0.0, 0.0, "pending")
+        self._pending_orders.append({
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "notional": notional,
+            "record": rec,
+        })
+        return rec
+
+    def buy(self, symbol, qty=None, notional=None):
+        return self._enqueue(symbol, "buy", qty, notional)
+
+    def sell(self, symbol, qty=None, notional=None):
+        return self._enqueue(symbol, "sell", qty, notional)
 
     def position(self, symbol):
         return self._positions.get(symbol, 0)
@@ -263,21 +391,36 @@ class SimBroker(Broker):
     def diagnostics(self) -> Dict[str, Any]:
         filled = [o for o in self._orders if o.status == "filled"]
         rejected = [o for o in self._orders if o.status.startswith("rejected")]
+        pending = [o for o in self._orders if o.status == "pending"]
         buy_attempts = sum(1 for o in self._orders if o.side == "buy")
         sell_attempts = sum(1 for o in self._orders if o.side == "sell")
         rejection_reasons: Dict[str, int] = {}
         for o in rejected:
             reason = o.status.replace("rejected: ", "")
             rejection_reasons[reason] = rejection_reasons.get(reason, 0) + 1
+        # Cap unbounded warning list when serializing — keep the first 20 +
+        # a count so a noisy strategy can't blow up the diag payload.
+        pw = self._participation_warnings
+        pw_serialized = pw[:20] if len(pw) <= 20 else pw[:20] + [{"truncated": len(pw) - 20}]
         return {
             "total_orders": len(self._orders),
             "filled_orders": len(filled),
             "rejected_orders": len(rejected),
+            "pending_orders_at_end": len(pending),
             "buy_attempts": buy_attempts,
             "sell_attempts": sell_attempts,
             "rejection_reasons": rejection_reasons,
             "final_cash": self._cash,
             "final_equity": self._equity_curve[-1] if self._equity_curve else self._cash,
+            "assumptions": {
+                "fee_rate": self._fee_rate,
+                "slippage": self._slippage,
+                "fill_model": "next_open",
+                "participation_cap_pct": 10.0,
+            },
+            "participation_warnings": pw_serialized,
+            "participation_warning_count": len(pw),
+            "killed": self.killed,
         }
 
 
@@ -951,11 +1094,12 @@ class IBKRBroker(Broker):
         if existing is not None:
             return existing
         contract = self._contract(symbol)
-        # '' = default tick types (last/bid/ask/volume). snapshot=False keeps
-        # the subscription alive so subsequent reads are instant.
-        ticker = self._ib.reqMktData(contract, "", False, False)
-        # First request needs a moment for the initial tick to arrive.
-        self._ib.sleep(1.0)
+        # For options, request tick type 106 (option model computation) to get
+        # modelGreeks (delta, gamma, vega, theta, impliedVol, undPrice).
+        generic_ticks = "106" if self.is_option(symbol) else ""
+        ticker = self._ib.reqMktData(contract, generic_ticks, False, False)
+        # Options need longer for model computation to arrive.
+        self._ib.sleep(2.0 if self.is_option(symbol) else 1.0)
         self._tickers[norm] = ticker
         return ticker
 
@@ -999,6 +1143,114 @@ class IBKRBroker(Broker):
         except Exception:
             return True
 
+    def greeks(self, symbol: str) -> Dict[str, Any]:
+        """Return live Greeks from IBKR's option model (tick type 106)."""
+        empty = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "iv": 0.0, "underlying_price": 0.0}
+        if not self.is_option(symbol):
+            return empty
+        try:
+            ticker = self._ticker(symbol)
+            mg = getattr(ticker, "modelGreeks", None)
+            if mg is None:
+                return empty
+            return {
+                "delta": float(getattr(mg, "delta", 0.0) or 0.0),
+                "gamma": float(getattr(mg, "gamma", 0.0) or 0.0),
+                "theta": float(getattr(mg, "theta", 0.0) or 0.0),
+                "vega": float(getattr(mg, "vega", 0.0) or 0.0),
+                "iv": float(getattr(mg, "impliedVol", 0.0) or 0.0),
+                "underlying_price": float(getattr(mg, "undPrice", 0.0) or 0.0),
+            }
+        except Exception as e:
+            log_err(f"[IBKRBroker.greeks] {symbol}: {e}")
+            return empty
+
+    def underlying_price(self, symbol: str) -> Optional[float]:
+        """Return the underlying price for an option from modelGreeks or direct lookup."""
+        if not self.is_option(symbol):
+            return None
+        g = self.greeks(symbol)
+        if g["underlying_price"] > 0:
+            return g["underlying_price"]
+        m = self._OPTION_RE.match(symbol.upper())
+        if m:
+            return self.price(m.group(1))
+        return None
+
+    def days_to_expiry(self, symbol: str) -> float:
+        """Return calendar days until option expiry."""
+        if not self.is_option(symbol):
+            return float("inf")
+        m = self._OPTION_RE.match(symbol.upper())
+        if not m:
+            return float("inf")
+        expiry_str = m.group(2)
+        exp_date = datetime(int(expiry_str[:4]), int(expiry_str[4:6]), int(expiry_str[6:8]), tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        return max((exp_date - now).total_seconds() / 86400.0, 0.0)
+
+    def option_chain(self, underlying: str, expiry: str = None):
+        """Discover available option strikes and expirations for an underlying."""
+        try:
+            from ib_insync import Stock
+            contract = Stock(underlying.upper(), "SMART", "USD")
+            self._ib.qualifyContracts(contract)
+            chains = self._ib.reqSecDefOptParams(underlying.upper(), "", "STK", contract.conId)
+            results = []
+            for chain in chains:
+                if chain.exchange != "SMART":
+                    continue
+                for exp in sorted(chain.expirations):
+                    if expiry is not None and exp != expiry:
+                        continue
+                    results.append({
+                        "expiry": exp,
+                        "strikes": sorted(float(s) for s in chain.strikes),
+                        "rights": ["C", "P"],
+                    })
+            return results
+        except Exception as e:
+            log_err(f"[IBKRBroker.option_chain] {underlying}: {e}")
+            return []
+
+    def _prev_option_positions(self):
+        """Track option positions for assignment detection."""
+        if not hasattr(self, "_option_pos_snapshot"):
+            self._option_pos_snapshot = {}
+        return self._option_pos_snapshot
+
+    def _assignment_check(self):
+        """Detect assignment/exercise events by comparing position snapshots."""
+        prev = self._prev_option_positions()
+        current = {}
+        for p in self._ib.positions(self._account):
+            sym = getattr(p.contract, "localSymbol", "") or str(p.contract.conId)
+            if hasattr(p.contract, "right") and p.contract.right in ("C", "P"):
+                current[sym] = float(p.position)
+        for sym, old_qty in prev.items():
+            new_qty = current.get(sym, 0.0)
+            if old_qty != 0.0 and new_qty == 0.0:
+                log_err(json.dumps({"event": "assignment", "symbol": sym, "qty_before": old_qty, "qty_after": 0.0}))
+        self._option_pos_snapshot = current
+
+    def _expiry_warning_check(self):
+        """Warn when held options are near expiry (DTE <= 3)."""
+        for p in self._ib.positions(self._account):
+            if not hasattr(p.contract, "right") or p.contract.right not in ("C", "P"):
+                continue
+            if float(p.position) == 0.0:
+                continue
+            exp_str = getattr(p.contract, "lastTradeDateOrContractMonth", "")
+            if len(exp_str) >= 8:
+                try:
+                    exp_date = datetime(int(exp_str[:4]), int(exp_str[4:6]), int(exp_str[6:8]), tzinfo=timezone.utc)
+                    dte = (exp_date - datetime.now(timezone.utc)).days
+                    if dte <= 3:
+                        sym = getattr(p.contract, "localSymbol", str(p.contract.conId))
+                        log_err(f"[EXPIRY_WARNING] {sym}: {dte} days to expiry, position={p.position}")
+                except Exception:
+                    pass
+
     def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
         """Return the most recent completed bar for symbol at interval.
 
@@ -1014,9 +1266,14 @@ class IBKRBroker(Broker):
         bar_size, duration = params
 
         contract = self._contract(symbol)
-        # PAXOS crypto bars stream on AGGTRADES; equities on TRADES. Anything
-        # else and IBKR returns an empty result.
-        what_to_show = "AGGTRADES" if self.is_crypto(symbol) else "TRADES"
+        # PAXOS crypto bars stream on AGGTRADES; options use MIDPOINT (sparse
+        # trade data); equities on TRADES.
+        if self.is_option(symbol):
+            what_to_show = "MIDPOINT"
+        elif self.is_crypto(symbol):
+            what_to_show = "AGGTRADES"
+        else:
+            what_to_show = "TRADES"
         # useRTH=False so after-hours equity bars also come through (live algos
         # may want to see the pre-/post-market action even if they don't
         # actually trade then).
@@ -1047,7 +1304,7 @@ class IBKRBroker(Broker):
             ts_iso = ts.isoformat()
         else:
             ts_iso = str(ts)
-        return {
+        bar = {
             "timestamp": ts_iso,
             "open": float(latest.open),
             "high": float(latest.high),
@@ -1055,6 +1312,16 @@ class IBKRBroker(Broker):
             "close": float(latest.close),
             "volume": float(latest.volume),
         }
+        if self.is_option(symbol):
+            g = self.greeks(symbol)
+            bar["underlying_close"] = float(g.get("underlying_price") or 0.0)
+            bar["iv"] = float(g.get("iv") or 0.0)
+            bar["delta"] = float(g.get("delta") or 0.0)
+            bar["gamma"] = float(g.get("gamma") or 0.0)
+            bar["theta"] = float(g.get("theta") or 0.0)
+            bar["vega"] = float(g.get("vega") or 0.0)
+            bar["dte"] = float(self.days_to_expiry(symbol))
+        return bar
 
     # --- account state ---
 

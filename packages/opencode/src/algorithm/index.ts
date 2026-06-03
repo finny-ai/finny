@@ -6,6 +6,7 @@ import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
 import { emit } from "../analytics/emit"
 import type { BrokerKind } from "@/live/brokers"
+import { normalizeConfigForSave } from "./strategy-params"
 
 const log = Log.create({ service: "algorithm" })
 const BrokerKindSchema = z.enum(["alpaca", "binance", "ibkr"])
@@ -24,6 +25,7 @@ export namespace Algorithm {
     backtestCode: z.string().optional(),
     reasoning: z.string().optional(),
     brokerKind: BrokerKindSchema.optional(),
+    targetBrokerage: BrokerKindSchema.optional(),
     time_created: z.number(),
     time_updated: z.number(),
   })
@@ -64,6 +66,7 @@ export namespace Algorithm {
     prefs?: string
     decisions?: string
     brokerKind?: BrokerKind
+    targetBrokerage?: BrokerKind
     saveMode: SaveMode
   }
 
@@ -110,6 +113,12 @@ export namespace Algorithm {
       status = existing.status ?? "draft"
     }
 
+    const normalizedConfig = normalizeConfigForSave({
+      incoming: input.config,
+      previous: input.saveMode === "version" ? existing?.config : undefined,
+      preserveExecution: input.saveMode === "version",
+    })
+
     const saved = (await LocalAlgorithmStore.insertVersion({
       algorithmId,
       userId,
@@ -118,13 +127,14 @@ export namespace Algorithm {
       language: input.language ?? "python",
       status,
       description: input.description,
-      config: input.config,
+      config: normalizedConfig,
       backtestCode: input.backtestCode,
       reasoning: input.reasoning,
       mission: input.mission,
       prefs: input.prefs,
       decisions: input.decisions,
       brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
+      targetBrokerage: input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
       time_created,
       time_updated: now,
     })) as Info
@@ -141,7 +151,7 @@ export namespace Algorithm {
         version: saved.version,
         status,
         description: input.description,
-        config: input.config,
+        config: normalizedConfig,
         backtestCode: input.backtestCode,
         reasoning: input.reasoning,
         brokerKind: record.brokerKind,

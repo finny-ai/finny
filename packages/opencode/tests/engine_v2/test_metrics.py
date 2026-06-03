@@ -72,6 +72,11 @@ def test_omega_threshold_zero():
     assert om > 0
 
 
+def test_omega_returns_none_when_no_downside():
+    r = np.array([0.01, 0.02, 0.005])
+    assert Rat.omega(r, threshold=0.0) is None
+
+
 def test_k_ratio_positive_on_linear_uptrend():
     eq = 100.0 * np.exp(np.linspace(0, 1, 200))
     k = Rat.k_ratio(eq)
@@ -104,6 +109,16 @@ def test_trade_metrics_basic():
     assert m["kelly_confidence"] == "low"
     # expectancy_r computed only from trades with stop_distance
     assert m["expectancy_r"] is not None
+
+
+def test_profit_factor_returns_none_when_no_losses():
+    trades = [
+        ClosedTrade("X", "long", 0, 1, 10, 100, 110, pnl=100, fees=0, funding=0, borrow=0,
+                    mae=0, mfe=100, hold_bars=5, entry_tag="a", exit_tag="b",
+                    stop_distance=None),
+    ]
+    m = T.compute(trades)
+    assert m["profit_factor"] is None
 
 
 def test_benchmark_alpha_beta_on_correlated_series():

@@ -20,7 +20,7 @@ type BacktestHistoryEntry = {
     endingEquity: number
     totalTrades: number
     winRate: number
-    profitFactor: number
+    profitFactor: number | null
   }
   symbol?: string
   timestamp: number

@@ -51,7 +51,7 @@ import type { SkillTool } from "@/tool/skill"
 import { useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import { useSDK } from "@tui/context/sdk"
 import { useCommandDialog } from "@tui/component/dialog-command"
-import { BacktestResultsView } from "@tui/component/backtest-results-view"
+import { BacktestResultsView, formatBacktestPlainMetrics } from "@tui/component/backtest-results-view"
 import type { BacktestRunner } from "@/backtest/runner"
 import type { DialogContext } from "@tui/ui/dialog"
 import { useKeybind } from "@tui/context/keybind"
@@ -1676,6 +1676,11 @@ function FinnyBacktestRun(props: ToolProps<any>) {
     const m = meta()
     return m && m.results && m.algorithmName
   }
+  const plainMetrics = () => {
+    const r = meta()?.results
+    if (!r) return ""
+    return `Metrics: ${formatBacktestPlainMetrics(r)}`
+  }
 
   return (
     <Show
@@ -1701,6 +1706,7 @@ function FinnyBacktestRun(props: ToolProps<any>) {
           params={meta()!.params}
           results={meta()!.results}
         />
+        <text fg={theme.text}>{plainMetrics()}</text>
       </BlockTool>
     </Show>
   )

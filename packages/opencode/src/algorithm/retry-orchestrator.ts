@@ -76,6 +76,7 @@ export namespace RetryOrchestrator {
     }
 
     const report = Validate.format(result)
+    const blockingDiagnostics = [...result.errors, ...result.warnings]
 
     if (currentAttempt >= MAX_ATTEMPTS) {
       // Max retries exhausted — reset counter so the next user request starts fresh.
@@ -89,7 +90,7 @@ export namespace RetryOrchestrator {
       attempt: currentAttempt,
       maxAttempts: MAX_ATTEMPTS,
       report,
-      diagnostics: result.errors,
+      diagnostics: blockingDiagnostics,
     }
   }
 

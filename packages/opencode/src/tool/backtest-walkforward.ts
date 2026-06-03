@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
+import { Validate } from "../algorithm/validate"
 
 const parameters = z.object({
   algorithmName: z
@@ -13,38 +14,92 @@ const parameters = z.object({
     .regex(/^\d+[dwmy]$/i, "Duration must match <number><unit> where unit is d/w/m/y (e.g. '3m', '6m')")
     .default("3m")
     .describe(
-      "TOTAL window to split. The first part (in-sample) is used to assess the strategy's " +
-        "performance on the data the model was effectively designed against; the second part " +
-        "(out-of-sample) is held out and used to detect overfitting. Recommend ≥3m so each half has enough trades.",
+      "Total rolling walk-forward window. Recommend ≥3m so each fold has enough bars.",
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
     .default("5min")
     .describe("Bar interval. Should match the algorithm's designed interval."),
   capital: z.string().default("10000").describe("Starting capital in USD"),
-  splitRatio: z
-    .number()
-    .min(0.5)
-    .max(0.9)
-    .default(0.7)
-    .describe("Fraction of the window used as in-sample. Default 0.7 → 70% IS / 30% OOS."),
 })
 
 function fmt(d: Date): string {
   return d.toISOString().slice(0, 10)
 }
 
+function fmtNum(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "N/A"
+}
+
+type WfMeta = {
+  walkForward?: {
+    n_folds: number
+    is_sharpe_mean: number
+    oos_sharpe_mean: number
+    oos_decay: number
+    flag_threshold: number
+    flagged: boolean
+    deflated_sharpe: number | null
+    probabilistic_sharpe: number | null
+    folds: Array<{
+      fold: number
+      train_start: string
+      train_end: string
+      test_start: string
+      test_end: string
+      is_sharpe: number | null
+      oos_sharpe: number | null
+      is_return: number
+      oos_return: number
+    }>
+  }
+  engineVersion?: string
+  schemaVersion?: number
+}
+
+const EMPTY_META: WfMeta = {}
+
+export function formatWalkForwardLines(input: {
+  algorithmName: string
+  version: number
+  duration: string
+  start: string
+  end: string
+  walkForward: NonNullable<WfMeta["walkForward"]>
+  verdict: string
+  verdictReason: string
+}): string[] {
+  const walkForward = input.walkForward
+  return [
+    `Algorithm: ${input.algorithmName} (v${input.version})`,
+    `Total window: ${input.duration} (${input.start} → ${input.end})`,
+    `Rolling folds: ${walkForward.n_folds}`,
+    ``,
+    `IS Sharpe mean:        ${fmtNum(walkForward.is_sharpe_mean)}`,
+    `OOS Sharpe mean:       ${fmtNum(walkForward.oos_sharpe_mean)}`,
+    `OOS decay ratio:       ${fmtNum(walkForward.oos_decay)}`,
+    `Deflated Sharpe prob:  ${fmtNum(walkForward.deflated_sharpe, 3)}`,
+    `Prob. Sharpe ratio:    ${fmtNum(walkForward.probabilistic_sharpe, 3)}`,
+    ``,
+    `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return`,
+    ...walkForward.folds.map(f =>
+      `${f.fold}\t${f.train_start.slice(0, 10)}→${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}→${f.test_end.slice(0, 10)}\t${fmtNum(f.is_sharpe)}\t${fmtNum(f.oos_sharpe)}\t${(f.oos_return * 100).toFixed(2)}%`,
+    ),
+    ``,
+    `Verdict: ${input.verdict.toUpperCase()} — ${input.verdictReason}`,
+  ]
+}
+
 export const BacktestWalkforwardTool = Tool.define(
   "finny_backtest_walkforward",
   Effect.succeed({
     description:
-      "Run a walk-forward backtest: splits the duration window into in-sample (first 70%) and " +
-      "out-of-sample (last 30%), runs the algorithm on each independently, and reports both metric " +
+      "Run a rolling walk-forward backtest across the requested duration and report the in-sample and out-of-sample metric " +
       "sets plus a robustness verdict. The strategy is OVERFIT if out-of-sample Sharpe is far below " +
       "in-sample Sharpe or if out-of-sample loses money. Use this as the primary overfitting gate " +
       "before declaring a strategy 'good'.",
     parameters,
-    execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
+    execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
         await ctx.ask({
           permission: "finny_backtest_walkforward",
@@ -53,106 +108,97 @@ export const BacktestWalkforwardTool = Tool.define(
           metadata: {},
         })
 
-        const algo = await Algorithm.get(input.algorithmName)
+        const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
           return {
             title: "Walk-forward failed",
-            output: `Algorithm "${input.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
-            metadata: {},
+            output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
+            metadata: EMPTY_META,
           }
         }
 
-        const totalDays = BacktestRunner.parseDurationDays(input.duration)
+        const validation = await Validate.run(algo.code, { config: algo.config })
+        if (!validation.valid) {
+          return {
+            title: "Walk-forward blocked by validation",
+            output: Validate.format(validation),
+            metadata: EMPTY_META,
+          }
+        }
+        const riskBanner = Validate.formatRiskBanner(validation)
+
+        const totalDays = BacktestRunner.parseDurationDays(params.duration)
         if (!totalDays || totalDays < 14) {
           return {
             title: "Walk-forward failed",
             output:
-              `Duration "${input.duration}" is too short for a walk-forward split. ` +
+              `Duration "${params.duration}" is too short for a walk-forward split. ` +
               `Use at least 2w (14 days) so each half has enough bars; 3m or longer is recommended.`,
-            metadata: {},
+            metadata: EMPTY_META,
           }
         }
 
-        const end = new Date()
-        const start = new Date()
-        start.setDate(start.getDate() - totalDays)
+        const now = new Date()
+        const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+        const start = new Date(end)
+        start.setUTCDate(start.getUTCDate() - totalDays)
 
-        const isDays = Math.max(1, Math.floor(totalDays * input.splitRatio))
-        const splitDate = new Date(start)
-        splitDate.setDate(splitDate.getDate() + isDays)
-
-        const isResult = await BacktestRunner.run({
+        const result = await BacktestRunner.run({
           algorithm: algo,
-          duration: input.duration,
-          interval: input.interval,
-          capital: input.capital,
+          duration: params.duration,
+          interval: params.interval,
+          capital: params.capital,
           startDate: fmt(start),
-          endDate: fmt(splitDate),
-        })
-
-        if (!isResult.ok) {
-          return {
-            title: "Walk-forward failed (in-sample)",
-            output: `In-sample backtest failed:\n${isResult.error}`,
-            metadata: {},
-          }
-        }
-
-        const oosResult = await BacktestRunner.run({
-          algorithm: algo,
-          duration: input.duration,
-          interval: input.interval,
-          capital: input.capital,
-          startDate: fmt(splitDate),
           endDate: fmt(end),
+          robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
         })
 
-        if (!oosResult.ok) {
+        if (!result.ok) {
           return {
-            title: "Walk-forward failed (out-of-sample)",
-            output: `Out-of-sample backtest failed:\n${oosResult.error}`,
-            metadata: {},
+            title: "Walk-forward failed",
+            output: `Backtest failed:\n${result.error}`,
+            metadata: EMPTY_META,
           }
         }
 
-        const is = isResult.results
-        const oos = oosResult.results
+        const walkForward = result.results.v2?.walk_forward
+        if (!walkForward || walkForward.n_folds < 2) {
+          return {
+            title: "Walk-forward failed",
+            output: "Strict engine did not produce enough walk-forward folds. Use a longer duration or coarser interval.",
+            metadata: EMPTY_META,
+          }
+        }
 
-        const sharpeRatio = is.sharpeRatio !== 0 ? oos.sharpeRatio / is.sharpeRatio : 0
         let verdict: "robust" | "degraded" | "failed"
         let verdictReason: string
-        if (oos.totalReturn <= 0 || oos.sharpeRatio <= 0) {
+        if (walkForward.flagged || walkForward.oos_sharpe_mean <= 0) {
           verdict = "failed"
-          verdictReason = "Out-of-sample lost money or had non-positive Sharpe — the strategy does not generalize."
-        } else if (is.sharpeRatio > 0 && sharpeRatio < 0.7) {
+          verdictReason = "Walk-forward OOS Sharpe decayed below the robustness threshold or became non-positive."
+        } else if (walkForward.oos_decay < 0.7) {
           verdict = "degraded"
-          verdictReason = `Out-of-sample Sharpe is ${(sharpeRatio * 100).toFixed(0)}% of in-sample — significant performance drop suggests overfitting.`
+          verdictReason = `OOS Sharpe retained ${(walkForward.oos_decay * 100).toFixed(0)}% of in-sample performance — meaningful decay.`
         } else {
           verdict = "robust"
-          verdictReason = "Out-of-sample performance is within 30% of in-sample. Strategy generalizes."
+          verdictReason = "Rolling OOS performance is within the robustness threshold."
         }
 
-        const lines = [
-          `Algorithm: ${algo.name} (v${algo.version})`,
-          `Total window: ${input.duration} (${fmt(start)} → ${fmt(end)})`,
-          `Split: ${(input.splitRatio * 100).toFixed(0)}% IS (${fmt(start)} → ${fmt(splitDate)}) / ${((1 - input.splitRatio) * 100).toFixed(0)}% OOS (${fmt(splitDate)} → ${fmt(end)})`,
-          ``,
-          `                       In-Sample      Out-of-Sample`,
-          `Total Return:          ${(is.totalReturn * 100).toFixed(2).padStart(8)}%      ${(oos.totalReturn * 100).toFixed(2).padStart(8)}%`,
-          `Max Drawdown:          ${(is.maxDrawdown * 100).toFixed(2).padStart(8)}%      ${(oos.maxDrawdown * 100).toFixed(2).padStart(8)}%`,
-          `Sharpe Ratio:          ${is.sharpeRatio.toFixed(2).padStart(8)}       ${oos.sharpeRatio.toFixed(2).padStart(8)}`,
-          `Total Trades:          ${String(is.totalTrades).padStart(8)}       ${String(oos.totalTrades).padStart(8)}`,
-          `Win Rate:              ${(is.winRate * 100).toFixed(1).padStart(7)}%       ${(oos.winRate * 100).toFixed(1).padStart(7)}%`,
-          `Profit Factor:         ${is.profitFactor.toFixed(2).padStart(8)}       ${oos.profitFactor.toFixed(2).padStart(8)}`,
-          ``,
-          `Robustness ratio (OOS Sharpe / IS Sharpe): ${sharpeRatio.toFixed(2)}`,
-          `Verdict: ${verdict.toUpperCase()} — ${verdictReason}`,
-        ]
+        const lines = formatWalkForwardLines({
+          algorithmName: algo.name,
+          version: algo.version,
+          duration: params.duration,
+          start: fmt(start),
+          end: fmt(end),
+          walkForward,
+          verdict,
+          verdictReason,
+        })
 
+        const finalOutput = riskBanner ? `${riskBanner}\n\n${lines.join("\n")}` : lines.join("\n")
         return {
           title: `Walk-forward: ${algo.name} (${verdict})`,
-          output: lines.join("\n"),
-          metadata: {},
+          output: finalOutput,
+          metadata: { walkForward, engineVersion: result.results.engineVersion, schemaVersion: result.results.schemaVersion },
         }
       }),
   }),

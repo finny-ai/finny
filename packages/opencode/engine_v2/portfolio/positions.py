@@ -37,6 +37,7 @@ class ClosedTrade:
     exit_tag: str
     stop_distance: Optional[float]  # for R-multiples; None if entry had no stop
     liquidation: bool = False
+    multiplier: float = 1.0
 
 
 @dataclass
@@ -58,6 +59,7 @@ class Position:
     realized_accum: float = 0.0   # PnL realized on partial reduces within this open trade
     peak_abs_qty: float = 0.0     # max |qty| held since flat (for trade.qty on emit)
     side_at_open: str = ""        # "long" | "short" — captured at flat→non-flat
+    multiplier: float = 1.0
 
     def is_flat(self) -> bool:
         return self.qty == 0.0
@@ -85,7 +87,7 @@ class Position:
     def unrealized_pnl(self, last_price: float) -> float:
         if self.qty == 0:
             return 0.0
-        return self.qty * (last_price - self.avg_price)
+        return self.qty * (last_price - self.avg_price) * self.multiplier
 
 
 @dataclass
@@ -109,6 +111,7 @@ class PositionBook:
         tag: str,
         stop_distance: Optional[float] = None,
         liquidation: bool = False,
+        multiplier: float = 1.0,
     ) -> float:
         """Apply a fill. Returns realized cash delta (excluding fee).
 
@@ -136,6 +139,7 @@ class PositionBook:
             pos.realized_accum = 0.0
             pos.peak_abs_qty = abs(new_qty)
             pos.side_at_open = "long" if new_qty > 0 else "short"
+            pos.multiplier = float(multiplier)
             return 0.0
 
         same_sign = _sign(new_qty) == _sign(old_qty) and new_qty != 0.0
@@ -151,7 +155,7 @@ class PositionBook:
         # Reducing (partial or full close, same sign)
         if same_sign and abs(new_qty) < abs(old_qty):
             closed_qty = abs(signed_qty)
-            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty)
+            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty) * pos.multiplier
             pos.qty = new_qty
             pos.fees_accum += fee
             pos.realized_accum += realized
@@ -160,7 +164,7 @@ class PositionBook:
         # Full close (new_qty == 0)
         if new_qty == 0.0:
             closed_qty = abs(old_qty)
-            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty)
+            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty) * pos.multiplier
             pos.realized_accum += realized
             self._emit_trade(pos, exit_ts_ns=ts_ns, exit_price=price,
                              exit_fee=fee, exit_tag=tag,
@@ -171,7 +175,7 @@ class PositionBook:
         # Flip: close old fully then open new on the other side at this price
         if sign_flipped:
             closed_qty = abs(old_qty)
-            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty)
+            realized = closed_qty * (price - pos.avg_price) * _sign(old_qty) * pos.multiplier
             close_fee = fee * (closed_qty / abs(signed_qty))
             open_fee = fee - close_fee
             pos.realized_accum += realized
@@ -185,6 +189,7 @@ class PositionBook:
                 bars_held=0, stop_distance=stop_distance,
                 peak_abs_qty=abs(new_qty),
                 side_at_open="long" if new_qty > 0 else "short",
+                multiplier=float(multiplier),
             )
             return realized
 
@@ -202,11 +207,11 @@ class PositionBook:
         side = pos.side_at_open or ("long" if pos.qty > 0 else "short")
         peak = pos.peak_abs_qty or 1.0
         if side == "long":
-            mfe = max(0.0, (pos.high_water - pos.entry_price) * peak)
-            mae = max(0.0, (pos.entry_price - pos.low_water) * peak)
+            mfe = max(0.0, (pos.high_water - pos.entry_price) * peak * pos.multiplier)
+            mae = max(0.0, (pos.entry_price - pos.low_water) * peak * pos.multiplier)
         else:
-            mfe = max(0.0, (pos.entry_price - pos.low_water) * peak)
-            mae = max(0.0, (pos.high_water - pos.entry_price) * peak)
+            mfe = max(0.0, (pos.entry_price - pos.low_water) * peak * pos.multiplier)
+            mae = max(0.0, (pos.high_water - pos.entry_price) * peak * pos.multiplier)
         total_fees = pos.fees_accum + exit_fee
         self.trades.append(ClosedTrade(
             symbol=pos.symbol,
@@ -227,6 +232,7 @@ class PositionBook:
             exit_tag=exit_tag,
             stop_distance=pos.stop_distance,
             liquidation=liquidation,
+            multiplier=pos.multiplier,
         ))
 
     def mark_all(self, prices: dict) -> None:
@@ -236,7 +242,7 @@ class PositionBook:
                 pos.mark(float(px))
 
     def gross_exposure(self, prices: dict) -> float:
-        return sum(abs(p.qty) * float(prices.get(s, 0.0)) for s, p in self.positions.items())
+        return sum(abs(p.qty) * float(prices.get(s, 0.0)) * p.multiplier for s, p in self.positions.items())
 
     def net_exposure(self, prices: dict) -> float:
-        return sum(p.qty * float(prices.get(s, 0.0)) for s, p in self.positions.items())
+        return sum(p.qty * float(prices.get(s, 0.0)) * p.multiplier for s, p in self.positions.items())

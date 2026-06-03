@@ -9,6 +9,10 @@ import { Process } from "@/util/process"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
 import { getActiveAlgo, algoDir, ensureAlgoWorkspace } from "@finny-ai/core/algo"
+import { BrokerRegistry } from "@/live/brokers"
+
+const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const
+const OPTION_RE = /^([A-Z]{1,6})\/(\d{8})\/(\d+(?:\.\d+)?)([CP])$/i
 
 function slugifyAlgoName(...parts: string[]): string {
   return parts
@@ -19,7 +23,11 @@ function slugifyAlgoName(...parts: string[]): string {
     .replace(/-{2,}/g, "-")
 }
 
-const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const
+function normalizeOptionSymbol(input: string): string | null {
+  const m = OPTION_RE.exec(input.trim())
+  if (!m) return null
+  return `${m[1].toUpperCase()}/${m[2]}/${m[3]}${m[4].toUpperCase()}`
+}
 
 // ── Regime classification ──────────────────────────────────────────────────
 
@@ -237,6 +245,18 @@ const parameters = z.object({
     .describe("Target algo name. If omitted, uses the active algo."),
 })
 
+async function alpacaDataEnv(): Promise<Record<string, string>> {
+  const accounts = await BrokerRegistry.listAccounts("alpaca")
+  if (accounts.length === 0) return {}
+  const creds = await BrokerRegistry.readCredentials(accounts[0]!.providerID)
+  if (!creds) return {}
+  return {
+    ALPACA_API_KEY_ID: creds.keyId,
+    ALPACA_API_SECRET_KEY: creds.secret,
+    ALPACA_DATA_FEED: process.env.ALPACA_DATA_FEED || "iex",
+  }
+}
+
 function makeExtractScript(
   symbol: string,
   interval: string,
@@ -265,8 +285,8 @@ export const ExtractDataTool = Tool.define(
   Effect.succeed({
     description:
       "Extract historical OHLCV data for a symbol and write it as a parquet file " +
-      "into the active algorithm's data/ folder. Tries multiple sources (Binance for crypto, " +
-      "yfinance for stocks/ETFs) and picks the one with the best coverage. Returns a structured " +
+      "into the active algorithm's data/ folder. Tries multiple sources (Alpaca for stocks/options " +
+      "when keys are configured, Binance for crypto, yfinance/synthetic fallbacks) and picks the one with the best coverage. Returns a structured " +
       "digest with price stats, performance metrics, and data quality — not raw bars.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
@@ -286,7 +306,18 @@ export const ExtractDataTool = Tool.define(
           }
         }
 
-        const resolved = resolveSymbol(params.symbol)
+        const optionCanonical = normalizeOptionSymbol(params.symbol)
+        const resolved = resolveSymbol(params.symbol) ?? (
+          optionCanonical
+            ? {
+                name: optionCanonical,
+                kind: "stock" as const,
+                yfinance: optionCanonical,
+                canonical: optionCanonical,
+                unknown: true,
+              }
+            : null
+        )
         if (!resolved) {
           const supported = SUPPORTED_SYMBOLS.map((s) => s.name).join(", ")
           return {
@@ -359,8 +390,10 @@ export const ExtractDataTool = Tool.define(
             }
           }
 
+          const dataEnv = await alpacaDataEnv()
           const result = await Process.run([pythonCmd, scriptPath], {
             cwd: tmpDir,
+            env: dataEnv,
             nothrow: true,
             timeout: 120_000,
             abort: ctx.abort,
