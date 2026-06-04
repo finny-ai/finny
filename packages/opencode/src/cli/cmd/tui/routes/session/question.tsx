@@ -3,7 +3,7 @@ import { createMemo, createSignal, For, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { TextareaRenderable } from "@opentui/core"
 import { useKeybind } from "../../context/keybind"
-import { selectedForeground, tint, useTheme } from "../../context/theme"
+import { selectedForeground, useTheme } from "../../context/theme"
 import type { QuestionAnswer, QuestionRequest } from "@opencode-ai/sdk/v2"
 import { useSDK } from "../../context/sdk"
 import { SplitBorder } from "../../component/border"
@@ -332,12 +332,10 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
                     >
                       <box flexDirection="row">
                         <box backgroundColor={active() ? theme.backgroundElement : undefined} paddingRight={1}>
-                          <text fg={active() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                            {`${i() + 1}.`}
-                          </text>
+                          <text fg={active() ? theme.accent : theme.textMuted}>{`${i() + 1}.`}</text>
                         </box>
                         <box backgroundColor={active() ? theme.backgroundElement : undefined}>
-                          <text fg={active() ? theme.secondary : picked() ? theme.success : theme.text}>
+                          <text fg={active() ? theme.accent : picked() ? theme.success : theme.text}>
                             {multi() ? `[${picked() ? "✓" : " "}] ${opt.label}` : opt.label}
                           </text>
                         </box>
@@ -361,12 +359,10 @@ export function QuestionPrompt(props: { request: QuestionRequest }) {
                 >
                   <box flexDirection="row">
                     <box backgroundColor={other() ? theme.backgroundElement : undefined} paddingRight={1}>
-                      <text fg={other() ? tint(theme.textMuted, theme.secondary, 0.6) : theme.textMuted}>
-                        {`${options().length + 1}.`}
-                      </text>
+                      <text fg={other() ? theme.accent : theme.textMuted}>{`${options().length + 1}.`}</text>
                     </box>
                     <box backgroundColor={other() ? theme.backgroundElement : undefined}>
-                      <text fg={other() ? theme.secondary : customPicked() ? theme.success : theme.text}>
+                      <text fg={other() ? theme.accent : customPicked() ? theme.success : theme.text}>
                         {multi() ? `[${customPicked() ? "✓" : " "}] Type your own answer` : "Type your own answer"}
                       </text>
                     </box>

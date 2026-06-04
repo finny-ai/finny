@@ -329,6 +329,15 @@ export const AlgorithmSaveTool = Tool.define(
                   },
                 }
               }
+              if (err instanceof Algorithm.MissionValidationError) {
+                return {
+                  result: {
+                    title: "Invalid mission.md",
+                    output: err.message,
+                    metadata: { blocked: true, missionInvalid: true },
+                  },
+                }
+              }
               throw err
             }
 
