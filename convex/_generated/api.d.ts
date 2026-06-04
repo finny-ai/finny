@@ -8,6 +8,7 @@
  * @module
  */
 
+import type * as _migrations_dropAlgoclash from "../_migrations/dropAlgoclash.js";
 import type * as analytics from "../analytics.js";
 import type * as analyticsEvents from "../analyticsEvents.js";
 import type * as controlAccounts from "../controlAccounts.js";
@@ -31,6 +32,7 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  "_migrations/dropAlgoclash": typeof _migrations_dropAlgoclash;
   analytics: typeof analytics;
   analyticsEvents: typeof analyticsEvents;
   controlAccounts: typeof controlAccounts;
