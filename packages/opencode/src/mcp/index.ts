@@ -347,7 +347,7 @@ export namespace MCP {
                   return bus
                     .publish(TuiEvent.ToastShow, {
                       title: "MCP Authentication Required",
-                      message: `Server "${key}" requires authentication. Run: opencode mcp auth ${key}`,
+                      message: `Server "${key}" requires authentication. Run: finny mcp auth ${key}`,
                       variant: "warning",
                       duration: 8000,
                     })
@@ -389,7 +389,7 @@ export namespace MCP {
           cwd,
           env: {
             ...process.env,
-            ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
+            ...(cmd === "opencode" || cmd === "finny" ? { BUN_BE_BUN: "1" } : {}),
             ...mcp.environment,
           },
         })

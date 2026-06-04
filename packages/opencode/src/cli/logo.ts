@@ -1,3 +1,7 @@
+import { VERSION } from "@/installation/meta"
+
+const version = VERSION.startsWith("v") ? VERSION : `v${VERSION}`
+
 export const logo = {
   lines: [
     "███████╗██╗███╗   ██╗███╗   ██╗██╗   ██╗",
@@ -8,7 +12,7 @@ export const logo = {
     "╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝   ",
   ],
   tagline: "Think Strategies, Ship Alpha",
-  version: "v0.6.7 • AI trading agent",
+  version: `${version} • AI Financial Harness`,
 }
 
 export const marks = "_^~"
