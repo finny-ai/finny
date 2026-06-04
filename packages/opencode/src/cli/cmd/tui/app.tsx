@@ -598,17 +598,6 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
         if (onboardingStarted) return
         onboardingStarted = true
         void runStartupGate()
-
-  createEffect(
-    on(
-      () => sync.status === "complete" && kv.ready,
-      (ready) => {
-        if (!ready) return
-        if (kv.get("onboarding_v2_status")) return
-        if (kv.get("experience_level_status")) return
-        if (onboardingStarted) return
-        onboardingStarted = true
-        void runOnboardingV2()
       },
     ),
   )
