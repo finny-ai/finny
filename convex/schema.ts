@@ -169,4 +169,39 @@ export default defineSchema({
     .index("by_userId_timestamp", ["userId", "timestamp"])
     .index("by_userId_eventType", ["userId", "eventType"])
     .index("by_algorithmId", ["algorithmId"]),
+
+  licenses: defineTable({
+    license_key_hash: v.string(),
+    org_id: v.string(),
+    plan_type: v.union(v.literal("enterprise"), v.literal("per_head")),
+    status: v.union(v.literal("active"), v.literal("expired"), v.literal("revoked")),
+    active_from: v.optional(v.number()),
+    active_until: v.optional(v.number()),
+    max_devices_per_key: v.optional(v.number()),
+    time_created: v.number(),
+    time_updated: v.number(),
+  })
+    .index("by_license_key_hash", ["license_key_hash"])
+    .index("by_org_license_key_hash", ["org_id", "license_key_hash"])
+    .index("by_org_id", ["org_id"])
+    .index("by_status", ["status"]),
+
+  licenseChecks: defineTable({
+    request_id: v.string(),
+    license_key_hash: v.string(),
+    org_id: v.string(),
+    machine_id_hash: v.string(),
+    app_version: v.optional(v.string()),
+    result: v.union(v.literal("allowed"), v.literal("denied")),
+    error_code: v.optional(v.string()),
+    devices_used: v.optional(v.number()),
+    device_limit: v.optional(v.number()),
+    metadata: v.optional(v.any()),
+    timestamp: v.number(),
+  })
+    .index("by_request_id", ["request_id"])
+    .index("by_org_license", ["org_id", "license_key_hash"])
+    .index("by_org_license_machine", ["org_id", "license_key_hash", "machine_id_hash"])
+    .index("by_org_license_result", ["org_id", "license_key_hash", "result"])
+    .index("by_timestamp", ["timestamp"]),
 })

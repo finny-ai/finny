@@ -1,31 +1,46 @@
 import { createSignal, onMount, Show } from "solid-js"
 import { TextAttributes, MouseEvent } from "@opentui/core"
-import open from "open"
 import { useTheme } from "../context/theme"
 import { useToast } from "../ui/toast"
-import { useDialog } from "../ui/dialog"
 import { Card } from "./card"
-import { DialogManagedHosting } from "./dialog-managed-hosting"
-import { Plan } from "@/plan"
+import { License } from "@/license"
 
-const PRO_URL = "https://finnyai.tech/pro"
-const LITE_URL = "https://finnyai.tech/lite"
+type LicenseStatus = Awaited<ReturnType<typeof License.currentStatus>>
+
+function planLabel(status: LicenseStatus | null) {
+  if (!status?.plan_type) return "Enterprise"
+  if (status.plan_type === "enterprise") return "Enterprise"
+  return "Enterprise Per-Head"
+}
+
+function formatDate(value?: string) {
+  if (!value) return "Not checked"
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return "Unknown"
+  return new Date(parsed).toLocaleString()
+}
+
+function shortHash(value?: string) {
+  if (!value) return "Unavailable"
+  return `${value.slice(0, 8)}...${value.slice(-6)}`
+}
+
+function deviceUsage(status: LicenseStatus | null) {
+  if (status?.plan_type === "enterprise") return "Unlimited"
+  if (!status?.device_limit) return "Available after next verification"
+  return `${status.devices_used ?? 0} / ${status.device_limit}`
+}
 
 export function SettingsPanelPro() {
   const { theme } = useTheme()
   const toast = useToast()
-  const dialog = useDialog()
 
-  const [tier, setTier] = createSignal<Plan.Tier>("free")
-  const [proKey, setProKey] = createSignal<string | null>(null)
-  const [liteKey, setLiteKey] = createSignal<string | null>(null)
+  const [status, setStatus] = createSignal<LicenseStatus | null>(null)
   const [licenseInput, setLicenseInput] = createSignal("")
   const [busy, setBusy] = createSignal(false)
 
   const refresh = async () => {
-    setTier(await Plan.getTier())
-    setProKey(await Plan.getLicenseKey("pro"))
-    setLiteKey(await Plan.getLicenseKey("lite"))
+    setStatus(await License.currentStatus())
   }
 
   onMount(refresh)
@@ -34,60 +49,25 @@ export function SettingsPanelPro() {
     if (busy()) return
     const key = licenseInput().trim()
     if (!key) {
-      toast.show({ message: "Please paste your license code", variant: "warning", duration: 3000 })
+      toast.show({ message: "Please enter a Finny license key", variant: "warning", duration: 3000 })
       return
     }
     setBusy(true)
     try {
-      const detected = await Plan.setLicenseKey(key)
-      if (!detected) {
-        toast.show({
-          message: "Unrecognized license code. Codes start with FINNY-LITE- or FINNY-PRO-.",
-          variant: "error",
-          duration: 5000,
-        })
-        return
-      }
-      const newTier = await Plan.getTier()
-      // If activation didn't elevate the tier to at least the detected level, the signature failed.
-      if (!Plan.hasAtLeast(newTier, detected)) {
-        await Plan.removeLicenseKey(detected)
-        toast.show({ message: "Invalid license code. Check your code and try again.", variant: "error", duration: 5000 })
-      } else {
-        const label = detected === "pro" ? "Finny Pro" : "Finny Lite"
-        toast.show({ message: `${label} activated!`, variant: "info", duration: 4000 })
-        setLicenseInput("")
-        await refresh()
-      }
-    } catch (e: any) {
-      toast.show({ message: `Error: ${e?.message ?? "unknown"}`, variant: "error", duration: 5000 })
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const removeLicense = async (which: Exclude<Plan.Tier, "free">) => {
-    if (busy()) return
-    setBusy(true)
-    try {
-      await Plan.removeLicenseKey(which)
-      toast.show({ message: `${which === "pro" ? "Pro" : "Lite"} license removed`, variant: "info", duration: 3000 })
+      await License.activate(key)
+      setLicenseInput("")
       await refresh()
-    } catch (e: any) {
-      toast.show({ message: `Error: ${e?.message ?? "unknown"}`, variant: "error", duration: 5000 })
+      toast.show({ message: "Enterprise license verified", variant: "info", duration: 3000 })
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Access denied. Please contact Finny."
+      toast.show({ message, variant: "error", duration: 5000 })
     } finally {
       setBusy(false)
     }
   }
 
   const InputBox = (props: { onInput: (v: string) => void }) => (
-    <box
-      backgroundColor={theme.backgroundElement}
-      paddingLeft={1}
-      paddingRight={1}
-      height={1}
-      flexShrink={0}
-    >
+    <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1} height={1} flexShrink={0}>
       <input
         onInput={(v: string) => props.onInput(v)}
         onMouseDown={(r: MouseEvent) => r.target?.focus()}
@@ -98,200 +78,75 @@ export function SettingsPanelPro() {
     </box>
   )
 
-  const TierRow = (props: { label: string; active: boolean; popular?: boolean }) => (
-    <box flexDirection="row" gap={1}>
-      <text fg={props.active ? theme.success : theme.textMuted}>
-        {props.active ? "✓" : "○"}
+  const Row = (props: { label: string; value: string; accent?: boolean }) => (
+    <box flexDirection="row" gap={2}>
+      <text fg={theme.textMuted}>{props.label.padEnd(16)}</text>
+      <text fg={props.accent ? theme.success : theme.text} attributes={props.accent ? TextAttributes.BOLD : undefined}>
+        {props.value}
       </text>
-      <text
-        fg={props.active ? theme.text : theme.textMuted}
-        attributes={props.active ? TextAttributes.BOLD : undefined}
-      >
-        {props.label}
-      </text>
-      <Show when={props.popular}>
-        <text fg={theme.primary}>★ most popular</text>
-      </Show>
     </box>
   )
 
-  const openLite = () => {
-    open(LITE_URL).catch(() => {
-      toast.show({ message: LITE_URL, variant: "info", duration: 5000 })
-    })
-    toast.show({ message: "Opening Lite page in browser…", variant: "info", duration: 2000 })
-  }
-  const openPro = () => {
-    open(PRO_URL).catch(() => {
-      toast.show({ message: PRO_URL, variant: "info", duration: 5000 })
-    })
-    toast.show({ message: "Opening Pro page in browser…", variant: "info", duration: 2000 })
-  }
-
-  const cloudRunCopy = () => {
-    const cap = Plan.CLOUD_RUN_CAP[tier()]
-    return cap === 1 ? "1 cloud live run" : `${cap} cloud live runs`
-  }
-
   return (
     <box flexGrow={1} flexDirection="row" gap={2} minHeight={0}>
-      {/* Left pane — plan ladder */}
       <box width={36} flexShrink={0} minHeight={0}>
         <Card title=" Plan ">
-          <box flexDirection="column" gap={2}>
-            <box flexDirection="column" gap={1}>
-              <TierRow label="Free" active={tier() === "free"} />
-              <TierRow label="Lite — $10/mo" active={tier() === "lite"} />
-              <TierRow label="Pro" active={tier() === "pro"} popular />
+          <box flexDirection="column" gap={1}>
+            <box flexDirection="row" gap={1}>
+              <text fg={status()?.active ? theme.success : theme.textMuted}>{status()?.active ? "✓" : "○"}</text>
+              <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                {planLabel(status())}
+              </text>
             </box>
-
-            <Show when={tier() === "free"}>
-              <box paddingLeft={1} paddingRight={1} flexDirection="row" onMouseUp={openLite}>
-                <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-                  → Upgrade to Lite — $10/mo
-                </text>
-              </box>
-            </Show>
-            <Show when={tier() !== "pro"}>
-              <box paddingLeft={1} paddingRight={1} flexDirection="row" onMouseUp={openPro}>
-                <text fg={theme.primary} attributes={TextAttributes.BOLD}>
-                  → Buy Pro at finnyai.tech
-                </text>
-              </box>
-            </Show>
+            <text fg={theme.textMuted}>Local install license</text>
+            <text fg={theme.textMuted}>Daily server verification</text>
+            <text fg={theme.textMuted}>No prompts, strategy code, market data, backtest results, or P&L leave this machine.</text>
           </box>
         </Card>
       </box>
 
-      {/* Right pane */}
       <box flexGrow={1} minHeight={0}>
-        <Show
-          when={tier() !== "free"}
-          fallback={
-            <Card title=" Activate ">
-              <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: false }}>
-                <box flexDirection="column" gap={1}>
-                  <text fg={theme.textMuted}>
-                    Paste a Lite or Pro license code from finnyai.tech.
-                  </text>
+        <Card title={` Finny ${planLabel(status())} `}>
+          <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: false }}>
+            <box flexDirection="column" gap={1}>
+              <text fg={status()?.active ? theme.success : theme.error} attributes={TextAttributes.BOLD}>
+                {status()?.active ? "License is active" : "License verification required"}
+              </text>
 
-                  <text fg={theme.textMuted}>License code</text>
-                  <InputBox onInput={setLicenseInput} />
+              <Row label="Organization" value={status()?.org_id ?? "dv_trading"} />
+              <Row label="Plan" value={planLabel(status())} accent={status()?.active} />
+              <Row label="Device usage" value={deviceUsage(status())} />
+              <Row label="Machine hash" value={shortHash(status()?.machine_id_hash)} />
+              <Row label="License hash" value={shortHash(status()?.license_key_hash)} />
+              <Row label="Last verified" value={formatDate(status()?.last_ok_at)} />
+              <Row label="Next check" value={formatDate(status()?.next_check_after)} />
 
-                  <box paddingTop={1} flexDirection="row">
-                    <box
-                      paddingLeft={2}
-                      paddingRight={2}
-                      backgroundColor={busy() ? theme.borderSubtle : theme.primary}
-                      onMouseUp={activate}
-                    >
-                      <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                        {busy() ? "Activating…" : "→ Activate"}
-                      </text>
-                    </box>
-                  </box>
-
-                  <box paddingTop={2}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                      Lite — $10/mo
-                    </text>
-                  </box>
-                  <text fg={theme.textMuted}>• 15 saved strategies, 20 backtests/day</text>
-                  <text fg={theme.textMuted}>• Live trading on Alpaca, Polymarket, Binance</text>
-                  <text fg={theme.textMuted}>• 5 terminal + 3 cloud live runs</text>
-                  <text fg={theme.textMuted}>• Discord Lite badge</text>
-
-                  <box paddingTop={2}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                      Pro ★ most popular
-                    </text>
-                  </box>
-                  <text fg={theme.textMuted}>• Unlimited strategies + backtests</text>
-                  <text fg={theme.textMuted}>• All brokers (incl. Questrade, IBKR)</text>
-                  <text fg={theme.textMuted}>• Unlimited terminal runs + 5 cloud runs</text>
-                  <text fg={theme.textMuted}>• Telegram bot, analytics, TradingView webhooks</text>
-                </box>
-              </scrollbox>
-            </Card>
-          }
-        >
-          <Card title={tier() === "pro" ? " Finny Pro " : " Finny Lite "}>
-            <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: false }}>
-              <box flexDirection="column" gap={1}>
-                <text fg={theme.success} attributes={TextAttributes.BOLD}>
-                  {tier() === "pro" ? "Pro is active" : "Lite is active"}
+              <box paddingTop={2}>
+                <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                  License key
                 </text>
-                <Show when={tier() === "pro" && proKey()}>
-                  <text fg={theme.textMuted}>Pro license: {Plan.maskKey(proKey()!)}</text>
-                </Show>
-                <Show when={tier() === "lite" && liteKey()}>
-                  <text fg={theme.textMuted}>Lite license: {Plan.maskKey(liteKey()!)}</text>
-                </Show>
+              </box>
+              <text fg={theme.textMuted}>Enter a new key only if Finny asks you to rotate this installation.</text>
+              <InputBox onInput={setLicenseInput} />
 
-                <box paddingTop={1} flexDirection="row" gap={2}>
-                  <box paddingLeft={1} paddingRight={1} onMouseUp={() => removeLicense(tier() as Exclude<Plan.Tier, "free">)}>
-                    <text fg={theme.error}>Remove license</text>
-                  </box>
-                </box>
-
-                <Show when={tier() === "lite"}>
-                  <box paddingTop={2}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                      Upgrade to Pro
-                    </text>
-                  </box>
-                  <text fg={theme.textMuted}>
-                    Unlock unlimited strategies, all brokers, Telegram bot, and more.
+              <box flexDirection="row" paddingTop={1}>
+                <box paddingLeft={2} paddingRight={2} backgroundColor={busy() ? theme.borderSubtle : theme.primary} onMouseUp={activate}>
+                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                    {busy() ? "Verifying..." : "Verify license"}
                   </text>
-                  <box flexDirection="row">
-                    <box paddingLeft={2} paddingRight={2} backgroundColor={theme.primary} onMouseUp={openPro}>
-                      <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                        → Upgrade to Pro
-                      </text>
-                    </box>
-                  </box>
-                </Show>
-
-                <Show when={tier() !== "free"}>
-                  <box paddingTop={2}>
-                    <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                      Managed Hosting
-                    </text>
-                  </box>
-                  <text fg={theme.textMuted}>
-                    Deploy your algo on our infrastructure with Telegram monitoring. Your plan includes {cloudRunCopy()}.
-                  </text>
-                  <box flexDirection="row">
-                    <box paddingLeft={2} paddingRight={2} backgroundColor={theme.primary} onMouseUp={() => DialogManagedHosting.show(dialog)}>
-                      <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                        → Request Managed Hosting
-                      </text>
-                    </box>
-                  </box>
-                </Show>
-
-                <box paddingTop={2}>
-                  <text fg={theme.textMuted}>
-                    Have a different license code? Paste it below to switch.
-                  </text>
-                </box>
-                <InputBox onInput={setLicenseInput} />
-                <box flexDirection="row">
-                  <box
-                    paddingLeft={2}
-                    paddingRight={2}
-                    backgroundColor={busy() ? theme.borderSubtle : theme.primary}
-                    onMouseUp={activate}
-                  >
-                    <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                      {busy() ? "Activating…" : "→ Activate"}
-                    </text>
-                  </box>
                 </box>
               </box>
-            </scrollbox>
-          </Card>
-        </Show>
+
+              <Show when={status()?.active}>
+                <box paddingTop={2}>
+                  <text fg={theme.textMuted}>
+                    Finny is unlocked on this machine. Restricted build, validation, backtest, export, and adapter actions remain available while the daily check is fresh.
+                  </text>
+                </box>
+              </Show>
+            </box>
+          </scrollbox>
+        </Card>
       </box>
     </box>
   )
