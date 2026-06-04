@@ -8,8 +8,20 @@
  * @module
  */
 
+import type * as analytics from "../analytics.js";
+import type * as controlAccounts from "../controlAccounts.js";
+import type * as devices from "../devices.js";
 import type * as http from "../http.js";
 import type * as licenses from "../licenses.js";
+import type * as messages from "../messages.js";
+import type * as parts from "../parts.js";
+import type * as permissions from "../permissions.js";
+import type * as projects from "../projects.js";
+import type * as sessionShares from "../sessionShares.js";
+import type * as sessions from "../sessions.js";
+import type * as subscriptions from "../subscriptions.js";
+import type * as todos from "../todos.js";
+import type * as workspaces from "../workspaces.js";
 
 import type {
   ApiFromModules,
@@ -18,8 +30,20 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  analytics: typeof analytics;
+  controlAccounts: typeof controlAccounts;
+  devices: typeof devices;
   http: typeof http;
   licenses: typeof licenses;
+  messages: typeof messages;
+  parts: typeof parts;
+  permissions: typeof permissions;
+  projects: typeof projects;
+  sessionShares: typeof sessionShares;
+  sessions: typeof sessions;
+  subscriptions: typeof subscriptions;
+  todos: typeof todos;
+  workspaces: typeof workspaces;
 }>;
 
 /**

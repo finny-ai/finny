@@ -95,7 +95,7 @@ http.route({
     }
 
     try {
-      const result = await ctx.runMutation((internal as any).licenses.check, {
+      const result = await ctx.runMutation(internal.licenses.check, {
         request_id: id,
         org_id: payload.org_id,
         license_key_hash: payload.license_key_hash,

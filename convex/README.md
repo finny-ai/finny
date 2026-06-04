@@ -115,9 +115,11 @@ Plan and device policy resolution stays server-side through the `licenses`
 table. The hardcoded local `org_id` only selects the intended org namespace; it
 is not sufficient for access without a matching license key hash.
 
-The `licenses` table stores license state, plan type, embedded device bindings,
-and the most recent check records. Per-head plans enforce
-`max_devices_per_key`, defaulting to 2. Enterprise plans have no device limit.
+The `licenses` table stores only license state and plan policy. The
+`licenseChecks` table stores each validation attempt plus the machine hash.
+Per-head plans enforce `max_devices_per_key`, defaulting to 2, by counting
+distinct machines with prior allowed checks for the same org/license pair.
+Enterprise plans have no device limit.
 
 For local development only, `FINNY_LICENSE_BYPASS=1` skips the client gate.
 Pilot/customer builds should not set it.
