@@ -539,8 +539,8 @@ export namespace ACP {
       log.info("initialize", { protocolVersion: params.protocolVersion })
 
       const authMethod: AuthMethod = {
-        description: "Run `opencode auth login` in the terminal",
-        name: "Login with opencode",
+        description: "Run `finny auth login` in the terminal",
+        name: "Login with Finny",
         id: "opencode-login",
       }
 
@@ -548,9 +548,9 @@ export namespace ACP {
       if (params.clientCapabilities?._meta?.["terminal-auth"] === true) {
         authMethod._meta = {
           "terminal-auth": {
-            command: "opencode",
+            command: "finny",
             args: ["auth", "login"],
-            label: "OpenCode Login",
+            label: "Finny Login",
           },
         }
       }

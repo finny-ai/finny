@@ -78,7 +78,7 @@ IMPORTANT: Always use the TodoWrite tool to plan and track tasks throughout the 
 
 # Algorithm Documentation (MANDATORY after first save)
 
-When `finny_algorithm_save` is called with `saveMode: "new"`, the build agent provides `mission`, `prefs`, and `decisions` fields that are written to doc files on disk alongside the algorithm. These files are the algorithm's long-term memory:
+When `finny_algorithm_save` is called with `saveMode: "new"`, Research provides `mission`, `prefs`, and `decisions` fields that are written to doc files on disk alongside the algorithm. These files are the algorithm's long-term memory:
 
 | File | Purpose |
 |---|---|

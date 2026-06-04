@@ -325,69 +325,69 @@ xAI
 ZenMux
 ```
 
-## OpenCode CLI commands (as shown in docs)
+## Finny CLI commands (as shown in docs)
 
 ```text
-opencode
-opencode [project]
-opencode /path/to/project
-opencode acp
-opencode agent [command]
-opencode agent create
-opencode agent list
-opencode attach [url]
-opencode attach http://10.20.30.40:4096
-opencode attach http://localhost:4096
-opencode auth [command]
-opencode auth list
-opencode auth login
-opencode auth logout
-opencode auth ls
-opencode export [sessionID]
-opencode github [command]
-opencode github install
-opencode github run
-opencode import <file>
-opencode import https://opncd.ai/s/abc123
-opencode import session.json
-opencode mcp [command]
-opencode mcp add
-opencode mcp auth [name]
-opencode mcp auth list
-opencode mcp auth ls
-opencode mcp auth my-oauth-server
-opencode mcp auth sentry
-opencode mcp debug <name>
-opencode mcp debug my-oauth-server
-opencode mcp list
-opencode mcp logout [name]
-opencode mcp logout my-oauth-server
-opencode mcp ls
-opencode models --refresh
-opencode models [provider]
-opencode models anthropic
-opencode run [message..]
-opencode run Explain the use of context in Go
-opencode serve
-opencode serve --cors http://localhost:5173 --cors https://app.example.com
-opencode serve --hostname 0.0.0.0 --port 4096
-opencode serve [--port <number>] [--hostname <string>] [--cors <origin>]
-opencode session [command]
-opencode session list
-opencode session delete <sessionID>
-opencode stats
-opencode uninstall
-opencode upgrade
-opencode upgrade [target]
-opencode upgrade v0.1.48
-opencode web
-opencode web --cors https://example.com
-opencode web --hostname 0.0.0.0
-opencode web --mdns
-opencode web --mdns --mdns-domain myproject.local
-opencode web --port 4096
-opencode web --port 4096 --hostname 0.0.0.0
-opencode.server.close()
+finny
+finny [project]
+finny /path/to/project
+finny acp
+finny agent [command]
+finny agent create
+finny agent list
+finny attach [url]
+finny attach http://10.20.30.40:4096
+finny attach http://localhost:4096
+finny auth [command]
+finny auth list
+finny auth login
+finny auth logout
+finny auth ls
+finny export [sessionID]
+finny github [command]
+finny github install
+finny github run
+finny import <file>
+finny import https://opncd.ai/s/abc123
+finny import session.json
+finny mcp [command]
+finny mcp add
+finny mcp auth [name]
+finny mcp auth list
+finny mcp auth ls
+finny mcp auth my-oauth-server
+finny mcp auth sentry
+finny mcp debug <name>
+finny mcp debug my-oauth-server
+finny mcp list
+finny mcp logout [name]
+finny mcp logout my-oauth-server
+finny mcp ls
+finny models --refresh
+finny models [provider]
+finny models anthropic
+finny run [message..]
+finny run Explain the use of context in Go
+finny serve
+finny serve --cors http://localhost:5173 --cors https://app.example.com
+finny serve --hostname 0.0.0.0 --port 4096
+finny serve [--port <number>] [--hostname <string>] [--cors <origin>]
+finny session [command]
+finny session list
+finny session delete <sessionID>
+finny stats
+finny uninstall
+finny upgrade
+finny upgrade [target]
+finny upgrade v0.1.48
+finny web
+finny web --cors https://example.com
+finny web --hostname 0.0.0.0
+finny web --mdns
+finny web --mdns --mdns-domain myproject.local
+finny web --port 4096
+finny web --port 4096 --hostname 0.0.0.0
+finny.server.close()
 ```
 
 ## Slash commands and routes

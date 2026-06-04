@@ -17,7 +17,7 @@ import {
 import { DATA_NEWS_BODY_DIR, DATA_NEWS_HEADLINES_DIR, MISSION_FILE } from "./schemas"
 
 const MISSION = `---
-schema_version: 2
+schema_version: 3
 name: active-demo
 status: research
 created: 2026-05-17
@@ -27,8 +27,50 @@ scope:
   asset_class: crypto
   universe: [BTC]
   horizon: weeks
+strategy:
+  bar_interval: 1h
+  type: momentum
+  direction: long
+  entry_signal: trend breakout
+  risk_profile: moderate
+  max_drawdown_pct: "10"
+  backtest_window: 1y
+  success_metric: Sharpe above 1
 exit_conditions: |
   - 14d
+questionnaire:
+  - id: market_universe
+    question: "Which market or universe should this strategy trade?"
+    answer: "BTC"
+    status: answered
+  - id: timeframe_bar_interval
+    question: "What trading timeframe and bar interval should this strategy use?"
+    answer: "1h bars for several weeks"
+    status: answered
+  - id: strategy_family
+    question: "What strategy family should Finny start from?"
+    answer: "Momentum"
+    status: answered
+  - id: directional_thesis_regime
+    question: "What directional thesis or market regime should the strategy express?"
+    answer: "Long trend continuation"
+    status: answered
+  - id: entry_signal_idea
+    question: "What entry signal idea should the strategy test?"
+    answer: "Trend breakout"
+    status: answered
+  - id: exit_invalidation_rules
+    question: "What exit or invalidation rules matter?"
+    answer: "14 day timeout"
+    status: answered
+  - id: risk_tolerance_max_drawdown
+    question: "What risk tolerance and maximum drawdown should the strategy respect?"
+    answer: "Moderate risk, max 10% drawdown"
+    status: answered
+  - id: backtest_window_success_metric
+    question: "What backtest window and success metric should Finny optimize for?"
+    answer: "1y, Sharpe above 1"
+    status: answered
 ---
 
 # active-demo

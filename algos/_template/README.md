@@ -38,8 +38,12 @@ strategy stub, and grow the rest of the folder as the algo matures.
 
 - Folder name is kebab-case (`hanta-biotech-swing`) and must match
   `mission.frontmatter.name`.
-- `mission.md` has YAML frontmatter governed by `schema_version: 2`. The
+- `mission.md` has YAML frontmatter governed by `schema_version: 3`. The
   schemas live in `@finny-ai/core/algo`.
+- v3 missions include a required Core 8 questionnaire. Each item is either
+  answered or explicitly skipped; skipped answers are stored as an empty
+  string with `status: skipped` and should be shown as
+  `(User skipped; ask when/if relevant)`.
 - `CURRENT` contains exactly one token, the version directory name. No JSON,
   no YAML, no comments.
 - Version dirs are zero-padded two digits: `v01`, `v02`, …, `v99`. This

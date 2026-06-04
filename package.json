@@ -1,6 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "name": "opencode",
+  "name": "finny-internal-prop",
+  "version": "0.0.0",
   "description": "AI-powered development tool",
   "private": true,
   "type": "module",

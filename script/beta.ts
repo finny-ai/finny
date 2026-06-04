@@ -96,7 +96,7 @@ async function install() {
 }
 
 async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: number) {
-  console.log(`  Trying to auto-resolve ${files.length} conflict(s) with opencode...`)
+  console.log(`  Trying to auto-resolve ${files.length} conflict(s) with finny...`)
 
   const done = lines(prs.filter((x) => applied.includes(x.number)))
   const next = lines(prs.slice(idx + 1))
@@ -122,9 +122,9 @@ async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: n
   ].join("\n")
 
   try {
-    await $`opencode run -m ${model} ${prompt}`
+    await $`finny run -m ${model} ${prompt}`
   } catch (err) {
-    console.log(`  opencode failed: ${err}`)
+    console.log(`  finny failed: ${err}`)
     return false
   }
 
@@ -138,12 +138,12 @@ async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: n
 
   if (!(await typecheck())) return false
 
-  console.log("  Conflicts resolved with opencode")
+  console.log("  Conflicts resolved with finny")
   return true
 }
 
 async function smoke(prs: PR[], applied: number[]) {
-  console.log("\nRunning final smoke check with opencode...")
+  console.log("\nRunning final smoke check with finny...")
 
   const done = lines(prs.filter((x) => applied.includes(x.number)))
   const prompt = [
@@ -156,7 +156,7 @@ async function smoke(prs: PR[], applied: number[]) {
   ].join("\n")
 
   try {
-    await $`opencode run -m ${model} ${prompt}`
+    await $`finny run -m ${model} ${prompt}`
   } catch (err) {
     console.log(`Smoke fix failed: ${err}`)
     return false
