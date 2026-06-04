@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
-  "version": "1.4.3",
-  "name": "finny",
+  "version": "0.0.0",
+  "name": "finny-internal-prop",
   "type": "module",
   "license": "MIT",
   "private": true,

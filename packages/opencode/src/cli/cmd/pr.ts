@@ -7,7 +7,7 @@ import { Process } from "@/util/process"
 
 export const PrCommand = cmd({
   command: "pr <number>",
-  describe: "fetch and checkout a GitHub PR branch, then run opencode",
+  describe: "fetch and checkout a GitHub PR branch, then run finny",
   builder: (yargs) =>
     yargs.positional("number", {
       type: "number",
@@ -93,15 +93,15 @@ export const PrCommand = cmd({
               )
             }
 
-            // Check for opencode session link in PR body
+            // Check for Finny session link in PR body
             if (prInfo && prInfo.body) {
               const sessionMatch = prInfo.body.match(/https:\/\/opncd\.ai\/s\/([a-zA-Z0-9_-]+)/)
               if (sessionMatch) {
                 const sessionUrl = sessionMatch[0]
-                UI.println(`Found opencode session: ${sessionUrl}`)
+                UI.println(`Found Finny session: ${sessionUrl}`)
                 UI.println(`Importing session...`)
 
-                const importResult = await Process.text(["opencode", "import", sessionUrl], {
+                const importResult = await Process.text(["finny", "import", sessionUrl], {
                   nothrow: true,
                 })
                 if (importResult.code === 0) {
@@ -120,18 +120,18 @@ export const PrCommand = cmd({
 
         UI.println(`Successfully checked out PR #${prNumber} as branch '${localBranchName}'`)
         UI.println()
-        UI.println("Starting opencode...")
+        UI.println("Starting Finny...")
         UI.println()
 
-        const opencodeArgs = sessionId ? ["-s", sessionId] : []
-        const opencodeProcess = Process.spawn(["opencode", ...opencodeArgs], {
+        const finnyArgs = sessionId ? ["-s", sessionId] : []
+        const finnyProcess = Process.spawn(["finny", ...finnyArgs], {
           stdin: "inherit",
           stdout: "inherit",
           stderr: "inherit",
           cwd: process.cwd(),
         })
-        const code = await opencodeProcess.exited
-        if (code !== 0) throw new Error(`opencode exited with code ${code}`)
+        const code = await finnyProcess.exited
+        if (code !== 0) throw new Error(`finny exited with code ${code}`)
       },
     })
   },
