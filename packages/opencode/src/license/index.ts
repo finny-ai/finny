@@ -235,7 +235,10 @@ export namespace License {
     }
 
     const parsed = await parseCheckResponse(response)
-    if (response.status === 200) return parsed?.ok === true ? parsed : { ok: true }
+    if (response.status === 200) {
+      if (parsed?.ok === true) return parsed
+      throw new VerificationError()
+    }
     if (response.status === 403) {
       if (parsed?.ok === false) return parsed
       return { ok: false }

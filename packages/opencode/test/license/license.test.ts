@@ -38,7 +38,10 @@ describe("License", () => {
 
     License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       payload = JSON.parse(String(init?.body))
-      return new Response(null, { status: 200 })
+      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
     }) as unknown as typeof fetch)
 
     await License.activate(" finny_valid_key ")
@@ -82,12 +85,24 @@ describe("License", () => {
 
     License._setFetchForTests((async (input: Parameters<typeof fetch>[0]) => {
       url = input
-      return new Response(null, { status: 200 })
+      return new Response(JSON.stringify({ ok: true, plan_type: "enterprise" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
     }) as unknown as typeof fetch)
 
     await License.activate("finny_valid_key")
 
     expect(String(url)).toBe("https://api.finnyai.tech/v1/license/check")
+  })
+
+  test("empty or malformed 200 does not unlock license", async () => {
+    License._setFetchForTests((async () => new Response(null, { status: 200 })) as unknown as typeof fetch)
+
+    await expect(License.activate("finny_empty_200")).rejects.toThrow(
+      "Could not verify license. Please check your connection or contact Finny.",
+    )
+    await expect(fs.access(path.join(tempDir, "license-cache.json"))).rejects.toThrow()
   })
 
   test("invalid activation returns access denied and does not write cache", async () => {
@@ -119,7 +134,10 @@ describe("License", () => {
     let calls = 0
     License._setFetchForTests((async () => {
       calls++
-      return new Response(null, { status: 200 })
+      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
     }) as unknown as typeof fetch)
 
     await License.activate("finny_valid_key")
@@ -135,7 +153,11 @@ describe("License", () => {
   test("stale cache calls Convex again and blocks on 403", async () => {
     const t0 = Date.parse("2026-06-01T12:00:00.000Z")
     License._setNowForTests(() => t0)
-    License._setFetchForTests((async () => new Response(null, { status: 200 })) as unknown as typeof fetch)
+    License._setFetchForTests((async () =>
+      new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as unknown as typeof fetch)
     await License.activate("finny_valid_key")
 
     let rechecked = false
