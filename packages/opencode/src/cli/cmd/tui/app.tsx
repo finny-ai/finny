@@ -40,6 +40,7 @@ import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
 import { DialogConsoleOrg } from "@tui/component/dialog-console-org"
+import { DialogLicenseActivation } from "@tui/component/dialog-license-activation"
 import { DialogOnboardingProviders } from "@tui/component/dialog-onboarding-providers"
 import { DialogOnboardingChoosePath } from "@tui/component/dialog-onboarding-choose-path"
 import { Analytics } from "@/analytics/tracker"
@@ -76,6 +77,7 @@ import { TuiConfigProvider, useTuiConfig } from "./context/tui-config"
 import { TuiConfig } from "@/config/tui"
 import { createTuiApi, TuiPluginRuntime, type RouteMap } from "./plugin"
 import { FormatError, FormatUnknownError } from "@/cli/error"
+import { License } from "@/license"
 
 async function getTerminalBackgroundColor(): Promise<"dark" | "light"> {
   // can't set raw mode if not a TTY
@@ -509,6 +511,7 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   // between steps, the prompt would briefly grab focus and the user could
   // type behind the dialog.
   let onboardingStarted = false
+  let startupGateDone = false
 
   function waitDialogClosed(): Promise<void> {
     if (dialog.stack.length === 0) return Promise.resolve()
@@ -564,16 +567,37 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
     }
   }
 
+  async function runLicenseActivation() {
+    while (!(await License.isUnlockedForToday())) {
+      const result = await DialogLicenseActivation.show(dialog)
+      if (result === "activated") {
+        dialog.clear()
+        return
+      }
+      await exit()
+      return
+    }
+  }
+
+  async function runStartupGate() {
+    try {
+      await runLicenseActivation()
+      if (kv.get("onboarding_v2_status")) return
+      if (kv.get("experience_level_status")) return
+      await runOnboardingV2()
+    } finally {
+      startupGateDone = true
+    }
+  }
+
   createEffect(
     on(
-      () => sync.status === "complete" && kv.ready,
+      () => sync.status === "complete" && kv.ready && dialog.stack.length === 0,
       (ready) => {
         if (!ready) return
-        if (kv.get("onboarding_v2_status")) return
-        if (kv.get("experience_level_status")) return
         if (onboardingStarted) return
         onboardingStarted = true
-        void runOnboardingV2()
+        void runStartupGate()
       },
     ),
   )
@@ -1147,6 +1171,8 @@ function App(props: { onSnapshot?: () => Promise<string[]> }) {
   })
 
   event.on("installation.update-available", async (evt) => {
+    if (!startupGateDone || dialog.stack.length > 0) return
+
     const version = evt.properties.version
 
     const skipped = kv.get("skipped_version")

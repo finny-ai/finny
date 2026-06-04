@@ -5,6 +5,7 @@ import type { Permission } from "../permission"
 import type { SessionID, MessageID } from "../session/schema"
 import { Truncate } from "./truncate"
 import { Agent } from "@/agent/agent"
+import { License } from "@/license"
 
 export namespace Tool {
   interface Metadata {
@@ -94,6 +95,9 @@ export namespace Tool {
                 )
               },
             })
+            if (License.isRestrictedTool(id)) {
+              yield* Effect.promise(() => License.ensureActive())
+            }
             const result = yield* execute(args, ctx)
             if (result.metadata.truncated !== undefined) {
               return result

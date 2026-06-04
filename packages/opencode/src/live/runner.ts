@@ -13,6 +13,7 @@ import { emit } from "@/analytics/emit"
 import { Plan } from "@/plan"
 import { requireBrokerTier } from "@/plan/brokers"
 import { Global } from "@/global"
+import { License } from "@/license"
 
 const log = Log.create({ service: "live" })
 
@@ -319,6 +320,8 @@ if __name__ == "__main__":
 `
 
   export async function start(params: StartParams): Promise<Run> {
+    await License.ensureActive()
+
     if (params.algorithm.backtestCode && params.algorithm.backtestCode.trim().length > 0) {
       throw new Error("Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.")
     }

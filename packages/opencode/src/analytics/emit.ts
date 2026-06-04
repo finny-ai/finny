@@ -1,9 +1,10 @@
 import crypto from "crypto"
 import { convexClient } from "../storage/convex-client"
-import { api } from "../../../../convex/_generated/api"
+import { api as generatedApi } from "../../../../convex/_generated/api"
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
 
+const api = generatedApi as any
 const log = Log.create({ service: "analytics-emit" })
 
 const SENSITIVE_KEYS = new Set(["code", "config", "backtestCode", "reasoning", "error", "stderr"])

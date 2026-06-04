@@ -1,5 +1,6 @@
 import { convexClient } from "../convex-client"
-import { api } from "../../../../../convex/_generated/api"
+import { api as generatedApi } from "../../../../../convex/_generated/api"
+const api = generatedApi as any
 
 export type InteractionEvent = {
   userId?: string
