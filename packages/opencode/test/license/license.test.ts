@@ -118,7 +118,7 @@ describe("License", () => {
         JSON.stringify({
           ok: false,
           error_code: "device_limit_reached",
-          message: "This license is already active on the maximum number of devices.",
+          message: "Access denied. Already configured on 2 devices.",
           devices_used: 2,
           device_limit: 2,
         }),
@@ -126,7 +126,7 @@ describe("License", () => {
       )) as unknown as typeof fetch)
 
     await expect(License.activate("finny_device_limit")).rejects.toThrow(
-      "This license is already active on the maximum number of devices.",
+      "Access denied. Already configured on 2 devices.",
     )
   })
 

@@ -33,7 +33,7 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
       props.onResult?.("activated")
     } catch (e) {
       if (e instanceof License.AccessDeniedError) {
-        setError("Access denied. Please contact Finny.")
+        setError(e.message || "Access denied. Please contact Finny.")
       } else {
         setError("Could not verify license. Please check your connection or contact Finny.")
       }
@@ -151,6 +151,7 @@ DialogLicenseActivation.show = (dialog: DialogContext) => {
         picked = "dismissed"
         resolve("dismissed")
       },
+      { dismissible: false },
     )
   })
 }

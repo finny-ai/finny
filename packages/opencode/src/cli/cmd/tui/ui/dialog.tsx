@@ -68,6 +68,7 @@ function init() {
     stack: [] as {
       element: JSX.Element
       onClose?: () => void
+      dismissible: boolean
     }[],
     size: "medium" as "medium" | "large" | "xlarge",
   })
@@ -79,10 +80,17 @@ function init() {
     if (evt.defaultPrevented) return
     if ((evt.name === "escape" || (evt.ctrl && evt.name === "c")) && renderer.getSelection()?.getSelectedText()) return
     if (evt.name === "escape" || (evt.ctrl && evt.name === "c")) {
+      const current = store.stack.at(-1)!
+      if (!current.dismissible) {
+        if (evt.name === "escape") {
+          evt.preventDefault()
+          evt.stopPropagation()
+        }
+        return
+      }
       if (renderer.getSelection()) {
         renderer.clearSelection()
       }
-      const current = store.stack.at(-1)!
       current.onClose?.()
       setStore("stack", store.stack.slice(0, -1))
       evt.preventDefault()
@@ -120,7 +128,7 @@ function init() {
       })
       refocus()
     },
-    replace(input: any, onClose?: () => void) {
+    replace(input: any, onClose?: () => void, options: { dismissible?: boolean } = {}) {
       if (store.stack.length === 0) {
         focus = renderer.currentFocusedRenderable
         focus?.blur()
@@ -133,6 +141,7 @@ function init() {
         {
           element: input,
           onClose,
+          dismissible: options.dismissible ?? true,
         },
       ])
     },
@@ -175,7 +184,13 @@ export function DialogProvider(props: ParentProps) {
         }
       >
         <Show when={value.stack.length}>
-          <Dialog onClose={() => value.clear()} size={value.size}>
+          <Dialog
+            onClose={() => {
+              if (!value.stack.at(-1)?.dismissible) return
+              value.clear()
+            }}
+            size={value.size}
+          >
             {value.stack.at(-1)!.element}
           </Dialog>
         </Show>

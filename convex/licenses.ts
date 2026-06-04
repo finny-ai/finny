@@ -9,7 +9,9 @@ const NEXT_CHECK_MS = 24 * 60 * 60 * 1000
 type PlanType = "enterprise" | "per_head"
 type LicenseCheck = {
   machine_id_hash: string
-  result: "allowed" | "denied"
+  status: "active" | "revoked"
+  first_seen_at: number
+  last_seen_at: number
 }
 
 function validHash(value: string) {
@@ -28,7 +30,7 @@ function userMessage(errorCode: string) {
   if (errorCode === "expired") return "This Finny license has expired. Please contact Finny."
   if (errorCode === "revoked") return "This Finny license has been revoked. Please contact Finny."
   if (errorCode === "device_limit_reached") {
-    return "This license is already active on the maximum number of devices."
+    return "Access denied. Already configured on 2 devices."
   }
   return "Access denied. Please contact Finny."
 }
@@ -59,12 +61,32 @@ function response(input: {
   }
 }
 
-function activeMachineHashes(checks: LicenseCheck[]) {
-  const machines = new Set<string>()
-  for (const check of checks) {
-    if (check.result === "allowed") machines.add(check.machine_id_hash)
+function activeDevices(devices: LicenseCheck[]) {
+  return devices.filter((device) => device.status === "active")
+}
+
+function upsertDevice(devices: LicenseCheck[], machineHash: string, now: number) {
+  const existingIndex = devices.findIndex((device) => device.machine_id_hash === machineHash)
+  if (existingIndex >= 0) {
+    return devices.map((device, index) =>
+      index === existingIndex
+        ? {
+            ...device,
+            status: "active" as const,
+            last_seen_at: now,
+          }
+        : device,
+    )
   }
-  return machines
+  return [
+    ...devices,
+    {
+      machine_id_hash: machineHash,
+      status: "active" as const,
+      first_seen_at: now,
+      last_seen_at: now,
+    },
+  ]
 }
 
 export const check = internalMutation({
@@ -98,16 +120,11 @@ export const check = internalMutation({
         ? Math.max(1, Number(license.max_devices_per_key ?? DEFAULT_PER_HEAD_DEVICE_LIMIT))
         : undefined
 
-    const historicalChecks = await ctx.db
-      .query("licenseChecks")
-      .withIndex("by_org_license", (q) =>
-        q.eq("org_id", args.org_id).eq("license_key_hash", args.license_key_hash),
-      )
-      .collect()
-
-    const machines = activeMachineHashes(historicalChecks)
-    const currentMachineAlreadyAllowed = machines.has(args.machine_id_hash)
-    let devicesUsed = machines.size
+    const devices = (license.devices ?? []) as LicenseCheck[]
+    const currentDevice = devices.find((device) => device.machine_id_hash === args.machine_id_hash)
+    const currentMachineAlreadyAllowed = currentDevice?.status === "active"
+    let nextDevices = devices
+    let devicesUsed = activeDevices(devices).length
 
     const recordCheck = async (input: {
       result: "allowed" | "denied"
@@ -128,7 +145,6 @@ export const check = internalMutation({
         metadata: args.metadata,
         timestamp: now,
       })
-      await ctx.db.patch(license._id, { time_updated: now })
     }
 
     const deny = async (errorCode: string, currentDevicesUsed = devicesUsed) => {
@@ -146,6 +162,7 @@ export const check = internalMutation({
         devicesUsed: currentDevicesUsed,
         deviceLimit,
       })
+      await ctx.db.patch(license._id, { time_updated: now })
       return result
     }
 
@@ -155,10 +172,14 @@ export const check = internalMutation({
     if (license.active_until !== undefined && license.active_until < now) return deny("expired")
 
     if (license.plan_type === "enterprise") {
-      devicesUsed = currentMachineAlreadyAllowed ? devicesUsed : devicesUsed + 1
+      nextDevices = upsertDevice(devices, args.machine_id_hash, now)
+      devicesUsed = activeDevices(nextDevices).length
+    } else if (currentMachineAlreadyAllowed) {
+      nextDevices = upsertDevice(devices, args.machine_id_hash, now)
     } else if (!currentMachineAlreadyAllowed) {
       if (devicesUsed >= deviceLimit!) return deny("device_limit_reached", devicesUsed)
-      devicesUsed += 1
+      nextDevices = upsertDevice(devices, args.machine_id_hash, now)
+      devicesUsed = activeDevices(nextDevices).length
     }
 
     const result = response({
@@ -169,6 +190,10 @@ export const check = internalMutation({
       now,
     })
 
+    await ctx.db.patch(license._id, {
+      devices: nextDevices,
+      time_updated: now,
+    })
     await recordCheck({
       result: "allowed",
       devicesUsed,

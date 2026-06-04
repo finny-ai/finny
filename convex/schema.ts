@@ -178,6 +178,16 @@ export default defineSchema({
     active_from: v.optional(v.number()),
     active_until: v.optional(v.number()),
     max_devices_per_key: v.optional(v.number()),
+    devices: v.optional(
+      v.array(
+        v.object({
+          machine_id_hash: v.string(),
+          status: v.union(v.literal("active"), v.literal("revoked")),
+          first_seen_at: v.number(),
+          last_seen_at: v.number(),
+        }),
+      ),
+    ),
     time_created: v.number(),
     time_updated: v.number(),
   })
