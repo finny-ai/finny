@@ -2,14 +2,8 @@ import { createMemo, For } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { useRoute, type Route } from "../context/route"
-import open from "open"
-import { useToast } from "../ui/toast"
 
-const DISCORD_URL = "https://discord.gg/Y68pqQju8"
-
-type NavAction =
-  | { kind: "route"; type: Route["type"] }
-  | { kind: "external"; url: string }
+type NavAction = { kind: "route"; type: Route["type"] }
 
 type NavItem = {
   icon: string
@@ -26,7 +20,6 @@ const TOP_ITEMS: NavItem[] = [
 ]
 
 const BOTTOM_ITEMS: NavItem[] = [
-  { icon: "@@@", label: "Discord", action: { kind: "external", url: DISCORD_URL } },
   { icon: "***", label: "Settings", action: { kind: "route", type: "settings" } },
 ]
 
@@ -60,7 +53,6 @@ function NavRow(props: { item: NavItem; isActive: boolean; onSelect: () => void 
 export function SidebarNav() {
   const { theme } = useTheme()
   const route = useRoute()
-  const toast = useToast()
 
   const activeType = createMemo(() => {
     const t = route.data.type
@@ -78,17 +70,9 @@ export function SidebarNav() {
       else if (type === "settings") route.navigate({ type: "settings" })
       return
     }
-    if (item.action.kind === "external") {
-      const url = item.action.url
-      open(url).catch(() => {
-        toast.show({ message: `Open: ${url}`, variant: "info", duration: 4000 })
-      })
-      toast.show({ message: `Opening ${item.label.toLowerCase()} in browser…`, variant: "info", duration: 2000 })
-    }
   }
 
   const isActive = (item: NavItem) => {
-    if (item.action.kind !== "route") return false
     return activeType() === item.action.type
   }
 
@@ -113,7 +97,9 @@ export function SidebarNav() {
             ENTERPRISE
           </text>
         </box>
-        <text fg={theme.textMuted} selectable={false}>trading agent</text>
+        <text fg={theme.textMuted} selectable={false}>
+          Financial Harness
+        </text>
       </box>
 
       <box flexDirection="column" flexShrink={0} paddingTop={1}>
