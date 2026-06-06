@@ -7,7 +7,6 @@ import { Log } from "../util/log"
 import { emit } from "../analytics/emit"
 import type { BrokerKind } from "@/live/brokers"
 import { normalizeConfigForSave } from "./strategy-params"
-import { parseMission } from "@finny-ai/core/algo"
 
 const log = Log.create({ service: "algorithm" })
 const BrokerKindSchema = z.enum(["alpaca", "binance", "ibkr"])
@@ -81,29 +80,7 @@ export namespace Algorithm {
     }
   }
 
-  export class MissionValidationError extends Error {
-    constructor(message: string) {
-      super(message)
-    }
-  }
-
-  export function validateMissionForNewSave(mission: string | undefined): void {
-    if (!mission?.trim()) {
-      throw new MissionValidationError(
-        "New algorithms require a schema_version: 3 mission.md with the Core 8 questionnaire.",
-      )
-    }
-    try {
-      parseMission(mission)
-    } catch (err) {
-      const reason = err instanceof Error ? err.message : String(err)
-      throw new MissionValidationError(`Invalid mission.md for new algorithm: ${reason}`)
-    }
-  }
-
   export async function save(input: SaveInput): Promise<Info> {
-    if (input.saveMode === "new") validateMissionForNewSave(input.mission)
-
     const userId = await DeviceProfile.userId()
     const now = Date.now()
 

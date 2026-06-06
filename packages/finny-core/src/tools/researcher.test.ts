@@ -15,7 +15,7 @@ import {
 // ---------------------------------------------------------------------------
 
 const MISSION_YAML = `---
-schema_version: 3
+schema_version: 2
 name: trump-china-swing
 status: research
 created: 2026-05-10
@@ -25,51 +25,9 @@ scope:
   asset_class: equities
   universe: [BABA, JD, PDD, FXI]
   horizon: days
-strategy:
-  bar_interval: 1h
-  type: event-driven-swing
-  direction: long
-  entry_signal: tariff-news reversal
-  risk_profile: moderate
-  max_drawdown_pct: "10"
-  backtest_window: 1y
-  success_metric: Sharpe above 1
 exit_conditions: |
   - Time stop: 5 trading days
   - Price stop: -5% from entry
-questionnaire:
-  - id: market_universe
-    question: "Which market or universe should this strategy trade?"
-    answer: "BABA, JD, PDD, FXI"
-    status: answered
-  - id: timeframe_bar_interval
-    question: "What trading timeframe and bar interval should this strategy use?"
-    answer: "1h bars"
-    status: answered
-  - id: strategy_family
-    question: "What strategy family should Finny start from?"
-    answer: "Event-driven swing"
-    status: answered
-  - id: directional_thesis_regime
-    question: "What directional thesis or market regime should the strategy express?"
-    answer: "Long affected China equities after tariff-news dislocations"
-    status: answered
-  - id: entry_signal_idea
-    question: "What entry signal idea should the strategy test?"
-    answer: "Tariff-news reversal"
-    status: answered
-  - id: exit_invalidation_rules
-    question: "What exit or invalidation rules matter?"
-    answer: "5 trading day time stop and 5% price stop"
-    status: answered
-  - id: risk_tolerance_max_drawdown
-    question: "What risk tolerance and maximum drawdown should the strategy respect?"
-    answer: "Moderate risk, max 10% drawdown"
-    status: answered
-  - id: backtest_window_success_metric
-    question: "What backtest window and success metric should Finny optimize for?"
-    answer: "1y, Sharpe above 1"
-    status: answered
 ---
 
 # Trump-China trade swing strategy
@@ -104,6 +62,7 @@ async function setupEnv(): Promise<{ algosPath: string; algoDir: string }> {
   return { algosPath, algoDir }
 }
 
+// ---------------------------------------------------------------------------
 // Tests — researcher agent definition
 // ---------------------------------------------------------------------------
 
@@ -433,7 +392,7 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
 })
 
 // ---------------------------------------------------------------------------
-// Prompt integration: Research owns the researcher workflow; Chat stays read-only
+// Prompt integration: Build owns implementation, Research plans, Chat stays read-only
 // ---------------------------------------------------------------------------
 
 describe("main agent prompts reference researcher", () => {
@@ -442,32 +401,25 @@ describe("main agent prompts reference researcher", () => {
     "../../../opencode/src/agent/prompt",
   )
 
-  test("Research prompt mentions the researcher workflow", async () => {
-    const content = await fs.readFile(path.join(PROMPT_DIR, "finny-research.txt"), "utf8")
-    expect(content).toContain("Research mode owns the full strategy workflow")
-    expect(content).toContain("researcher")
-    expect(content).toContain("subagent")
-  })
-
-  test("Research prompt asks only missing or ambiguous Core 8 items", async () => {
-    const content = await fs.readFile(path.join(PROMPT_DIR, "finny-research.txt"), "utf8")
-    expect(content).toContain("extract any Core 8 answers already present")
-    expect(content).toContain("Ask only the missing or ambiguous Core 8 items")
-    expect(content).toContain("store the inferred answer as `status: answered`")
-  })
-
-  test("Chat prompt is read-only and hands strategy work to Research", async () => {
-    const content = await fs.readFile(path.join(PROMPT_DIR, "finny-chat.txt"), "utf8")
-    expect(content).toContain("read-only")
-    expect(content).toContain("switch to Research mode")
-    expect(content).toContain("no `task`")
-    expect(content).not.toContain("researcher")
-  })
-
-  test("Build prompt file is retained as the legacy prompt asset", async () => {
+  test("Build prompt owns strategy implementation and backtests", async () => {
     const content = await fs.readFile(path.join(PROMPT_DIR, "finny-build.txt"), "utf8")
     expect(content).toContain("You are Finny Build: the implementation agent for trading strategies.")
-    expect(content).toContain("## Responsibility")
     expect(content).toContain("Mandatory Pre-Build Subagents")
+    expect(content).toContain("Save with `finny_algorithm_save`")
+    expect(content).toContain("Run `finny_backtest_run`")
+  })
+
+  test("Research prompt plans strategies without saving or backtesting", async () => {
+    const content = await fs.readFile(path.join(PROMPT_DIR, "finny-research.txt"), "utf8")
+    expect(content).toContain("Research mode asks clarifying questions")
+    expect(content).toContain("writes a plain-English strategy plan")
+    expect(content).toContain("Do not call save, scaffold, validate, or backtest tools")
+  })
+
+  test("Chat prompt is read-only and hands build work to Build", async () => {
+    const content = await fs.readFile(path.join(PROMPT_DIR, "finny-chat.txt"), "utf8")
+    expect(content).toContain("Chat mode explains, summarizes, and answers questions")
+    expect(content).toContain("does not save algorithms, create strategy code, or run new backtests")
+    expect(content).toContain("Tell the user to switch to Build mode")
   })
 })

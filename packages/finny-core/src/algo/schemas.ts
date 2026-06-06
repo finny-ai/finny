@@ -62,118 +62,17 @@ export const MissionScope = z.object({
 })
 export type MissionScope = z.infer<typeof MissionScope>
 
-export const CoreQuestionId = z.enum([
-  "market_universe",
-  "timeframe_bar_interval",
-  "strategy_family",
-  "directional_thesis_regime",
-  "entry_signal_idea",
-  "exit_invalidation_rules",
-  "risk_tolerance_max_drawdown",
-  "backtest_window_success_metric",
-])
-export type CoreQuestionId = z.infer<typeof CoreQuestionId>
-
-export const CORE_QUESTION_IDS = CoreQuestionId.options
-
-export const MissionQuestion = z
-  .object({
-    id: CoreQuestionId,
-    question: z.string().min(1),
-    answer: z.string(),
-    status: z.enum(["answered", "skipped"]),
-  })
-  .strict()
-  .superRefine((item, ctx) => {
-    if (item.status === "answered" && item.answer.trim().length === 0) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["answer"],
-        message: "answered questionnaire items must include an answer",
-      })
-    }
-    if (item.status === "skipped" && item.answer !== "") {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["answer"],
-        message: "skipped questionnaire items must use an empty answer",
-      })
-    }
-  })
-export type MissionQuestion = z.infer<typeof MissionQuestion>
-
-export const MissionQuestionnaire = z
-  .array(MissionQuestion)
-  .length(CORE_QUESTION_IDS.length)
-  .superRefine((items, ctx) => {
-    const seen = new Map<CoreQuestionId, number>()
-    for (const item of items) {
-      seen.set(item.id, (seen.get(item.id) ?? 0) + 1)
-    }
-    for (const id of CORE_QUESTION_IDS) {
-      const count = seen.get(id) ?? 0
-      if (count === 1) continue
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: count === 0 ? `missing questionnaire item: ${id}` : `duplicate questionnaire item: ${id}`,
-      })
-    }
-  })
-export type MissionQuestionnaire = z.infer<typeof MissionQuestionnaire>
-
-export const MissionStrategy = z
-  .object({
-    bar_interval: z.string(),
-    type: z.string(),
-    direction: z.string(),
-    entry_signal: z.string(),
-    risk_profile: z.string(),
-    max_drawdown_pct: z.string(),
-    backtest_window: z.string(),
-    success_metric: z.string(),
-  })
-  .strict()
-export type MissionStrategy = z.infer<typeof MissionStrategy>
-
-function blank(value: string): boolean {
-  return value.trim().length === 0
-}
-
 export const MissionFrontmatter = z
   .object({
-    schema_version: z.literal(3),
+    schema_version: z.literal(2),
     name: z.string().regex(ALGO_NAME_RE, "name must be kebab-case (lowercase, digits, hyphens)"),
     status: AlgoStatus,
     created: IsoDate,
     hypothesis: z.string().min(1),
     scope: MissionScope,
-    strategy: MissionStrategy,
     exit_conditions: z.string().min(1),
-    questionnaire: MissionQuestionnaire,
   })
   .strict()
-  .superRefine((mission, ctx) => {
-    const skipped = new Set(
-      mission.questionnaire.filter((item) => item.status === "skipped").map((item) => item.id),
-    )
-    const requireAnswer = (field: keyof MissionStrategy, question: CoreQuestionId) => {
-      if (!blank(mission.strategy[field])) return
-      if (skipped.has(question)) return
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["strategy", field],
-        message: `blank strategy.${field} requires questionnaire item ${question} to be skipped`,
-      })
-    }
-    requireAnswer("bar_interval", "timeframe_bar_interval")
-    requireAnswer("type", "strategy_family")
-    requireAnswer("direction", "directional_thesis_regime")
-    requireAnswer("entry_signal", "entry_signal_idea")
-    requireAnswer("risk_profile", "risk_tolerance_max_drawdown")
-    requireAnswer("max_drawdown_pct", "risk_tolerance_max_drawdown")
-    requireAnswer("backtest_window", "backtest_window_success_metric")
-    requireAnswer("success_metric", "backtest_window_success_metric")
-  })
 export type MissionFrontmatter = z.infer<typeof MissionFrontmatter>
 
 const Nullable = <T extends z.ZodTypeAny>(t: T) => z.union([t, z.null()])
