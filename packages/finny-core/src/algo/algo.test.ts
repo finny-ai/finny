@@ -24,7 +24,7 @@ import {
 } from "./index"
 
 const EXAMPLE_MISSION_YAML = `---
-schema_version: 3
+schema_version: 2
 name: hanta-biotech-swing
 status: research
 created: 2026-05-10
@@ -36,52 +36,10 @@ scope:
   asset_class: equities
   universe: [MRNA, GILD, SIGA, PFE]
   horizon: days
-strategy:
-  bar_interval: 1h
-  type: event-driven-swing
-  direction: long
-  entry_signal: biotech sympathy breakout after outbreak news
-  risk_profile: moderate
-  max_drawdown_pct: "12"
-  backtest_window: 2014-2024 analog events
-  success_metric: Sharpe above 1 with max drawdown below 12%
 exit_conditions: |
   - Time stop: 10 trading days from entry
   - Price stop: -8% from entry
   - Thesis stop: WHO downgrades risk OR no follow-on news for 5 days
-questionnaire:
-  - id: market_universe
-    question: "Which market or universe should this strategy trade?"
-    answer: "MRNA, GILD, SIGA, PFE"
-    status: answered
-  - id: timeframe_bar_interval
-    question: "What trading timeframe and bar interval should this strategy use?"
-    answer: "Swing trading on 1h bars"
-    status: answered
-  - id: strategy_family
-    question: "What strategy family should Finny start from?"
-    answer: "Event-driven swing"
-    status: answered
-  - id: directional_thesis_regime
-    question: "What directional thesis or market regime should the strategy express?"
-    answer: "Long biotech sympathy after outbreak news"
-    status: answered
-  - id: entry_signal_idea
-    question: "What entry signal idea should the strategy test?"
-    answer: "Breakout after outbreak-related catalyst"
-    status: answered
-  - id: exit_invalidation_rules
-    question: "What exit or invalidation rules matter?"
-    answer: "Time stop, price stop, and thesis downgrade"
-    status: answered
-  - id: risk_tolerance_max_drawdown
-    question: "What risk tolerance and maximum drawdown should the strategy respect?"
-    answer: "Moderate risk, max 12% drawdown"
-    status: answered
-  - id: backtest_window_success_metric
-    question: "What backtest window and success metric should Finny optimize for?"
-    answer: "2014-2024 analog events, Sharpe above 1 with drawdown below 12%"
-    status: answered
 ---
 
 # Hanta-driven biotech swing
@@ -108,68 +66,6 @@ const EXAMPLE_BACKTEST = {
   notes: "Pattern-backtest using analogous virus-news events 2014-2024",
 }
 
-const EXAMPLE_STRATEGY = {
-  bar_interval: "1h",
-  type: "event-driven-swing",
-  direction: "long",
-  entry_signal: "biotech sympathy breakout after outbreak news",
-  risk_profile: "moderate",
-  max_drawdown_pct: "12",
-  backtest_window: "2014-2024 analog events",
-  success_metric: "Sharpe above 1 with max drawdown below 12%",
-}
-
-const EXAMPLE_QUESTIONNAIRE = [
-  {
-    id: "market_universe",
-    question: "Which market or universe should this strategy trade?",
-    answer: "MRNA, GILD, SIGA, PFE",
-    status: "answered",
-  },
-  {
-    id: "timeframe_bar_interval",
-    question: "What trading timeframe and bar interval should this strategy use?",
-    answer: "Swing trading on 1h bars",
-    status: "answered",
-  },
-  {
-    id: "strategy_family",
-    question: "What strategy family should Finny start from?",
-    answer: "Event-driven swing",
-    status: "answered",
-  },
-  {
-    id: "directional_thesis_regime",
-    question: "What directional thesis or market regime should the strategy express?",
-    answer: "Long biotech sympathy after outbreak news",
-    status: "answered",
-  },
-  {
-    id: "entry_signal_idea",
-    question: "What entry signal idea should the strategy test?",
-    answer: "Breakout after outbreak-related catalyst",
-    status: "answered",
-  },
-  {
-    id: "exit_invalidation_rules",
-    question: "What exit or invalidation rules matter?",
-    answer: "Time stop, price stop, and thesis downgrade",
-    status: "answered",
-  },
-  {
-    id: "risk_tolerance_max_drawdown",
-    question: "What risk tolerance and maximum drawdown should the strategy respect?",
-    answer: "Moderate risk, max 12% drawdown",
-    status: "answered",
-  },
-  {
-    id: "backtest_window_success_metric",
-    question: "What backtest window and success metric should Finny optimize for?",
-    answer: "2014-2024 analog events, Sharpe above 1 with drawdown below 12%",
-    status: "answered",
-  },
-] as const
-
 async function mkSandbox(): Promise<string> {
   return await fs.mkdtemp(path.join(os.tmpdir(), "finny-algo-test-"))
 }
@@ -184,85 +80,33 @@ describe("MissionFrontmatter schema", () => {
 
   test("rejects malformed frontmatter (bad status enum)", () => {
     const bad = {
-      schema_version: 3,
+      schema_version: 2,
       name: "ok-name",
       status: "yolo",
       created: "2026-05-10",
       hypothesis: "x",
       scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
-      strategy: EXAMPLE_STRATEGY,
       exit_conditions: "x",
-      questionnaire: EXAMPLE_QUESTIONNAIRE,
     }
     expect(() => MissionFrontmatter.parse(bad)).toThrow()
   })
 
   test("rejects non-kebab-case names", () => {
     const bad = {
-      schema_version: 3,
+      schema_version: 2,
       name: "Hanta_Biotech",
       status: "research",
       created: "2026-05-10",
       hypothesis: "x",
       scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
-      strategy: EXAMPLE_STRATEGY,
       exit_conditions: "x",
-      questionnaire: EXAMPLE_QUESTIONNAIRE,
     }
     expect(() => MissionFrontmatter.parse(bad)).toThrow()
   })
 
-  test("rejects missing questionnaire records", () => {
-    const bad = {
-      schema_version: 3,
-      name: "ok-name",
-      status: "research",
-      created: "2026-05-10",
-      hypothesis: "x",
-      scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
-      strategy: EXAMPLE_STRATEGY,
-      exit_conditions: "x",
-      questionnaire: EXAMPLE_QUESTIONNAIRE.slice(0, 7),
-    }
-    expect(() => MissionFrontmatter.parse(bad)).toThrow()
-  })
-
-  test("allows blank strategy fields only when the linked question was skipped", () => {
-    const questionnaire = EXAMPLE_QUESTIONNAIRE.map((item) =>
-      item.id === "timeframe_bar_interval" ? { ...item, answer: "", status: "skipped" } : item,
-    )
-    expect(() =>
-      MissionFrontmatter.parse({
-        schema_version: 3,
-        name: "ok-name",
-        status: "research",
-        created: "2026-05-10",
-        hypothesis: "x",
-        scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
-        strategy: { ...EXAMPLE_STRATEGY, bar_interval: "" },
-        exit_conditions: "x",
-        questionnaire,
-      }),
-    ).not.toThrow()
-
-    expect(() =>
-      MissionFrontmatter.parse({
-        schema_version: 3,
-        name: "ok-name",
-        status: "research",
-        created: "2026-05-10",
-        hypothesis: "x",
-        scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
-        strategy: { ...EXAMPLE_STRATEGY, type: "" },
-        exit_conditions: "x",
-        questionnaire: EXAMPLE_QUESTIONNAIRE,
-      }),
-    ).toThrow()
-  })
-
-  test("rejects schema_version 2 (must migrate)", () => {
+  test("rejects schema_version 1 (must migrate)", () => {
     const oldVersion = {
-      schema_version: 2,
+      schema_version: 1,
       name: "ok-name",
       status: "research",
       created: "2026-05-10",

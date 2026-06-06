@@ -122,7 +122,7 @@ function reply(input: Parameters<typeof SessionPrompt.prompt>[0], text: string):
 }
 
 describe("tool.task", () => {
-  it.live("description sorts subagents by name and is stable across calls", () =>
+  it.live("description lists Build-visible subagents and is stable across calls", () =>
     provideTmpdirInstance(
       () =>
         Effect.gen(function* () {
@@ -138,15 +138,13 @@ describe("tool.task", () => {
 
           expect(first).toBe(second)
 
-          const alpha = first.indexOf("- alpha: Alpha agent")
-          const explore = first.indexOf("- explore:")
-          const general = first.indexOf("- general:")
-          const zebra = first.indexOf("- zebra: Zebra agent")
+          const dataExtractor = first.indexOf("- data_extractor:")
+          const researcher = first.indexOf("- researcher:")
 
-          expect(alpha).toBeGreaterThan(-1)
-          expect(explore).toBeGreaterThan(alpha)
-          expect(general).toBeGreaterThan(explore)
-          expect(zebra).toBeGreaterThan(general)
+          expect(dataExtractor).toBeGreaterThan(-1)
+          expect(researcher).toBeGreaterThan(dataExtractor)
+          expect(first).not.toContain("- alpha: Alpha agent")
+          expect(first).not.toContain("- zebra: Zebra agent")
         }),
       {
         config: {

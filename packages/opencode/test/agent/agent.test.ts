@@ -15,7 +15,7 @@ afterEach(async () => {
   await Instance.disposeAll()
 })
 
-test("returns Research and Chat as visible primary agents", async () => {
+test("returns default native agents when no config", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
@@ -30,73 +30,38 @@ test("returns Research and Chat as visible primary agents", async () => {
       expect(names).toContain("compaction")
       expect(names).toContain("title")
       expect(names).toContain("summary")
-
-      const visibleModes = agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name)
-      expect(visibleModes).toEqual(["research", "chat"])
     },
   })
 })
 
-test("build agent is a hidden Research compatibility alias", async () => {
+test("build agent has correct default properties", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const build = await Agent.get("build")
-      const research = await Agent.get("research")
       expect(build).toBeDefined()
-      expect(research).toBeDefined()
       expect(build?.mode).toBe("primary")
       expect(build?.native).toBe(true)
-      expect(build?.hidden).toBe(true)
-      expect(build?.prompt).toBe(research?.prompt)
-      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
-      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
       expect(evalPerm(build, "edit")).toBe("deny")
       expect(evalPerm(build, "bash")).toBe("deny")
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
     },
   })
 })
 
-test("research agent asks questions and can save/backtest strategies", async () => {
+test("research agent denies generic coding tools and allows research tools", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const research = await Agent.get("research")
       expect(research).toBeDefined()
-      expect(research?.mode).toBe("primary")
-      expect(research?.hidden).toBeUndefined()
-      expect(evalPerm(research, "question")).toBe("allow")
-      expect(evalPerm(research, "finny_algorithm_scaffold")).toBe("allow")
-      expect(evalPerm(research, "finny_algorithm_save")).toBe("allow")
-      expect(evalPerm(research, "finny_backtest_run")).toBe("allow")
       expect(evalPerm(research, "edit")).toBe("deny")
       expect(evalPerm(research, "bash")).toBe("deny")
-    },
-  })
-})
-
-test("chat agent allows read tools and denies mutation/build tools", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const chat = await Agent.get("chat")
-      expect(chat).toBeDefined()
-      expect(chat?.mode).toBe("primary")
-      expect(chat?.hidden).toBeUndefined()
-      expect(evalPerm(chat, "question")).toBe("allow")
-      expect(evalPerm(chat, "finny_get_quote")).toBe("allow")
-      expect(evalPerm(chat, "finny_algorithm_get")).toBe("allow")
-      expect(evalPerm(chat, "finny_backtest_history")).toBe("allow")
-      expect(evalPerm(chat, "finny_algorithm_scaffold")).toBe("deny")
-      expect(evalPerm(chat, "finny_algorithm_save")).toBe("deny")
-      expect(evalPerm(chat, "finny_algorithm_validate")).toBe("deny")
-      expect(evalPerm(chat, "finny_algorithm_set_params")).toBe("deny")
-      expect(evalPerm(chat, "finny_backtest_run")).toBe("deny")
-      expect(evalPerm(chat, "task")).toBe("deny")
-      expect(evalPerm(chat, "edit")).toBe("deny")
+      expect(evalPerm(research, "finny_get_history")).toBe("allow")
+      expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
     },
   })
 })
@@ -242,7 +207,9 @@ test("agent permission config merges with defaults", async () => {
       agent: {
         build: {
           permission: {
-            finny_algorithm_save: "deny",
+            bash: {
+              "rm -rf *": "deny",
+            },
           },
         },
       },
@@ -253,9 +220,11 @@ test("agent permission config merges with defaults", async () => {
     fn: async () => {
       const build = await Agent.get("build")
       expect(build).toBeDefined()
-      expect(evalPerm(build, "finny_algorithm_save")).toBe("deny")
-      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
-      expect(evalPerm(build, "question")).toBe("allow")
+      // Specific pattern is denied
+      expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("deny")
+      // Finny build tools remain allowed while generic coding tools stay denied.
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+      expect(evalPerm(build, "edit")).toBe("deny")
     },
   })
 })
@@ -283,7 +252,7 @@ test("agent steps/maxSteps config sets steps property", async () => {
     config: {
       agent: {
         build: { steps: 50 },
-        research: { steps: 100 },
+        plan: { maxSteps: 100 },
       },
     },
   })
@@ -291,9 +260,9 @@ test("agent steps/maxSteps config sets steps property", async () => {
     directory: tmp.path,
     fn: async () => {
       const build = await Agent.get("build")
-      const research = await Agent.get("research")
+      const plan = await Agent.get("plan")
       expect(build?.steps).toBe(50)
-      expect(research?.steps).toBe(100)
+      expect(plan?.steps).toBe(100)
     },
   })
 })
@@ -616,10 +585,10 @@ description: Permission skill.
     await Instance.provide({
       directory: tmp.path,
       fn: async () => {
-        const general = await Agent.get("general")
+        const explore = await Agent.get("explore")
         const skillDir = path.join(tmp.path, ".opencode", "skill", "perm-skill")
         const target = path.join(skillDir, "reference", "notes.md")
-        expect(Permission.evaluate("external_directory", target, general!.permission).action).toBe("allow")
+        expect(Permission.evaluate("external_directory", target, explore!.permission).action).toBe("allow")
       },
     })
   } finally {
@@ -627,13 +596,13 @@ description: Permission skill.
   }
 })
 
-test("defaultAgent returns research when no default_agent config", async () => {
+test("defaultAgent returns build when no default_agent config", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      expect(agent).toBe("research")
+      expect(agent).toBe("build")
     },
   })
 })
@@ -649,21 +618,6 @@ test("defaultAgent respects default_agent config set to chat", async () => {
     fn: async () => {
       const agent = await Agent.defaultAgent()
       expect(agent).toBe("chat")
-    },
-  })
-})
-
-test("defaultAgent accepts hidden build compatibility alias from config", async () => {
-  await using tmp = await tmpdir({
-    config: {
-      default_agent: "build",
-    },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("build")
     },
   })
 })
@@ -742,6 +696,7 @@ test("defaultAgent returns research when build is disabled and default_agent not
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
+      // build is disabled, so it should return research (next primary agent)
       expect(agent).toBe("research")
     },
   })
@@ -760,6 +715,7 @@ test("defaultAgent throws when all primary agents are disabled", async () => {
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      // build, research, and chat are disabled, so no visible primary agent remains
       await expect(Agent.defaultAgent()).rejects.toThrow("no primary visible agent found")
     },
   })
