@@ -32,7 +32,7 @@ describe("evaluateBacktestQuality", () => {
     const quality = evaluateBacktestQuality(result({ totalTrades: 1 }))
     expect(quality.label).toBe("weak_positive")
     expect(quality.paperEligible).toBe(false)
-    expect(quality.reasons.join("; ")).toContain("low sample size")
+    expect(quality.reasons.join("; ")).toContain("trade count low")
   })
 
   test("rejects a 4-trade QQQ-style positive result as weak positive", () => {

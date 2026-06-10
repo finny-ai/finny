@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { resolveSymbol } from "../data/symbols"
 
 // Canonical execution-context parameters extracted from chat. Stored as the
 // JSON string in Algorithm.Info.config. Only the inputs the user supplies —
@@ -9,7 +10,7 @@ export const StrategyParams = z.object({
   asset_class: z.enum(["equity", "crypto", "crypto_spot", "crypto_perp", "future", "fx", "option"]).optional(),
   interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"]).optional(),
   equity_usd: z.number().positive().optional(),
-  brokerage: z.enum(["alpaca", "binance"]).optional(),
+  brokerage: z.enum(["alpaca", "binance", "ibkr"]).optional(),
   execution: z
     .object({
       max_leverage: z.number().positive().optional(),
@@ -149,7 +150,7 @@ export function normalizeConfigForSave(input: {
     }
     if (EXECUTION_KEYS.has(key)) {
       if (value === null) delete normalized[key]
-      else normalized[key] = value
+      else normalized[key] = key === "symbol" && typeof value === "string" ? (resolveSymbol(value)?.canonical ?? value) : value
       continue
     }
     if (value !== undefined && value !== null) {
@@ -169,4 +170,29 @@ export function normalizeConfigForSave(input: {
 
   if (Object.keys(normalized).length === 0) return undefined
   return JSON.stringify(normalized)
+}
+
+export function missingRequiredNewSaveConfigFields(config: string | undefined | null): string[] {
+  const parsed = parseRawObject(config)
+  const missing: string[] = []
+
+  if (typeof parsed.symbol !== "string" || parsed.symbol.trim() === "") missing.push("symbol")
+  if (typeof parsed.asset_class !== "string" || parsed.asset_class.trim() === "") missing.push("asset_class")
+  if (typeof parsed.interval !== "string" || parsed.interval.trim() === "") missing.push("interval")
+  if (!isPlainObject(parsed.params) || Object.keys(parsed.params).length === 0) missing.push("params")
+
+  return missing
+}
+
+export function unsupportedNewSaveConfigReasons(config: string | undefined | null): string[] {
+  const parsed = parseRawObject(config)
+  const reasons: string[] = []
+
+  if (typeof parsed.symbol === "string" && parsed.symbol.split(",").map((s) => s.trim()).filter(Boolean).length > 1) {
+    reasons.push(
+      "symbol must be one tradable symbol, not a comma-separated portfolio; use finny_portfolio_backtest or save one complete strategy per symbol",
+    )
+  }
+
+  return reasons
 }

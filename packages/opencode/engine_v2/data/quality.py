@@ -49,18 +49,51 @@ def expected_step(interval: str) -> pd.Timedelta:
     return pd.Timedelta(minutes=1)
 
 
-def _outlier_indexes_and_details(df: pd.DataFrame, provider: str = "unknown") -> Tuple[List[int], List[OutlierDetail]]:
+def is_intraday_interval(interval: str) -> bool:
+    step = expected_step(interval)
+    return step < pd.Timedelta(days=1)
+
+
+def _continuous_return_mask(ts: pd.Series, interval: str, asset_class: str) -> np.ndarray:
+    """Return a mask for close-to-close returns that are within one continuous session.
+
+    Intraday equity data has overnight/weekend gaps by design. Treating the
+    previous session close and next session open as adjacent bars makes normal
+    gaps look like provider outliers, so outlier detection only scores returns
+    whose timestamp spacing is close to the requested interval.
+    """
+    if len(ts) <= 1:
+        return np.zeros(0, dtype=bool)
+    diffs = ts.diff().iloc[1:]
+    step = expected_step(interval)
+    if asset_class in {"equity", "future", "option"} and is_intraday_interval(interval):
+        return (diffs <= step * 1.5).to_numpy()
+    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"}:
+        return (diffs <= step * 1.5).to_numpy()
+    return np.ones(len(ts) - 1, dtype=bool)
+
+
+def _outlier_indexes_and_details(
+    df: pd.DataFrame,
+    provider: str = "unknown",
+    interval: str = "1m",
+    asset_class: str = "crypto_spot",
+) -> Tuple[List[int], List[OutlierDetail]]:
     c = df["close"].to_numpy()
+    ts = pd.to_datetime(df["timestamp"], utc=True)
     log_ret = np.diff(np.log(np.clip(c, 1e-12, None)))
-    if log_ret.size <= 30:
+    continuous = _continuous_return_mask(ts, interval, asset_class)
+    scored = log_ret[continuous]
+    if scored.size <= 30:
         return [], []
-    mu, sd = float(log_ret.mean()), float(log_ret.std(ddof=0))
+    mu, sd = float(scored.mean()), float(scored.std(ddof=0))
     if sd <= 0:
         return [], []
     idxs: List[int] = []
     details: List[OutlierDetail] = []
-    ts = pd.to_datetime(df["timestamp"], utc=True)
     for i, r in enumerate(log_ret):
+        if not continuous[i]:
+            continue
         z = float((r - mu) / sd)
         if abs(z) > 8.0:
             row_idx = i + 1
@@ -76,7 +109,12 @@ def _outlier_indexes_and_details(df: pd.DataFrame, provider: str = "unknown") ->
     return idxs, details
 
 
-def repair_isolated_outliers(df: pd.DataFrame, provider: str = "unknown") -> Tuple[pd.DataFrame, List[OutlierDetail]]:
+def repair_isolated_outliers(
+    df: pd.DataFrame,
+    provider: str = "unknown",
+    interval: str = "1m",
+    asset_class: str = "crypto_spot",
+) -> Tuple[pd.DataFrame, List[OutlierDetail]]:
     """Drop isolated severe outlier rows only.
 
     This intentionally refuses to repair clusters; clustered moves are more
@@ -86,7 +124,7 @@ def repair_isolated_outliers(df: pd.DataFrame, provider: str = "unknown") -> Tup
     if df.empty:
         return df, []
     work = df.sort_values("timestamp").reset_index(drop=True)
-    idxs, details = _outlier_indexes_and_details(work, provider)
+    idxs, details = _outlier_indexes_and_details(work, provider, interval, asset_class)
     if not idxs:
         return work, []
     if any((idx + 1) in idxs or (idx - 1) in idxs for idx in idxs):
@@ -112,7 +150,7 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", p
     ohlc_viol = int(((low > o) | (low > c) | (h < o) | (h < c) | (h < low)).sum())
 
     # Outliers (>8σ close moves)
-    _, outlier_details = _outlier_indexes_and_details(df, provider)
+    _, outlier_details = _outlier_indexes_and_details(df, provider, interval, asset_class)
     outliers = len(outlier_details)
 
     # Zero volume

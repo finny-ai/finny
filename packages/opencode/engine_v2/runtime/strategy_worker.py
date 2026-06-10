@@ -36,7 +36,7 @@ DENIED_INTERNAL_IMPORT_ROOTS = {
 SAFE_IMPORT_ROOTS = {
     "abc", "array", "bisect", "collections", "copy", "dataclasses", "datetime",
     "decimal", "enum", "functools", "heapq", "itertools", "math", "numbers",
-    "operator", "random", "re", "statistics", "typing",
+    "operator", "re", "typing",
 }
 
 

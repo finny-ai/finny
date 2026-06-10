@@ -1,8 +1,10 @@
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import {
   appendCompactionSummary,
+  bindSessionWorkspace,
   buildCompactionContext,
   clearActiveAlgo,
+  clearSessionWorkspace,
   discoverAlgos,
   getActiveAlgo,
   setActiveAlgo,
@@ -43,18 +45,22 @@ export function parseAlgoArgs(raw: string): AlgoAction {
   return { kind: "error", message: `unknown subcommand "${verb}". Use: use <name> | clear | list | status` }
 }
 
-async function handleAlgoCommand(raw: string): Promise<string> {
+async function handleAlgoCommand(raw: string, sessionID?: string): Promise<string> {
   const action = parseAlgoArgs(raw)
   switch (action.kind) {
     case "use":
       try {
         await setActiveAlgo(action.name)
+        // Storage-resolving tools read only the per-session binding, so /algo
+        // use must bind the current session for the selection to take effect.
+        if (sessionID) await bindSessionWorkspace(sessionID, action.name).catch(() => {})
         return `✓ active algo: ${action.name}`
       } catch (err) {
         return `✗ ${err instanceof Error ? err.message : String(err)}`
       }
     case "clear":
       await clearActiveAlgo()
+      if (sessionID) await clearSessionWorkspace(sessionID).catch(() => {})
       return "✓ cleared active algo"
     case "list": {
       const names = await discoverAlgos()
@@ -110,7 +116,7 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
     "command.execute.before": async (event, output) => {
       if (event.command !== COMMAND_NAME) return
       if (!ownsAlgoCommand) return
-      const result = await handleAlgoCommand(event.arguments)
+      const result = await handleAlgoCommand(event.arguments, event.sessionID)
       const replacement = { type: "text", text: result } as any
       output.parts.splice(0, output.parts.length, replacement)
     },

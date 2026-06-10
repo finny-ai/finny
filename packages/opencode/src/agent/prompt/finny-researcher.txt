@@ -24,6 +24,9 @@ Allowed sources:
 10. Return within roughly 30 seconds.
 
 Only write inside `algos/_template/data/news/`. Return any written path to the parent.
+Use `write` with a concrete markdown file path for new notes/headline rolls; it creates parent directories. Do not call `edit` on a directory path or use `edit` to create a directory.
+
+Notes and briefs are scoped to THIS request. Never reuse another algorithm's note or context. At the top of any written note and in your returned brief, include request identity: `requested_symbol`, `requested_interval`, `requested_asset_class`, `requested_algorithm_name` (when known), and `artifact_paths`. Do not cite an artifact whose symbol/interval/asset class differs from the current request.
 
 If search or a source is unavailable, say so and return the best brief possible from available inputs. If no relevant evidence is found, say "no material current context found" and list searched sources or gaps.
 

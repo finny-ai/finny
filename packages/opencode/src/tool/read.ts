@@ -1,6 +1,6 @@
 import z from "zod"
 import { Effect, Scope } from "effect"
-import { createReadStream } from "fs"
+import { createReadStream, existsSync } from "fs"
 import { open } from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
@@ -12,6 +12,56 @@ import DESCRIPTION from "./read.txt"
 import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+
+/**
+ * Resolve a (possibly relative) read path.
+ *
+ * Relative `algos/...` paths refer to the repo-local algo workspace (template
+ * docs, subagent-written data/news notes), which lives at the worktree/repo
+ * root — NOT under the current package directory. In dev the process directory
+ * is often `packages/opencode`, so resolving `algos/_template/README.md` against
+ * it produced the wrong `packages/opencode/algos/...` path. Anchor `algos/` at
+ * the worktree root; everything else stays relative to the working directory.
+ */
+export function findFinnyAlgoRoot(directory: string, worktree: string): string {
+  const starts = [...new Set([directory, worktree].filter((item) => item && item !== "/"))]
+  for (const start of starts) {
+    let current = path.resolve(start)
+    while (true) {
+      if (existsSync(path.join(current, "algos/_template/README.md"))) return current
+      const next = path.dirname(current)
+      if (next === current) break
+      current = next
+    }
+  }
+  return worktree
+}
+
+export function resolveReadPath(filePath: string, directory: string, worktree: string): string {
+  if (path.isAbsolute(filePath)) {
+    // Models compose absolute algos/ paths under the package dir (their cwd
+    // context), e.g. `<repo>/packages/opencode/algos/_template/README.md`,
+    // because tool params demand absolute paths. When such a path does not
+    // exist but the same `algos/...` suffix exists under the algo root, remap
+    // it there. Existing absolute paths are never touched.
+    if (!existsSync(filePath)) {
+      const m = filePath.match(/^(.*?)[/\\](algos(?:[/\\].*)?)$/)
+      if (m) {
+        const root = findFinnyAlgoRoot(directory, worktree)
+        const candidate = path.resolve(root, m[2])
+        if (candidate !== filePath && (existsSync(candidate) || existsSync(path.dirname(candidate)))) {
+          return candidate
+        }
+      }
+    }
+    return filePath
+  }
+  const normalized = filePath.replace(/^\.\//, "")
+  if (normalized === "algos" || normalized.startsWith("algos/")) {
+    return path.resolve(findFinnyAlgoRoot(directory, worktree), normalized)
+  }
+  return path.resolve(directory, filePath)
+}
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -85,10 +135,7 @@ export const ReadTool = Tool.define(
         return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
       }
 
-      let filepath = params.filePath
-      if (!path.isAbsolute(filepath)) {
-        filepath = path.resolve(Instance.directory, filepath)
-      }
+      let filepath = resolveReadPath(params.filePath, Instance.directory, Instance.worktree)
       if (process.platform === "win32") {
         filepath = AppFileSystem.normalizePath(filepath)
       }

@@ -117,6 +117,12 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("ending on the current run date")
   })
 
+  test("an explicit duration/range overrides the intraday 30-day default", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("use that FULL")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Never cap an intraday request to 30 days")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Only when NO range or duration is given")
+  })
+
   test("reports actual tool source instead of a fixed provider order", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("actual selected source")
     expect(PROMPT_DATA_EXTRACTOR).toContain("selected data source and tool digest")

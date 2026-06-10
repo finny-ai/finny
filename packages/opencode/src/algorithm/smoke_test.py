@@ -305,11 +305,27 @@ def _snapshot_state(strategy):
     return snap
 
 
-def _looks_like_indicator(name, samples):
-    """An attribute looks like an indicator if its value stays in [0, 100] AND actually varies.
+# Only names that plausibly hold a 0-100 bounded oscillator VALUE. Internal
+# accumulators (avg_gain, gain_sum) and unbounded measures (ATR, stddev) happen
+# to sit in [0, 100] on many price series and were false-flagged as "stuck".
+OSCILLATOR_NAME_HINTS = ("rsi", "stoch", "adx", "mfi", "willr", "percent", "pct_k", "pct_d")
+OSCILLATOR_NAME_EXCLUDES = ("gain", "loss", "sum", "count", "avg", "atr", "std", "var", "period")
 
-    We require real variation (range > 1) to avoid flagging config constants like num_std=2.0.
+
+def _looks_like_indicator(name, samples):
+    """An attribute looks like an indicator if it is NAMED like a bounded
+    oscillator AND its value stays in [0, 100] AND actually varies.
+
+    The name gate matters: ATR on a low-vol series or an RSI gain accumulator
+    also sits in [0, 100] and hugs zero, but neither is a broken oscillator.
+    We require real variation (range > 1) to avoid flagging config constants
+    like num_std=2.0.
     """
+    n = name.lower()
+    if not any(h in n for h in OSCILLATOR_NAME_HINTS):
+        return False
+    if any(x in n for x in OSCILLATOR_NAME_EXCLUDES):
+        return False
     if len(samples) < 20:
         return False
     if not all(isinstance(v, (int, float)) for v in samples):

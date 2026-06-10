@@ -25,6 +25,7 @@ import { algoDir, algosRoot, discoverAlgos, discoverVersions, resolveAlgoDir, ve
 export * from "./schemas"
 export * from "./paths"
 export * from "./active"
+export * from "./session-workspace"
 export * from "./memory"
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/

@@ -12,6 +12,7 @@ import { gitlabAuthPlugin as GitlabAuthPlugin } from "opencode-gitlab-auth"
 import { PoeAuthPlugin } from "opencode-poe-auth"
 import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cloudflare"
 import { FinnyMemoryPlugin } from "./finny-memory"
+import { FinnyWorkspacePlugin } from "./finny-workspace"
 import { Effect, Layer, Context, Stream } from "effect"
 import { EffectLogger } from "@/effect/logger"
 import { InstanceState } from "@/effect/instance-state"
@@ -57,6 +58,7 @@ export namespace Plugin {
     CloudflareWorkersAuthPlugin,
     CloudflareAIGatewayAuthPlugin,
     FinnyMemoryPlugin,
+    FinnyWorkspacePlugin,
   ]
 
   function isServerPlugin(value: unknown): value is PluginInstance {

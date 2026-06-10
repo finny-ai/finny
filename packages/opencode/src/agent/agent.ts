@@ -29,6 +29,7 @@ const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORT
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import path from "path"
+import { existsSync } from "fs"
 import { Plugin } from "@/plugin"
 import { Skill } from "../skill"
 import { Effect, Context, Layer } from "effect"
@@ -161,6 +162,7 @@ export namespace Agent {
             "finny_algorithm_set_params",
             "finny_backtest_run",
             "finny_backtest_walkforward",
+            "finny_portfolio_backtest",
             "finny_get_quote",
             "finny_get_history",
             "finny_extract_data",
@@ -185,25 +187,63 @@ export namespace Agent {
             "finny_backtest_history",
             "webfetch",
           ]
+          function finnyAlgoRoot() {
+            const starts = [...new Set([ctx.directory, ctx.worktree].filter((item) => item && item !== "/"))]
+            for (const start of starts) {
+              let current = path.resolve(start)
+              while (true) {
+                if (existsSync(path.join(current, "algos/_template/README.md"))) return current
+                const next = path.dirname(current)
+                if (next === current) break
+                current = next
+              }
+            }
+            return ctx.worktree
+          }
+
+          function finnyWorkspacePatterns(pattern: string): Config.PermissionObject {
+            const root = finnyAlgoRoot()
+            // `<dir>/*` does not match the bare directory itself, so listing
+            // `algos/_template` was denied while `algos/_template/README.md`
+            // was allowed. Emit the parent dir alongside each glob.
+            const variants = pattern.endsWith("/*") ? [pattern, pattern.slice(0, -2)] : [pattern]
+            const patterns = variants.flatMap((p) => {
+              const out = [p, path.join(ctx.directory, p)]
+              if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) out.push(path.join(ctx.worktree, p))
+              if (root !== "/" && root !== ctx.directory && root !== ctx.worktree) out.push(path.join(root, p))
+              return out
+            })
+            return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
+          }
+
           const finnyTemplateReadAccess = Permission.fromConfig({
             read: {
-              "algos/_template/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/*"),
+            },
+            external_directory: {
+              ...finnyWorkspacePatterns("algos/_template/*"),
             },
           })
           const finnyTemplateDataAccess = Permission.fromConfig({
             read: {
-              "algos/_template/data/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
             },
             edit: {
-              "algos/_template/data/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
+            },
+            external_directory: {
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
             },
           })
           const finnyTemplateNewsAccess = Permission.fromConfig({
             read: {
-              "algos/_template/data/news/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
             edit: {
-              "algos/_template/data/news/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
+            },
+            external_directory: {
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
           })
 
@@ -218,11 +258,11 @@ export namespace Agent {
                 defaults,
                 finnyFileSystemSandbox,
                 finnyToolBundle(finnyBuildTools, ["data_extractor", "researcher"]),
-                finnyTemplateReadAccess,
                 Permission.fromConfig({
                   question: "allow",
                 }),
                 user,
+                finnyTemplateReadAccess,
               ),
               mode: "primary",
               native: true,
@@ -347,8 +387,8 @@ export namespace Agent {
                 defaults,
                 finnyFileSystemSandbox,
                 finnyToolBundle(["finny_extract_data"]),
-                finnyTemplateDataAccess,
                 user,
+                finnyTemplateDataAccess,
               ),
               mode: "subagent",
               native: true,
@@ -366,8 +406,8 @@ export namespace Agent {
                 defaults,
                 finnyFileSystemSandbox,
                 finnyToolBundle(["webfetch", "websearch", "finny_discord_read"]),
-                finnyTemplateNewsAccess,
                 user,
+                finnyTemplateNewsAccess,
               ),
               mode: "subagent",
               native: true,

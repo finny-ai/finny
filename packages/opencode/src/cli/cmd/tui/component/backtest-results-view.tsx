@@ -52,6 +52,23 @@ const TOP = hline("┌", "┬", "┐")
 const MID = hline("├", "┼", "┤")
 const BOT = hline("└", "┴", "┘")
 
+/**
+ * Render a label/value row as a SINGLE line string.
+ *
+ * Rows used to be a `flexDirection="row"` box of several sibling `<text>` cells,
+ * which rendered as empty rows in the TUI (only the single-string border lines
+ * showed). Building the whole line as one string — exactly like the border
+ * lines that render correctly — keeps the cells aligned and visible.
+ */
+export function formatTableRowLine(label: string, value: string): string {
+  return "│ " + label.padEnd(LW) + " │ " + value.padStart(VW) + " │"
+}
+
+/** Full-width section header line (spans both columns). */
+export function formatHeaderRowLine(text: string): string {
+  return "│ " + text.padEnd(LW + VW + 3) + " │"
+}
+
 type RowData = { label: string; value: string; color?: any; bold?: boolean }
 
 export function BacktestResultsView(props: {
@@ -112,29 +129,18 @@ export function BacktestResultsView(props: {
         ]
       : []
 
+  // Single-line rows (one <text> node, like the border lines) so the cells
+  // always render — a row of sibling <text> cells showed up empty in the TUI.
   const TableRow = (p: RowData) => (
-    <box flexDirection="row">
-      <text fg={theme.textMuted}>{"│ "}</text>
-      <text fg={theme.text}>{p.label.padEnd(LW)}</text>
-      <text fg={theme.textMuted}>{" │ "}</text>
-      <text
-        fg={p.color ?? theme.text}
-        attributes={p.bold ? TextAttributes.BOLD : 0}
-      >
-        {p.value.padStart(VW)}
-      </text>
-      <text fg={theme.textMuted}>{" │"}</text>
-    </box>
+    <text fg={p.color ?? theme.text} attributes={p.bold ? TextAttributes.BOLD : 0}>
+      {formatTableRowLine(p.label, p.value)}
+    </text>
   )
 
   const HeaderRow = (p: { text: string }) => (
-    <box flexDirection="row">
-      <text fg={theme.textMuted}>{"│ "}</text>
-      <text fg={theme.text} attributes={TextAttributes.BOLD}>
-        {p.text.padEnd(LW + VW + 3)}
-      </text>
-      <text fg={theme.textMuted}>{" │"}</text>
-    </box>
+    <text fg={theme.text} attributes={TextAttributes.BOLD}>
+      {formatHeaderRowLine(p.text)}
+    </text>
   )
 
   return (

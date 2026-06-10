@@ -66,7 +66,7 @@ export namespace Templates {
   //   - bar["open"] is the only current-bar price exposed at decision time.
   //   - Indicators use completed data via bar["prev_close"], prev_high/low,
   //     or self.broker.history(symbol, limit).
-  //   - Sizing uses qty = min(by_risk, by_cash) so the validator's leverage smoke
+  //   - Sizing uses qty = int(min(by_risk, by_cash)) so the validator's leverage smoke
   //     test (10k starting equity) never sees qty * price > equity.
   //   - Warmup is an early-return guard before any indicator is read.
 
@@ -124,7 +124,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
         elif pos > 0 and rsi > self.overbought:
@@ -169,8 +169,16 @@ class Strategy:
 
         # Bollinger Bands from settled prior closes
         n = len(self.prices)
-        mean = sum(self.prices) / n
-        variance = sum((x - mean) ** 2 for x in self.prices) / (n - 1) if n > 1 else 0.0
+        denom = n
+        if denom <= 1:
+            self.prices.append(close_px)
+            return
+        mean = sum(self.prices) / denom
+        sample_denom = denom - 1
+        if sample_denom <= 0:
+            self.prices.append(close_px)
+            return
+        variance = sum((x - mean) ** 2 for x in self.prices) / sample_denom
         std = math.sqrt(variance)
 
         if std <= 1e-10:
@@ -188,7 +196,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
         elif pos > 0 and open_px >= upper:
@@ -233,7 +241,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
         elif pos > 0 and open_px <= lower_channel:
@@ -320,7 +328,7 @@ class Strategy:
                 stop_dist = open_px * self.stop_pct
                 by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
                 by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-                qty = min(by_risk, by_cash)
+                qty = int(min(by_risk, by_cash))
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
             # Death cross
@@ -386,7 +394,7 @@ class Strategy:
             stop_dist = open_px * self.stop_loss_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
@@ -437,7 +445,7 @@ class Strategy:
         #     stop_dist = open_px * 0.02
         #     by_risk = (equity * self.risk_pct) / stop_dist
         #     by_cash = (cash * 0.95) / open_px
-        #     qty = min(by_risk, by_cash)
+        #     qty = int(min(by_risk, by_cash))
         #     self.broker.buy(symbol, qty=qty)
 
         # State update at end of bar
@@ -521,7 +529,7 @@ class Strategy:
                 stop_dist = open_px * self.stop_pct
                 by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
                 by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-                qty = min(by_risk, by_cash)
+                qty = int(min(by_risk, by_cash))
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
                     self.entry_px = open_px
@@ -601,7 +609,7 @@ class Strategy:
                 stop_dist = open_px * self.stop_pct
                 by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
                 by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-                qty = min(by_risk, by_cash)
+                qty = int(min(by_risk, by_cash))
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
                     self.entry_px = open_px
@@ -674,7 +682,7 @@ class Strategy:
                 stop_dist = self.stop_mult * atr
                 by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
                 by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-                qty = min(by_risk, by_cash)
+                qty = int(min(by_risk, by_cash))
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
                     self.entry_px = open_px
@@ -749,7 +757,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
@@ -811,7 +819,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
@@ -896,7 +904,7 @@ class Strategy:
             stop_dist = self.atr_mult * atr
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
@@ -989,7 +997,7 @@ class Strategy:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = min(by_risk, by_cash)
+            qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px

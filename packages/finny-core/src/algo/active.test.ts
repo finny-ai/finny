@@ -170,11 +170,19 @@ describe("ensureAlgoWorkspace", () => {
     await fs.stat(path.join(res.dir, DATA_NEWS_BODY_DIR))
   })
 
-  test("two calls with same human name produce different directories", async () => {
+  test("same human name creates distinct workspaces by default", async () => {
     const res1 = await ensureAlgoWorkspace("same-name", { root: algosRootDir })
     const res2 = await ensureAlgoWorkspace("same-name", { root: algosRootDir })
+    expect(res2.slug).not.toBe(res1.slug)
+    expect(res2.dir).not.toBe(res1.dir)
+    expect(res1.created).toBe(true)
+    expect(res2.created).toBe(true)
+  })
+
+  test("distinct workspaces can be forced with an explicit slug suffix", async () => {
+    const res1 = await ensureAlgoWorkspace("same-name", { root: algosRootDir, slug: "same-name.1.1.00.01" })
+    const res2 = await ensureAlgoWorkspace("same-name", { root: algosRootDir, slug: "same-name.1.1.00.02" })
     expect(res1.slug).not.toBe(res2.slug)
-    expect(res1.dir).not.toBe(res2.dir)
     expect(res1.created).toBe(true)
     expect(res2.created).toBe(true)
   })

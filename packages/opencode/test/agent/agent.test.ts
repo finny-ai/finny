@@ -47,6 +47,81 @@ test("build agent has correct default properties", async () => {
       expect(evalPerm(build, "bash")).toBe("deny")
       expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
       expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
+      expect(Permission.evaluate("read", "algos/_template/README.md", build!.permission).action).toBe("allow")
+      // Bare directory listing must be allowed too (was denied: `/*` glob does not match the dir itself)
+      expect(Permission.evaluate("read", "algos/_template", build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("read", path.join(tmp.path, "algos/_template/README.md"), build!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("read", path.join(tmp.path, "package.json"), build!.permission).action).toBe("deny")
+    },
+  })
+})
+
+test("build agent allows repo-root template reads when launched from packages/opencode", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      permission: {
+        read: "deny",
+        external_directory: "deny",
+      },
+    },
+    init: async (dir) => {
+      await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
+      await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
+    },
+  })
+  const nested = path.join(tmp.path, "packages/opencode")
+  await Bun.$`mkdir -p ${nested}`.quiet()
+  await Instance.provide({
+    directory: nested,
+    fn: async () => {
+      const build = await Agent.get("build")
+      const templatePath = path.join(tmp.path, "algos/_template/README.md")
+      expect(Permission.evaluate("read", templatePath, build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/*"), build!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("read", path.join(tmp.path, "package.json"), build!.permission).action).toBe("deny")
+    },
+  })
+})
+
+test("mandatory Finny subagents keep repo-root data access after broad user denies", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      permission: {
+        read: "deny",
+        edit: "deny",
+        external_directory: "deny",
+      },
+    },
+    init: async (dir) => {
+      await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
+      await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
+    },
+  })
+  const nested = path.join(tmp.path, "packages/opencode")
+  await Bun.$`mkdir -p ${nested}`.quiet()
+  await Instance.provide({
+    directory: nested,
+    fn: async () => {
+      const dataExtractor = await Agent.get("data_extractor")
+      const researcher = await Agent.get("researcher")
+      const dataPath = path.join(tmp.path, "algos/_template/data/spy.md")
+      const newsPath = path.join(tmp.path, "algos/_template/data/news/body/spy.md")
+
+      expect(Permission.evaluate("read", dataPath, dataExtractor!.permission).action).toBe("allow")
+      expect(Permission.evaluate("edit", dataPath, dataExtractor!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/data/*"), dataExtractor!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("read", newsPath, researcher!.permission).action).toBe("allow")
+      expect(Permission.evaluate("edit", newsPath, researcher!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/data/news/*"), researcher!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("edit", path.join(tmp.path, "package.json"), dataExtractor!.permission).action).toBe("deny")
     },
   })
 })

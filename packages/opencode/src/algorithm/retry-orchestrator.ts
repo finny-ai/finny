@@ -53,6 +53,31 @@ export namespace RetryOrchestrator {
 
   export type Outcome = RetrySignal | ExhaustedSignal | PassedSignal
 
+  export function outcomeFromValidationResult(input: {
+    result: Validate.Result
+    currentAttempt: number
+  }): Outcome {
+    const { result, currentAttempt } = input
+    if (result.valid && result.warnings.length === 0) {
+      return { kind: "passed", attempts: currentAttempt, warnings: [] }
+    }
+
+    const report = result.valid && result.warnings.length > 0 ? formatWarningRejection(result.warnings) : Validate.format(result)
+    const blockingDiagnostics = [...result.errors, ...result.warnings]
+
+    if (currentAttempt >= MAX_ATTEMPTS) {
+      return { kind: "exhausted", attempts: currentAttempt, report }
+    }
+
+    return {
+      kind: "retry",
+      attempt: currentAttempt,
+      maxAttempts: MAX_ATTEMPTS,
+      report,
+      diagnostics: blockingDiagnostics,
+    }
+  }
+
   /**
    * Run validation and decide what the save tool should do next.
    * Never mutates storage — that's the caller's job once `kind === "passed"`.
@@ -68,30 +93,16 @@ export namespace RetryOrchestrator {
     const currentAttempt = priorAttempts + 1
 
     const result = await Validate.run(input.code, { config: input.config })
+    const outcome = outcomeFromValidationResult({ result, currentAttempt })
 
-    if (result.valid) {
-      // Success — clear counter for this algo.
+    if (outcome.kind === "passed" || outcome.kind === "exhausted") {
+      // Success or terminal failure — clear counter for this algo.
       attempts.delete(k)
-      return { kind: "passed", attempts: currentAttempt, warnings: result.warnings }
-    }
-
-    const report = Validate.format(result)
-    const blockingDiagnostics = [...result.errors, ...result.warnings]
-
-    if (currentAttempt >= MAX_ATTEMPTS) {
-      // Max retries exhausted — reset counter so the next user request starts fresh.
-      attempts.delete(k)
-      return { kind: "exhausted", attempts: currentAttempt, report }
+      return outcome
     }
 
     attempts.set(k, currentAttempt)
-    return {
-      kind: "retry",
-      attempt: currentAttempt,
-      maxAttempts: MAX_ATTEMPTS,
-      report,
-      diagnostics: blockingDiagnostics,
-    }
+    return outcome
   }
 
   /**
@@ -112,7 +123,7 @@ export namespace RetryOrchestrator {
    * the prompt can evolve without touching the orchestrator state machine.
    */
   export function buildRetryInstruction(signal: RetrySignal): string {
-    const errors = signal.diagnostics.map((d) => {
+    const diagnostics = signal.diagnostics.map((d) => {
       const loc = d.line ? ` (line ${d.line})` : ""
       const fix = d.fix ? `  Fix: ${d.fix}` : ""
       return `- ${d.code}${loc}: ${d.message}\n${fix}`
@@ -121,19 +132,34 @@ export namespace RetryOrchestrator {
     return [
       `Validation rejected attempt ${signal.attempt}/${signal.maxAttempts}.`,
       ``,
-      `Errors:`,
-      errors,
+      `Blocking diagnostics:`,
+      diagnostics,
       ``,
       `Rewrite the full strategy fixing every error. Do not apologise. Do not narrate.`,
       `Call finny_algorithm_save again with the corrected code.`,
     ].join("\n")
   }
 
+  export function formatWarningRejection(warnings: Validate.Diagnostic[]): string {
+    const lines = warnings.map((d) => {
+      const loc = d.line ? ` (line ${d.line})` : ""
+      const fix = d.fix ? `\n  Fix: ${d.fix}` : ""
+      return `- ${d.code}${loc}: ${d.message}${fix}`
+    })
+
+    return [
+      `Validation rejected: warnings must clear before save/backtest.`,
+      ``,
+      `${warnings.length} warning(s):`,
+      ...lines,
+    ].join("\n")
+  }
+
   export function buildExhaustedMessage(signal: ExhaustedSignal): string {
     return [
-      `Sorry — I couldn't produce an algorithm that passes validation after ${signal.attempts} attempts.`,
+      `Validation stopped after ${signal.attempts} failed save attempts.`,
       ``,
-      `Please rephrase your request or give me more specifics (e.g. the indicator, timeframe, or risk rules you want).`,
+      `Do not call finny_algorithm_save again for this request. Stop and report the final validator blockers to the user.`,
       ``,
       `Last validator report:`,
       signal.report,

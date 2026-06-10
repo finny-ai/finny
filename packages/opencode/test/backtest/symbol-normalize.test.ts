@@ -10,6 +10,7 @@ describe("normalizeSymbol", () => {
     ["BTCUSD", "BTC/USD"],
     ["btcusd", "BTC/USD"],
     ["BTC-USD", "BTC/USD"],
+    ["BTC.USD", "BTC/USD"],
     ["BTC/USD", "BTC/USD"],
     ["BTCUSDT", "BTC/USD"],
     ["btc/usdt", "BTC/USD"],

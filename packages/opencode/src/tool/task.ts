@@ -13,6 +13,7 @@ import { Inject } from "@/cron/inject"
 import { TaskState } from "@/task/state"
 import { BackgroundTaskBlockedError } from "@/task/error"
 import { Permission } from "@/permission"
+import { getSessionWorkspace, bindSessionWorkspace } from "@finny-ai/core/algo"
 import type { ModelID, ProviderID } from "@/provider/schema"
 import { Analytics } from "@/analytics/tracker"
 
@@ -122,6 +123,13 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
             })) ?? []),
           ],
         }))
+
+      // Subagents inherit the parent session's algo workspace binding so data
+      // extraction lands in the same per-request workspace as the parent.
+      yield* Effect.promise(async () => {
+        const bound = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+        if (bound) await bindSessionWorkspace(nextSession.id, bound).catch(() => {})
+      })
 
       const msg = yield* Effect.sync(() => MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }))
       if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
