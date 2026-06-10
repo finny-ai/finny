@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
+import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
 
 const parameters = z.object({
@@ -31,6 +32,12 @@ const parameters = z.object({
     .enum(["strict", "repair_outliers"])
     .default("strict")
     .describe("Strict by default. Use repair_outliers only for explicit research-only reruns after severe isolated outlier diagnostics."),
+  userApproved: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true ONLY after the user explicitly approved continuing past two consecutive failed backtests for this symbol/interval. Renaming the algorithm does not reset the failure budget.",
+    ),
 })
 
 type BacktestMessageLike = {
@@ -46,13 +53,64 @@ type BacktestMessageLike = {
   }>
 }
 
-export function countConsecutiveFailedBacktests(messages: BacktestMessageLike[], algorithmName: string) {
+export type DataQualityFailureMetadata = {
+  kind: "data_quality_failed"
+  algorithmName: string
+  params: { duration: string; interval: string; capital: string; dataQualityMode: "strict" | "repair_outliers" }
+  phase?: "before_resample" | "after_resample"
+  reason: string
+  symbol?: string
+  provider?: string
+  interval?: string
+  rawRows?: number
+  postRows?: number
+  coverage?: number
+  gaps?: number
+  duplicates?: number
+  invalidOhlc?: number
+  outliers?: number
+  zeroVolume?: number
+  repair_outliers_allowed: boolean
+  outlierDetails: Array<{
+    timestamp: string
+    prev_close: number
+    close: number
+    log_return: number
+    z_score: number
+    provider?: string
+  }>
+}
+
+/**
+ * Count consecutive failed backtest runs that belong to the same attempt
+ * stream. A prior run matches when it ran the SAME algorithm name, or — when
+ * `scope` is known — the same symbol+interval under any name. The
+ * symbol+interval match closes the rename loophole: saving the same concept
+ * under a fresh algorithm name must not reset the failure budget.
+ */
+export function countConsecutiveFailedBacktests(
+  messages: BacktestMessageLike[],
+  algorithmName: string,
+  scope?: { symbol?: string; interval?: string },
+) {
+  const scopeSymbol = scope?.symbol?.toUpperCase()
+  const scopeInterval = scope?.interval && normalizeInterval(scope.interval)
   let count = 0
   for (const msg of [...messages].reverse()) {
     for (const part of [...(msg.parts ?? [])].reverse()) {
       if (part.type !== "tool" || part.tool !== "finny_backtest_run") continue
       if (part.state?.status !== "completed") continue
-      if (part.state.input?.algorithmName !== algorithmName) continue
+
+      const input = part.state.input
+      const metadata = part.state.metadata
+      const sameName = input?.algorithmName === algorithmName
+      const partSymbol = (metadata?.results?.v2?.symbols?.[0] as string | undefined)?.toUpperCase()
+      const partInterval = input?.interval && normalizeInterval(input.interval)
+      const sameScope =
+        Boolean(scopeSymbol && scopeInterval && partSymbol && partInterval) &&
+        partSymbol === scopeSymbol &&
+        partInterval === scopeInterval
+      if (!sameName && !sameScope) continue
 
       const output = part.state.output ?? ""
       if (output.includes("Verdict: failed")) {
@@ -63,6 +121,78 @@ export function countConsecutiveFailedBacktests(messages: BacktestMessageLike[],
     }
   }
   return count
+}
+
+function parseNumberField(text: string, field: string) {
+  const match = text.match(new RegExp(`${field}=(-?\\d+(?:\\.\\d+)?)`))
+  return match ? Number(match[1]) : undefined
+}
+
+function parseStringField(text: string, field: string) {
+  const match = text.match(new RegExp(`${field}=([^,\\s)]+)`))
+  return match?.[1]
+}
+
+export function parseDataQualityFailure(
+  error: string,
+  input: {
+    algorithmName: string
+    duration: string
+    interval: string
+    capital: string
+    dataQualityMode: "strict" | "repair_outliers"
+  },
+): DataQualityFailureMetadata | undefined {
+  if (!error.includes("__FINNY_OUTLIER__") && !error.includes("Data quality failed")) return undefined
+
+  const phase = error.includes("Data quality failed before resample")
+    ? "before_resample"
+    : error.includes("Data quality failed after resample")
+      ? "after_resample"
+      : undefined
+  const reason =
+    error
+      .split(/\r?\n/)
+      .find((line) => line.includes("Data quality failed"))
+      ?.trim() ?? "Strict data quality failed."
+
+  const outlierDetails = [...error.matchAll(/__FINNY_OUTLIER__:\s+ts=(.*?)\s+prev_close=([^\s]+)\s+close=([^\s]+)\s+log_return=([^\s]+)\s+z=([^\s]+)\s+provider=([^\s]+)/g)].map(
+    (match) => ({
+      timestamp: match[1],
+      prev_close: Number(match[2]),
+      close: Number(match[3]),
+      log_return: Number(match[4]),
+      z_score: Number(match[5]),
+      provider: match[6],
+    }),
+  )
+
+  const reportLine = error
+    .split(/\r?\n/)
+    .find((line) => line.includes("provider=") && line.includes("symbol=") && line.includes("interval="))
+
+  const provider = parseStringField(reportLine ?? "", "provider") ?? outlierDetails[0]?.provider
+
+  return {
+    kind: "data_quality_failed",
+    algorithmName: input.algorithmName,
+    params: input,
+    phase,
+    reason,
+    symbol: parseStringField(reportLine ?? "", "symbol"),
+    provider,
+    interval: parseStringField(reportLine ?? "", "interval") ?? input.interval,
+    rawRows: parseNumberField(reportLine ?? "", "raw_rows"),
+    postRows: parseNumberField(reportLine ?? "", "post_rows"),
+    coverage: parseNumberField(reportLine ?? "", "coverage"),
+    gaps: parseNumberField(reportLine ?? "", "gaps"),
+    duplicates: parseNumberField(reportLine ?? "", "duplicates"),
+    invalidOhlc: parseNumberField(reportLine ?? "", "invalid_ohlc"),
+    outliers: parseNumberField(reportLine ?? "", "outliers"),
+    zeroVolume: parseNumberField(reportLine ?? "", "zero_volume"),
+    repair_outliers_allowed: input.dataQualityMode === "repair_outliers",
+    outlierDetails,
+  }
 }
 
 export const BacktestRunTool = Tool.define(
@@ -137,6 +267,33 @@ export const BacktestRunTool = Tool.define(
         })
 
         if (!result.ok) {
+          const dataQualityFailure = parseDataQualityFailure(result.error, {
+            algorithmName: params.algorithmName,
+            duration: params.duration,
+            interval: params.interval,
+            capital: params.capital,
+            dataQualityMode: params.dataQualityMode,
+          })
+          if (dataQualityFailure) {
+            const details = dataQualityFailure.outlierDetails
+              .map(
+                (d) =>
+                  `outlier ts=${d.timestamp} prev_close=${d.prev_close} close=${d.close} log_return=${d.log_return} z=${d.z_score} provider=${d.provider ?? dataQualityFailure.provider ?? "unknown"}`,
+              )
+              .join("\n")
+            return {
+              title: "Backtest blocked by data quality",
+              output:
+                `Strict data quality blocked "${params.algorithmName}".\n` +
+                `${dataQualityFailure.reason}\n` +
+                (details ? `\n${details}\n` : "") +
+                `\nStopped without running repair_outliers.`,
+              metadata: {
+                ...emptyMeta,
+                ...dataQualityFailure,
+              },
+            }
+          }
           return {
             title: "Backtest failed",
             output: `Backtest of "${params.algorithmName}" failed:\n${result.error}`,
@@ -198,7 +355,7 @@ export const BacktestRunTool = Tool.define(
             lines.push(`│  Trade p-value       │  ${(fmt(pval, 4) + " " + sig).padStart(24)} │`)
           }
           if (lowSample) {
-            lines.push(`│  Sample size         │  ${(`⚠ LOW (${r.totalTrades}/${minTrades} min)`).padStart(24)} │`)
+            lines.push(`│  Sample size         │  ${(`⚠ LOW (${r.totalTrades} trades)`).padStart(24)} │`)
           }
         }
 
@@ -215,7 +372,12 @@ export const BacktestRunTool = Tool.define(
         if (quality.reasons.length > 0) {
           lines.push(`Reasons: ${quality.reasons.join("; ")}`)
         }
-        lines.push(`Minimum trades for this window: ${quality.minTrades}`)
+        if (r.totalTrades > 0 && r.totalTrades < quality.minTrades) {
+          lines.push(
+            `Trade count is low for this window (${r.totalTrades} trades) — confidence is limited; ` +
+            `interpret Sharpe/win rate cautiously. This is a caveat, not an automatic failure.`,
+          )
+        }
         if (r.v2?.data_quality?.repair_applied) {
           lines.push(`REPAIRED DATA BACKTEST — research-only until rerun on strict clean data.`)
         }

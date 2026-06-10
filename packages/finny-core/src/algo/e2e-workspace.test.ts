@@ -133,8 +133,10 @@ describe("subagents-without-scaffold: full lifecycle with slugs", () => {
     const algoByName = await loadAlgo(algoName, root)
     expect(algoByName.name).toBe(res1.slug)
 
-    // ─── Phase 6: uniqueness — second session gets a different workspace ───
-    const res3 = await ensureAlgoWorkspace(algoName, { root, setActive: true })
+    // ─── Phase 6: distinct workspaces via explicit datetime suffix ───
+    // Same name in the same minute reuses the workspace (datetime slugs);
+    // a second session at a different time gets its own directory.
+    const res3 = await ensureAlgoWorkspace(algoName, { root, setActive: true, slug: `${algoName}.2.1.09.30` })
     expect(res3.created).toBe(true)
     expect(res3.slug).not.toBe(res1.slug)
     expect(res3.dir).not.toBe(res1.dir)

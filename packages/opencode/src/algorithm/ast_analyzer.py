@@ -36,6 +36,10 @@ ENTRY_METHOD_NAMES = ("on_bar", "on_tick", "handle_bar", "step", "next", "proces
 PRIVATE_STRATEGY_ATTRS = {"_broker", "_market", "_account", "account", "market"}
 REFLECTION_CALLS = {"getattr", "setattr", "delattr", "vars", "dir", "globals", "locals"}
 DISALLOWED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input"}
+FORBIDDEN_IMPORT_ROOTS = {
+    "asyncio", "importlib", "io", "os", "pathlib", "pickle", "random", "requests",
+    "shutil", "socket", "statistics", "subprocess", "sys", "tempfile", "threading",
+}
 
 
 def _find_class(tree, name):
@@ -110,13 +114,13 @@ def check_strict_security(tree, cls):
             if isinstance(node, ast.ImportFrom) and node.module:
                 names.append(node.module.split(".")[0])
             for name in names:
-                if name in {"os", "sys", "subprocess", "socket", "requests", "pickle", "threading", "asyncio", "pathlib"}:
+                if name in FORBIDDEN_IMPORT_ROOTS:
                     diagnostics.append({
                         "code": "FORBIDDEN_IMPORT",
                         "severity": "error",
                         "message": f"Forbidden import `{name}` in strict strategy code.",
                         "line": node.lineno,
-                        "fix": "Remove filesystem, network, process, and runtime imports from strategy code.",
+                        "fix": "Remove filesystem, network, process, stochastic, and runtime imports from strategy code.",
                     })
                     return diagnostics
         if isinstance(node, ast.Call):
@@ -413,6 +417,22 @@ def check_rms_not_stddev(tree):
 
 def check_population_variance(tree):
     diagnostics = []
+    sample_denom_names = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        value = node.value
+        is_n_minus_one = (
+            isinstance(value, ast.BinOp)
+            and isinstance(value.op, ast.Sub)
+            and isinstance(value.right, ast.Constant)
+            and value.right.value == 1
+        )
+        if not is_n_minus_one:
+            continue
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                sample_denom_names.add(target.id)
     for node in ast.walk(tree):
         if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
             continue
@@ -426,7 +446,7 @@ def check_population_variance(tree):
         elif isinstance(denom, ast.Call) and isinstance(denom.func, ast.Name) and denom.func.id == "len":
             is_pop = True
         elif isinstance(denom, ast.Name):
-            is_pop = True
+            is_pop = denom.id not in sample_denom_names
         if is_pop:
             diagnostics.append({
                 "code": "POPULATION_VARIANCE",
@@ -436,7 +456,7 @@ def check_population_variance(tree):
                     "This systematically under-estimates stddev and inflates Sharpe."
                 ),
                 "line": node.lineno,
-                "fix": "Divide by (n - 1) when n > 1, or use statistics.stdev().",
+                "fix": "Divide by (n - 1) when n > 1; avoid statistics.stdev() because strict runtime blocks it.",
             })
             break  # one is enough
     return diagnostics
@@ -1073,6 +1093,7 @@ def check_equity_never_updated(cls):
 
 
 SIZING_DENOM_HINTS = ("stop", "distance", "atr", "risk_per", "range")
+SIZING_NUMER_HINTS = ("equity", "capital", "cash", "balance", "risk")
 
 
 def _looks_like_sizing_division(assign):
@@ -1086,7 +1107,18 @@ def _looks_like_sizing_division(assign):
         a.attr for a in ast.walk(value.right)
         if isinstance(a, ast.Attribute) and isinstance(a.value, ast.Name) and a.value.id == "self"
     }
-    return any(any(h in n.lower() for h in SIZING_DENOM_HINTS) for n in denom_names)
+    if not any(any(h in n.lower() for h in SIZING_DENOM_HINTS) for n in denom_names):
+        return False
+    # Require a risk/equity-shaped numerator too. Position sizing is
+    # `(equity * risk_pct) / stop_dist`; an indicator smoothing step like
+    # `(atr_val * (period - 1) + tr) / atr_period` also has a hint-matching
+    # denominator ("atr") but is not sizing — flagging it produced
+    # POSITION_SIZE_UNCAPPED on ATR variables.
+    numer_names = _collect_names_from_expr(value.left) | {
+        a.attr for a in ast.walk(value.left)
+        if isinstance(a, ast.Attribute) and isinstance(a.value, ast.Name) and a.value.id == "self"
+    }
+    return any(any(h in n.lower() for h in SIZING_NUMER_HINTS) for n in numer_names)
 
 
 def check_position_size_uncapped(on_tick):
@@ -1190,37 +1222,73 @@ def _symbol_is_equity(symbol):
     return s.isalnum()
 
 
+def _is_integer_qty_expr(expr, integer_names):
+    """Integer-safe only for explicit coercions, floor-division, or a variable
+    previously assigned from an integer-safe expression.
+
+    A generic call like `min(by_risk, by_cash)` is NOT integer-safe: the result
+    can still be one of its float operands. Only `int(...)`, `floor(...)` /
+    `math.floor(...)`, and (per current policy) `round(...)` coerce to a whole
+    number — and they do so regardless of their arguments, so we do not recurse
+    into call args.
+    """
+    if isinstance(expr, ast.Name) and expr.id in integer_names:
+        return True
+    if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.FloorDiv):
+        return True
+    if isinstance(expr, ast.Call):
+        if isinstance(expr.func, ast.Name) and expr.func.id in {"int", "round"}:
+            return True
+        if isinstance(expr.func, ast.Attribute) and expr.func.attr == "floor":
+            return True
+    return False
+
+
+def _expr_mentions_names(expr, names):
+    return bool(_collect_names_from_expr(expr) & names)
+
+
 def check_fractional_shares_equity(on_tick, symbol):
-    """Equity symbol + float qty from division (no int/floor) → warn."""
+    """Equity order qty from float sizing without final int/floor coercion → warn."""
     diagnostics = []
     if not _symbol_is_equity(symbol):
         return diagnostics
 
+    float_sizing_names = set()
+    integer_names = set()
+    for node in sorted(ast.walk(on_tick), key=lambda n: getattr(n, "lineno", 0)):
+        if not isinstance(node, ast.Assign):
+            continue
+        target_names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        if not target_names:
+            continue
+        if _is_integer_qty_expr(node.value, integer_names):
+            integer_names.update(target_names)
+            float_sizing_names.difference_update(target_names)
+            continue
+        if _looks_like_sizing_division(node) or _expr_mentions_names(node.value, float_sizing_names):
+            float_sizing_names.update(target_names)
+
     for node in ast.walk(on_tick):
-        if not _looks_like_sizing_division(node):
+        if not (isinstance(node, ast.Call) and _is_broker_trade_call(node)):
             continue
-        value = node.value
-        # Check for int() / math.floor() / // anywhere in the RHS
-        floored = isinstance(value.op, ast.FloorDiv)
-        for inner in ast.walk(value):
-            if isinstance(inner, ast.Call):
-                if isinstance(inner.func, ast.Name) and inner.func.id == "int":
-                    floored = True
-                if isinstance(inner.func, ast.Attribute) and inner.func.attr == "floor":
-                    floored = True
-        if floored:
-            continue
-        diagnostics.append({
-            "code": "FRACTIONAL_SHARES_EQUITY",
-            "severity": "warning",
-            "message": (
-                f"Symbol `{symbol}` looks like an equity ticker, but position size is a float. "
-                "Most brokers require whole-share orders for stocks/ETFs."
-            ),
-            "line": node.lineno,
-            "fix": "Floor to an integer: `qty = math.floor(qty)` (after capping against capital).",
-        })
-        break
+        for kw in node.keywords:
+            if kw.arg != "qty":
+                continue
+            if _is_integer_qty_expr(kw.value, integer_names):
+                continue
+            if _contains_floaty_division(kw.value) or _expr_mentions_names(kw.value, float_sizing_names):
+                diagnostics.append({
+                    "code": "FRACTIONAL_SHARES_EQUITY",
+                    "severity": "warning",
+                    "message": (
+                        f"Symbol `{symbol}` looks like an equity ticker, but order qty may be fractional. "
+                        "Most brokers require whole-share orders for stocks/ETFs."
+                    ),
+                    "line": node.lineno,
+                    "fix": "Floor to an integer before submitting the order: `qty = int(qty)` or `qty = math.floor(qty)`.",
+                })
+                return diagnostics
     return diagnostics
 
 

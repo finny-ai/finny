@@ -104,6 +104,27 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     return d
 
 
+def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, interval: str) -> pd.DataFrame:
+    exec_cfg = cfg.get("execution", {}) if isinstance(cfg.get("execution"), dict) else {}
+    if bool(exec_cfg.get("extended_hours", False)):
+        return df
+    if asset_class not in {"equity", "option"}:
+        return df
+    if not DQ.is_intraday_interval(interval):
+        return df
+    if df.empty:
+        return df
+
+    ts_et = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
+    minutes = ts_et.dt.hour * 60 + ts_et.dt.minute
+    in_regular_session = (
+        (ts_et.dt.weekday < 5)
+        & (minutes >= 9 * 60 + 30)
+        & (minutes < 16 * 60)
+    )
+    return df.loc[in_regular_session].reset_index(drop=True)
+
+
 def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, asset_spec: AssetSpec) -> PortfolioBroker:
     exec_cfg = cfg.get("execution", {})
     risk_cfg = cfg.get("risk", {})
@@ -528,6 +549,9 @@ def main() -> None:
     if df.empty:
         raise SystemExit("No bars after date filter")
     raw_rows = int(len(df))
+    df = _apply_regular_hours_filter(df, asset_spec.assetClass, cfg, args.interval)
+    if df.empty:
+        raise SystemExit("No bars after regular-hours filter")
     provider = str(asset_spec.dataProvider or cfg.get("data_provider") or "unknown")
     repaired_details_total = []
     raw_dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
@@ -544,7 +568,12 @@ def main() -> None:
             and all("severe outlier" in reason for reason in raw_blocking)
         )
         if can_repair_raw:
-            repaired_df, repaired_details = DQ.repair_isolated_outliers(df, provider=provider)
+            repaired_df, repaired_details = DQ.repair_isolated_outliers(
+                df,
+                provider=provider,
+                interval=args.interval,
+                asset_class=asset_spec.assetClass,
+            )
             if repaired_details and len(repaired_df) < len(df):
                 repaired_details_total.extend(repaired_details)
                 df = repaired_df
@@ -599,7 +628,12 @@ def main() -> None:
             and all("severe outlier" in reason for reason in blocking_quality)
         )
         if can_repair:
-            repaired_df, repaired_details = DQ.repair_isolated_outliers(df, provider=provider)
+            repaired_df, repaired_details = DQ.repair_isolated_outliers(
+                df,
+                provider=provider,
+                interval=args.interval,
+                asset_class=asset_spec.assetClass,
+            )
             if repaired_details and len(repaired_df) < len(df):
                 repaired_details_total.extend(repaired_details)
                 df = repaired_df

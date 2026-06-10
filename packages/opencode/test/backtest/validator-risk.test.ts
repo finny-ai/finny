@@ -181,6 +181,95 @@ describe("Validate strict Shape C gates", () => {
     expect(warnings).toContain("FUTURES_FRACTIONAL_QTY")
   })
 
+  test("does not warn on equity sizing when final order qty is integer-coerced", async () => {
+    const code = `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+        stop_dist = open_px * 0.02
+        if stop_dist > 1e-10 and open_px > 0:
+            by_risk = (equity * 0.01) / stop_dist
+            by_cash = (cash * 0.95) / open_px
+            qty = int(min(by_risk, by_cash))
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+`
+    const result = await Validate.run(code, {
+      config: { symbol: "SPY" },
+      skipSmokeTest: true,
+    })
+    expect(result.valid).toBe(true)
+    expect(result.warnings.map(w => w.code)).not.toContain("FRACTIONAL_SHARES_EQUITY")
+  })
+
+  test("warns on equity sizing when order qty is a bare min(by_risk, by_cash)", async () => {
+    const code = `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+        stop_dist = open_px * 0.02
+        if stop_dist > 1e-10 and open_px > 0:
+            by_risk = (equity * 0.01) / stop_dist
+            by_cash = (cash * 0.95) / open_px
+            qty = min(by_risk, by_cash)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+`
+    const result = await Validate.run(code, {
+      config: { symbol: "SPY" },
+      skipSmokeTest: true,
+    })
+    expect(result.warnings.map(w => w.code)).toContain("FRACTIONAL_SHARES_EQUITY")
+  })
+
+  test("does not treat a generic min() as integer-safe just because one arg is int-coerced", async () => {
+    // min(int(by_risk), by_cash) can still return the float by_cash, so the
+    // order qty is not whole-share safe — the validator must still warn.
+    const code = `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+        stop_dist = open_px * 0.02
+        if stop_dist > 1e-10 and open_px > 0:
+            by_risk = (equity * 0.01) / stop_dist
+            by_cash = (cash * 0.95) / open_px
+            qty = min(int(by_risk), by_cash)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+`
+    const result = await Validate.run(code, {
+      config: { symbol: "SPY" },
+      skipSmokeTest: true,
+    })
+    expect(result.warnings.map(w => w.code)).toContain("FRACTIONAL_SHARES_EQUITY")
+  })
+
+  test("rejects statistics import because strict worker cannot load it safely", async () => {
+    const code = `import statistics
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        return
+`
+    const result = await Validate.run(code, {
+      config: { symbol: "SPY" },
+      skipSmokeTest: true,
+    })
+    expect(result.valid).toBe(false)
+    expect(result.errors.map(e => e.code)).toContain("FORBIDDEN_IMPORT")
+  })
+
   test("rejects delayed oversized leverage after the old 200-bar smoke window", async () => {
     const code = `class Strategy:
     def __init__(self, broker, params=None):

@@ -9,6 +9,7 @@ import { Plan } from "../plan"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
 import { readActiveBrokerKind } from "../live/brokers/active"
+import { missingRequiredNewSaveConfigFields, normalizeConfigForSave } from "../algorithm/strategy-params"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -273,6 +274,28 @@ export const AlgorithmSaveTool = Tool.define(
             }
 
             // Validation passed — proceed with save.
+            const normalizedConfig = normalizeConfigForSave({ incoming: params.config })
+            if (params.saveMode === "new") {
+              const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
+              if (missingConfig.length > 0) {
+                return {
+                  result: {
+                    title: "Save blocked — incomplete execution config",
+                    output:
+                      `New algorithms must be saved with complete execution config before backtesting.\n\n` +
+                      `Missing required config field(s): ${missingConfig.join(", ")}.\n\n` +
+                      `Include symbol, asset_class, interval, and non-empty strategy params under params in the finny_algorithm_save config. Do not save first and patch these with finny_algorithm_set_params.`,
+                    metadata: {
+                      blocked: true,
+                      retry: false,
+                      missingConfig,
+                      configRequired: true,
+                    },
+                  },
+                }
+              }
+            }
+
             // Tier cap only applies to NEW lineages. Version bumps don't add a
             // unique algorithm slot (the lineage already counts).
             if (params.saveMode === "new") {
@@ -307,7 +330,7 @@ export const AlgorithmSaveTool = Tool.define(
                 code: params.code,
                 language: params.language,
                 description: params.description,
-                config: params.config,
+                config: normalizedConfig,
                 backtestCode: params.backtestCode,
                 reasoning: params.reasoning,
                 mission: params.mission,

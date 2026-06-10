@@ -25,7 +25,7 @@ const DESCRIPTION = [
   "  - symbol  (e.g. 'UCO', 'BTC/USD')",
   "  - interval  (1min / 5min / 15min / 30min / 1h / 4h / 1d)",
   "  - equity_usd  (starting capital in USD)",
-  "  - brokerage  (alpaca | binance)",
+  "  - brokerage  (alpaca | binance | ibkr)",
   "  - backtest.duration  ('2w', '4w', '5d', '1m', '1y', etc.)",
   "  - asset_class  (equity | crypto)",
   "",

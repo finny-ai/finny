@@ -13,6 +13,25 @@ import { Instance } from "../project/instance"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 
+/**
+ * Resolve a (possibly relative) read path.
+ *
+ * Relative `algos/...` paths refer to the repo-local algo workspace (template
+ * docs, subagent-written data/news notes), which lives at the worktree/repo
+ * root — NOT under the current package directory. In dev the process directory
+ * is often `packages/opencode`, so resolving `algos/_template/README.md` against
+ * it produced the wrong `packages/opencode/algos/...` path. Anchor `algos/` at
+ * the worktree root; everything else stays relative to the working directory.
+ */
+export function resolveReadPath(filePath: string, directory: string, worktree: string): string {
+  if (path.isAbsolute(filePath)) return filePath
+  const normalized = filePath.replace(/^\.\//, "")
+  if (normalized === "algos" || normalized.startsWith("algos/")) {
+    return path.resolve(worktree, normalized)
+  }
+  return path.resolve(directory, filePath)
+}
+
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
@@ -85,10 +104,7 @@ export const ReadTool = Tool.define(
         return yield* Effect.fail(new Error("offset must be greater than or equal to 1"))
       }
 
-      let filepath = params.filePath
-      if (!path.isAbsolute(filepath)) {
-        filepath = path.resolve(Instance.directory, filepath)
-      }
+      let filepath = resolveReadPath(params.filePath, Instance.directory, Instance.worktree)
       if (process.platform === "win32") {
         filepath = AppFileSystem.normalizePath(filepath)
       }

@@ -47,6 +47,11 @@ test("build agent has correct default properties", async () => {
       expect(evalPerm(build, "bash")).toBe("deny")
       expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
       expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
+      expect(Permission.evaluate("read", "algos/_template/README.md", build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("read", path.join(tmp.path, "algos/_template/README.md"), build!.permission).action).toBe(
+        "allow",
+      )
+      expect(Permission.evaluate("read", path.join(tmp.path, "package.json"), build!.permission).action).toBe("deny")
     },
   })
 })

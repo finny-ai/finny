@@ -2,17 +2,84 @@ import z from "zod"
 import os from "os"
 import path from "path"
 import fs from "fs/promises"
+import { randomUUID } from "crypto"
 import { fileURLToPath } from "url"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Process } from "@/util/process"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
-import { getActiveAlgo, algoDir, ensureAlgoWorkspace } from "@finny-ai/core/algo"
+import { assetClassForSymbol, normalizeSymbol, workspaceMatchesRequest } from "../agent/request-identity"
+import { ensureAlgoWorkspace, getSessionWorkspace, bindSessionWorkspace } from "@finny-ai/core/algo"
 import { BrokerRegistry } from "@/live/brokers"
+import { Log } from "@/util/log"
 
 const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const
 const OPTION_RE = /^([A-Z]{1,6})\/(\d{8})\/(\d+(?:\.\d+)?)([CP])$/i
+
+const log = Log.create({ service: "tool.extract-data" })
+
+export interface ResolvedWorkspace {
+  slug: string
+  dir: string
+  created: boolean
+  source: "explicit" | "session" | "pending"
+}
+
+/**
+ * Decide which algo workspace stores this extraction.
+ *
+ * Order: explicit `algorithm_name` param → the session's bound workspace
+ * (provisioned by the prompt-in bootstrap) → a fresh `<symbol>-<interval>-pending`
+ * workspace, which is then bound to the session so subsequent calls land in
+ * the same place.
+ *
+ * The machine-global "active algo" marker is deliberately NOT consulted: a
+ * stale marker from a previous session once routed SPY data into a
+ * btc-usdt-5m-momentum workspace. As a safety net, even a session binding is
+ * ignored when its slug embeds a symbol/asset that conflicts with the
+ * requested symbol.
+ */
+export async function resolveTargetWorkspace(input: {
+  algorithmName?: string
+  canonicalSymbol: string
+  interval: string
+  sessionID: string
+}): Promise<ResolvedWorkspace> {
+  const facts = {
+    requested_symbol: normalizeSymbol(input.canonicalSymbol),
+    requested_asset_class: assetClassForSymbol(input.canonicalSymbol),
+  }
+
+  if (input.algorithmName) {
+    const ensured = await ensureAlgoWorkspace(input.algorithmName)
+    return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, source: "explicit" }
+  }
+
+  const bound = await getSessionWorkspace(input.sessionID).catch(() => null)
+  if (bound) {
+    if (workspaceMatchesRequest(bound, facts)) {
+      const ensured = await ensureAlgoWorkspace(bound)
+      return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, source: "session" }
+    }
+    log.warn("session workspace conflicts with requested symbol; provisioning fresh workspace", {
+      sessionID: input.sessionID,
+      bound,
+      symbol: input.canonicalSymbol,
+    })
+  }
+
+  const pendingName = `${slugifyAlgoName(input.canonicalSymbol, input.interval)}-pending`
+  const ensured = await ensureAlgoWorkspace(pendingName)
+  await bindSessionWorkspace(input.sessionID, ensured.slug).catch((err) => {
+    log.warn("failed to bind pending workspace to session", {
+      sessionID: input.sessionID,
+      slug: ensured.slug,
+      err: err instanceof Error ? err.message : String(err),
+    })
+  })
+  return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, source: "pending" }
+}
 
 function slugifyAlgoName(...parts: string[]): string {
   return parts
@@ -158,6 +225,8 @@ function buildDataBrief(p: {
   symbol: string; interval: string; start: string; end: string
   bars: number; source: string; parquetPath: string
   digest: any; regime: Regime; suggestions: Suggestions; workspaceCreated: boolean
+  requestedSymbol: string; requestedInterval: string; assetClass: string
+  algorithmName: string; runId: string
 }): string {
   const { digest, regime, suggestions: s } = p
   const price = digest?.price ?? {}
@@ -166,6 +235,22 @@ function buildDataBrief(p: {
 
   const lines: string[] = [
     `# Data Brief: ${p.symbol} ${p.interval}`,
+    "",
+    // Request identity contract — the parent must verify these against the
+    // immutable request facts before using anything below. An artifact whose
+    // identity does not match the current request is NOT reusable.
+    `## Request Identity`,
+    "",
+    `| Field | Value |`,
+    `|-------|-------|`,
+    `| requested_symbol | ${p.requestedSymbol} |`,
+    `| requested_interval | ${p.requestedInterval} |`,
+    `| requested_asset_class | ${p.assetClass} |`,
+    `| actual_symbol | ${p.symbol} |`,
+    `| actual_interval | ${p.interval} |`,
+    `| algorithm_name | ${p.algorithmName} |`,
+    `| run_id | ${p.runId} |`,
+    `| artifact_paths | \`${p.parquetPath}\` |`,
     "",
     `| Field | Value |`,
     `|-------|-------|`,
@@ -327,30 +412,25 @@ export const ExtractDataTool = Tool.define(
           }
         }
 
-        let algoName = params.algorithm_name
-        let workspaceCreated = false
-        let algoSlug: string | undefined
-        if (!algoName) {
-          // Active algo may already be a slug — use it as-is
-          algoName = await getActiveAlgo() ?? undefined
-        }
-        if (!algoName) {
-          algoName = `${slugifyAlgoName(resolved.canonical, params.interval)}-pending`
-        }
-
+        let workspace: ResolvedWorkspace
         try {
-          const ensured = await ensureAlgoWorkspace(algoName, { setActive: true })
-          workspaceCreated = ensured.created
-          algoSlug = ensured.slug
+          workspace = await resolveTargetWorkspace({
+            algorithmName: params.algorithm_name,
+            canonicalSymbol: resolved.canonical,
+            interval: params.interval,
+            sessionID: ctx.sessionID,
+          })
         } catch (e: any) {
           return {
             title: "Invalid algorithm name",
-            output: `Could not prepare workspace for "${algoName}": ${e?.message ?? e}`,
-            metadata: { error: "invalid_algo_name", algorithm: algoName },
+            output: `Could not prepare workspace for "${params.algorithm_name ?? resolved.canonical}": ${e?.message ?? e}`,
+            metadata: { error: "invalid_algo_name", algorithm: params.algorithm_name },
           }
         }
-
-        const algoPath = algoDir(algoSlug!)
+        const algoName = workspace.slug
+        const algoSlug = workspace.slug
+        const workspaceCreated = workspace.created
+        const algoPath = workspace.dir
 
         const ENGINE_V2_SRC = path.resolve(
           path.dirname(fileURLToPath(import.meta.url)),
@@ -444,6 +524,8 @@ export const ExtractDataTool = Tool.define(
           const suggestions = deriveSuggestions(digest, params.interval, regime)
 
           // ── Write data_brief.md into algo workspace ──
+          const runId = randomUUID()
+          const assetClass = assetClassForSymbol(resolved.canonical) ?? resolved.kind
           const briefPath = path.join(algoPath, "data_brief.md")
           const brief = buildDataBrief({
             symbol: resolved.canonical,
@@ -457,6 +539,11 @@ export const ExtractDataTool = Tool.define(
             regime,
             suggestions,
             workspaceCreated,
+            requestedSymbol: params.symbol,
+            requestedInterval: params.interval,
+            assetClass,
+            algorithmName: algoSlug ?? algoName,
+            runId,
           })
           await fs.writeFile(briefPath, brief, "utf8")
 
@@ -474,6 +561,17 @@ export const ExtractDataTool = Tool.define(
               algo_slug: algoSlug,
               workspace_created: workspaceCreated,
               regime: regime.tag,
+              // Request identity contract for the parent to verify.
+              requested_symbol: params.symbol,
+              requested_interval: params.interval,
+              requested_asset_class: assetClass,
+              requested_algorithm_name: params.algorithm_name,
+              actual_symbol: resolved.canonical,
+              actual_interval: params.interval,
+              actual_asset_class: assetClass,
+              algorithm_name: algoSlug ?? algoName,
+              artifact_paths: [parquetPath, briefPath],
+              run_id: runId,
             },
           }
         } finally {

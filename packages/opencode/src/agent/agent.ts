@@ -185,25 +185,31 @@ export namespace Agent {
             "finny_backtest_history",
             "webfetch",
           ]
+          function finnyWorkspacePatterns(pattern: string) {
+            const patterns = [pattern, path.join(ctx.directory, pattern)]
+            if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) patterns.push(path.join(ctx.worktree, pattern))
+            return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow"]))
+          }
+
           const finnyTemplateReadAccess = Permission.fromConfig({
             read: {
-              "algos/_template/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/*"),
             },
           })
           const finnyTemplateDataAccess = Permission.fromConfig({
             read: {
-              "algos/_template/data/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
             },
             edit: {
-              "algos/_template/data/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
             },
           })
           const finnyTemplateNewsAccess = Permission.fromConfig({
             read: {
-              "algos/_template/data/news/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
             edit: {
-              "algos/_template/data/news/*": "allow",
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
           })
 

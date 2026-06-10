@@ -11,6 +11,7 @@ import { Config } from "@/config/config"
 import { Instance } from "@/project/instance"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
+import { repairToolCallInput } from "./repair-tool-call"
 import { Plugin } from "@/plugin"
 import { SystemPrompt } from "./system"
 import { Flag } from "@/flag/flag"
@@ -377,6 +378,16 @@ export namespace LLM {
               toolName: lower,
             }
           }
+          // Recover character-indexed JSON payloads (e.g. {0:"{",1:'"',...})
+          // back into a well-formed object for the originally-named tool, rather
+          // than routing a malformed call to the `invalid` sink.
+          if (tools[failed.toolCall.toolName]) {
+            const repaired = repairToolCallInput(failed.toolCall.input)
+            if (repaired !== undefined) {
+              l.info("repairing malformed tool input", { tool: failed.toolCall.toolName })
+              return { ...failed.toolCall, input: repaired }
+            }
+          }
           return {
             ...failed.toolCall,
             input: JSON.stringify({
@@ -390,7 +401,9 @@ export namespace LLM {
         topP: params.topP,
         topK: params.topK,
         providerOptions: ProviderTransform.providerOptions(input.model, params.options),
-        activeTools: Object.keys(tools).filter((x) => x !== "invalid"),
+        // `invalid` stays active so repaired malformed calls have a deliverable
+        // sink — otherwise the runtime reports "unavailable tool 'invalid'".
+        activeTools: Object.keys(tools),
         tools,
         toolChoice: input.toolChoice,
         maxOutputTokens: params.maxOutputTokens,

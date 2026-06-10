@@ -35,7 +35,8 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
     return { label: "failed", paperEligible: false, reasons, minTrades }
   }
 
-  if (results.totalTrades < minTrades) reasons.push(`low sample size (${results.totalTrades}/${minTrades} trades)`)
+  if (results.totalTrades < minTrades)
+    reasons.push(`trade count low for this window (${results.totalTrades} trades) — confidence limited`)
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
   if (results.maxDrawdown > 0.15) reasons.push("max drawdown > 15%")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")

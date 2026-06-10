@@ -81,7 +81,10 @@ export namespace Validate {
     skipSmokeTest?: boolean
   }
 
-  const FORBIDDEN_MODULES = ["os", "subprocess", "sys", "socket", "requests", "pickle", "threading", "asyncio"]
+  const FORBIDDEN_MODULES = [
+    "asyncio", "importlib", "io", "os", "pathlib", "pickle", "random", "requests",
+    "shutil", "socket", "statistics", "subprocess", "sys", "tempfile", "threading",
+  ]
   const DANGEROUS_CALLS = ["exec(", "eval(", "__import__(", "compile(", "open("]
 
   // Config keys that are legitimately metadata (not expected to appear in strategy code).
@@ -128,6 +131,8 @@ export namespace Validate {
     "POPULATION_VARIANCE",
     "MISSING_POSITION_SIZING",
     "FRACTIONAL_SHARES_EQUITY",
+    "FUTURES_FRACTIONAL_QTY",
+    "FUTURES_NOTIONAL_SIZING",
     "NEAR_ZERO_DIVISION",
     "INVARIANT_DIRECTIONAL_SANITY",
     "GUARD_NEVER_BINDING",
@@ -461,7 +466,7 @@ export namespace Validate {
             severity: "error",
             message: `Forbidden import: \`${mod}\` is not allowed`,
             line: i + 1,
-            fix: `Remove the \`${mod}\` import. Allowed: math, statistics, collections, dataclasses, typing, decimal, random, itertools, functools`,
+            fix: `Remove the \`${mod}\` import. Allowed: math, collections, dataclasses, typing, decimal, itertools, functools`,
           })
         }
       }

@@ -53,6 +53,8 @@ import { useSDK } from "@tui/context/sdk"
 import { useCommandDialog } from "@tui/component/dialog-command"
 import { BacktestResultsView, formatBacktestPlainMetrics } from "@tui/component/backtest-results-view"
 import type { BacktestRunner } from "@/backtest/runner"
+import type { DataQualityFailureMetadata } from "@/tool/backtest-run"
+import { formatFinnyDataQualityBlocker } from "@tui/component/finny-data-quality-blocker"
 import type { DialogContext } from "@tui/ui/dialog"
 import { useKeybind } from "@tui/context/keybind"
 import { parsePatch } from "diff"
@@ -1671,13 +1673,22 @@ function FinnyBacktestRun(props: ToolProps<any>) {
   const meta = () =>
     props.metadata as
       | { algorithmName: string; params: { duration: string; interval: string; capital: string }; results: BacktestRunner.Results }
+      | DataQualityFailureMetadata
       | undefined
-  const hasResults = () => {
+  const dataQualityFailure = () => {
     const m = meta()
+    return m && "kind" in m && m.kind === "data_quality_failed" ? m : undefined
+  }
+  const resultMeta = () => {
+    const m = meta()
+    return m && !dataQualityFailure() && "results" in m ? m : undefined
+  }
+  const hasResults = () => {
+    const m = resultMeta()
     return m && m.results && m.algorithmName
   }
   const plainMetrics = () => {
-    const r = meta()?.results
+    const r = resultMeta()?.results
     if (!r) return ""
     return `Metrics: ${formatBacktestPlainMetrics(r)}`
   }
@@ -1687,24 +1698,33 @@ function FinnyBacktestRun(props: ToolProps<any>) {
       when={hasResults()}
       fallback={
         <Show
-          when={props.output}
+          when={dataQualityFailure()}
           fallback={
-            <InlineTool icon="📊" pending="Running backtest..." complete={props.part.state.status === "completed"} part={props.part}>
-              finny_backtest_run {input(props.input)}
-            </InlineTool>
+            <Show
+              when={props.output}
+              fallback={
+                <InlineTool icon="📊" pending="Running backtest..." complete={props.part.state.status === "completed"} part={props.part}>
+                  finny_backtest_run {input(props.input)}
+                </InlineTool>
+              }
+            >
+              <BlockTool title="# Backtest Results" part={props.part}>
+                <text fg={theme.text}>{props.output}</text>
+              </BlockTool>
+            </Show>
           }
         >
-          <BlockTool title="# Backtest Results" part={props.part}>
-            <text fg={theme.text}>{props.output}</text>
+          <BlockTool title="# Data Quality Blocker" part={props.part}>
+            <text fg={theme.text}>{formatFinnyDataQualityBlocker(dataQualityFailure()!)}</text>
           </BlockTool>
         </Show>
       }
     >
       <BlockTool title="# Backtest Results" part={props.part}>
         <BacktestResultsView
-          algorithmName={meta()!.algorithmName}
-          params={meta()!.params}
-          results={meta()!.results}
+          algorithmName={resultMeta()!.algorithmName}
+          params={resultMeta()!.params}
+          results={resultMeta()!.results}
         />
         <text fg={theme.text}>{plainMetrics()}</text>
       </BlockTool>

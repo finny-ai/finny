@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Algorithm } from "../../src/algorithm"
-import { normalizeConfigForSave } from "../../src/algorithm/strategy-params"
+import { StrategyParams, missingRequiredNewSaveConfigFields, normalizeConfigForSave, parseConfig } from "../../src/algorithm/strategy-params"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
@@ -31,6 +31,45 @@ describe("algorithm save config normalization", () => {
         profit_target: 0.1,
       },
     })
+  })
+
+  test("accepts ibkr brokerage in saved execution config", () => {
+    const normalized = normalizeConfigForSave({
+      incoming: JSON.stringify({
+        symbol: "SPY",
+        asset_class: "equity",
+        interval: "15min",
+        brokerage: "ibkr",
+        params: { period: 20 },
+      }),
+    })
+
+    expect(StrategyParams.safeParse(JSON.parse(normalized!)).success).toBe(true)
+    expect(parseConfig(normalized).brokerage).toBe("ibkr")
+  })
+
+  test("reports missing new-save execution config fields", () => {
+    const normalized = normalizeConfigForSave({
+      incoming: JSON.stringify({
+        symbol: "SPY",
+        params: {},
+      }),
+    })
+
+    expect(missingRequiredNewSaveConfigFields(normalized)).toEqual(["asset_class", "interval", "params"])
+  })
+
+  test("complete new-save execution config clears required-field blocker", () => {
+    const normalized = normalizeConfigForSave({
+      incoming: JSON.stringify({
+        symbol: "SPY",
+        asset_class: "equity",
+        interval: "15min",
+        params: { period: 20, risk_pct: 0.02 },
+      }),
+    })
+
+    expect(missingRequiredNewSaveConfigFields(normalized)).toEqual([])
   })
 
   test("version save preserves execution config while replacing strategy params", () => {

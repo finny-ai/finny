@@ -125,7 +125,7 @@ afterEach(async () => {
 
 describe("Finny debloat", () => {
   test("primary prompt budgets stay under target", () => {
-    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(180)
+    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(205)
     expect(lineCount(PROMPT_RESEARCH)).toBeLessThanOrEqual(120)
     expect(lineCount(PROMPT_CHAT)).toBeLessThanOrEqual(100)
   })
@@ -206,19 +206,63 @@ describe("Finny debloat", () => {
   test("prompt policy covers the critical transcript routes", () => {
     expect(PROMPT_BUILD).toContain("Conceptual/explainer question")
     expect(PROMPT_BUILD).toContain("concrete symbol, universe, tradable")
+    expect(PROMPT_BUILD).toContain("Deterministic Build State Machine")
+    expect(PROMPT_BUILD).toContain("Parse immutable request facts")
     expect(PROMPT_BUILD).toContain("Mandatory Pre-Build Subagents")
     expect(PROMPT_BUILD).toContain("Use `read` only under `algos/_template/`")
     expect(PROMPT_BUILD).toContain("Read `algos/_template/README.md`")
+    expect(PROMPT_BUILD).toContain("Do not use scaffold as a")
     expect(PROMPT_BUILD).toContain('Launch `task(subagent_type="data_extractor")`')
     expect(PROMPT_BUILD).toContain('Launch `task(subagent_type="researcher")`')
     expect(PROMPT_BUILD).toContain("If either result starts with `BLOCKED:`")
     expect(PROMPT_BUILD).toContain("Pass concrete symbol, interval, asset class, strategy intent")
+    expect(PROMPT_BUILD).toContain("never to backfill a new save")
+    expect(PROMPT_BUILD).toContain("If strict data quality fails, stop")
+    expect(PROMPT_BUILD).toContain("unless the user already")
     expect(PROMPT_BUILD).toContain("Drift Control")
     expect(PROMPT_BUILD).toContain("`BLOCKED: requested crypto, proposed equity proxy requires approval`")
     expect(PROMPT_BUILD).toContain("Do not save a QQQ/SPY strategy under a BTC/crypto name")
     expect(PROMPT_BUILD).toContain("Positive ROI, but NOT paper")
     expect(PROMPT_BUILD).toContain("Save with `finny_algorithm_save`")
     expect(PROMPT_BUILD).toContain("Run `finny_backtest_run`")
+
+    expect(PROMPT_BUILD).toContain("Context Integrity")
+    expect(PROMPT_BUILD).toContain("`BLOCKED: context mismatch`")
+    expect(PROMPT_BUILD).toContain("never globally reusable")
+    expect(PROMPT_BUILD).toContain("Verify it against the immutable request facts")
+    expect(PROMPT_BUILD).toContain("never infer relevance from prose")
+    expect(PROMPT_BUILD).toContain("btc-usdt-5m-momentum")
+
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Request Identity Contract")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Never reuse another algorithm's note")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("request identity block at the very top")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`BLOCKED: context mismatch`")
+
+    // saveMode policy: no silent version-bump on a "new" request.
+    expect(PROMPT_BUILD).toContain("do not silently switch to")
+    expect(PROMPT_BUILD).toContain("if save returns `name_taken`")
+    expect(PROMPT_BUILD).toContain("Use `version` only to update/improve/fix a named existing algorithm")
+
+    // Mandatory subagent result must be usable or an explicit unusable/BLOCKED.
+    expect(PROMPT_BUILD).toContain("BLOCKED: mandatory subagent result unusable")
+    expect(PROMPT_BUILD).toContain("no material current context found")
+    // Failure-budget wording: count only completed backtest tool failures.
+    expect(PROMPT_BUILD).toContain("Count only completed backtest tool failures")
+    expect(PROMPT_BUILD).toContain('never "two failures"')
+    // Regime mismatch: build the requested concept first, diagnose after.
+    expect(PROMPT_BUILD).toContain("Do not ask to pivot away from the requested strategy type")
+    // Trade count is a caveat, not a hard cutoff.
+    expect(PROMPT_BUILD).toContain("Trade count is a caveat, not a hard cutoff")
+    // Per-request workspace: storage routing is automatic, never invented.
+    expect(PROMPT_BUILD).toContain("per-request workspace is auto-provisioned")
+    expect(PROMPT_BUILD).toContain("never invent one for storage routing")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Storage is bound to your session workspace automatically")
+    // Evidence window must cover the full requested backtest duration.
+    expect(PROMPT_BUILD).toContain("evidence window must cover the FULL backtest duration")
+    expect(PROMPT_BUILD).toContain("never let an intraday extractor fall back to its 30-day default")
+    // set_params is not re-run after a complete new save.
+    expect(PROMPT_BUILD).toContain("If a complete new save already carries config/params")
+    expect(PROMPT_BUILD).toContain("re-patch it with `set_params` afterward")
 
     expect(PROMPT_RESEARCH).toContain("Conceptual question")
     expect(PROMPT_RESEARCH).toContain("Explicit date range")
