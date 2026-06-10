@@ -263,6 +263,12 @@ describe("Finny debloat", () => {
     // set_params is not re-run after a complete new save.
     expect(PROMPT_BUILD).toContain("If a complete new save already carries config/params")
     expect(PROMPT_BUILD).toContain("re-patch it with `set_params` afterward")
+    // Subagents must create files directly; the live session showed `edit` on
+    // a news directory, which is a recoverable but noisy tool error.
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Use `write` with a concrete markdown file path")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Do not call `edit` on a directory path")
+    expect(PROMPT_RESEARCHER).toContain("Use `write` with a concrete markdown file path")
+    expect(PROMPT_RESEARCHER).toContain("Do not call `edit` on a directory path")
 
     expect(PROMPT_RESEARCH).toContain("Conceptual question")
     expect(PROMPT_RESEARCH).toContain("Explicit date range")

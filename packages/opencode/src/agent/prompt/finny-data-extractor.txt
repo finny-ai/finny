@@ -46,6 +46,7 @@ ending on the current run date:
 5. For multiple symbols, return one compact section per symbol.
 
 Only write inside `algos/_template/data/`. Return any written path to the parent.
+Use `write` with a concrete markdown file path for new notes; it creates parent directories. Do not call `edit` on a directory path or use `edit` to create a directory.
 
 ## Request Identity Contract
 
