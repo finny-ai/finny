@@ -1,17 +1,21 @@
 import { z } from "zod"
+import { randomUUID } from "node:crypto"
 
 /** Matches a human-readable kebab-case algo name: `btc-mean-reversion-1h` */
 export const ALGO_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
 /**
  * Slug suffix formats:
- *  - datetime (current): `D.M.HH.mm` workspace creation time, e.g. `10.6.11.09`
+ *  - datetime + shortid (current): `D.M.HH.mm.hex8`, e.g. `10.6.11.09.a3f8c9e2`
+ *  - datetime (legacy): `D.M.HH.mm` workspace creation time, e.g. `10.6.11.09`
  *  - hex shortid (legacy): 8 lowercase hex chars, e.g. `a3f8c9e2` — still
  *    accepted so existing on-disk workspaces keep resolving.
  */
-const SLUG_SUFFIX_RE_SRC = "(?:[a-f0-9]{8}|\\d{1,2}\\.\\d{1,2}\\.\\d{2}\\.\\d{2})"
+const DATETIME_SUFFIX_RE_SRC = "\\d{1,2}\\.\\d{1,2}\\.\\d{2}\\.\\d{2}"
+const SHORT_ID_RE_SRC = "[a-f0-9]{8}"
+const SLUG_SUFFIX_RE_SRC = `(?:${SHORT_ID_RE_SRC}|${DATETIME_SUFFIX_RE_SRC}(?:\\.${SHORT_ID_RE_SRC})?)`
 
-/** Matches a slug (name + suffix): `spy-15m-mean-reversion.10.6.11.09` or legacy `.a3f8c9e2` */
+/** Matches a slug (name + suffix): `spy-15m-mean-reversion.10.6.11.09.a3f8c9e2` */
 export const ALGO_SLUG_RE = new RegExp(`^[a-z0-9]+(?:-[a-z0-9]+)*\\.${SLUG_SUFFIX_RE_SRC}$`)
 
 /** Returns true if the string matches the `name.suffix` slug format. */
@@ -31,15 +35,17 @@ export function slugTimestamp(now: Date = new Date()): string {
   return `${now.getDate()}.${now.getMonth() + 1}.${hh}.${mm}`
 }
 
-/** Create a slug from a human name + optional suffix. Defaults to the current date-time. */
+/** Create a slug from a human name + optional suffix. Defaults to date-time plus a unique short id. */
 export function makeSlug(humanName: string, shortId?: string): string {
   if (!ALGO_NAME_RE.test(humanName)) {
     throw new Error(`invalid algo name: ${JSON.stringify(humanName)} (must be kebab-case)`)
   }
   if (shortId !== undefined && !new RegExp(`^${SLUG_SUFFIX_RE_SRC}$`).test(shortId)) {
-    throw new Error(`invalid slug suffix: ${JSON.stringify(shortId)} (must be D.M.HH.mm or 8 lowercase hex chars)`)
+    throw new Error(
+      `invalid slug suffix: ${JSON.stringify(shortId)} (must be D.M.HH.mm.hex8, D.M.HH.mm, or 8 lowercase hex chars)`,
+    )
   }
-  const id = shortId ?? slugTimestamp()
+  const id = shortId ?? `${slugTimestamp()}.${randomUUID().replace(/-/g, "").slice(0, 8)}`
   return `${humanName}.${id}`
 }
 
