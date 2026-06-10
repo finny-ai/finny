@@ -29,6 +29,7 @@ const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORT
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import path from "path"
+import { existsSync } from "fs"
 import { Plugin } from "@/plugin"
 import { Skill } from "../skill"
 import { Effect, Context, Layer } from "effect"
@@ -185,14 +186,33 @@ export namespace Agent {
             "finny_backtest_history",
             "webfetch",
           ]
+          function finnyAlgoRoot() {
+            const starts = [...new Set([ctx.directory, ctx.worktree].filter((item) => item && item !== "/"))]
+            for (const start of starts) {
+              let current = path.resolve(start)
+              while (true) {
+                if (existsSync(path.join(current, "algos/_template/README.md"))) return current
+                const next = path.dirname(current)
+                if (next === current) break
+                current = next
+              }
+            }
+            return ctx.worktree
+          }
+
           function finnyWorkspacePatterns(pattern: string): Config.PermissionObject {
+            const root = finnyAlgoRoot()
             const patterns = [pattern, path.join(ctx.directory, pattern)]
             if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) patterns.push(path.join(ctx.worktree, pattern))
+            if (root !== "/" && root !== ctx.directory && root !== ctx.worktree) patterns.push(path.join(root, pattern))
             return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
           }
 
           const finnyTemplateReadAccess = Permission.fromConfig({
             read: {
+              ...finnyWorkspacePatterns("algos/_template/*"),
+            },
+            external_directory: {
               ...finnyWorkspacePatterns("algos/_template/*"),
             },
           })
@@ -203,12 +223,18 @@ export namespace Agent {
             edit: {
               ...finnyWorkspacePatterns("algos/_template/data/*"),
             },
+            external_directory: {
+              ...finnyWorkspacePatterns("algos/_template/data/*"),
+            },
           })
           const finnyTemplateNewsAccess = Permission.fromConfig({
             read: {
               ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
             edit: {
+              ...finnyWorkspacePatterns("algos/_template/data/news/*"),
+            },
+            external_directory: {
               ...finnyWorkspacePatterns("algos/_template/data/news/*"),
             },
           })

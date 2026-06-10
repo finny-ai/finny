@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test"
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "fs"
+import os from "os"
 import path from "path"
 import { resolveReadPath } from "../../src/tool/read"
 
@@ -15,6 +17,23 @@ describe("resolveReadPath", () => {
   test("handles a leading ./ on algos paths", () => {
     const resolved = resolveReadPath("./algos/_template/data/spy.md", PKG_DIR, REPO_ROOT)
     expect(resolved).toBe(path.join(REPO_ROOT, "algos/_template/data/spy.md"))
+  })
+
+  test("finds the Finny algos root above a nested packages/opencode cwd", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "finny-read-root-"))
+    try {
+      mkdirSync(path.join(root, "algos/_template"), { recursive: true })
+      mkdirSync(path.join(root, "packages/opencode"), { recursive: true })
+      writeFileSync(path.join(root, "algos/_template/README.md"), "# Template\n")
+
+      const nested = path.join(root, "packages/opencode")
+      const resolved = resolveReadPath("algos/_template/README.md", nested, nested)
+
+      expect(resolved).toBe(path.join(root, "algos/_template/README.md"))
+      expect(resolved).not.toContain("packages/opencode/algos")
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 
   test("leaves other relative paths anchored at the working directory", () => {

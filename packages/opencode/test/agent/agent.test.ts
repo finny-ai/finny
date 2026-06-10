@@ -56,6 +56,28 @@ test("build agent has correct default properties", async () => {
   })
 })
 
+test("build agent allows repo-root template reads when launched from packages/opencode", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
+      await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
+    },
+  })
+  const nested = path.join(tmp.path, "packages/opencode")
+  await Bun.$`mkdir -p ${nested}`.quiet()
+  await Instance.provide({
+    directory: nested,
+    fn: async () => {
+      const build = await Agent.get("build")
+      const templatePath = path.join(tmp.path, "algos/_template/README.md")
+      expect(Permission.evaluate("read", templatePath, build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/*"), build!.permission).action).toBe(
+        "allow",
+      )
+    },
+  })
+})
+
 test("research agent denies generic coding tools and allows research tools", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({

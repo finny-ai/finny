@@ -1,6 +1,6 @@
 import z from "zod"
 import { Effect, Scope } from "effect"
-import { createReadStream } from "fs"
+import { createReadStream, existsSync } from "fs"
 import { open } from "fs/promises"
 import * as path from "path"
 import { createInterface } from "readline"
@@ -23,11 +23,25 @@ import { Instruction } from "../session/instruction"
  * it produced the wrong `packages/opencode/algos/...` path. Anchor `algos/` at
  * the worktree root; everything else stays relative to the working directory.
  */
+export function findFinnyAlgoRoot(directory: string, worktree: string): string {
+  const starts = [...new Set([directory, worktree].filter((item) => item && item !== "/"))]
+  for (const start of starts) {
+    let current = path.resolve(start)
+    while (true) {
+      if (existsSync(path.join(current, "algos/_template/README.md"))) return current
+      const next = path.dirname(current)
+      if (next === current) break
+      current = next
+    }
+  }
+  return worktree
+}
+
 export function resolveReadPath(filePath: string, directory: string, worktree: string): string {
   if (path.isAbsolute(filePath)) return filePath
   const normalized = filePath.replace(/^\.\//, "")
   if (normalized === "algos" || normalized.startsWith("algos/")) {
-    return path.resolve(worktree, normalized)
+    return path.resolve(findFinnyAlgoRoot(directory, worktree), normalized)
   }
   return path.resolve(directory, filePath)
 }
