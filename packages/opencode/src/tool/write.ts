@@ -12,6 +12,7 @@ import { Format } from "../format"
 import { FileTime } from "../file/time"
 import { AppFileSystem } from "../filesystem"
 import { Instance } from "../project/instance"
+import { resolveReadPath } from "./read"
 import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 
@@ -34,9 +35,9 @@ export const WriteTool = Tool.define(
       }),
       execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const filepath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(Instance.directory, params.filePath)
+          // algos/ paths anchor at the repo algo root, not the package dir
+          // (same rule as the read tool) — see resolveReadPath.
+          const filepath = resolveReadPath(params.filePath, Instance.directory, Instance.worktree)
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)

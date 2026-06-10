@@ -162,6 +162,7 @@ export namespace Agent {
             "finny_algorithm_set_params",
             "finny_backtest_run",
             "finny_backtest_walkforward",
+            "finny_portfolio_backtest",
             "finny_get_quote",
             "finny_get_history",
             "finny_extract_data",
@@ -202,9 +203,16 @@ export namespace Agent {
 
           function finnyWorkspacePatterns(pattern: string): Config.PermissionObject {
             const root = finnyAlgoRoot()
-            const patterns = [pattern, path.join(ctx.directory, pattern)]
-            if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) patterns.push(path.join(ctx.worktree, pattern))
-            if (root !== "/" && root !== ctx.directory && root !== ctx.worktree) patterns.push(path.join(root, pattern))
+            // `<dir>/*` does not match the bare directory itself, so listing
+            // `algos/_template` was denied while `algos/_template/README.md`
+            // was allowed. Emit the parent dir alongside each glob.
+            const variants = pattern.endsWith("/*") ? [pattern, pattern.slice(0, -2)] : [pattern]
+            const patterns = variants.flatMap((p) => {
+              const out = [p, path.join(ctx.directory, p)]
+              if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) out.push(path.join(ctx.worktree, p))
+              if (root !== "/" && root !== ctx.directory && root !== ctx.worktree) out.push(path.join(root, p))
+              return out
+            })
             return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
           }
 

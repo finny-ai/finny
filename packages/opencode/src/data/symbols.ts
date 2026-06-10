@@ -151,7 +151,7 @@ function looksLikeCryptoBase(s: string): boolean {
  * Resolve any user-supplied symbol shape into a {@link SupportedSymbol}.
  *
  * 1. Curated registry hit → return rich metadata.
- * 2. Pair form (BTC/USD, BTC-USD, BTCUSDT, BTCUSDC, BTCUSD) → coerce base
+ * 2. Pair form (BTC/USD, BTC-USD, BTC.USD, BTCUSDT, BTCUSDC, BTCUSD) → coerce base
  *    to the BASE/USD canonical shape and yfinance BASE-USD.
  * 3. Bare ticker (1-5 caps, optionally one class-share suffix) → assume
  *    stock/ETF, return as-is for both yfinance and canonical.
@@ -168,15 +168,15 @@ export function resolveSymbol(input: string): SupportedSymbol | null {
   // (1) curated registry lookup — accepts name/yfinance/canonical forms
   // plus a few normalized pair shapes.
   const candidates = [upper]
-  const stripPair = upper.replace(new RegExp(`[-/]?(${QUOTE_CURRENCIES.join("|")})$`), "")
+  const stripPair = upper.replace(new RegExp(`[-/.]?(${QUOTE_CURRENCIES.join("|")})$`), "")
   if (stripPair !== upper) candidates.push(stripPair)
   for (const c of candidates) {
     const hit = SUPPORTED_SYMBOLS.find((s) => s.name === c || s.yfinance === c || s.canonical === c)
     if (hit) return hit
   }
 
-  // (2) crypto pair form: BASE/USD, BASE-USD, BASEUSD, BASEUSDT, BASEUSDC, BASEBUSD
-  const sep = upper.match(new RegExp(`^([A-Z0-9]{2,6})[-/](${QUOTE_CURRENCIES.join("|")})$`))
+  // (2) crypto pair form: BASE/USD, BASE-USD, BASE.USD, BASEUSD, BASEUSDT, BASEUSDC, BASEBUSD
+  const sep = upper.match(new RegExp(`^([A-Z0-9]{2,6})[-/.](${QUOTE_CURRENCIES.join("|")})$`))
   if (sep) return { name: sep[1], kind: "crypto", yfinance: `${sep[1]}-USD`, canonical: `${sep[1]}/USD`, unknown: true }
   const glued = upper.match(new RegExp(`^([A-Z0-9]{2,6})(${QUOTE_CURRENCIES.join("|")})$`))
   if (glued) return { name: glued[1], kind: "crypto", yfinance: `${glued[1]}-USD`, canonical: `${glued[1]}/USD`, unknown: true }

@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { resolveSymbol } from "../data/symbols"
 
 // Canonical execution-context parameters extracted from chat. Stored as the
 // JSON string in Algorithm.Info.config. Only the inputs the user supplies —
@@ -149,7 +150,7 @@ export function normalizeConfigForSave(input: {
     }
     if (EXECUTION_KEYS.has(key)) {
       if (value === null) delete normalized[key]
-      else normalized[key] = value
+      else normalized[key] = key === "symbol" && typeof value === "string" ? (resolveSymbol(value)?.canonical ?? value) : value
       continue
     }
     if (value !== undefined && value !== null) {
@@ -181,4 +182,17 @@ export function missingRequiredNewSaveConfigFields(config: string | undefined | 
   if (!isPlainObject(parsed.params) || Object.keys(parsed.params).length === 0) missing.push("params")
 
   return missing
+}
+
+export function unsupportedNewSaveConfigReasons(config: string | undefined | null): string[] {
+  const parsed = parseRawObject(config)
+  const reasons: string[] = []
+
+  if (typeof parsed.symbol === "string" && parsed.symbol.split(",").map((s) => s.trim()).filter(Boolean).length > 1) {
+    reasons.push(
+      "symbol must be one tradable symbol, not a comma-separated portfolio; use finny_portfolio_backtest or save one complete strategy per symbol",
+    )
+  }
+
+  return reasons
 }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { countConsecutiveFailedBacktests, parseDataQualityFailure } from "../../src/tool/backtest-run"
+import { countConsecutiveFailedBacktests, parseDataQualityFailure, repairOutliersBlockMessage, strictDataQualityNextSteps } from "../../src/tool/backtest-run"
 
 function backtestPart(algorithmName: string, output: string) {
   return {
@@ -58,6 +58,104 @@ describe("backtest failure budget", () => {
     ]
 
     expect(countConsecutiveFailedBacktests(messages, "btc-trend-follower")).toBe(1)
+  })
+
+  function scopedPart(algorithmName: string, symbol: string, interval: string, output: string) {
+    return {
+      parts: [
+        {
+          type: "tool",
+          tool: "finny_backtest_run",
+          state: {
+            status: "completed",
+            input: { algorithmName, interval },
+            output,
+            metadata: { results: { v2: { symbols: [symbol] } } },
+          },
+        },
+      ],
+    }
+  }
+
+  test("renaming the algorithm does not reset the budget for the same symbol+interval", () => {
+    // The observed loophole: after 2 failures on spy-daily-trend, the agent
+    // saved the same concept as spy-daily-golden-cross to bypass the block.
+    const messages = [
+      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
+      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
+    ]
+    expect(
+      countConsecutiveFailedBacktests(messages, "spy-daily-golden-cross", { symbol: "SPY", interval: "1d" }),
+    ).toBe(2)
+  })
+
+  test("a different symbol does not share the budget", () => {
+    const messages = [
+      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
+      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
+    ]
+    expect(
+      countConsecutiveFailedBacktests(messages, "btc-daily-trend", { symbol: "BTC/USD", interval: "1d" }),
+    ).toBe(0)
+  })
+
+  test("a different interval does not share the budget", () => {
+    const messages = [
+      scopedPart("spy-15m-mean-reversion", "SPY", "15min", "Verdict: failed"),
+      scopedPart("spy-15m-mean-reversion", "SPY", "15min", "Verdict: failed"),
+    ]
+    expect(
+      countConsecutiveFailedBacktests(messages, "spy-1h-trend", { symbol: "SPY", interval: "1h" }),
+    ).toBe(0)
+  })
+
+  test("interval comparison is normalized (15min vs 15m)", () => {
+    const messages = [
+      scopedPart("a", "SPY", "15min", "Verdict: failed"),
+      scopedPart("b", "SPY", "15m", "Verdict: failed"),
+    ]
+    expect(countConsecutiveFailedBacktests(messages, "c", { symbol: "SPY", interval: "15min" })).toBe(2)
+  })
+})
+
+describe("backtest repair approval", () => {
+  test("blocks repair_outliers unless explicitly approved", () => {
+    expect(
+      repairOutliersBlockMessage({
+        dataQualityMode: "repair_outliers",
+      }),
+    ).toContain("requires explicit user approval")
+  })
+
+  test("does not treat failure-budget approval as repair approval", () => {
+    expect(
+      repairOutliersBlockMessage({
+        dataQualityMode: "repair_outliers",
+        userApproved: true,
+      } as any),
+    ).toContain("requires explicit user approval")
+  })
+
+  test("allows strict mode and explicitly approved repaired-data research reruns", () => {
+    expect(repairOutliersBlockMessage({ dataQualityMode: "strict" })).toBeUndefined()
+    expect(
+      repairOutliersBlockMessage({
+        dataQualityMode: "repair_outliers",
+        repairOutliersApproved: true,
+      }),
+    ).toBeUndefined()
+  })
+})
+
+describe("strict data quality next steps", () => {
+  test("tells the agent not to call a blocked strict backtest ready", () => {
+    const output = strictDataQualityNextSteps()
+    expect(output).toContain("No performance metrics were produced")
+    expect(output).toContain("do not call this strategy backtested, ready, or paper/live eligible")
+    expect(output).toContain("Verify the flagged candles first")
+    expect(output).toContain("Only after explicit user approval")
+    expect(output.indexOf("Verify the flagged candles first")).toBeLessThan(output.indexOf("Only after explicit user approval"))
+    expect(output).toContain("before changing the backtest window, interval, provider, or data-quality strictness")
   })
 })
 

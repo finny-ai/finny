@@ -1073,7 +1073,7 @@ if __name__ == "__main__":
   }
 
   /**
-   * Canonicalize any user-supplied symbol shape (BTC, btc, BTC-USD, BTC/USD,
+   * Canonicalize any user-supplied symbol shape (BTC, btc, BTC-USD, BTC/USD, BTC.USD,
    * BTCUSD, BTCUSDT) into the canonical form Finny uses internally
    * ("BTC/USD" for crypto, "AAPL" for equities). Mirrors the Python
    * {@link AlpacaBroker.normalize_symbol} so the broker (Python) and the
@@ -1092,8 +1092,8 @@ if __name__ == "__main__":
 
     const upper = raw.toUpperCase().replace(/\s+/g, "")
 
-    // Pair forms with explicit separator: BASE/QUOTE or BASE-QUOTE.
-    const sep = upper.match(/^([A-Z][A-Z0-9]{0,5})[-/](USD|USDT|USDC)$/)
+    // Pair forms with explicit separator: BASE/QUOTE, BASE-QUOTE, or BASE.QUOTE.
+    const sep = upper.match(/^([A-Z][A-Z0-9]{0,5})[-/.](USD|USDT|USDC)$/)
     if (sep) return `${sep[1]}/USD`
 
     // Glued pair: BTCUSDT, BTCUSD, BTCUSDC.

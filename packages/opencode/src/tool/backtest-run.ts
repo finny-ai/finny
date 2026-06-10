@@ -31,7 +31,13 @@ const parameters = z.object({
   dataQualityMode: z
     .enum(["strict", "repair_outliers"])
     .default("strict")
-    .describe("Strict by default. Use repair_outliers only for explicit research-only reruns after severe isolated outlier diagnostics."),
+    .describe("Strict by default. Use repair_outliers only when repairOutliersApproved is true after explicit user approval."),
+  repairOutliersApproved: z
+    .boolean()
+    .optional()
+    .describe(
+      "Set true ONLY after the user explicitly approved a repair_outliers research rerun. Do not reuse interval-pivot or failure-budget approval.",
+    ),
   userApproved: z
     .boolean()
     .optional()
@@ -121,6 +127,27 @@ export function countConsecutiveFailedBacktests(
     }
   }
   return count
+}
+
+export function repairOutliersBlockMessage(input: {
+  dataQualityMode: "strict" | "repair_outliers"
+  repairOutliersApproved?: boolean
+}) {
+  if (input.dataQualityMode !== "repair_outliers" || input.repairOutliersApproved === true) return undefined
+  return (
+    "Backtest blocked: repair_outliers mode requires explicit user approval for a research-only repaired-data rerun.\n\n" +
+    "Run strict mode first. If strict data quality fails, stop and report the exact timestamp(s) and reason; do not repair automatically."
+  )
+}
+
+export function strictDataQualityNextSteps() {
+  return [
+    "No performance metrics were produced; do not call this strategy backtested, ready, or paper/live eligible.",
+    "Valid next steps:",
+    "1. Verify the flagged candles first: inspect neighboring raw candles and compare another provider if available.",
+    "2. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
+    "3. Only after explicit user approval, run repair_outliers as a research-only rerun.",
+  ].join("\n")
 }
 
 function parseNumberField(text: string, field: string) {
@@ -216,14 +243,12 @@ export const BacktestRunTool = Tool.define(
           results: undefined as BacktestRunner.Results | undefined,
         }
 
-        const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName)
-        if (consecutiveFailures >= 2) {
+        const repairBlock = repairOutliersBlockMessage(params)
+        if (repairBlock) {
           return {
-            title: "Backtest blocked by failure budget",
-            output:
-              `Backtest blocked: "${params.algorithmName}" already has ${consecutiveFailures} consecutive failed backtests in this session.\n\n` +
-              `Stop and summarize the blocker before trying another version. If the next attempt changes concept, asset, timeframe, or venue, ask the user for approval first.`,
-            metadata: { ...emptyMeta },
+            title: "Backtest blocked by repair approval",
+            output: repairBlock,
+            metadata: { ...emptyMeta, repair_outliers_allowed: false },
           }
         }
 
@@ -233,6 +258,27 @@ export const BacktestRunTool = Tool.define(
             title: "Backtest failed",
             output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
             metadata: { ...emptyMeta },
+          }
+        }
+
+        // Failure budget is scoped to symbol+interval, not just the algorithm
+        // name, so re-saving the same concept under a fresh name cannot reset
+        // it. Only an explicit user approval (userApproved: true) continues
+        // past the block.
+        if (params.userApproved !== true) {
+          const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName, {
+            symbol: (algo.config as any)?.symbol,
+            interval: params.interval,
+          })
+          if (consecutiveFailures >= 2) {
+            return {
+              title: "Backtest blocked by failure budget",
+              output:
+                `Backtest blocked: this symbol/interval already has ${consecutiveFailures} consecutive failed backtests in this session (latest: "${params.algorithmName}").\n\n` +
+                `Renaming the algorithm does not reset this budget. Stop and summarize the blocker. ` +
+                `If the user explicitly approves continuing (new concept, asset, timeframe, or venue), rerun with userApproved: true.`,
+              metadata: { ...emptyMeta },
+            }
           }
         }
 
@@ -287,7 +333,7 @@ export const BacktestRunTool = Tool.define(
                 `Strict data quality blocked "${params.algorithmName}".\n` +
                 `${dataQualityFailure.reason}\n` +
                 (details ? `\n${details}\n` : "") +
-                `\nStopped without running repair_outliers.`,
+                `\nStopped without running repair_outliers.\n\n${strictDataQualityNextSteps()}`,
               metadata: {
                 ...emptyMeta,
                 ...dataQualityFailure,

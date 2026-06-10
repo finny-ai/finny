@@ -9,7 +9,11 @@ import { Plan } from "../plan"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
 import { readActiveBrokerKind } from "../live/brokers/active"
-import { missingRequiredNewSaveConfigFields, normalizeConfigForSave } from "../algorithm/strategy-params"
+import {
+  missingRequiredNewSaveConfigFields,
+  normalizeConfigForSave,
+  unsupportedNewSaveConfigReasons,
+} from "../algorithm/strategy-params"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -117,6 +121,23 @@ const PYTHON_MISSING_OUTPUT = [
  */
 export function countUniqueAlgorithms(algos: ReadonlyArray<{ name: string }>): number {
   return new Set(algos.map((a) => a.name)).size
+}
+
+export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
+  if (warnings.length === 0) return undefined
+  return {
+    title: "Save blocked — validation warnings",
+    output:
+      "Validator warnings must be fixed before saving or backtesting.\n\n" +
+      RetryOrchestrator.formatWarningRejection(warnings) +
+      "\n\nRewrite the strategy to clear every warning, then call finny_algorithm_save again.",
+    metadata: {
+      blocked: true,
+      retry: true,
+      warningCount: warnings.length,
+      warningCodes: warnings.map((w) => w.code),
+    },
+  }
 }
 
 const parameters = z.object({
@@ -274,6 +295,11 @@ export const AlgorithmSaveTool = Tool.define(
             }
 
             // Validation passed — proceed with save.
+            const warningBlock = validationWarningsBlock(validation.warnings)
+            if (warningBlock) {
+              return { result: warningBlock }
+            }
+
             const normalizedConfig = normalizeConfigForSave({ incoming: params.config })
             if (params.saveMode === "new") {
               const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
@@ -289,6 +315,24 @@ export const AlgorithmSaveTool = Tool.define(
                       blocked: true,
                       retry: false,
                       missingConfig,
+                      configRequired: true,
+                    },
+                  },
+                }
+              }
+              const unsupportedConfig = unsupportedNewSaveConfigReasons(normalizedConfig)
+              if (unsupportedConfig.length > 0) {
+                return {
+                  result: {
+                    title: "Save blocked — unsupported execution config",
+                    output:
+                      `New algorithms must be saved with one clear execution shape.\n\n` +
+                      `Unsupported config: ${unsupportedConfig.join("; ")}.\n\n` +
+                      `For multi-portfolio requests, run a portfolio backtest or save one complete strategy per symbol. Do not narrow to one ticker without user approval.`,
+                    metadata: {
+                      blocked: true,
+                      retry: false,
+                      unsupportedConfig,
                       configRequired: true,
                     },
                   },

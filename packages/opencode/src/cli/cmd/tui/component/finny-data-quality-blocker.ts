@@ -1,4 +1,4 @@
-import type { DataQualityFailureMetadata } from "@/tool/backtest-run"
+import { strictDataQualityNextSteps, type DataQualityFailureMetadata } from "@/tool/backtest-run"
 
 export function formatFinnyDataQualityBlocker(meta: DataQualityFailureMetadata) {
   const lines = [
@@ -28,6 +28,7 @@ export function formatFinnyDataQualityBlocker(meta: DataQualityFailureMetadata) 
       ? "Repair mode was explicitly requested; treat this as research-only until strict mode passes."
       : "Stopped without running repair_outliers.",
   )
+  if (!meta.repair_outliers_allowed) lines.push("", strictDataQualityNextSteps())
 
   return lines.join("\n")
 }

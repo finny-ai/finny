@@ -69,6 +69,7 @@ const EXPECTED_TOOLS = {
     "finny_extract_data",
     "finny_get_history",
     "finny_get_quote",
+    "finny_portfolio_backtest",
     "question",
     "read",
     "task",
@@ -125,7 +126,7 @@ afterEach(async () => {
 
 describe("Finny debloat", () => {
   test("primary prompt budgets stay under target", () => {
-    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(205)
+    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(210)
     expect(lineCount(PROMPT_RESEARCH)).toBeLessThanOrEqual(120)
     expect(lineCount(PROMPT_CHAT)).toBeLessThanOrEqual(100)
   })
@@ -216,9 +217,11 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain('Launch `task(subagent_type="researcher")`')
     expect(PROMPT_BUILD).toContain("If either result starts with `BLOCKED:`")
     expect(PROMPT_BUILD).toContain("Pass concrete symbol, interval, asset class, strategy intent")
-    expect(PROMPT_BUILD).toContain("never to backfill a new save")
+    expect(PROMPT_BUILD).toContain("never backfill or re-patch a complete new save")
     expect(PROMPT_BUILD).toContain("If strict data quality fails, stop")
-    expect(PROMPT_BUILD).toContain("unless the user already")
+    expect(PROMPT_BUILD).toContain("ready/backtested")
+    expect(PROMPT_BUILD).toContain("valid next steps in this order")
+    expect(PROMPT_BUILD).toContain("explicit research-only repair")
     expect(PROMPT_BUILD).toContain("Drift Control")
     expect(PROMPT_BUILD).toContain("`BLOCKED: requested crypto, proposed equity proxy requires approval`")
     expect(PROMPT_BUILD).toContain("Do not save a QQQ/SPY strategy under a BTC/crypto name")
@@ -251,6 +254,16 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain('never "two failures"')
     // Regime mismatch: build the requested concept first, diagnose after.
     expect(PROMPT_BUILD).toContain("Do not ask to pivot away from the requested strategy type")
+    // Walk-forward honesty + failure-budget rename loophole.
+    expect(PROMPT_BUILD).toContain("if it says FAILED, the strategy failed walk-forward")
+    expect(PROMPT_BUILD).toContain('call it "validated" or "robust"')
+    expect(PROMPT_BUILD).toContain("does NOT reset the failure budget")
+    expect(PROMPT_BUILD).toContain("`userApproved: true`")
+    expect(PROMPT_BUILD).toContain("After 3 failed save/validation attempts, stop")
+    expect(PROMPT_BUILD).toContain("`write`/`edit` are never allowed in")
+    expect(PROMPT_BUILD).toContain("do not save comma-separated `symbol`")
+    expect(PROMPT_BUILD).toContain("`finny_portfolio_backtest` or save")
+    expect(PROMPT_BUILD).toContain("do not narrow to one ticker")
     // Trade count is a caveat, not a hard cutoff.
     expect(PROMPT_BUILD).toContain("Trade count is a caveat, not a hard cutoff")
     // Per-request workspace: storage routing is automatic, never invented.
@@ -260,9 +273,14 @@ describe("Finny debloat", () => {
     // Evidence window must cover the full requested backtest duration.
     expect(PROMPT_BUILD).toContain("evidence window must cover the FULL backtest duration")
     expect(PROMPT_BUILD).toContain("never let an intraday extractor fall back to its 30-day default")
-    // set_params is not re-run after a complete new save.
-    expect(PROMPT_BUILD).toContain("If a complete new save already carries config/params")
-    expect(PROMPT_BUILD).toContain("re-patch it with `set_params` afterward")
+    // set_params cannot mutate identity or re-patch a complete new save.
+    expect(PROMPT_BUILD).toContain("Use `finny_algorithm_set_params` only for non-identity inputs")
+    expect(PROMPT_BUILD).toContain("Never patch")
+    expect(PROMPT_BUILD).toContain("symbol, asset class, interval, or brokerage")
+    expect(PROMPT_BUILD).toContain("never backfill or re-patch a complete new save")
+    expect(PROMPT_BUILD).toContain('Never claim "exported" unless `finny_algorithm_export` ran')
+    expect(PROMPT_BUILD).toContain('blocked strict backtest')
+    expect(PROMPT_BUILD).toContain("no performance")
     // Subagents must create files directly; the live session showed `edit` on
     // a news directory, which is a recoverable but noisy tool error.
     expect(PROMPT_DATA_EXTRACTOR).toContain("Use `write` with a concrete markdown file path")

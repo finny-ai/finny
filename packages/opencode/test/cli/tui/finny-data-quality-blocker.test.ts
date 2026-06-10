@@ -33,4 +33,8 @@ test("formats Finny strict data quality blocker details", () => {
   expect(output).toContain("provider=alpaca")
   expect(output).toContain("ts=2026-03-09 19:15:00+00:00")
   expect(output).toContain("Stopped without running repair_outliers.")
+  expect(output).toContain("No performance metrics were produced")
+  expect(output).toContain("Verify the flagged candles first")
+  expect(output).toContain("Only after explicit user approval")
+  expect(output.indexOf("Verify the flagged candles first")).toBeLessThan(output.indexOf("Only after explicit user approval"))
 })

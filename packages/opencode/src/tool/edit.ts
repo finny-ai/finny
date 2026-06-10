@@ -17,6 +17,7 @@ import { Format } from "../format"
 import { FileTime } from "../file/time"
 import { Filesystem } from "../util/filesystem"
 import { Instance } from "../project/instance"
+import { resolveReadPath } from "./read"
 import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { AppFileSystem } from "../filesystem"
@@ -63,9 +64,9 @@ export const EditTool = Tool.define(
             throw new Error("No changes to apply: oldString and newString are identical.")
           }
 
-          const filePath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(Instance.directory, params.filePath)
+          // algos/ paths anchor at the repo algo root, not the package dir
+          // (same rule as the read tool) — see resolveReadPath.
+          const filePath = resolveReadPath(params.filePath, Instance.directory, Instance.worktree)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

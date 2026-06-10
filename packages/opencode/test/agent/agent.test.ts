@@ -48,6 +48,8 @@ test("build agent has correct default properties", async () => {
       expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
       expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
       expect(Permission.evaluate("read", "algos/_template/README.md", build!.permission).action).toBe("allow")
+      // Bare directory listing must be allowed too (was denied: `/*` glob does not match the dir itself)
+      expect(Permission.evaluate("read", "algos/_template", build!.permission).action).toBe("allow")
       expect(Permission.evaluate("read", path.join(tmp.path, "algos/_template/README.md"), build!.permission).action).toBe(
         "allow",
       )

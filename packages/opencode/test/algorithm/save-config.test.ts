@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { Algorithm } from "../../src/algorithm"
-import { StrategyParams, missingRequiredNewSaveConfigFields, normalizeConfigForSave, parseConfig } from "../../src/algorithm/strategy-params"
+import {
+  StrategyParams,
+  missingRequiredNewSaveConfigFields,
+  normalizeConfigForSave,
+  parseConfig,
+  unsupportedNewSaveConfigReasons,
+} from "../../src/algorithm/strategy-params"
 import { Instance } from "../../src/project/instance"
 import { tmpdir } from "../fixture/fixture"
 
@@ -48,6 +54,19 @@ describe("algorithm save config normalization", () => {
     expect(parseConfig(normalized).brokerage).toBe("ibkr")
   })
 
+  test("normalizes broker-native crypto dot symbols before save", () => {
+    const normalized = normalizeConfigForSave({
+      incoming: JSON.stringify({
+        symbol: "BTC.USD",
+        asset_class: "crypto",
+        interval: "15min",
+        params: { period: 20 },
+      }),
+    })
+
+    expect(parseConfig(normalized).symbol).toBe("BTC/USD")
+  })
+
   test("reports missing new-save execution config fields", () => {
     const normalized = normalizeConfigForSave({
       incoming: JSON.stringify({
@@ -70,6 +89,21 @@ describe("algorithm save config normalization", () => {
     })
 
     expect(missingRequiredNewSaveConfigFields(normalized)).toEqual([])
+  })
+
+  test("new-save execution config rejects comma-separated portfolio symbols", () => {
+    const normalized = normalizeConfigForSave({
+      incoming: JSON.stringify({
+        symbol: "DELL, INTC, NVDA",
+        asset_class: "equity",
+        interval: "1d",
+        params: { period: 20 },
+      }),
+    })
+
+    expect(unsupportedNewSaveConfigReasons(normalized)).toEqual([
+      "symbol must be one tradable symbol, not a comma-separated portfolio; use finny_portfolio_backtest or save one complete strategy per symbol",
+    ])
   })
 
   test("version save preserves execution config while replacing strategy params", () => {

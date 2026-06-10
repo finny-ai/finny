@@ -38,7 +38,24 @@ export function findFinnyAlgoRoot(directory: string, worktree: string): string {
 }
 
 export function resolveReadPath(filePath: string, directory: string, worktree: string): string {
-  if (path.isAbsolute(filePath)) return filePath
+  if (path.isAbsolute(filePath)) {
+    // Models compose absolute algos/ paths under the package dir (their cwd
+    // context), e.g. `<repo>/packages/opencode/algos/_template/README.md`,
+    // because tool params demand absolute paths. When such a path does not
+    // exist but the same `algos/...` suffix exists under the algo root, remap
+    // it there. Existing absolute paths are never touched.
+    if (!existsSync(filePath)) {
+      const m = filePath.match(/^(.*?)[/\\](algos(?:[/\\].*)?)$/)
+      if (m) {
+        const root = findFinnyAlgoRoot(directory, worktree)
+        const candidate = path.resolve(root, m[2])
+        if (candidate !== filePath && (existsSync(candidate) || existsSync(path.dirname(candidate)))) {
+          return candidate
+        }
+      }
+    }
+    return filePath
+  }
   const normalized = filePath.replace(/^\.\//, "")
   if (normalized === "algos" || normalized.startsWith("algos/")) {
     return path.resolve(findFinnyAlgoRoot(directory, worktree), normalized)

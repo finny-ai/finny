@@ -3,6 +3,7 @@ import {
   _resetPythonAvailableCache,
   isPythonAvailable,
   looksLikePythonMissing,
+  validationWarningsBlock,
 } from "../../src/tool/algorithm-save"
 
 describe("looksLikePythonMissing", () => {
@@ -70,5 +71,28 @@ describe("isPythonAvailable", () => {
     const a = await isPythonAvailable()
     const b = await isPythonAvailable()
     expect(a).toBe(b)
+  })
+})
+
+describe("validationWarningsBlock", () => {
+  test("blocks saves that still have validator warnings", () => {
+    const block = validationWarningsBlock([
+      {
+        code: "DIVISION_NO_ZERO_CHECK",
+        severity: "warning",
+        message: "Guard division denominators before dividing.",
+      } as any,
+    ])
+
+    expect(block?.title).toBe("Save blocked — validation warnings")
+    expect(block?.metadata.blocked).toBe(true)
+    expect(block?.metadata.warningCodes).toEqual(["DIVISION_NO_ZERO_CHECK"])
+    expect(block?.output).toContain("Validator warnings must be fixed")
+    expect(block?.output).toContain("Validation rejected: warnings must clear")
+    expect(block?.output).not.toContain("Validation passed")
+  })
+
+  test("allows saves with no validator warnings", () => {
+    expect(validationWarningsBlock([])).toBeUndefined()
   })
 })
