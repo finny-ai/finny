@@ -185,10 +185,10 @@ export namespace Agent {
             "finny_backtest_history",
             "webfetch",
           ]
-          function finnyWorkspacePatterns(pattern: string) {
+          function finnyWorkspacePatterns(pattern: string): Config.PermissionObject {
             const patterns = [pattern, path.join(ctx.directory, pattern)]
             if (ctx.worktree !== "/" && ctx.worktree !== ctx.directory) patterns.push(path.join(ctx.worktree, pattern))
-            return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow"]))
+            return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
           }
 
           const finnyTemplateReadAccess = Permission.fromConfig({
