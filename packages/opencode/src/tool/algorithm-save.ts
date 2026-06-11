@@ -5,7 +5,6 @@ import DESCRIPTION from "./algorithm-save.txt"
 import { Algorithm } from "../algorithm"
 import { Validate } from "../algorithm/validate"
 import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
-import { Plan } from "../plan"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
 import { readActiveBrokerKind } from "../live/brokers/active"
@@ -114,8 +113,8 @@ const PYTHON_MISSING_OUTPUT = [
 
 /**
  * Count unique algorithm names against the user's saved set. Historical /
- * orphaned rows that share a name don't consume separate cap slots — this
- * keeps the cap consistent with what `algorithm-list` shows.
+ * orphaned rows that share a name collapse to one visible algorithm, matching
+ * what `algorithm-list` shows.
  *
  * Pure helper, exposed for testing.
  */
@@ -336,27 +335,6 @@ export const AlgorithmSaveTool = Tool.define(
                       configRequired: true,
                     },
                   },
-                }
-              }
-            }
-
-            // Tier cap only applies to NEW lineages. Version bumps don't add a
-            // unique algorithm slot (the lineage already counts).
-            if (params.saveMode === "new") {
-              const tier = await Plan.getTier()
-              const cap = Plan.SAVE_CAP[tier]
-              if (Number.isFinite(cap)) {
-                const allAlgos = await Algorithm.list()
-                if (countUniqueAlgorithms(allAlgos) >= cap) {
-                  const upgradeTo =
-                    tier === "free" ? "Finny Lite (15) or Finny Pro (unlimited)" : "Finny Pro for unlimited algorithms"
-                  return {
-                    result: {
-                      title: `Save blocked — ${tier} tier limit`,
-                      output: `Your plan (${tier}) allows up to ${cap} saved algorithms. Delete an existing algorithm or upgrade to ${upgradeTo}.\n\nTo delete an algorithm, go to My Algos and click Delete on one you no longer need.`,
-                      metadata: { blocked: true },
-                    },
-                  }
                 }
               }
             }

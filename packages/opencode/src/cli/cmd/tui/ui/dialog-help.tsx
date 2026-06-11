@@ -118,7 +118,7 @@ export function DialogHelp() {
                 Free
               </text>
               <text fg={theme.textMuted}>
-                Bring your own API key. Up to {Plan.SAVE_CAP.free} algorithms, {Plan.DAILY_BACKTEST_LIMIT.free} backtests/day.
+                Bring your own API key. Unlimited local algorithms and backtests.
               </text>
             </box>
             <box flexDirection="column">
@@ -126,8 +126,7 @@ export function DialogHelp() {
                 Lite
               </text>
               <text fg={theme.textMuted}>
-                Finny-managed rate-limited models. {Plan.SAVE_CAP.lite} algorithms, {Plan.DAILY_BACKTEST_LIMIT.lite} backtests/day,{" "}
-                {Plan.CLOUD_RUN_CAP.lite} cloud runs.
+                Finny-managed rate-limited models with unlimited local algorithms and backtests.
               </text>
             </box>
             <box flexDirection="column">
@@ -135,7 +134,7 @@ export function DialogHelp() {
                 Pro
               </text>
               <text fg={theme.textMuted}>
-                Full-access models. Unlimited algorithms & backtests, {Plan.CLOUD_RUN_CAP.pro} cloud runs.
+                Full-access models with unlimited local algorithms and backtests.
               </text>
             </box>
             <text fg={theme.primary}>Upgrade: {Plan.UPGRADE_URL}</text>

@@ -96,21 +96,9 @@ describe("PlanLimitError", () => {
     })
   })
 
-  test("requireTier throws PlanLimitError when below required", async () => {
-    let caught: unknown
-    try {
-      await Plan.requireTier("pro", "test_feature")
-    } catch (e) {
-      caught = e
-    }
-    expect(caught).toBeInstanceOf(Plan.PlanLimitError)
-    const err = caught as Plan.PlanLimitError
-    expect(err.feature).toBe("test_feature")
-    expect(err.required).toBe("pro")
-  })
-
-  test("requireTier passes when at or above required", async () => {
-    // free ≥ free
+  test("requireTier no-ops for local feature access", async () => {
+    await expect(Plan.requireTier("pro", "test_feature")).resolves.toBeUndefined()
+    await expect(Plan.requireTier("lite", "test_feature")).resolves.toBeUndefined()
     await expect(Plan.requireTier("free", "anything")).resolves.toBeUndefined()
   })
 })
@@ -125,48 +113,35 @@ describe("BROKER_MIN_TIER", () => {
     expect(BROKER_MIN_TIER.questrade).toBe("pro")
     expect(BROKER_MIN_TIER.ibkr).toBe("pro")
   })
-  test("requireBrokerTier throws PLAN_LIMIT for free user on Alpaca live", async () => {
-    let caught: unknown
-    try {
-      await requireBrokerTier("alpaca")
-    } catch (e) {
-      caught = e
-    }
-    expect(caught).toBeInstanceOf(Plan.PlanLimitError)
-    expect((caught as Plan.PlanLimitError).feature).toBe("live_brokerage:alpaca")
-    expect((caught as Plan.PlanLimitError).required).toBe("lite")
+  test("requireBrokerTier no-ops for local live access", async () => {
+    await expect(requireBrokerTier("alpaca")).resolves.toBeUndefined()
+    await expect(requireBrokerTier("questrade")).resolves.toBeUndefined()
   })
-  test("unknown broker defaults to requiring Lite", async () => {
-    let caught: unknown
-    try {
-      await requireBrokerTier("kraken")
-    } catch (e) {
-      caught = e
-    }
-    expect(caught).toBeInstanceOf(Plan.PlanLimitError)
-    expect((caught as Plan.PlanLimitError).required).toBe("lite")
+
+  test("unknown broker does not trigger local tier gating", async () => {
+    await expect(requireBrokerTier("kraken")).resolves.toBeUndefined()
   })
 })
 
 describe("per-feature gating shape", () => {
-  test("backtest cap: free=10, lite=20, pro=Infinity (per-day)", () => {
-    expect(Plan.DAILY_BACKTEST_LIMIT.free).toBe(10)
-    expect(Plan.DAILY_BACKTEST_LIMIT.lite).toBe(20)
+  test("backtest caps are unlimited for every tier", () => {
+    expect(Number.isFinite(Plan.DAILY_BACKTEST_LIMIT.free)).toBe(false)
+    expect(Number.isFinite(Plan.DAILY_BACKTEST_LIMIT.lite)).toBe(false)
     expect(Number.isFinite(Plan.DAILY_BACKTEST_LIMIT.pro)).toBe(false)
   })
-  test("save cap: free=5, lite=15, pro=Infinity", () => {
-    expect(Plan.SAVE_CAP.free).toBe(5)
-    expect(Plan.SAVE_CAP.lite).toBe(15)
+  test("save caps are unlimited for every tier", () => {
+    expect(Number.isFinite(Plan.SAVE_CAP.free)).toBe(false)
+    expect(Number.isFinite(Plan.SAVE_CAP.lite)).toBe(false)
     expect(Number.isFinite(Plan.SAVE_CAP.pro)).toBe(false)
   })
-  test("terminal-run cap: free=2, lite=5, pro=Infinity", () => {
-    expect(Plan.TERMINAL_RUN_CAP.free).toBe(2)
-    expect(Plan.TERMINAL_RUN_CAP.lite).toBe(5)
+  test("terminal-run caps are unlimited for every tier", () => {
+    expect(Number.isFinite(Plan.TERMINAL_RUN_CAP.free)).toBe(false)
+    expect(Number.isFinite(Plan.TERMINAL_RUN_CAP.lite)).toBe(false)
     expect(Number.isFinite(Plan.TERMINAL_RUN_CAP.pro)).toBe(false)
   })
-  test("cloud-run cap: free=0, lite=3, pro=5", () => {
-    expect(Plan.CLOUD_RUN_CAP.free).toBe(0)
-    expect(Plan.CLOUD_RUN_CAP.lite).toBe(3)
-    expect(Plan.CLOUD_RUN_CAP.pro).toBe(5)
+  test("cloud-run caps are unlimited for every tier", () => {
+    expect(Number.isFinite(Plan.CLOUD_RUN_CAP.free)).toBe(false)
+    expect(Number.isFinite(Plan.CLOUD_RUN_CAP.lite)).toBe(false)
+    expect(Number.isFinite(Plan.CLOUD_RUN_CAP.pro)).toBe(false)
   })
 })

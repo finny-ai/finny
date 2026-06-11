@@ -17,10 +17,9 @@ export const BROKER_MIN_TIER: Record<string, Plan.Tier> = {
 }
 
 /**
- * Throws Plan.PlanLimitError if the current user tier cannot trade live on
- * the given brokerage. Call from the live entry path only.
+ * Local brokerage tier gates are disabled. Broker capability and credential
+ * checks still happen in the live runner before a real brokerage connection.
  */
-export async function requireBrokerTier(brokerKind: string): Promise<void> {
-  const required = BROKER_MIN_TIER[brokerKind] ?? "lite"
-  await Plan.requireTier(required, `live_brokerage:${brokerKind}`)
+export async function requireBrokerTier(_brokerKind: string): Promise<void> {
+  return
 }

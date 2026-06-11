@@ -78,7 +78,7 @@ export const AlgorithmListTool = Tool.define(
   "finny_algorithm_list",
   Effect.succeed({
     description:
-      "List all saved trading algorithms for the current user. Returns one entry per unique algorithm name (latest version) plus the user's plan capacity so the model can reason about whether a new save will fit.",
+      "List all saved trading algorithms for the current user. Returns one entry per unique algorithm name (latest version). Capacity fields are retained for compatibility; null means local saves are unlimited.",
     parameters,
     execute: (_params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {

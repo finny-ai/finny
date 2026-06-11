@@ -20,9 +20,7 @@ import { DialogLiveConfirm } from "../component/dialog-live-confirm"
 import { DialogLiveRun } from "../component/dialog-live-run"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogManagedHosting } from "../component/dialog-managed-hosting"
-import { DialogProUpsell } from "../component/dialog-pro-upsell"
 import { DialogAlgorithmVersions } from "../component/dialog-algorithm-versions"
-import { Plan } from "@/plan"
 
 export function Algorithms() {
   const { theme } = useTheme()
@@ -33,12 +31,10 @@ export function Algorithms() {
   const toast = useToast()
   const routeData = useRouteData("algorithms")
   const [selectedId, setSelectedId] = createSignal<string | undefined>(routeData.algorithmId)
-  const [tier, setTier] = createSignal<Plan.Tier>("free")
 
   // Always refetch on route mount so newly-built algos show up.
   onMount(async () => {
     algos.refetch()
-    setTier(await Plan.getTier())
   })
 
   // If the route is updated with a new algorithmId (e.g. clicked from Home's
@@ -73,8 +69,8 @@ export function Algorithms() {
   }
 
   const runLive = async (algo: Algorithm.Info) => {
-    // Local terminal live run. The runner enforces per-tier simultaneous caps;
-    // broker-specific tier checks still apply before real brokerage access.
+    // Local terminal live run. The runner still enforces validation,
+    // eligibility, credential, and duplicate-run checks.
     const liveCfg = parseConfig(algo.config)
     const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
     const params = await DialogLiveConfirm.show(dialog, algo, {
@@ -101,56 +97,16 @@ export function Algorithms() {
         duration: 3000,
       })
     } catch (e: any) {
-      if (e instanceof Plan.PlanLimitError) {
-        const featureLabel =
-          e.feature === "terminal_runs"
-            ? "terminal live runs"
-            : e.feature.startsWith("live_brokerage:")
-              ? `live trading on ${e.feature.split(":")[1]}`
-              : e.feature
-        const message =
-          e.required === "pro"
-            ? `You've hit your Lite limit for ${featureLabel}. Upgrade to Finny Pro for unlimited.`
-            : `${featureLabel} requires Finny Lite or Pro.`
-        await DialogProUpsell.show(dialog, message, e.required)
-        return
-      }
       const msg = e?.message ?? "Failed to start live run"
       await DialogAlert.show(dialog, "Live Run Failed", msg)
     }
   }
 
   const requestCloudRun = async () => {
-    const currentTier = await Plan.getTier()
-    setTier(currentTier)
-    if (!Plan.hasAtLeast(currentTier, "lite")) {
-      await DialogProUpsell.show(
-        dialog,
-        "Cloud live runs are included with Finny Lite and Pro.",
-        "lite",
-      )
-      return
-    }
     await DialogManagedHosting.show(dialog)
   }
 
   const runBacktest = async (algo: Algorithm.Info) => {
-    const tier = await Plan.getTier()
-    const cap = Plan.DAILY_BACKTEST_LIMIT[tier]
-    if (Number.isFinite(cap)) {
-      const todayStart = new Date()
-      todayStart.setHours(0, 0, 0, 0)
-      const todayCount = history.list().filter((e) => e.timestamp >= todayStart.getTime()).length
-      if (todayCount >= cap) {
-        const required: Plan.Tier = tier === "free" ? "lite" : "pro"
-        const message =
-          tier === "free"
-            ? "Free plan allows 10 backtests per day. Upgrade to Lite for 20/day, or Pro for unlimited."
-            : "Lite plan allows 20 backtests per day. Upgrade to Pro for unlimited."
-        await DialogProUpsell.show(dialog, message, required)
-        return
-      }
-    }
     const cfg = parseConfig(algo.config)
     const equity = cfg.equity_usd ?? cfg.risk?.starting_equity_usd
     const params = await DialogBacktestParams.show(dialog, algo.name, {
@@ -318,18 +274,16 @@ export function Algorithms() {
                         ◉ Run Live
                       </text>
                     </box>
-                    <Show when={Plan.hasAtLeast(tier(), "lite")}>
-                      <box
-                        paddingLeft={2}
-                        paddingRight={2}
-                        backgroundColor={theme.backgroundElement}
-                        onMouseUp={requestCloudRun}
-                      >
-                        <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                          ☁ Request Cloud
-                        </text>
-                      </box>
-                    </Show>
+                    <box
+                      paddingLeft={2}
+                      paddingRight={2}
+                      backgroundColor={theme.backgroundElement}
+                      onMouseUp={requestCloudRun}
+                    >
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                        ☁ Request Cloud
+                      </text>
+                    </box>
                   </box>
                   <AlgorithmCodeView algorithm={algo()} />
                 </box>

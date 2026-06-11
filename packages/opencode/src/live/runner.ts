@@ -10,7 +10,6 @@ import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind } from "./brokers"
 import { emit } from "@/analytics/emit"
-import { Plan } from "@/plan"
 import { requireBrokerTier } from "@/plan/brokers"
 import { Global } from "@/global"
 import { License } from "@/license"
@@ -336,16 +335,6 @@ if __name__ == "__main__":
     const eligibility = await latestEligibility(params.algorithm)
     if (eligibility !== "paper_eligible" && eligibility !== "live_eligible") {
       throw new Error(`Live trading is blocked until the latest immutable backtest run is paper/live eligible. Current eligibility: ${eligibility ?? "none"}.`)
-    }
-
-    const tier = await Plan.getTier()
-
-    // Tiered cap on simultaneous live algos.
-    const activeCount = [...runs.values()].filter((r) => r.status === "starting" || r.status === "running").length
-    const cap = Plan.TERMINAL_RUN_CAP[tier]
-    if (activeCount >= cap) {
-      const required: Plan.Tier = tier === "free" ? "lite" : "pro"
-      throw new Plan.PlanLimitError({ current: tier, required, feature: "terminal_runs" })
     }
 
     // Prevent duplicate: only one active run per algorithm.

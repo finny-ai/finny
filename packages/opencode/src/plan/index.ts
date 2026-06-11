@@ -24,27 +24,27 @@ export namespace Plan {
   export const UPGRADE_URL = "https://www.finnyai.tech/pro"
 
   export const SAVE_CAP: Record<Tier, number> = {
-    free: 5,
-    lite: 15,
+    free: Number.POSITIVE_INFINITY,
+    lite: Number.POSITIVE_INFINITY,
     pro: Number.POSITIVE_INFINITY,
   }
 
   export const DAILY_BACKTEST_LIMIT: Record<Tier, number> = {
-    free: 10,
-    lite: 20,
+    free: Number.POSITIVE_INFINITY,
+    lite: Number.POSITIVE_INFINITY,
     pro: Number.POSITIVE_INFINITY,
   }
 
   export const TERMINAL_RUN_CAP: Record<Tier, number> = {
-    free: 2,
-    lite: 5,
+    free: Number.POSITIVE_INFINITY,
+    lite: Number.POSITIVE_INFINITY,
     pro: Number.POSITIVE_INFINITY,
   }
 
   export const CLOUD_RUN_CAP: Record<Tier, number> = {
-    free: 0,
-    lite: 3,
-    pro: 5,
+    free: Number.POSITIVE_INFINITY,
+    lite: Number.POSITIVE_INFINITY,
+    pro: Number.POSITIVE_INFINITY,
   }
 
   const PRO_KEY_PREFIX = "FINNY-PRO-"
@@ -117,12 +117,9 @@ export namespace Plan {
     return hasAtLeast(await getTier(), required)
   }
 
-  /** Throws PlanLimitError if the current tier is below `required`. */
-  export async function requireTier(required: Tier, feature: string): Promise<void> {
-    const current = await getTier()
-    if (!hasAtLeast(current, required)) {
-      throw new PlanLimitError({ current, required, feature })
-    }
+  /** Local plan gates are disabled; retained for callers that still await this API. */
+  export async function requireTier(_required: Tier, _feature: string): Promise<void> {
+    return
   }
 
   /** Back-compat: returns true when the user has at least Pro. */

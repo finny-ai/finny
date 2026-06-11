@@ -1,14 +1,12 @@
 import { TextAttributes } from "@opentui/core"
-import { createSignal, createMemo, onMount } from "solid-js"
+import { createMemo, onMount } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import { useKeyboard } from "@opentui/solid"
-import { Plan } from "@/plan"
-import { BacktestRunner } from "@/backtest/runner"
 
-// Standard preset chips. Free tier sees only those ≤ 90 days. Chat-derived
-// non-preset durations are injected at the front of the list when present.
+// Standard preset chips. Chat-derived non-preset durations are injected at the
+// front of the list when present.
 const STANDARD_DURATIONS = [
   { label: "1 week", value: "1w" },
   { label: "2 weeks", value: "2w" },
@@ -35,8 +33,6 @@ const CAPITALS = [
   { label: "$50,000", value: "50000" },
   { label: "$100,000", value: "100000" },
 ] as const
-
-const FREE_TIER_DAYS = 90
 
 type Field = "duration" | "interval" | "capital"
 const FIELDS: Field[] = ["duration", "interval", "capital"]
@@ -95,16 +91,8 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
 
-  const [proUser, setProUser] = createSignal(false)
   const allDurations = createMemo(() => buildDurations(props.defaults?.duration))
-
-  const allowedDurations = createMemo(() => {
-    if (proUser()) return allDurations()
-    return allDurations().filter((d) => {
-      const days = BacktestRunner.parseDurationDays(d.value)
-      return days !== null && days <= FREE_TIER_DAYS
-    })
-  })
+  const allowedDurations = allDurations
 
   const initialDurationIdx = () => indexOfDuration(allowedDurations(), props.defaults?.duration, 0)
   const initialIntervalIdx = () => indexOfDuration(INTERVALS as any, props.defaults?.interval, 4)
@@ -159,10 +147,8 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
     }
   })
 
-  onMount(async () => {
+  onMount(() => {
     dialog.setSize("medium")
-    setProUser(await Plan.isPro())
-    // Apply chat-derived defaults after we know free/pro status.
     setStore("durationIndex", initialDurationIdx())
     setStore("intervalIndex", initialIntervalIdx())
     setStore("capitalIndex", initialCapitalIdx())
@@ -217,12 +203,6 @@ export function DialogBacktestParams(props: DialogBacktestParamsProps) {
         <FieldRow label="Interval" field="interval" options={INTERVALS} selectedIndex={store.intervalIndex} />
         <FieldRow label="Capital" field="capital" options={CAPITALS} selectedIndex={store.capitalIndex} />
       </box>
-
-      {!proUser() && (
-        <text fg={theme.textMuted}>
-          Free tier: durations up to 90 days. <span style={{ fg: theme.primary }}>Finny Pro</span> unlocks 6m and 1y.
-        </text>
-      )}
 
       <text fg={theme.textMuted}>
         <span style={{ fg: theme.text }}>←/→</span> change value · <span style={{ fg: theme.text }}>↑/↓</span> switch

@@ -17,8 +17,7 @@ const parameters = z.object({
     .default("1m")
     .describe(
       "Backtest period as <number><unit> where unit is d (days), w (weeks), m (months), or y (years). " +
-        "Examples: '5d' = 5 days, '2w' = 2 weeks, '1m' = 1 month, '3m' = 3 months, '1y' = 1 year. " +
-        "Free-tier accounts are limited to ≤90 days; pro accounts can use any value.",
+        "Examples: '5d' = 5 days, '2w' = 2 weeks, '1m' = 1 month, '3m' = 3 months, '1y' = 1 year.",
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
