@@ -14,7 +14,7 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, and non-empty strategy knobs under `params`. The validator cross-references every config key against the strategy code, so do not declare keys you do not use.
 - **backtestCode**: The backtest.py source code
 - **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
-- **mission**: (new algorithms only) WHO: hypothesis, scope, exit conditions. Written to `mission.md`.
+- **mission**: (new algorithms only) WHO: hypothesis, scope, exit conditions. Written to `mission.md`. Must be valid `schema_version: 3` with all Core 8 questionnaire records. Any user preferences (e.g. capital, sizing, data sources/depth, custom thresholds) must be stored in a `## User Preferences` section at the bottom of the markdown body.
 - **prefs**: (new algorithms only) HOW: sizing, risk, constraints, interval, asset. Written to `prefs.md`.
 - **decisions**: (new algorithms only) Design decisions log. Written to `decisions.md`.
 

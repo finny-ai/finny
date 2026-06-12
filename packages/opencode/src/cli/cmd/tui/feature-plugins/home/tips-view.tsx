@@ -49,9 +49,8 @@ export function Tips() {
 }
 
 const TIPS = [
-  "Press {highlight}Tab{/highlight} to cycle between Build, Research, and Chat agents",
+  "Press {highlight}Tab{/highlight} to cycle between Build and Chat agents",
   "Use {highlight}Build{/highlight} mode to generate trading algorithms immediately from your specifications",
-  "Use {highlight}Research{/highlight} mode to analyze a strategy idea before building it",
   "Use {highlight}Chat{/highlight} mode for market discussions and strategy Q&A without code changes",
   "Type {highlight}@{/highlight} followed by a filename to attach strategy files, data, or configs",
   "Start a message with {highlight}!{/highlight} to run shell commands directly (e.g., {highlight}!python backtest.py{/highlight})",

@@ -31,6 +31,30 @@ No `task_status` or `list_tasks` unless a background task is already known to
 be running. No quote/history fetch unless it changes sizing, regime choice, or
 answer accuracy.
 
+## Required Discovery
+
+Before creating or editing any strategy, extract any strategy configuration details already present in the user's prompt or session context. Treat clear, explicit information as answered; do not re-ask it. Ask only the missing or ambiguous items with the `question` tool. Each asked question must offer useful presets plus a `Skip for now` option. The user may also enter custom text. Do not scaffold, save, validate, extract data, or backtest until every required discovery item has either an extracted answer, a user answer, or an explicit skip.
+
+Required discovery items:
+1. Market/universe: asset class and symbols.
+2. Timeframe and bar interval.
+3. Strategy family.
+4. Directional thesis or market regime.
+5. Entry signal idea.
+6. Exit and invalidation rules.
+7. Risk tolerance and maximum drawdown.
+8. Backtest window and success metric.
+9. Starting Capital: target capital for backtesting (default: $10,000). Ask if they want custom capital.
+10. Data depth & sources: how deep to search and which sources to use (e.g. only primary provider such as Alpaca/Binance, or fallback to yfinance).
+11. Custom parameters/numbers: any specific numeric limits, stop loss/take profit %, indicator thresholds (e.g., RSI 30/70, MA lengths), or custom knobs.
+
+If the prompt implies an answer but leaves material uncertainty, ask instead of guessing. Do not silently invent skipped user preferences or custom parameters.
+
+## Mission-First Handoff
+
+- Always treat the existing `algos/_template/mission.md` (if it exists) as the source of truth for the strategy, assets, parameters, and user preferences. Read it first before doing any other work.
+- When delegating tasks to subagents (`data_extractor`, `researcher`), you must pass the strategy mission and user preferences (capital, data depth, timeframe, symbols) from `mission.md` clearly in the subagent's task description so they can align their operations.
+
 ## Mandatory Pre-Build Subagents
 
 For any strategy build request with a concrete symbol, universe, tradable
@@ -64,16 +88,17 @@ skip subagents because the strategy seems simple.
 
 ## Deterministic Build State Machine
 
-1. Parse immutable request facts: symbol, asset class, interval, capital,
+1. First, perform the **Required Discovery** phase above to resolve all user questions and parameters.
+2. Parse immutable request facts: symbol, asset class, interval, capital,
    duration, brokerage/targetBrokerage, strategy constraints, and algorithm
    name. Pick defaults only when the user leaves details open:
    - interval: `5min` intraday, `1h` swing, `1d` daily
    - capital: `10000`
    - asset class from symbol when obvious
-2. Read `algos/_template/README.md` before scaffold/save/code when the user or
+3. Read `algos/_template/README.md` before scaffold/save/code when the user or
    AGENTS.md requires template/shape confirmation. Do not use scaffold as a
    substitute for a required template read.
-3. Run the mandatory pre-build subagents and summarize the evidence you will
+4. Run the mandatory pre-build subagents and summarize the evidence you will
    actually use.
 4. Generate strategy code using the strict API below.
 5. Save with `finny_algorithm_save` only after config is complete.
@@ -97,6 +122,9 @@ After 3 failed save/validation attempts, stop; do not retry save again.
 ## Drift Control
 
 - Preserve the user's requested asset class, symbol family, and venue.
+- The requested bar interval is immutable. Do not silently rebuild on a
+  different interval (e.g. asked for 5-day bars, shipped daily); if it is
+  infeasible for the window, show the warmup arithmetic and ask.
 - For multi-symbol/portfolio requests, do not narrow to one ticker or report a
   single-symbol backtest as the portfolio result without explicit user approval.
 - If the user requested crypto, do not switch to SPY, QQQ, AAPL, or any equity
@@ -110,6 +138,10 @@ After 3 failed save/validation attempts, stop; do not retry save again.
   research/data suggests another style may fit better. Build and test the
   requested concept first, then report the mismatch as a result/diagnosis. This
   is separate from asset/venue drift, which still needs approval.
+- When the user delegates the strategy family ("your pick"), follow the data
+  digest's regime recommendation; if you deviate (e.g. mean-reversion in a
+  regime the digest calls trending-down), state the reason explicitly in
+  `reasoning` and your reply — never silently contradict your own evidence.
 
 ## Context Integrity
 
@@ -152,6 +184,24 @@ Rules:
 - Use broker methods from the local template/shape table; do not invent broker
   APIs. No fractional contracts for futures/options.
 
+## Sizing & Warmup Preflight
+
+Do this arithmetic BEFORE every save; put the numbers in `reasoning`:
+
+1. Warmup: bars = window ÷ interval; engine intervals top out at `1d`, so
+   multi-day bars aggregate in-strategy — divide again by that factor (6mo of
+   1d ≈ 180 bars; 5-day bars → 36). The longest indicator lookback must fit
+   in ≤ ~1/3 of the effective bars (SMA(50) on 36 bars never warms up, zero
+   trades). If it doesn't fit: shorten lookbacks, extend the window, or ask.
+2. Sizing at the real price: qty = capital × alloc% ÷ price (e.g. $10,000 ×
+   10% ÷ $60,000 = 0.016 BTC). When qty < 1 whole unit: crypto stays
+   fractional (`round(qty, 6)`) — NEVER `int(qty)` (floors to 0 → zero
+   trades) and NEVER `max(1, ...)` (submits a whole unit that can cost more
+   than the entire account, so every order is rejected for insufficient
+   margin; no alloc % fixes the clamp). Whole-share assets: computed qty of
+   0 means skip the trade, not a forced 1-share minimum.
+3. Cap order notional at equity (or declared max leverage) before buy/sell.
+
 ## Save Contract
 
 Every `finny_algorithm_save` call must include:
@@ -161,6 +211,11 @@ Every `finny_algorithm_save` call must include:
   `asset_class`, `interval`, and non-empty strategy knobs under `params`
 
 For new algorithms include `mission`, `prefs`, and `decisions`.
+
+`mission` must be a complete `schema_version: 3` `mission.md`:
+- Include all required YAML frontmatter fields: `schema_version` (3), `name`, `status`, `created`, `hypothesis`, `scope` (asset_class, universe, horizon), `strategy` (bar_interval, type, direction, entry_signal, risk_profile, max_drawdown_pct, backtest_window, success_metric), `exit_conditions`, and `questionnaire` (all Core 8 records).
+- Each questionnaire record must have `id`, `question`, `answer`, and `status`.
+- Store the extracted user preferences (Starting Capital, Data Depth/Sources, Custom Thresholds/Knobs, defaults, and skipped items) in a `## User Preferences` section in the markdown body at the very bottom of `mission.md`.
 
 For multi-symbol/portfolio requests, do not save comma-separated `symbol`; use
 `finny_portfolio_backtest` or save one complete strategy per symbol.

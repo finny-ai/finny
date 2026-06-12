@@ -159,7 +159,7 @@ export function Session() {
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
   const [conceal, setConceal] = createSignal(true)
-  const [showThinking, setShowThinking] = kv.signal("thinking_visibility", true)
+  const [showThinking, setShowThinking] = kv.signal("thinking_visibility", false)
   const [timestamps, setTimestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
   const [showDetails, setShowDetails] = kv.signal("tool_details_visibility", true)
   const [showAssistantMetadata, setShowAssistantMetadata] = kv.signal("assistant_metadata_visibility", true)
@@ -1495,8 +1495,16 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
     // OpenRouter sends encrypted reasoning data that appears as [REDACTED]
     return props.part.text.replace("[REDACTED]", "").trim()
   })
+  // Collapsed one-liner (Codex-style) when thinking is hidden: live "Thinking…"
+  // while streaming, then "Thought for Ns". The command-palette toggle expands.
+  const collapsedLabel = createMemo(() => {
+    const time = props.part.time
+    if (!time?.end) return "▸ Thinking…"
+    const seconds = Math.max(0, Math.round((time.end - time.start) / 1000))
+    return seconds > 0 ? `▸ Thought for ${seconds}s` : "▸ Thought briefly"
+  })
   return (
-    <Show when={content() && ctx.showThinking()}>
+    <Show when={content()}>
       <box
         id={"text-" + props.part.id}
         paddingLeft={2}
@@ -1506,15 +1514,20 @@ function ReasoningPart(props: { last: boolean; part: ReasoningPart; message: Ass
         customBorderChars={SplitBorder.customBorderChars}
         borderColor={theme.backgroundElement}
       >
-        <code
-          filetype="markdown"
-          drawUnstyledText={false}
-          streaming={true}
-          syntaxStyle={subtleSyntax()}
-          content={"_Thinking:_ " + content()}
-          conceal={ctx.conceal()}
-          fg={theme.textMuted}
-        />
+        <Show
+          when={ctx.showThinking()}
+          fallback={<text fg={theme.textMuted}>{collapsedLabel()}</text>}
+        >
+          <code
+            filetype="markdown"
+            drawUnstyledText={false}
+            streaming={true}
+            syntaxStyle={subtleSyntax()}
+            content={"_Thinking:_ " + content()}
+            conceal={ctx.conceal()}
+            fg={theme.textMuted}
+          />
+        </Show>
       </box>
     </Show>
   )

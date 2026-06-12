@@ -1,7 +1,10 @@
 """Finny strategy behavioral smoke test.
 
-Loads a Strategy class from stdin-provided source, runs it against four synthetic
+Loads a Strategy class from stdin-provided source, runs it against synthetic
 bar regimes (constant / up / down / random walk), and asserts behavioral invariants.
+For crypto symbols (pass --symbol) an additional HIGH-PRICE regime (~$60K random
+walk vs $10K equity) catches sizing that forces unaffordable whole-unit orders
+(e.g. `max(1, int(qty))` submitting 1 BTC on a $10K account).
 
 Emits a JSON array of diagnostics on stdout (same shape as ast_analyzer.py).
 
@@ -19,6 +22,7 @@ Diagnostic codes:
 Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emits
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
 """
+import argparse
 import importlib.util
 import inspect
 import json
@@ -33,6 +37,17 @@ from pathlib import Path
 
 
 VALID_RETURNS = {"BUY", "SELL", "HOLD", None}
+
+# Mirrors ast_analyzer.py's symbol heuristics (kept local: both scripts are run
+# standalone via stdin and must not depend on each other's import side effects).
+CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT")
+
+
+def _symbol_is_crypto(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return False
+    s = symbol.strip().upper()
+    return any(suf in s for suf in CRYPTO_SUFFIXES) or s.endswith("-PERP")
 
 
 def _load_strategy(source):
@@ -79,11 +94,12 @@ class StubBroker:
         """
         mark = self._last_price.get(symbol, 0)
         # Record what the strategy ASKED for (before we cap) so leverage violations
-        # are observable even if the real broker would silently cap.
+        # are observable even if the real broker would silently cap. Position at
+        # call time distinguishes new exposure (open/add) from a closing trade.
         requested_qty = qty
         if notional is not None and qty is None:
             requested_qty = notional / mark if mark > 0 else 0
-        self.calls.append(("buy", symbol, requested_qty, notional))
+        self.calls.append(("buy", symbol, requested_qty, notional, self._positions.get(symbol, 0)))
         if mark <= 0:
             return None
 
@@ -148,7 +164,7 @@ class StubBroker:
         mark = self._last_price.get(symbol, 0)
         if notional is not None and qty is None:
             requested_qty = notional / mark if mark > 0 else 0
-        self.calls.append(("sell", symbol, requested_qty, notional))
+        self.calls.append(("sell", symbol, requested_qty, notional, self._positions.get(symbol, 0)))
         if mark <= 0:
             return None
 
@@ -267,8 +283,7 @@ def _completed_row(price, ts=0, symbol="TEST"):
     }
 
 
-def _regime_prices(n=200, seed=42):
-    base = 100.0
+def _regime_prices(n=200, seed=42, base=100.0):
     constant = [base] * n
     up = [base * (1 + 0.005) ** i for i in range(n)]
     down = [base * (1 - 0.005) ** i for i in range(n)]
@@ -281,16 +296,24 @@ def _regime_prices(n=200, seed=42):
     return constant, up, down, rw
 
 
-def _regimes(n=200):
+def _regimes(n=200, include_high_price=False):
     constant, up, down, rw = _regime_prices(n, 42)
     _, _, _, long_rw = _regime_prices(500, 4242)
-    return {
+    regimes = {
         "constant": constant,
         "up": up,
         "down": down,
         "random": rw,
         "long_random": long_rw,
     }
+    if include_high_price:
+        # BTC-scale prices against the $10K stub account. A strategy that sizes
+        # fractionally requests ~0.01–0.2 units and passes; one that floors or
+        # min-clamps qty to whole units requests ≥1 unit (~$60K) and trips the
+        # requested-qty leverage check.
+        _, _, _, high_rw = _regime_prices(n, 7, base=60_000.0)
+        regimes["high_price"] = high_rw
+    return regimes
 
 
 def _snapshot_state(strategy):
@@ -401,11 +424,16 @@ def _run_regime(StrategyCls, prices):
 
         new_broker_calls = broker.calls[pre_calls:]
         if new_broker_calls:
-            for side, _sym, req_qty, _notional in new_broker_calls:
+            for side, _sym, req_qty, _notional, pos_before in new_broker_calls:
                 returns.append("BUY" if side == "buy" else "SELL")
-                if side == "buy" and isinstance(req_qty, (int, float)) and req_qty > 0:
+                # Only opening/adding trades create new exposure. A buy that
+                # covers a short or a sell that closes a long is risk-reducing
+                # and must not count toward requested-qty leverage.
+                opens_exposure = (side == "buy" and pos_before >= 0) or (side == "sell" and pos_before <= 0)
+                if opens_exposure and isinstance(req_qty, (int, float)) and req_qty > 0:
                     requested_qty_events.append({
                         "tick": i,
+                        "side": side,
                         "requested_qty": float(req_qty),
                         "price": float(price),
                         "equity": float(equity_before),
@@ -464,7 +492,7 @@ def _run_regime(StrategyCls, prices):
     }
 
 
-def analyze(source):
+def analyze(source, symbol=None):
     diagnostics = []
 
     try:
@@ -478,7 +506,10 @@ def analyze(source):
         })
         return diagnostics
 
-    regimes = _regimes(200)
+    # High-price regime only for crypto: whole-share equities legitimately
+    # never trade at BTC-scale prices on a $10K account, and futures size in
+    # margin-backed whole contracts whose notional routinely exceeds equity.
+    regimes = _regimes(200, include_high_price=_symbol_is_crypto(symbol))
     results = {}
     for name, prices in regimes.items():
         try:
@@ -641,20 +672,8 @@ def analyze(source):
                 break
         if found:
             break
-        # Requested-qty leverage check (broker-API: detect intent to over-size
-        # even when the stub/real broker capped the actual fill).
-        if res.get("uses_broker_api"):
-            requested_violations = []
-            for tick_idx, snap in enumerate(res["exposure_snapshots"]):
-                # no direct link between calls and ticks; use the equity at the tick
-                # and compare against the per-tick price
-                pass  # handled via direct scan below
-            # Simpler: scan all snapshots and compare to per-tick max requested qty.
-            # broker.calls is module-level; we need per-regime isolation — already
-            # reset because a fresh broker is created per regime. Use the final
-            # equity and first trade price as a rough bound.
     # Requested-qty leverage detection done separately per regime via a second pass
-    # using the returns + exposure snapshots.
+    # using the recorded exposure-opening order intents.
     if not any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
         for regime_name, res in results.items():
             if not res.get("uses_broker_api"):
@@ -663,16 +682,25 @@ def analyze(source):
             for ev in requested:
                 exposure = ev["requested_qty"] * ev["price"]
                 if exposure > ev["equity"] * 1.01:
+                    whole_unit_hint = ""
+                    if ev["requested_qty"] >= 1.0 and float(ev["requested_qty"]).is_integer():
+                        whole_unit_hint = (
+                            " The requested qty is a whole unit — check for `max(1, int(qty))`-style sizing: "
+                            "the 1-unit minimum overrides the computed fractional size, and no allocation % "
+                            "can fix it. For crypto keep qty fractional (`round(qty, 6)`); for whole-share "
+                            "assets skip the trade when the computed qty floors to 0."
+                        )
                     diagnostics.append({
                         "code": "LEVERAGE_VIOLATION",
                         "severity": "error",
                         "message": (
                             f"On the {regime_name} regime, tick {ev['tick']}: strategy requested "
-                            f"a position of {ev['requested_qty']:.2f} @ {ev['price']:.2f} "
+                            f"a {ev.get('side', 'buy')} of {ev['requested_qty']:.2f} @ {ev['price']:.2f} "
                             f"(= ${exposure:,.0f}), exceeding equity (${ev['equity']:,.0f}). "
-                            "Real broker would cap the fill but the intent is leveraged."
+                            "Real broker would reject or cap the fill but the intent is leveraged."
+                            + whole_unit_hint
                         ),
-                        "fix": "Cap qty BEFORE calling broker.buy: `qty = min(qty, self.broker.equity() / price)`.",
+                        "fix": "Cap qty BEFORE calling broker.buy/sell: `qty = min(qty, self.broker.equity() / price)`.",
                     })
                     break
             if any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
@@ -704,9 +732,13 @@ def analyze(source):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", default=None, help="Symbol from config.json (enables the crypto high-price regime).")
+    args = parser.parse_args()
+
     source = sys.stdin.read()
     try:
-        diagnostics = analyze(source)
+        diagnostics = analyze(source, symbol=args.symbol)
     except Exception as exc:
         sys.stderr.write(f"smoke_test error: {exc}\n")
         sys.stdout.write("[]")

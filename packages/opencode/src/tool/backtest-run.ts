@@ -149,6 +149,53 @@ export function strictDataQualityNextSteps() {
   ].join("\n")
 }
 
+/**
+ * Diagnose WHY a zero-trade backtest produced no fills. Returns display lines
+ * (without the leading blank). Exported for tests.
+ *
+ * The margin branch exists because of a real failure mode: sizing like
+ * `max(1, int(qty))` forces a 1-whole-unit order even when one unit costs more
+ * than the whole account (1 BTC ≈ $60K on $10K capital), so EVERY order —
+ * buys and shorts alike — is rejected for insufficient margin, and shrinking
+ * the allocation % changes nothing because the 1-unit clamp wins.
+ */
+export function zeroTradeLikelyCause(d: {
+  buyAttempts: number
+  sellAttempts: number
+  rejectedOrders: number
+  rejectionReasons: Record<string, number>
+  strategyErrors: number
+}): string[] {
+  const reasons = Object.keys(d.rejectionReasons)
+  const attempts = d.buyAttempts + d.sellAttempts
+  const marginRejected = reasons.some((r) => /margin|buying_?power|insufficient/i.test(r))
+
+  if (attempts > 0 && d.rejectedOrders >= attempts && marginRejected) {
+    return [
+      `LIKELY CAUSE: Every order (${d.buyAttempts} buys, ${d.sellAttempts} sells) was rejected for ${reasons.join(", ")}.`,
+      `The order notional exceeds buying power. Check the sizing math:`,
+      `  • A \`max(1, int(qty))\` clamp forces a 1-whole-unit order even when 1 unit costs more than total`,
+      `    equity (e.g. 1 BTC ≈ $60K on $10K capital). Reducing the allocation/risk % does NOT fix this —`,
+      `    the 1-unit minimum wins. Remove the clamp.`,
+      `  • For crypto, use fractional qty: \`qty = round(equity * alloc_pct / price, 6)\`.`,
+      `  • For whole-share assets, skip the trade when the computed qty floors to 0.`,
+    ]
+  }
+  if (attempts > 0 && d.rejectedOrders >= attempts) {
+    return [`LIKELY CAUSE: All ${d.rejectedOrders} orders were rejected (${reasons.join(", ")}).`]
+  }
+  if (d.buyAttempts === 0 && d.strategyErrors === 0) {
+    return [
+      `LIKELY CAUSE: Entry conditions never triggered, OR position size too small (see above).`,
+      `Check the computed qty against the asset price/stop distance — math.floor(qty) may be rounding to 0.`,
+    ]
+  }
+  if (d.strategyErrors > 0) {
+    return [`LIKELY CAUSE: Strategy raised ${d.strategyErrors} exceptions — the trading logic may be broken.`]
+  }
+  return []
+}
+
 function parseNumberField(text: string, field: string) {
   const match = text.match(new RegExp(`${field}=(-?\\d+(?:\\.\\d+)?)`))
   return match ? Number(match[1]) : undefined
@@ -470,12 +517,9 @@ export const BacktestRunTool = Tool.define(
               )
             }
           }
-          if (d.buyAttempts === 0 && d.strategyErrors === 0) {
-            lines.push(``,`LIKELY CAUSE: Entry conditions never triggered, OR position size too small (see above).`,`Check the computed qty against the asset price/stop distance — math.floor(qty) may be rounding to 0.`)
-          } else if (d.rejectedOrders > 0 && d.rejectedOrders === d.buyAttempts) {
-            lines.push(``, `LIKELY CAUSE: All buy orders were rejected (${Object.keys(d.rejectionReasons).join(", ")}).`)
-          } else if (d.strategyErrors > 0) {
-            lines.push(``, `LIKELY CAUSE: Strategy raised ${d.strategyErrors} exceptions — the trading logic may be broken.`)
+          const likelyCause = zeroTradeLikelyCause(d)
+          if (likelyCause.length > 0) {
+            lines.push(``, ...likelyCause)
           }
           lines.push(`────────────────────────────────────────────────────`)
         }

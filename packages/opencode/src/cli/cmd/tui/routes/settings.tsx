@@ -31,7 +31,7 @@ const COPY: Record<Exclude<SettingsTab, "mcp" | "paper-trading" | "skills" | "pr
   },
   model: {
     title: "Model",
-    body: "Choose the LLM that powers Build, Research, and Chat modes.",
+    body: "Choose the LLM that powers Build and Chat modes.",
     cta: "Open model picker",
   },
   providers: {
@@ -41,7 +41,7 @@ const COPY: Record<Exclude<SettingsTab, "mcp" | "paper-trading" | "skills" | "pr
   },
   agents: {
     title: "Agents",
-    body: "Configure Build, Research, and Chat modes and their permissions.",
+    body: "Configure Build and Chat modes and their permissions.",
     cta: "Open agent picker",
   },
 }

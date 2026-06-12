@@ -126,7 +126,7 @@ afterEach(async () => {
 
 describe("Finny debloat", () => {
   test("primary prompt budgets stay under target", () => {
-    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(210)
+    expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(265)
     expect(lineCount(PROMPT_RESEARCH)).toBeLessThanOrEqual(120)
     expect(lineCount(PROMPT_CHAT)).toBeLessThanOrEqual(100)
   })

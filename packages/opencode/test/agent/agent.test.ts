@@ -126,17 +126,66 @@ test("mandatory Finny subagents keep repo-root data access after broad user deni
   })
 })
 
-test("research agent denies generic coding tools and allows research tools", async () => {
+test("returns Build and Chat as visible primary agents", async () => {
   await using tmp = await tmpdir()
   await Instance.provide({
     directory: tmp.path,
     fn: async () => {
+      const agents = await Agent.list()
+      const names = agents.map((a) => a.name)
+      expect(names).toContain("build")
+      expect(names).toContain("research")
+      expect(names).toContain("chat")
+      expect(names).toContain("general")
+      expect(names).toContain("explore")
+      expect(names).toContain("compaction")
+      expect(names).toContain("title")
+      expect(names).toContain("summary")
+
+      const visibleModes = agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name)
+      expect(visibleModes).toEqual(["build", "chat"])
+    },
+  })
+})
+
+test("research agent is a hidden compatibility alias", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const build = await Agent.get("build")
       const research = await Agent.get("research")
+      expect(build).toBeDefined()
       expect(research).toBeDefined()
+      expect(build?.mode).toBe("primary")
+      expect(build?.native).toBe(true)
+      expect(build?.hidden).toBeUndefined()
+      expect(research?.mode).toBe("primary")
+      expect(research?.native).toBe(true)
+      expect(research?.hidden).toBe(true)
+      expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
+      expect(evalPerm(research, "finny_backtest_run")).toBe("deny")
       expect(evalPerm(research, "edit")).toBe("deny")
       expect(evalPerm(research, "bash")).toBe("deny")
-      expect(evalPerm(research, "finny_get_history")).toBe("allow")
-      expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
+    },
+  })
+})
+
+test("build agent asks questions and can save/backtest strategies", async () => {
+  await using tmp = await tmpdir()
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const build = await Agent.get("build")
+      expect(build).toBeDefined()
+      expect(build?.mode).toBe("primary")
+      expect(build?.hidden).toBeUndefined()
+      expect(evalPerm(build, "question")).toBe("allow")
+      expect(evalPerm(build, "finny_algorithm_scaffold")).toBe("allow")
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
+      expect(evalPerm(build, "edit")).toBe("deny")
+      expect(evalPerm(build, "bash")).toBe("deny")
     },
   })
 })
@@ -697,6 +746,21 @@ test("defaultAgent respects default_agent config set to chat", async () => {
   })
 })
 
+test("defaultAgent accepts hidden research compatibility alias from config", async () => {
+  await using tmp = await tmpdir({
+    config: {
+      default_agent: "research",
+    },
+  })
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const agent = await Agent.defaultAgent()
+      expect(agent).toBe("research")
+    },
+  })
+})
+
 test("defaultAgent respects default_agent config set to custom agent with mode all", async () => {
   await using tmp = await tmpdir({
     config: {
@@ -759,7 +823,7 @@ test("defaultAgent throws when default_agent points to non-existent agent", asyn
   })
 })
 
-test("defaultAgent returns research when build is disabled and default_agent not set", async () => {
+test("defaultAgent returns chat when build is disabled and default_agent not set", async () => {
   await using tmp = await tmpdir({
     config: {
       agent: {
@@ -771,8 +835,7 @@ test("defaultAgent returns research when build is disabled and default_agent not
     directory: tmp.path,
     fn: async () => {
       const agent = await Agent.defaultAgent()
-      // build is disabled, so it should return research (next primary agent)
-      expect(agent).toBe("research")
+      expect(agent).toBe("chat")
     },
   })
 })
