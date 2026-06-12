@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { Config } from "../../src/config/config"
@@ -9,7 +9,7 @@ import { MessageV2 } from "../../src/session/message-v2"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID } from "../../src/session/schema"
 import { ModelID, ProviderID } from "../../src/provider/schema"
-import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
+import { EMPTY_SUBAGENT_RESULT_MARKER, finalTaskText, TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "../../src/tool/truncate"
 import { ToolRegistry } from "../../src/tool/registry"
 import { TaskState } from "../../src/task/state"
@@ -120,6 +120,28 @@ function reply(input: Parameters<typeof SessionPrompt.prompt>[0], text: string):
     ],
   }
 }
+
+describe("finalTaskText", () => {
+  const part = (type: string, text?: string) => ({ type, text })
+
+  test("returns the last text part trimmed", () => {
+    expect(finalTaskText([part("text", "first"), part("tool"), part("text", "  done  ")])).toBe("done")
+  })
+
+  test("substitutes the BLOCKED marker when the final turn was aborted (no text part)", () => {
+    expect(finalTaskText([part("tool")])).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
+    expect(finalTaskText([])).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
+  })
+
+  test("substitutes the BLOCKED marker for empty/whitespace-only text", () => {
+    expect(finalTaskText([part("text", "   ")])).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
+    expect(finalTaskText([part("text", "")])).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
+  })
+
+  test("marker routes into existing BLOCKED handling", () => {
+    expect(EMPTY_SUBAGENT_RESULT_MARKER.startsWith("BLOCKED:")).toBe(true)
+  })
+})
 
 describe("tool.task", () => {
   it.live("description lists Build-visible subagents and is stable across calls", () =>

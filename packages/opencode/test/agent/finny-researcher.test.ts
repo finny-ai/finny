@@ -35,6 +35,8 @@ describe("researcher subagent", () => {
         expect(Permission.evaluate("finny_discord_read", "", info!.permission).action).toBe("allow")
         expect(Permission.evaluate("read", "algos/_template/data/news/body/btc.md", info!.permission).action).toBe("allow")
         expect(Permission.evaluate("edit", "algos/_template/data/news/body/btc.md", info!.permission).action).toBe("allow")
+        expect(Permission.evaluate("read", "algos/_template/mission.md", info!.permission).action).toBe("allow")
+        expect(Permission.evaluate("edit", "algos/_template/mission.md", info!.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/_template/data/crypto/btc.md", info!.permission).action).toBe("deny")
         expect(Permission.evaluate("read", "algos/live-strategy/data/news/body/btc.md", info!.permission).action).toBe("deny")
         expect(Permission.evaluate("bash", "", info!.permission).action).toBe("deny")
@@ -52,7 +54,7 @@ describe("researcher prompt contract", () => {
   })
 
   test("requires recency-aware research and source limits", () => {
-    expect(PROMPT_RESEARCHER).toContain("last 30 days")
+    expect(PROMPT_RESEARCHER).toContain("last 14 days")
     expect(PROMPT_RESEARCHER).toContain("current-year and recency-aware searches")
     expect(PROMPT_RESEARCHER).toContain("at most five high-signal sources")
     expect(PROMPT_RESEARCHER).toContain("Prefer primary or high-signal sources")

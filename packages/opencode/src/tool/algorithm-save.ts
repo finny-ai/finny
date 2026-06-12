@@ -3,6 +3,7 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import DESCRIPTION from "./algorithm-save.txt"
 import { Algorithm } from "../algorithm"
+import { Mission } from "../algorithm/mission"
 import { Validate } from "../algorithm/validate"
 import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Bus } from "../bus"
@@ -122,6 +123,82 @@ export function countUniqueAlgorithms(algos: ReadonlyArray<{ name: string }>): n
   return new Set(algos.map((a) => a.name)).size
 }
 
+/**
+ * Corrective message for an invalid/missing mission.md on save. Leads with the
+ * concrete issues, then shows the full v3 template so the agent can fix the
+ * mission in one pass instead of discovering enum constraints one save at a time.
+ */
+export function missionRejectionMessage(issues: string[]): string {
+  return [
+    "Invalid mission.md for this save:",
+    ...issues.map((i) => `  - ${i}`),
+    "",
+    "The `mission` parameter must be a `schema_version: 3` mission.md markdown string starting with a YAML frontmatter block enclosed in `---`. Required shape:",
+    "",
+    "```markdown",
+    "---",
+    "schema_version: 3",
+    "name: <kebab-case-algorithm-name>",
+    "status: research | backtested | paper | live | retired",
+    "created: YYYY-MM-DD",
+    "hypothesis: <detailed hypothesis>",
+    "scope:",
+    "  asset_class: equities | crypto | futures | fx | options | mixed",
+    "  universe:",
+    "    - <SYMBOL>",
+    "  horizon: intraday | days | weeks | months",
+    "strategy:",
+    "  bar_interval: <e.g., 5min, 1h, 1d>",
+    "  type: <strategy type/family>",
+    "  direction: long | short | both",
+    "  entry_signal: <summary of entry>",
+    "  risk_profile: <risk profile description>",
+    "  max_drawdown_pct: <maximum drawdown percent>",
+    "  backtest_window: <duration/window description>",
+    "  success_metric: <success criteria description>",
+    "exit_conditions: <detailed exit conditions>",
+    "questionnaire:",
+    ...Mission.CORE8_IDS.flatMap((id) => [
+      `  - id: ${id}`,
+      "    question: <the Core 8 question>",
+      "    answer: <user answer, or empty string if skipped>",
+      "    status: answered | skipped",
+    ]),
+    "---",
+    "",
+    "Any user preferences (capital, sizing, data sources/depth, custom numbers) belong in a `## User Preferences` section at the bottom of the markdown body.",
+    "```",
+  ].join("\n")
+}
+
+/**
+ * Combined mission + execution-config rejection: every structural blocker in
+ * one response, so the agent fixes them in a single save round-trip instead of
+ * peeling one gate per attempt. Returns undefined when both lists are empty.
+ */
+export function contractRejectionBlock(missionIssues: string[], configIssues: string[]) {
+  if (missionIssues.length === 0 && configIssues.length === 0) return undefined
+  const sections: string[] = []
+  if (configIssues.length > 0) {
+    sections.push(["Config issues:", ...configIssues.map((i) => `  - ${i}`)].join("\n"))
+  }
+  if (missionIssues.length > 0) {
+    sections.push(missionRejectionMessage(missionIssues))
+  }
+  return {
+    title: "Save blocked — mission/config contract",
+    output: sections.join("\n\n"),
+    metadata: {
+      blocked: true,
+      retry: false,
+      missionInvalid: missionIssues.length > 0,
+      missionIssues,
+      configIssues,
+      configRequired: configIssues.length > 0,
+    },
+  }
+}
+
 export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
   if (warnings.length === 0) return undefined
   return {
@@ -212,6 +289,38 @@ export const AlgorithmSaveTool = Tool.define(
               }
             }
 
+            // Contract gate: mission + execution config are cheap, pure
+            // checks — run them together BEFORE code validation so the agent
+            // gets every structural blocker in ONE response instead of
+            // peeling them one save round-trip at a time. New algorithms
+            // require a complete v3 mission.md; a mission passed on a version
+            // bump must also be valid.
+            const normalizedConfig = normalizeConfigForSave({ incoming: params.config })
+            const missionIssues =
+              params.saveMode === "new" || params.mission !== undefined ? Mission.validate(params.mission) : []
+            const configIssues: string[] = []
+            if (params.saveMode === "new") {
+              const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
+              if (missingConfig.length > 0) {
+                configIssues.push(
+                  `missing required config field(s): ${missingConfig.join(", ")} — include symbol, asset_class, ` +
+                    `interval, and non-empty strategy params under params in the save config; do not save first ` +
+                    `and patch with finny_algorithm_set_params`,
+                )
+              }
+              const unsupported = unsupportedNewSaveConfigReasons(normalizedConfig)
+              configIssues.push(...unsupported)
+              if (unsupported.length > 0) {
+                configIssues.push(
+                  "for multi-portfolio requests, run a portfolio backtest or save one complete strategy per symbol — do not narrow to one ticker without user approval",
+                )
+              }
+            }
+            const contractBlock = contractRejectionBlock(missionIssues, configIssues)
+            if (contractBlock) {
+              return { result: contractBlock }
+            }
+
             // Run validation through the retry orchestrator so the attempt counter,
             // transient flagging, and max-retry handling all live in one place.
             const validation = await RetryOrchestrator.attempt({
@@ -299,45 +408,7 @@ export const AlgorithmSaveTool = Tool.define(
               return { result: warningBlock }
             }
 
-            const normalizedConfig = normalizeConfigForSave({ incoming: params.config })
-            if (params.saveMode === "new") {
-              const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
-              if (missingConfig.length > 0) {
-                return {
-                  result: {
-                    title: "Save blocked — incomplete execution config",
-                    output:
-                      `New algorithms must be saved with complete execution config before backtesting.\n\n` +
-                      `Missing required config field(s): ${missingConfig.join(", ")}.\n\n` +
-                      `Include symbol, asset_class, interval, and non-empty strategy params under params in the finny_algorithm_save config. Do not save first and patch these with finny_algorithm_set_params.`,
-                    metadata: {
-                      blocked: true,
-                      retry: false,
-                      missingConfig,
-                      configRequired: true,
-                    },
-                  },
-                }
-              }
-              const unsupportedConfig = unsupportedNewSaveConfigReasons(normalizedConfig)
-              if (unsupportedConfig.length > 0) {
-                return {
-                  result: {
-                    title: "Save blocked — unsupported execution config",
-                    output:
-                      `New algorithms must be saved with one clear execution shape.\n\n` +
-                      `Unsupported config: ${unsupportedConfig.join("; ")}.\n\n` +
-                      `For multi-portfolio requests, run a portfolio backtest or save one complete strategy per symbol. Do not narrow to one ticker without user approval.`,
-                    metadata: {
-                      blocked: true,
-                      retry: false,
-                      unsupportedConfig,
-                      configRequired: true,
-                    },
-                  },
-                }
-              }
-            }
+            // (Mission + config contract checked before code validation above.)
 
             // The agent never sees brokerKind — the user's per-session pick
             // (set via the TUI Brokerage capsule and persisted to

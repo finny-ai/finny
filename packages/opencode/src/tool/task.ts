@@ -17,6 +17,21 @@ import { getSessionWorkspace, bindSessionWorkspace } from "@finny-ai/core/algo"
 import type { ModelID, ProviderID } from "@/provider/schema"
 import { Analytics } from "@/analytics/tracker"
 
+/**
+ * Substituted when a subagent's final turn produced no text (stream aborted or
+ * empty). Uses the BLOCKED: prefix so parent flows that gate on subagent
+ * evidence (e.g. the Finny build contract) refuse to treat the silence as a
+ * successful result.
+ */
+export const EMPTY_SUBAGENT_RESULT_MARKER =
+  "BLOCKED: subagent returned no usable output (final turn aborted or empty) — do not treat this as evidence."
+
+/** Final text of a subagent run; the BLOCKED marker when there is none. */
+export function finalTaskText(parts: ReadonlyArray<{ type: string; text?: string }>): string {
+  const text = parts.findLast((item) => item.type === "text")?.text?.trim() ?? ""
+  return text.length > 0 ? text : EMPTY_SUBAGENT_RESULT_MARKER
+}
+
 export interface TaskPromptOps {
   cancel(sessionID: SessionID): void
   resolvePromptParts(template: string): Effect.Effect<SessionPrompt.PromptInput["parts"]>
@@ -233,7 +248,7 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
 
               yield* ops.promptAsync(promptInput, {
                 onResult: async (result) => {
-                  const text = result.parts.findLast((item) => item.type === "text")?.text?.trim() ?? ""
+                  const text = finalTaskText(result.parts)
                   if (text.startsWith("BLOCKED:")) {
                     const reason = text.slice("BLOCKED:".length).trim() || "Background task requested attention."
                     const state = await TaskState.finalizeActive(nextSession.id, {
@@ -394,7 +409,7 @@ export const TaskTool = Tool.define<typeof parameters, Metadata, Agent.Service |
                 `task_id: ${nextSession.id} (for resuming to continue this task if needed)`,
                 "",
                 "<task_result>",
-                result.parts.findLast((item) => item.type === "text")?.text ?? "",
+                finalTaskText(result.parts),
                 "</task_result>",
               ].join("\n"),
             }

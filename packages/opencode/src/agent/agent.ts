@@ -247,6 +247,15 @@ export namespace Agent {
             },
           })
 
+          const finnyTemplateMissionReadAccess = Permission.fromConfig({
+            read: {
+              ...finnyWorkspacePatterns("algos/_template/mission.md"),
+            },
+            external_directory: {
+              ...finnyWorkspacePatterns("algos/_template/mission.md"),
+            },
+          })
+
           const agents: Record<string, Info> = {
             build: {
               name: "build",
@@ -275,7 +284,7 @@ export namespace Agent {
             },
             research: {
               name: "research",
-              description: "Research mode. Asks questions first, researches strategy, then hands off to Build.",
+              description: "Hidden compatibility alias for Research mode.",
               color: "#a78bfa",
               options: {},
               prompt: PROMPT_FINNY_RESEARCH,
@@ -287,6 +296,7 @@ export namespace Agent {
               ),
               mode: "primary",
               native: true,
+              hidden: true,
               // Research asks → reads → proposes plan; light tool use compared
               // to build.
               steps: 15,
@@ -389,6 +399,7 @@ export namespace Agent {
                 finnyToolBundle(["finny_extract_data"]),
                 user,
                 finnyTemplateDataAccess,
+                finnyTemplateMissionReadAccess,
               ),
               mode: "subagent",
               native: true,
@@ -408,6 +419,7 @@ export namespace Agent {
                 finnyToolBundle(["webfetch", "websearch", "finny_discord_read"]),
                 user,
                 finnyTemplateNewsAccess,
+                finnyTemplateMissionReadAccess,
               ),
               mode: "subagent",
               native: true,
@@ -528,7 +540,7 @@ export namespace Agent {
               const agent = agents[c.default_agent]
               if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
               if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
-              if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
+              if (agent.hidden === true && agent.name !== "research") throw new Error(`default agent "${c.default_agent}" is hidden`)
               return agent.name
             }
             const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)

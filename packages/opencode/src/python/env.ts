@@ -46,6 +46,19 @@ export namespace Python {
   }
 
   async function systemPython(): Promise<string> {
+    // Prefer specific stable versions before falling back to the `python3`
+    // symlink — on macOS the symlink may point to a pre-release (e.g. 3.14)
+    // that has broken C extensions (pyexpat / libexpat ABI mismatch).
+    for (const candidate of [
+      "/opt/homebrew/opt/python@3.13/bin/python3",
+      "/opt/homebrew/opt/python@3.12/bin/python3",
+      "/opt/homebrew/opt/python@3.11/bin/python3",
+    ]) {
+      try {
+        const result = await Process.run([candidate, "-c", "from xml.parsers import expat"], { nothrow: true })
+        if (result.code === 0) return candidate
+      } catch {}
+    }
     try {
       await Process.run(["python3", "--version"])
       return "python3"

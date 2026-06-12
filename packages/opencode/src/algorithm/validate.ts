@@ -51,6 +51,7 @@ export namespace Validate {
     | "FRACTIONAL_SHARES_EQUITY"
     | "FUTURES_FRACTIONAL_QTY"
     | "FUTURES_NOTIONAL_SIZING"
+    | "CRYPTO_WHOLE_UNIT_QTY"
     | "NEAR_ZERO_DIVISION"
     // Phase 1 smoke-test warnings
     | "INVARIANT_DIRECTIONAL_SANITY"
@@ -133,7 +134,9 @@ export namespace Validate {
     "FRACTIONAL_SHARES_EQUITY",
     "FUTURES_FRACTIONAL_QTY",
     "FUTURES_NOTIONAL_SIZING",
+    "CRYPTO_WHOLE_UNIT_QTY",
     "NEAR_ZERO_DIVISION",
+    "DIVISION_NO_ZERO_CHECK",
     "INVARIANT_DIRECTIONAL_SANITY",
     "GUARD_NEVER_BINDING",
   ])
@@ -330,8 +333,9 @@ export namespace Validate {
     return runPythonDiagnostic(scriptPath("ast_analyzer.py"), code, 5_000, args)
   }
 
-  async function checkSmokeTest(code: string): Promise<Diagnostic[]> {
-    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, 15_000)
+  async function checkSmokeTest(code: string, symbol?: string): Promise<Diagnostic[]> {
+    const args = symbol ? ["--symbol", symbol] : []
+    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, 15_000, args)
   }
 
   async function checkSyntax(code: string): Promise<Diagnostic | null> {
@@ -513,24 +517,10 @@ export namespace Validate {
       })
     }
 
-    // DIVISION_NO_ZERO_CHECK: / without nearby != 0 or > 0
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (line.startsWith("#") || line.startsWith("def ") || line.startsWith("class ")) continue
-      if (/[^/]\/[^/=]/.test(line) || /^\s*\w.*\/[^/]/.test(line)) {
-        const context = lines.slice(Math.max(0, i - 3), i + 1).join("\n")
-        if (!/!=\s*0/.test(context) && !/>\s*0/.test(context) && !/if\s+.*\b\w+\b/.test(context)) {
-          diagnostics.push({
-            code: "DIVISION_NO_ZERO_CHECK",
-            severity: "warning",
-            message: "Division without a nearby zero-check guard",
-            line: i + 1,
-            fix: "Add `if denominator != 0:` before dividing",
-          })
-          break
-        }
-      }
-    }
+    // DIVISION_NO_ZERO_CHECK moved to ast_analyzer.py: the old line-window
+    // regex flagged un-zero-able denominators (e.g. `period + 1`) and missed
+    // guards more than 3 lines away, which dead-ended save loops once
+    // warnings became blocking.
 
     // on_tick warnings
     const classResult = extractClassBody(normalized, "Strategy")
@@ -708,7 +698,7 @@ export namespace Validate {
       const symbol = extractSymbol(options.config)
       astDiagnostics = await checkAST(normalized, symbol)
       if (!options.skipSmokeTest) {
-        smokeDiagnostics = await checkSmokeTest(normalized)
+        smokeDiagnostics = await checkSmokeTest(normalized, symbol)
       }
     }
 

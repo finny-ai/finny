@@ -22,7 +22,7 @@ const FIRST_RUN_KEY = "home_getting_started_seen"
 
 let once = false
 const placeholder = {
-  normal: ["Describe a strategy...", "Build me a mean-reversion algo", "Research momentum strategies"],
+  normal: ["Describe a strategy...", "Build me a mean-reversion algo", "Build momentum strategies"],
   shell: ["ls -la", "git status", "pwd"],
 }
 

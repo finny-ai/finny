@@ -17,6 +17,8 @@ Diagnostic codes:
   FRACTIONAL_SHARES_EQUITY  (warning) symbol looks like an equity ticker but qty is a float
   FUTURES_FRACTIONAL_QTY    (warning) futures contracts require whole-number qty
   FUTURES_NOTIONAL_SIZING   (warning) futures strategies should size by explicit contract qty
+  CRYPTO_WHOLE_UNIT_QTY     (warning) crypto order qty floored to whole units / clamped to a 1-unit minimum
+  DIVISION_NO_ZERO_CHECK    (warning) division by a variable with no zero-guard anywhere in the function
   NEAR_ZERO_DIVISION        (warning) RSI-shaped division guarded only by != 0 / > 0
 
 Exits 0 on success (diagnostics on stdout). Exits non-zero only on parse failure.
@@ -1355,6 +1357,147 @@ def _contains_floaty_division(node):
     return False
 
 
+def _symbol_is_crypto(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return False
+    s = symbol.strip().upper()
+    return any(suf in s for suf in CRYPTO_SUFFIXES) or s.endswith("-PERP")
+
+
+def _is_whole_unit_coercion(node):
+    """`int(x)`, `floor(x)` / `math.floor(x)`, single-arg `round(x)`, or `a // b` —
+    expressions that force a whole-number qty. `round(x, n)` keeps fractional
+    precision and is NOT flagged."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.FloorDiv):
+        return True
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id == "int":
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id == "round" and len(node.args) == 1:
+            return True
+        if isinstance(node.func, ast.Name) and node.func.id == "floor":
+            return True
+        if isinstance(node.func, ast.Attribute) and node.func.attr == "floor":
+            return True
+    return False
+
+
+def _find_min_clamp_violation(node):
+    """Detect `max(<const ≥ 1>, <whole-unit coercion or anything>)` — the
+    minimum-order clamp. `max(1, int(qty))` submits 1 whole unit even when the
+    computed qty floored to 0 because one unit costs more than the account."""
+    for inner in ast.walk(node):
+        if not (isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name) and inner.func.id == "max"):
+            continue
+        has_min_const = any(
+            isinstance(a, ast.Constant) and isinstance(a.value, (int, float)) and a.value >= 1
+            for a in inner.args
+        )
+        has_coercion = any(_is_whole_unit_coercion(a) for a in inner.args)
+        if has_min_const and has_coercion:
+            return inner.lineno
+    return None
+
+
+QTY_NAME_RE = None  # compiled lazily to keep import side effects minimal
+
+
+def _looks_like_qty_name(name):
+    global QTY_NAME_RE
+    if QTY_NAME_RE is None:
+        import re
+        QTY_NAME_RE = re.compile(r"qty|quantity|shares?|units?|contracts?", re.IGNORECASE)
+    return bool(QTY_NAME_RE.search(name))
+
+
+SIZING_FN_RE = None
+
+
+def _looks_like_sizing_fn(name):
+    global SIZING_FN_RE
+    if SIZING_FN_RE is None:
+        import re
+        SIZING_FN_RE = re.compile(r"siz(e|ing)|qty|quantity", re.IGNORECASE)
+    return bool(SIZING_FN_RE.search(name))
+
+
+def check_crypto_qty_floor(cls, symbol):
+    """Crypto supports fractional order quantities. Flooring qty to whole units
+    silently produces qty=0 for high-priced coins (no trades ever), and clamping
+    with `max(1, …)` is worse: it submits 1 whole unit (e.g. 1 BTC ≈ $60K)
+    regardless of account size, so every order is rejected for insufficient
+    margin — and tuning the allocation % cannot fix it because the clamp wins.
+
+    Scans the WHOLE Strategy class, not just on_bar: sizing usually lives in a
+    helper like `_get_position_size`."""
+    diagnostics = []
+    if not _symbol_is_crypto(symbol):
+        return diagnostics
+
+    for fn in cls.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        in_sizing_fn = _looks_like_sizing_fn(fn.name)
+        for node in ast.walk(fn):
+            # Highest-confidence pattern anywhere in the class: max(N, int(...)).
+            if isinstance(node, (ast.Return, ast.Assign)) and node.value is not None:
+                clamp_line = _find_min_clamp_violation(node.value)
+                if clamp_line is not None:
+                    diagnostics.append({
+                        "code": "CRYPTO_WHOLE_UNIT_QTY",
+                        "severity": "warning",
+                        "message": (
+                            f"Symbol `{symbol}` is crypto, but order qty is clamped to a whole-unit minimum "
+                            "(`max(N, int(...))`). When one unit costs more than the account (e.g. 1 BTC on a "
+                            "$10K account), this submits an unaffordable whole-unit order and EVERY order is "
+                            "rejected for insufficient margin. Reducing the allocation % does not fix it — "
+                            "the max(N, …) clamp wins."
+                        ),
+                        "line": clamp_line,
+                        "fix": (
+                            "Keep qty fractional: `qty = (equity * alloc_pct) / price`, then `qty = round(qty, 6)`. "
+                            "Skip the trade when qty * price is below the venue minimum — never force a whole-unit floor."
+                        ),
+                    })
+                    return diagnostics
+
+            # Lower-confidence pattern: int/floor coercion of a sizing value —
+            # only flag when it is clearly qty-shaped (sizing-named function,
+            # qty-named target, or a coerced expression that divides by price).
+            target_names = []
+            value = None
+            if isinstance(node, ast.Assign):
+                target_names = [t.id for t in node.targets if isinstance(t, ast.Name)]
+                value = node.value
+            elif isinstance(node, ast.Return):
+                value = node.value
+            if value is None or not _is_whole_unit_coercion(value):
+                continue
+            qty_shaped = (
+                in_sizing_fn
+                or any(_looks_like_qty_name(t) for t in target_names)
+                or _contains_floaty_division(value)
+            )
+            if not qty_shaped:
+                continue
+            diagnostics.append({
+                "code": "CRYPTO_WHOLE_UNIT_QTY",
+                "severity": "warning",
+                "message": (
+                    f"Symbol `{symbol}` is crypto, but the computed order qty is floored to a whole unit "
+                    "(`int(...)` / `floor(...)`). For high-priced coins the intended fractional size floors "
+                    "to 0 and the strategy never trades. Crypto supports fractional quantities."
+                ),
+                "line": node.lineno,
+                "fix": (
+                    "Drop the int/floor coercion. Use `qty = round((equity * alloc_pct) / price, 6)` and skip "
+                    "the trade when the resulting notional is below the venue minimum."
+                ),
+            })
+            return diagnostics
+    return diagnostics
+
+
 RSI_DENOM_HINTS = ("avg_loss", "avg_gain", "loss_avg", "gain_avg", "denom")
 
 
@@ -1464,6 +1607,88 @@ def check_near_zero_division(on_tick):
     return diagnostics
 
 
+def _denominator_key(node):
+    """Bare variable denominators only: `x` or `self.x` → its name; anything else None."""
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _is_unzeroable_denominator(node):
+    """Denominators that cannot plausibly be zero and must never be flagged:
+    nonzero literals, `x + <positive literal>`, `max(x, <positive literal>)`,
+    and `x or <nonzero literal>` fallbacks."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, (int, float)) and node.value != 0
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        return any(
+            isinstance(side, ast.Constant) and isinstance(side.value, (int, float)) and side.value > 0
+            for side in (node.left, node.right)
+        )
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "max":
+        return any(
+            isinstance(a, ast.Constant) and isinstance(a.value, (int, float)) and a.value > 0
+            for a in node.args
+        )
+    if isinstance(node, ast.BoolOp) and isinstance(node.op, ast.Or):
+        return any(
+            isinstance(v, ast.Constant) and isinstance(v.value, (int, float)) and v.value != 0
+            for v in node.values
+        )
+    return False
+
+
+def check_division_no_zero_guard(cls):
+    """Division by a VARIABLE denominator with no zero-guard anywhere in the
+    enclosing function. Replaces the old line-window regex in validate.ts that
+    flagged un-zero-able denominators like `period + 1` and missed guards more
+    than 3 lines away. A denominator counts as guarded when ANY if/while/
+    ternary/assert test in the function mentions it — generous on purpose so
+    this only fires on completely unguarded denominators (e.g. RSI avg_loss).
+    Reports every offending division, each with its real line number."""
+    diagnostics = []
+    for fn in cls.body:
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        guarded = set()
+        for node in ast.walk(fn):
+            test = None
+            if isinstance(node, (ast.If, ast.While, ast.IfExp)):
+                test = node.test
+            elif isinstance(node, ast.Assert):
+                test = node.test
+            if test is None:
+                continue
+            for sub in ast.walk(test):
+                key = _denominator_key(sub)
+                if key:
+                    guarded.add(key)
+        seen_lines = set()
+        for node in ast.walk(fn):
+            if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)):
+                continue
+            den = node.right
+            if _is_unzeroable_denominator(den):
+                continue
+            key = _denominator_key(den)
+            if key is None or key in guarded or node.lineno in seen_lines:
+                continue
+            seen_lines.add(node.lineno)
+            diagnostics.append({
+                "code": "DIVISION_NO_ZERO_CHECK",
+                "severity": "warning",
+                "message": (
+                    f"`{key}` is used as a denominator in `{fn.name}` with no zero-guard anywhere "
+                    "in the function."
+                ),
+                "line": node.lineno,
+                "fix": f"Guard before dividing: `if {key} <= 0: return None` (or similar) anywhere in `{fn.name}`.",
+            })
+    return diagnostics
+
+
 def analyze(code, symbol=None):
     try:
         tree = ast.parse(code)
@@ -1481,6 +1706,8 @@ def analyze(code, symbol=None):
     diagnostics += check_gains_losses_asymmetry(cls)
     diagnostics += check_missing_position_sizing(cls)
     diagnostics += check_equity_never_updated(cls)
+    diagnostics += check_crypto_qty_floor(cls, symbol)
+    diagnostics += check_division_no_zero_guard(cls)
 
     # Run entry-method-scoped checks for every entry method the strategy defines.
     # This covers both legacy on_tick strategies and broker-API on_bar strategies.
