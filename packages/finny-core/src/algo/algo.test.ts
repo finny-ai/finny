@@ -22,6 +22,7 @@ import {
   serializeMission,
   writeAlgo,
 } from "./index"
+import { writeUserPrefs } from "../prefs"
 
 const EXAMPLE_MISSION_YAML = `---
 schema_version: 2
@@ -166,6 +167,28 @@ describe("algosRoot", () => {
     expect(got).toBe(path.join("/x/data", "finny", "algos"))
   })
 
+  test("respects FINNY_HOME before XDG_DATA_HOME", () => {
+    const got = algosRoot({ FINNY_HOME: "/custom/finny", XDG_DATA_HOME: "/x/data" } as any, "darwin")
+    expect(got).toBe(path.join("/custom/finny", "algos"))
+  })
+
+  test("uses saved Finny Home preference", async () => {
+    const root = await mkSandbox()
+    const prefsPath = path.join(root, "prefs.md")
+    await writeUserPrefs(
+      {
+        frontmatter: {
+          schema_version: 1,
+          finny_home: path.join(root, "saved"),
+        },
+        body: "\n",
+      },
+      prefsPath,
+    )
+    const got = algosRoot({ XDG_DATA_HOME: path.join(root, "xdg") } as any, "linux", prefsPath)
+    expect(got).toBe(path.join(root, "saved", "algos"))
+  })
+
   test("falls back to ~/.local/share on linux/darwin without XDG", () => {
     const got = algosRoot({} as any, "linux")
     expect(got.endsWith(path.join(".local", "share", "finny", "algos"))).toBe(true)
@@ -174,6 +197,18 @@ describe("algosRoot", () => {
   test("uses %LOCALAPPDATA% on win32", () => {
     const got = algosRoot({ LOCALAPPDATA: "C:\\\\users\\\\me\\\\AppData\\\\Local" } as any, "win32")
     expect(got).toBe(path.join("C:\\\\users\\\\me\\\\AppData\\\\Local", "finny", "algos"))
+  })
+
+  test("honors XDG_DATA_HOME for isolated win32 tests", () => {
+    const got = algosRoot(
+      {
+        OPENCODE_TEST_HOME: "C:\\\\tmp\\\\test-home",
+        XDG_DATA_HOME: "C:\\\\tmp\\\\xdg-data",
+        LOCALAPPDATA: "C:\\\\users\\\\me\\\\AppData\\\\Local",
+      } as any,
+      "win32",
+    )
+    expect(got).toBe(path.join("C:\\\\tmp\\\\xdg-data", "finny", "algos"))
   })
 
   test("falls back under AppData\\Local on win32 without LOCALAPPDATA", () => {
@@ -273,7 +308,11 @@ describe("loadAlgo + listAlgos", () => {
       mission,
       current: "v01",
       versions: {
-        v01: { strategy: "class Strategy: pass\n", backtest: { ...EXAMPLE_BACKTEST, version: "v01" } as any, reasoning: "# v01\n" },
+        v01: {
+          strategy: "class Strategy: pass\n",
+          backtest: { ...EXAMPLE_BACKTEST, version: "v01" } as any,
+          reasoning: "# v01\n",
+        },
       },
     })
 

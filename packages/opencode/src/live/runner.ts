@@ -9,10 +9,11 @@ import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind } from "./brokers"
+import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
 import { requireBrokerTier } from "@/plan/brokers"
-import { Global } from "@/global"
 import { License } from "@/license"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
 
 const log = Log.create({ service: "live" })
 
@@ -364,6 +365,8 @@ if __name__ == "__main__":
         `${spec.displayName} credentials not found. Open Settings → Paper Trading and connect your ${spec.displayName} account first.`,
       )
     }
+    const disabledReason = liveTradingDisabledReason(spec, creds)
+    if (disabledReason) throw new Error(disabledReason)
 
     const id = crypto.randomUUID()
 
@@ -650,7 +653,12 @@ if __name__ == "__main__":
 
   async function latestEligibility(algorithm: Algorithm.Info): Promise<string | null> {
     const version = Number((algorithm as any).version ?? 0) || 0
-    const runsDir = path.join(Global.Path.data, "algorithms", algorithm.algorithmId, `v${String(version).padStart(2, "0")}`, "runs")
+    const runsDir = path.join(
+      finnyArtifactPath("algorithms"),
+      algorithm.algorithmId,
+      `v${String(version).padStart(2, "0")}`,
+      "runs",
+    )
     try {
       const entries = await fs.readdir(runsDir, { withFileTypes: true })
       let newest: { mtime: number; status: string } | null = null

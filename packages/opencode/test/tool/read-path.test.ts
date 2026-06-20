@@ -4,7 +4,7 @@ import os from "os"
 import path from "path"
 import { resolveReadPath } from "../../src/tool/read"
 
-const REPO_ROOT = "/Users/dev/finny-internal-prop"
+const REPO_ROOT = path.join(path.parse(process.cwd()).root, "Users", "dev", "finny-internal-prop")
 const PKG_DIR = path.join(REPO_ROOT, "packages/opencode")
 
 describe("resolveReadPath", () => {
@@ -17,6 +17,18 @@ describe("resolveReadPath", () => {
   test("handles a leading ./ on algos paths", () => {
     const resolved = resolveReadPath("./algos/_template/data/spy.md", PKG_DIR, REPO_ROOT)
     expect(resolved).toBe(path.join(REPO_ROOT, "algos/_template/data/spy.md"))
+  })
+
+  test("anchors relative data-agent instructions at the worktree root", () => {
+    const resolved = resolveReadPath("data-agent/instructions.md", PKG_DIR, REPO_ROOT)
+    expect(resolved).toBe(path.join(REPO_ROOT, "data-agent/instructions.md"))
+    expect(resolved).not.toContain("packages/opencode")
+  })
+
+  test("anchors relative data-agent directory at the worktree root", () => {
+    const resolved = resolveReadPath("data-agent", PKG_DIR, REPO_ROOT)
+    expect(resolved).toBe(path.join(REPO_ROOT, "data-agent"))
+    expect(resolved).not.toContain("packages/opencode")
   })
 
   test("finds the Finny algos root above a nested packages/opencode cwd", () => {
@@ -59,8 +71,10 @@ describe("resolveReadPath absolute wrong-base remap", () => {
   function fixture() {
     const root = mkdtempSync(path.join(os.tmpdir(), "finny-remap-"))
     mkdirSync(path.join(root, "algos/_template/data/news"), { recursive: true })
+    mkdirSync(path.join(root, "data-agent"), { recursive: true })
     mkdirSync(path.join(root, "packages/opencode"), { recursive: true })
     writeFileSync(path.join(root, "algos/_template/README.md"), "# Template\n")
+    writeFileSync(path.join(root, "data-agent/instructions.md"), "# Data Agent\n")
     return { root, nested: path.join(root, "packages/opencode") }
   }
 
@@ -89,6 +103,16 @@ describe("resolveReadPath absolute wrong-base remap", () => {
     try {
       const wrong = path.join(nested, "algos/_template/data/news/btc-brief.md")
       expect(resolveReadPath(wrong, nested, nested)).toBe(path.join(root, "algos/_template/data/news/btc-brief.md"))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  test("remaps wrong-base absolute data-agent instructions to the repo root", () => {
+    const { root, nested } = fixture()
+    try {
+      const wrong = path.join(nested, "data-agent/instructions.md")
+      expect(resolveReadPath(wrong, nested, nested)).toBe(path.join(root, "data-agent/instructions.md"))
     } finally {
       rmSync(root, { recursive: true, force: true })
     }

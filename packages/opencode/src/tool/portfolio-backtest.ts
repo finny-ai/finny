@@ -5,7 +5,7 @@ import path from "path"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Process } from "@/util/process"
-import { ensurePythonEnv } from "@/python/env"
+import { resolveSessionPythonEnv } from "@/python/session-env"
 
 const parameters = z.object({
   holdings: z
@@ -398,7 +398,7 @@ export const PortfolioBacktestTool = Tool.define(
 
         let pythonCmd: string
         try {
-          const env = await ensurePythonEnv([
+          const env = await resolveSessionPythonEnv(ctx.sessionID, [
             { spec: "yfinance", importCheck: "yfinance" },
             { spec: "pandas", importCheck: "pandas" },
           ])

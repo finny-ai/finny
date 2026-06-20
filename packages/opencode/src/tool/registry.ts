@@ -1,14 +1,17 @@
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/layer-node-platform"
+import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanExitTool } from "./plan"
-import { Session } from "../session"
+import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
-import { BashTool } from "./bash"
+import { ShellTool } from "./shell"
 import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { Database } from "@opencode-ai/core/database/database"
 import { ListTasksTool } from "./list-tasks"
-import { TaskStatusTool } from "./task-status"
 import { StopTaskTool } from "./stop-task"
 import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
@@ -32,448 +35,502 @@ import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
-import { ExtractDataTool } from "./extract-data"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
 import { SkillTool } from "./skill"
-import { Tool } from "./tool"
-import { Config } from "../config/config"
+import * as Tool from "./tool"
+import { Config } from "@/config/config"
 import { type ToolContext as PluginToolContext, type ToolDefinition } from "@opencode-ai/plugin"
+import type { JSONSchema7, JSONSchema7Definition } from "@ai-sdk/provider"
+import { Schema } from "effect"
 import z from "zod"
 import { Plugin } from "../plugin"
-import { Provider } from "../provider/provider"
-import { ProviderID, type ModelID } from "../provider/schema"
+import { Provider } from "@/provider/provider"
+
 import { WebSearchTool } from "./websearch"
-import { CodeSearchTool } from "./codesearch"
-import { Flag } from "@/flag/flag"
-import { Log } from "@/util/log"
 import { LspTool } from "./lsp"
-import { Truncate } from "./truncate"
+import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
-import { Glob } from "../util/glob"
+import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
 import { Effect, Layer, Context } from "effect"
 import { FetchHttpClient, HttpClient } from "effect/unstable/http"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
-import * as CrossSpawnSpawner from "@/effect/cross-spawn-spawner"
-import { Ripgrep } from "../file/ripgrep"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Format } from "../format"
 import { InstanceState } from "@/effect/instance-state"
-import { makeRuntime } from "@/effect/run-service"
-import { Env } from "../env"
+import { EffectBridge } from "@/effect/bridge"
 import { Question } from "../question"
 import { Todo } from "../session/todo"
-import { LSP } from "../lsp"
-import { FileTime } from "../file/time"
+import { LSP } from "@/lsp/lsp"
 import { Instruction } from "../session/instruction"
-import { AppFileSystem } from "../filesystem"
-import { Bus } from "../bus"
+import { FSUtil } from "@opencode-ai/core/fs-util"
+import { EventV2Bridge } from "@/event-v2-bridge"
 import { Agent } from "../agent/agent"
 import { Skill } from "../skill"
-import { evaluate as evaluatePermissionRule } from "../permission/evaluate"
-import { Wildcard } from "@/util/wildcard"
+import { Permission } from "@/permission"
+import { BackgroundJob } from "@/background/job"
+import { RuntimeFlags } from "@/effect/runtime-flags"
+import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
+import { Bus } from "@/bus"
 
-export namespace ToolRegistry {
-  const log = Log.create({ service: "tool.registry" })
+export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
+  return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
+}
 
-  type TaskDef = Tool.InferDef<typeof TaskTool>
-  type ReadDef = Tool.InferDef<typeof ReadTool>
-  const EDIT_TOOLS = ["edit", "write", "apply_patch", "multiedit"]
+type TaskDef = Tool.InferDef<typeof TaskTool>
+type ReadDef = Tool.InferDef<typeof ReadTool>
 
-  function disabledTools(tools: string[], ruleset: Agent.Info["permission"]): Set<string> {
-    const result = new Set<string>()
-    for (const tool of tools) {
-      const permission = EDIT_TOOLS.includes(tool) ? "edit" : tool
-      const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
-      if (!rule) continue
-      if (rule.pattern === "*" && rule.action === "deny") result.add(tool)
-    }
-    return result
-  }
+type State = {
+  custom: Tool.Def<Tool.ParameterSchema>[]
+  builtin: Tool.Def<Tool.ParameterSchema>[]
+  task: TaskDef
+  read: ReadDef
+}
 
-  type State = {
-    custom: Tool.Def[]
-    builtin: Tool.Def[]
-    task: TaskDef
-    read: ReadDef
-  }
+export interface Interface {
+  readonly ids: () => Effect.Effect<string[]>
+  readonly all: () => Effect.Effect<Tool.Def[]>
+  readonly named: () => Effect.Effect<{ task: TaskDef; read: ReadDef }>
+  readonly tools: (model: {
+    providerID: ProviderV2.ID
+    modelID: ModelV2.ID
+    agent: Agent.Info
+  }) => Effect.Effect<Tool.Def[]>
+}
 
-  export interface Interface {
-    readonly ids: () => Effect.Effect<string[]>
-    readonly all: () => Effect.Effect<Tool.Def[]>
-    readonly named: () => Effect.Effect<{ task: TaskDef; read: ReadDef }>
-    readonly tools: (model: {
-      providerID: ProviderID
-      modelID: ModelID
-      agent: Agent.Info
-    }) => Effect.Effect<Tool.Def[]>
-  }
+export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
 
-  export class Service extends Context.Service<Service, Interface>()("@opencode/ToolRegistry") {}
+export const layer = Layer.effect(
+  Service,
+  Effect.gen(function* () {
+    const config = yield* Config.Service
+    const plugin = yield* Plugin.Service
+    const agents = yield* Agent.Service
+    const truncate = yield* Truncate.Service
+    const flags = yield* RuntimeFlags.Service
 
-  export const layer: Layer.Layer<
-    Service,
-    never,
-    | Config.Service
-    | Plugin.Service
-    | Question.Service
-    | Todo.Service
-    | Agent.Service
-    | Skill.Service
-    | Session.Service
-    | Provider.Service
-    | LSP.Service
-    | FileTime.Service
-    | Instruction.Service
-    | AppFileSystem.Service
-    | Bus.Service
-    | HttpClient.HttpClient
-    | ChildProcessSpawner
-    | Ripgrep.Service
-    | Format.Service
-    | Truncate.Service
-  > = Layer.effect(
-    Service,
-    Effect.gen(function* () {
-      const config = yield* Config.Service
-      const plugin = yield* Plugin.Service
-      const agents = yield* Agent.Service
-      const skill = yield* Skill.Service
-      const truncate = yield* Truncate.Service
+    const invalid = yield* InvalidTool
+    const task = yield* TaskTool
+    const listTasks = yield* ListTasksTool
+    const stopTask = yield* StopTaskTool
+    const read = yield* ReadTool
+    const question = yield* QuestionTool
+    const todo = yield* TodoWriteTool
+    const lsptool = yield* LspTool
+    const plan = yield* PlanExitTool
+    const webfetch = yield* WebFetchTool
+    const websearch = yield* WebSearchTool
+    const shell = yield* ShellTool
+    const globtool = yield* GlobTool
+    const writetool = yield* WriteTool
+    const edit = yield* EditTool
+    const greptool = yield* GrepTool
+    const patchtool = yield* ApplyPatchTool
+    const skilltool = yield* SkillTool
+    const algorithmSave = yield* AlgorithmSaveTool
+    const algorithmList = yield* AlgorithmListTool
+    const algorithmGet = yield* AlgorithmGetTool
+    const algorithmSetParams = yield* AlgorithmSetParamsTool
+    const algorithmValidate = yield* AlgorithmValidateTool
+    const algorithmScaffold = yield* AlgorithmScaffoldTool
+    const algorithmVersions = yield* AlgorithmVersionsTool
+    const algorithmExport = yield* AlgorithmExportTool
+    const brokerageSwitch = yield* BrokerageSwitchTool
+    const backtestRun = yield* BacktestRunTool
+    const backtestHistory = yield* BacktestHistoryTool
+    const backtestWalkforward = yield* BacktestWalkforwardTool
+    const backtestSweep = yield* BacktestSweepTool
+    const monitorSnapshot = yield* MonitorSnapshotTool
+    const scheduleSubagent = yield* ScheduleSubagentTool
+    const listSubagents = yield* ListSubagentsTool
+    const stopSubagent = yield* StopSubagentTool
+    const quote = yield* QuoteTool
+    const priceHistory = yield* PriceHistoryTool
+    const portfolioBacktest = yield* PortfolioBacktestTool
+    const discordRead = yield* DiscordReadTool
+    const agent = yield* Agent.Service
 
-      const invalid = yield* InvalidTool
-      const task = yield* TaskTool
-      const read = yield* ReadTool
-      const question = yield* QuestionTool
-      const todo = yield* TodoWriteTool
-      const listtasks = yield* ListTasksTool
-      const taskstatus = yield* TaskStatusTool
-      const stoptask = yield* StopTaskTool
-      const lsptool = yield* LspTool
-      const plan = yield* PlanExitTool
-      const webfetch = yield* WebFetchTool
-      const websearch = yield* WebSearchTool
-      const bash = yield* BashTool
-      const codesearch = yield* CodeSearchTool
-      const globtool = yield* GlobTool
-      const writetool = yield* WriteTool
-      const edit = yield* EditTool
-      const greptool = yield* GrepTool
-      const patchtool = yield* ApplyPatchTool
-      const skilltool = yield* SkillTool
-      const algosave = yield* AlgorithmSaveTool
-      const algolist = yield* AlgorithmListTool
-      const algoget = yield* AlgorithmGetTool
-      const algosetparams = yield* AlgorithmSetParamsTool
-      const algovalidate = yield* AlgorithmValidateTool
-      const algoscaffold = yield* AlgorithmScaffoldTool
-      const algoversions = yield* AlgorithmVersionsTool
-      const algoexport = yield* AlgorithmExportTool
-      const brokerageswitch = yield* BrokerageSwitchTool
-      const backtestrun = yield* BacktestRunTool
-      const backtesthistory = yield* BacktestHistoryTool
-      const backtestwalkforward = yield* BacktestWalkforwardTool
-      const backtestsweep = yield* BacktestSweepTool
-      const monitorsnapshot = yield* MonitorSnapshotTool
-      const schedulesubagent = yield* ScheduleSubagentTool
-      const listsubagents = yield* ListSubagentsTool
-      const stopsubagent = yield* StopSubagentTool
-      const quote = yield* QuoteTool
-      const pricehistory = yield* PriceHistoryTool
-      const portfoliobacktest = yield* PortfolioBacktestTool
-      const discordread = yield* DiscordReadTool
-      const extractdata = yield* ExtractDataTool
+    const state = yield* InstanceState.make<State>(
+      Effect.fn("ToolRegistry.state")(function* (ctx) {
+        const custom: Tool.Def<Tool.ParameterSchema>[] = []
 
-      const state = yield* InstanceState.make<State>(
-        Effect.fn("ToolRegistry.state")(function* (ctx) {
-          const custom: Tool.Def[] = []
-
-          function fromPlugin(id: string, def: ToolDefinition): Tool.Def {
-            return {
-              id,
-              parameters: z.object(def.args),
-              description: def.description,
-              execute: (args, toolCtx) =>
-                Effect.gen(function* () {
-                  const pluginCtx: PluginToolContext = {
-                    ...toolCtx,
-                    ask: (req) => toolCtx.ask(req),
-                    directory: ctx.directory,
-                    worktree: ctx.worktree,
-                  }
-                  const result = yield* Effect.promise(() => def.execute(args as any, pluginCtx))
-                  const agent = yield* Effect.promise(() => Agent.get(toolCtx.agent))
-                  const out = yield* truncate.output(result, {}, agent)
-                  return {
-                    title: "",
-                    output: out.truncated ? out.content : result,
-                    metadata: {
-                      truncated: out.truncated,
-                      outputPath: out.truncated ? out.outputPath : undefined,
-                    },
-                  }
-                }),
-            }
-          }
-
-          const dirs = yield* config.directories()
-          const matches = dirs.flatMap((dir) =>
-            Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
-          )
-          if (matches.length) yield* config.waitForDependencies()
-          for (const match of matches) {
-            const namespace = path.basename(match, path.extname(match))
-            const mod = yield* Effect.promise(
-              () => import(process.platform === "win32" ? match : pathToFileURL(match).href),
-            )
-            for (const [id, def] of Object.entries<ToolDefinition>(mod)) {
-              custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
-            }
-          }
-
-          const plugins = yield* plugin.list()
-          for (const p of plugins) {
-            for (const [id, def] of Object.entries(p.tool ?? {})) {
-              custom.push(fromPlugin(id, def))
-            }
-          }
-
-          const cfg = yield* config.get()
-          const questionEnabled =
-            ["app", "cli", "desktop"].includes(Flag.OPENCODE_CLIENT) || Flag.OPENCODE_ENABLE_QUESTION_TOOL
-
-          const tool = yield* Effect.all({
-            invalid: Tool.init(invalid),
-            bash: Tool.init(bash),
-            read: Tool.init(read),
-            glob: Tool.init(globtool),
-            grep: Tool.init(greptool),
-            edit: Tool.init(edit),
-            write: Tool.init(writetool),
-            task: Tool.init(task),
-            fetch: Tool.init(webfetch),
-            todo: Tool.init(todo),
-            listtasks: Tool.init(listtasks),
-            taskstatus: Tool.init(taskstatus),
-            stoptask: Tool.init(stoptask),
-            search: Tool.init(websearch),
-            code: Tool.init(codesearch),
-            skill: Tool.init(skilltool),
-            patch: Tool.init(patchtool),
-            question: Tool.init(question),
-            lsp: Tool.init(lsptool),
-            plan: Tool.init(plan),
-            algosave: Tool.init(algosave),
-            algolist: Tool.init(algolist),
-            algoget: Tool.init(algoget),
-            algosetparams: Tool.init(algosetparams),
-            algovalidate: Tool.init(algovalidate),
-            algoscaffold: Tool.init(algoscaffold),
-            algoversions: Tool.init(algoversions),
-            algoexport: Tool.init(algoexport),
-            brokerageswitch: Tool.init(brokerageswitch),
-            backtestrun: Tool.init(backtestrun),
-            backtesthistory: Tool.init(backtesthistory),
-            backtestwalkforward: Tool.init(backtestwalkforward),
-            backtestsweep: Tool.init(backtestsweep),
-            monitorsnapshot: Tool.init(monitorsnapshot),
-            schedulesubagent: Tool.init(schedulesubagent),
-            listsubagents: Tool.init(listsubagents),
-            stopsubagent: Tool.init(stopsubagent),
-            quote: Tool.init(quote),
-            pricehistory: Tool.init(pricehistory),
-            portfoliobacktest: Tool.init(portfoliobacktest),
-            discordread: Tool.init(discordread),
-            extractdata: Tool.init(extractdata),
-          })
-
+        function fromPlugin(id: string, def: ToolDefinition): Tool.Def {
+          // Plugin tools still expose Zod args publicly; keep that compatibility
+          // boxed at the registry boundary and give the LLM the original JSON Schema.
+          // Normalize missing args to `{}` once — pre-1.14.49 the code was
+          // `z.object(def.args)` and Zod silently tolerated undefined (#27451, #27630).
+          const args = def.args ?? {}
+          const entries = Object.entries(args)
+          const allZod = entries.every((entry) => isZodType(entry[1]))
+          const zodParams = allZod ? z.object(args) : undefined
+          const jsonSchema = zodParams ? zodJsonSchema(zodParams) : legacyJsonSchema(entries)
+          const parameters = zodParams
+            ? Schema.declare<unknown>((u): u is unknown => zodParams.safeParse(u).success)
+            : Schema.Unknown
           return {
-            custom,
-            builtin: [
-              tool.invalid,
-              ...(questionEnabled ? [tool.question] : []),
-              tool.bash,
-              tool.read,
-              tool.glob,
-              tool.grep,
-              tool.edit,
-              tool.write,
-              tool.task,
-              tool.fetch,
-              tool.todo,
-              tool.listtasks,
-              tool.taskstatus,
-              tool.stoptask,
-              tool.search,
-              tool.code,
-              tool.skill,
-              tool.patch,
-              tool.algosave,
-              tool.algolist,
-              tool.algoget,
-              tool.algosetparams,
-              tool.algovalidate,
-              tool.algoscaffold,
-              tool.algoversions,
-              tool.algoexport,
-              tool.brokerageswitch,
-              tool.backtestrun,
-              tool.backtesthistory,
-              tool.backtestwalkforward,
-              tool.backtestsweep,
-              tool.monitorsnapshot,
-              tool.schedulesubagent,
-              tool.listsubagents,
-              tool.stopsubagent,
-              tool.quote,
-              tool.pricehistory,
-              tool.portfoliobacktest,
-              tool.discordread,
-              tool.extractdata,
-              ...(Flag.OPENCODE_EXPERIMENTAL_LSP_TOOL ? [tool.lsp] : []),
-              ...(Flag.OPENCODE_EXPERIMENTAL_PLAN_MODE && Flag.OPENCODE_CLIENT === "cli" ? [tool.plan] : []),
-            ],
-            task: tool.task,
-            read: tool.read,
+            id,
+            parameters,
+            jsonSchema,
+            description: def.description,
+            execute: (args, toolCtx) =>
+              Effect.gen(function* () {
+                // Bridge the host's Effect-based `ask` into a Promise-returning
+                // function for the plugin to make sure context persists
+                const bridge = yield* EffectBridge.make()
+                const pluginCtx: PluginToolContext = {
+                  ...toolCtx,
+                  ask: (req) => bridge.promise(toolCtx.ask(req)),
+                  directory: ctx.directory,
+                  worktree: ctx.worktree,
+                }
+                const result = yield* Effect.promise(() => def.execute(args as any, pluginCtx))
+                const output = typeof result === "string" ? result : result.output
+                const metadata = typeof result === "string" ? {} : (result.metadata ?? {})
+                const attachments = typeof result === "string" ? undefined : result.attachments
+                const info = yield* agent.get(toolCtx.agent)
+                const out = yield* truncate.output(output, {}, info)
+                return {
+                  title: typeof result === "string" ? "" : (result.title ?? ""),
+                  output: out.truncated ? out.content : output,
+                  attachments,
+                  metadata: {
+                    ...metadata,
+                    truncated: out.truncated,
+                    ...(out.truncated && { outputPath: out.outputPath }),
+                  },
+                }
+              }).pipe(
+                Effect.withSpan("Tool.execute", {
+                  attributes: {
+                    "tool.name": id,
+                    "session.id": toolCtx.sessionID,
+                    "message.id": toolCtx.messageID,
+                    ...(toolCtx.callID ? { "tool.call_id": toolCtx.callID } : {}),
+                  },
+                }),
+              ),
+          }
+        }
+
+        const dirs = yield* config.directories()
+        const matches = dirs.flatMap((dir) =>
+          Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
+        )
+        if (matches.length) yield* config.waitForDependencies()
+        for (const match of matches) {
+          const namespace = path.basename(match, path.extname(match))
+          // `match` is an absolute filesystem path from `Glob.scanSync(..., { absolute: true })`.
+          // Import it as `file://` so Node on Windows accepts the dynamic import.
+          const mod = yield* Effect.promise(() => import(pathToFileURL(match).href))
+          for (const [id, def] of Object.entries(mod)) {
+            if (!isPluginTool(def)) continue
+            custom.push(fromPlugin(id === "default" ? namespace : `${namespace}_${id}`, def))
+          }
+        }
+
+        const plugins = yield* plugin.list()
+        for (const p of plugins) {
+          for (const [id, def] of Object.entries(p.tool ?? {})) {
+            custom.push(fromPlugin(id, def))
+          }
+        }
+
+        yield* config.get()
+        const questionEnabled = ["app", "cli", "desktop"].includes(flags.client) || flags.enableQuestionTool
+
+        const tool = yield* Effect.all({
+          invalid: Tool.init(invalid),
+          shell: Tool.init(shell),
+          read: Tool.init(read),
+          glob: Tool.init(globtool),
+          grep: Tool.init(greptool),
+          edit: Tool.init(edit),
+          write: Tool.init(writetool),
+          task: Tool.init(task),
+          listTasks: Tool.init(listTasks),
+          stopTask: Tool.init(stopTask),
+          fetch: Tool.init(webfetch),
+          todo: Tool.init(todo),
+          search: Tool.init(websearch),
+          skill: Tool.init(skilltool),
+          patch: Tool.init(patchtool),
+          question: Tool.init(question),
+          lsp: Tool.init(lsptool),
+          plan: Tool.init(plan),
+          algorithmSave: Tool.init(algorithmSave),
+          algorithmList: Tool.init(algorithmList),
+          algorithmGet: Tool.init(algorithmGet),
+          algorithmSetParams: Tool.init(algorithmSetParams),
+          algorithmValidate: Tool.init(algorithmValidate),
+          algorithmScaffold: Tool.init(algorithmScaffold),
+          algorithmVersions: Tool.init(algorithmVersions),
+          algorithmExport: Tool.init(algorithmExport),
+          brokerageSwitch: Tool.init(brokerageSwitch),
+          backtestRun: Tool.init(backtestRun),
+          backtestHistory: Tool.init(backtestHistory),
+          backtestWalkforward: Tool.init(backtestWalkforward),
+          backtestSweep: Tool.init(backtestSweep),
+          monitorSnapshot: Tool.init(monitorSnapshot),
+          scheduleSubagent: Tool.init(scheduleSubagent),
+          listSubagents: Tool.init(listSubagents),
+          stopSubagent: Tool.init(stopSubagent),
+          quote: Tool.init(quote),
+          priceHistory: Tool.init(priceHistory),
+          portfolioBacktest: Tool.init(portfolioBacktest),
+          discordRead: Tool.init(discordRead),
+        })
+
+        return {
+          custom,
+          builtin: [
+            tool.invalid,
+            ...(questionEnabled ? [tool.question] : []),
+            tool.shell,
+            tool.read,
+            tool.glob,
+            tool.grep,
+            tool.edit,
+            tool.write,
+            tool.task,
+            tool.listTasks,
+            tool.stopTask,
+            tool.fetch,
+            tool.todo,
+            tool.search,
+            tool.skill,
+            tool.patch,
+            tool.algorithmSave,
+            tool.algorithmList,
+            tool.algorithmGet,
+            tool.algorithmSetParams,
+            tool.algorithmValidate,
+            tool.algorithmScaffold,
+            tool.algorithmVersions,
+            tool.algorithmExport,
+            tool.brokerageSwitch,
+            tool.backtestRun,
+            tool.backtestHistory,
+            tool.backtestWalkforward,
+            tool.backtestSweep,
+            tool.monitorSnapshot,
+            tool.scheduleSubagent,
+            tool.listSubagents,
+            tool.stopSubagent,
+            tool.quote,
+            tool.priceHistory,
+            tool.portfolioBacktest,
+            tool.discordRead,
+            ...(flags.experimentalLspTool ? [tool.lsp] : []),
+            ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+          ],
+          task: tool.task,
+          read: tool.read,
+        }
+      }),
+    )
+
+    const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
+      const s = yield* InstanceState.get(state)
+      return [...s.builtin, ...s.custom] as Tool.Def[]
+    })
+
+    const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
+      return (yield* all()).map((tool) => tool.id)
+    })
+
+    const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
+      const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
+      const filtered = items.filter(
+        (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
+      )
+      const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
+      const description = list
+        .map(
+          (item) =>
+            `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
+        )
+        .join("\n")
+      return ["Available agent types and the tools they have access to:", description].join("\n")
+    })
+
+    const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      const filtered = (yield* all()).filter((tool) => {
+        if (tool.id === WebSearchTool.id) {
+          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+        }
+
+        const usePatch =
+          input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4")
+        if (tool.id === ApplyPatchTool.id) return usePatch
+        if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
+
+        return true
+      })
+
+      return yield* Effect.forEach(
+        filtered,
+        Effect.fnUntraced(function* (tool: Tool.Def) {
+          const output = {
+            description: tool.description,
+            parameters: tool.parameters,
+            jsonSchema: tool.jsonSchema,
+          }
+          yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          const jsonSchema =
+            output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
+              ? output.jsonSchema
+              : undefined
+          return {
+            id: tool.id,
+            description: [output.description, tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined]
+              .filter(Boolean)
+              .join("\n"),
+            parameters: output.parameters,
+            jsonSchema,
+            execute: tool.execute,
+            formatValidationError: tool.formatValidationError,
           }
         }),
+        { concurrency: "unbounded" },
       )
+    })
 
-      const all: Interface["all"] = Effect.fn("ToolRegistry.all")(function* () {
-        const s = yield* InstanceState.get(state)
-        return [...s.builtin, ...s.custom] as Tool.Def[]
-      })
+    const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {
+      const s = yield* InstanceState.get(state)
+      return { task: s.task, read: s.read }
+    })
 
-      const ids: Interface["ids"] = Effect.fn("ToolRegistry.ids")(function* () {
-        return (yield* all()).map((tool) => tool.id)
-      })
+    return Service.of({ ids, all, named, tools })
+  }),
+)
 
-      const describeSkill = Effect.fn("ToolRegistry.describeSkill")(function* (agent: Agent.Info) {
-        const list = yield* skill.available(agent)
-        if (list.length === 0) return "No skills are currently available."
-        return [
-          "Load a specialized skill that provides domain-specific instructions and workflows.",
-          "",
-          "When you recognize that a task matches one of the available skills listed below, use this tool to load the full skill instructions.",
-          "",
-          "The skill will inject detailed instructions, workflows, and access to bundled resources (scripts, references, templates) into the conversation context.",
-          "",
-          'Tool output includes a `<skill_content name="...">` block with the loaded content.',
-          "",
-          "The following skills provide specialized sets of instructions for particular tasks",
-          "Invoke this tool to load a skill when a task matches one of the available skills listed below:",
-          "",
-          Skill.fmt(list, { verbose: false }),
-        ].join("\n")
-      })
-
-      const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
-        const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
-        const filtered = items.filter(
-          (item) => evaluatePermissionRule("task", item.name, agent.permission).action !== "deny",
-        )
-        const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
-        const description = list
-          .map(
-            (item) =>
-              `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
-          )
-          .join("\n")
-        return ["Available agent types and the tools they have access to:", description].join("\n")
-      })
-
-      const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
-        const providerFiltered = (yield* all()).filter((tool) => {
-          if (tool.id === CodeSearchTool.id || tool.id === WebSearchTool.id) {
-            return input.providerID === ProviderID.opencode || Flag.OPENCODE_ENABLE_EXA
-          }
-
-          const usePatch =
-            !!Env.get("OPENCODE_E2E_LLM_URL") ||
-            (input.modelID.includes("gpt-") && !input.modelID.includes("oss") && !input.modelID.includes("gpt-4"))
-          if (tool.id === ApplyPatchTool.id) return usePatch
-          if (tool.id === EditTool.id || tool.id === WriteTool.id) return !usePatch
-
-          return true
-        })
-        const disabled = disabledTools(
-          providerFiltered.map((tool) => tool.id),
-          input.agent.permission,
-        )
-        const filtered = providerFiltered.filter((tool) => !disabled.has(tool.id))
-
-        return yield* Effect.forEach(
-          filtered,
-          Effect.fnUntraced(function* (tool: Tool.Def) {
-            using _ = log.time(tool.id)
-            const output = {
-              description: tool.description,
-              parameters: tool.parameters,
-            }
-            yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
-            return {
-              id: tool.id,
-              description: [
-                output.description,
-                tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined,
-                tool.id === SkillTool.id ? yield* describeSkill(input.agent) : undefined,
-              ]
-                .filter(Boolean)
-                .join("\n"),
-              parameters: output.parameters,
-              execute: tool.execute,
-              formatValidationError: tool.formatValidationError,
-            }
-          }),
-          { concurrency: "unbounded" },
-        )
-      })
-
-      const named: Interface["named"] = Effect.fn("ToolRegistry.named")(function* () {
-        const s = yield* InstanceState.get(state)
-        return { task: s.task, read: s.read }
-      })
-
-      return Service.of({ ids, all, named, tools })
-    }),
-  )
-
-  export const defaultLayer = Layer.suspend(() =>
-    layer.pipe(
+export const defaultLayer = Layer.suspend(() =>
+  layer
+    .pipe(
       Layer.provide(Config.defaultLayer),
+      Layer.provide(Ripgrep.defaultLayer),
       Layer.provide(Plugin.defaultLayer),
       Layer.provide(Question.defaultLayer),
       Layer.provide(Todo.defaultLayer),
       Layer.provide(Skill.defaultLayer),
       Layer.provide(Agent.defaultLayer),
       Layer.provide(Session.defaultLayer),
+      Layer.provide(BackgroundJob.defaultLayer),
       Layer.provide(Provider.defaultLayer),
       Layer.provide(LSP.defaultLayer),
-      Layer.provide(FileTime.defaultLayer),
       Layer.provide(Instruction.defaultLayer),
-      Layer.provide(AppFileSystem.defaultLayer),
-      Layer.provide(Bus.layer),
+      Layer.provide(FSUtil.defaultLayer),
+      Layer.provide(EventV2Bridge.defaultLayer),
+      Layer.provide(Bus.defaultLayer),
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(Format.defaultLayer),
       Layer.provide(CrossSpawnSpawner.defaultLayer),
-      Layer.provide(Ripgrep.defaultLayer),
       Layer.provide(Truncate.defaultLayer),
-    ),
+    )
+    .pipe(Layer.provide(Database.defaultLayer), Layer.provide(RuntimeFlags.defaultLayer)),
+)
+
+function isZodType(value: unknown): value is z.ZodType {
+  return typeof value === "object" && value !== null && "_zod" in value
+}
+
+function isPluginTool(value: unknown): value is ToolDefinition {
+  return typeof value === "object" && value !== null && "args" in value && "description" in value && "execute" in value
+}
+
+function isJsonSchemaDefinition(value: unknown): value is JSONSchema7Definition {
+  return typeof value === "boolean" || (typeof value === "object" && value !== null && !Array.isArray(value))
+}
+
+function legacyJsonSchema(entries: [string, unknown][]): JSONSchema7 {
+  const properties = Object.fromEntries(
+    entries.filter((entry): entry is [string, JSONSchema7Definition] => isJsonSchemaDefinition(entry[1])),
   )
-
-  const { runPromise } = makeRuntime(Service, defaultLayer)
-
-  export async function ids() {
-    return runPromise((svc) => svc.ids())
-  }
-
-  export async function tools(input: {
-    providerID: ProviderID
-    modelID: ModelID
-    agent: Agent.Info
-  }): Promise<(Tool.Def & { id: string })[]> {
-    return runPromise((svc) => svc.tools(input))
+  return {
+    type: "object",
+    properties,
+    required: Object.keys(properties),
   }
 }
+
+function zodJsonSchema(schema: z.ZodType): JSONSchema7 {
+  const result = normalizeZodJsonSchema(z.toJSONSchema(schema, { io: "input", metadata: zodMetadataRegistry(schema) }))
+  if (!isJsonSchemaObject(result)) throw new Error("plugin tool Zod schema produced a non-object JSON Schema")
+  const { $defs, ...rest } = result
+  return (
+    $defs && isJsonSchemaObject($defs) ? { ...rest, definitions: $defs as JSONSchema7["definitions"] } : rest
+  ) as JSONSchema7
+}
+
+function zodMetadataRegistry(schema: z.ZodType) {
+  const registry = z.registry<Record<string, unknown>>()
+  const seen = new WeakSet<object>()
+  const collect = (value: unknown) => {
+    if (typeof value !== "object" || value === null) return
+    if (seen.has(value)) return
+    seen.add(value)
+
+    if (isZodType(value)) {
+      const metadata = typeof value.meta === "function" ? value.meta() : undefined
+      const description = typeof value.description === "string" ? value.description : undefined
+      const merged = {
+        ...(metadata && typeof metadata === "object" ? metadata : {}),
+        ...(description ? { description } : {}),
+      }
+      if (Object.keys(merged).length) registry.add(value, merged)
+      collect(value._zod.def)
+      return
+    }
+
+    for (const item of Object.values(value)) collect(item)
+  }
+  collect(schema)
+  return registry
+}
+
+function normalizeZodJsonSchema(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeZodJsonSchema(item))
+  if (typeof value !== "object" || value === null) return value
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter((entry) =>
+        (entry[0] === "exclusiveMaximum" || entry[0] === "exclusiveMinimum") && typeof entry[1] === "boolean"
+          ? false
+          : true,
+      )
+      .map(([key, item]) => [key, normalizeZodJsonSchema(item)]),
+  )
+}
+
+function isJsonSchemaObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer)), [
+  Config.node,
+  Plugin.node,
+  Question.node,
+  Todo.node,
+  Agent.node,
+  Skill.node,
+  Session.node,
+  BackgroundJob.node,
+  Provider.node,
+  LSP.node,
+  Instruction.node,
+  FSUtil.node,
+  EventV2Bridge.node,
+  Bus.node,
+  httpClient,
+  CrossSpawnSpawner.node,
+  Format.node,
+  Truncate.node,
+  RuntimeFlags.node,
+  Database.node,
+])
+
+export * as ToolRegistry from "./registry"

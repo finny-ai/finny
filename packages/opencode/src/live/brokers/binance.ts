@@ -1,6 +1,7 @@
 import crypto from "crypto"
 import { Auth } from "@/auth"
 import type { BrokerAccount, BrokerCredentials, BrokerMode, BrokerSpec } from "./types"
+import { brokerModeChoices } from "./live-trading"
 
 export const BINANCE_PROVIDER_PREFIX = "binance-testnet"
 const TESTNET_REST = "https://testnet.binance.vision"
@@ -63,7 +64,7 @@ export const binanceSpec: BrokerSpec = {
     { name: "label", label: "Label" },
     { name: "keyId", label: "API key" },
     { name: "secret", label: "API secret", secret: true },
-    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: ["testnet", "live"] },
+    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: brokerModeChoices(["testnet", "live"]) },
     { name: "endpoint", label: "Endpoint", default: TESTNET_REST },
   ],
   promptFragment: [

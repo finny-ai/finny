@@ -43,6 +43,7 @@ beforeEach(async () => {
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "finny-active-"))
   process.env.XDG_DATA_HOME = sandbox
   delete process.env.LOCALAPPDATA
+  delete process.env.FINNY_HOME
   algosRootDir = path.join(sandbox, "finny", "algos")
   await fs.mkdir(algosRootDir, { recursive: true })
 })
@@ -143,6 +144,11 @@ describe("active marker storage location", () => {
   test("uses LOCALAPPDATA on win32", () => {
     const env = { LOCALAPPDATA: "C:/users/me/AppData/Local" } as NodeJS.ProcessEnv
     expect(_activeMarkerPath(env, "win32")).toBe(path.join("C:/users/me/AppData/Local", "finny", "active-algo"))
+  })
+
+  test("respects FINNY_HOME", () => {
+    const env = { FINNY_HOME: "/tmp/finny-home", XDG_DATA_HOME: "/x/data" } as NodeJS.ProcessEnv
+    expect(_activeMarkerPath(env, "linux")).toBe(path.join("/tmp/finny-home", "active-algo"))
   })
 
   test("falls back to ~/.local/share when XDG unset on linux/darwin", () => {

@@ -1,94 +1,156 @@
-import { afterEach, test, expect } from "bun:test"
+import { afterEach, expect } from "bun:test"
+import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
-import { tmpdir } from "../fixture/fixture"
-import { Instance } from "../../src/project/instance"
+import { disposeAllInstances, TestInstance } from "../fixture/fixture"
+import { testEffect } from "../lib/effect"
 import { Agent } from "../../src/agent/agent"
+import { Auth } from "../../src/auth"
+import { Config } from "../../src/config/config"
+import { RuntimeFlags } from "../../src/effect/runtime-flags"
+import { Global } from "@opencode-ai/core/global"
 import { Permission } from "../../src/permission"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { Plugin } from "../../src/plugin"
+import { Provider } from "../../src/provider/provider"
+import { Skill } from "../../src/skill"
+import { Truncate } from "../../src/tool/truncate"
+import { LocationServiceMap } from "@opencode-ai/core/location-layer"
+import { algosRoot } from "@finny-ai/core/algo"
+
+const agentLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
+  Agent.layer.pipe(
+    Layer.provide(Plugin.defaultLayer),
+    Layer.provide(Provider.defaultLayer),
+    Layer.provide(Auth.defaultLayer),
+    Layer.provide(Config.defaultLayer),
+    Layer.provide(Skill.defaultLayer),
+    Layer.provide(LocationServiceMap.layer),
+    Layer.provide(RuntimeFlags.layer(flags)),
+  )
+
+const it = testEffect(agentLayer())
 
 // Helper to evaluate permission for a tool with wildcard pattern
-function evalPerm(agent: Agent.Info | undefined, permission: string): Permission.Action | undefined {
+function evalPerm(agent: Agent.Info | undefined, permission: string): PermissionV1.Action | undefined {
   if (!agent) return undefined
   return Permission.evaluate(permission, "*", agent.permission).action
 }
 
+function load<A>(fn: (svc: Agent.Interface) => Effect.Effect<A>) {
+  return Agent.Service.use(fn)
+}
+
+const expectDefaultAgentError = Effect.fn("AgentTest.expectDefaultAgentError")(function* (message: string) {
+  const exit = yield* load((svc) => svc.defaultAgent()).pipe(Effect.exit)
+  expect(Exit.isFailure(exit)).toBe(true)
+  if (Exit.isFailure(exit)) expect(Cause.pretty(exit.cause)).toContain(message)
+})
+
 afterEach(async () => {
-  await Instance.disposeAll()
+  await disposeAllInstances()
 })
 
-test("returns default native agents when no config", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agents = await Agent.list()
-      const names = agents.map((a) => a.name)
-      expect(names).toContain("build")
-      expect(names).toContain("research")
-      expect(names).toContain("chat")
-      expect(names).toContain("general")
-      expect(names).toContain("explore")
-      expect(names).toContain("compaction")
-      expect(names).toContain("title")
-      expect(names).toContain("summary")
-    },
-  })
-})
+it.instance("returns default native agents when no config", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const names = agents.map((a) => a.name)
+    expect(names).toContain("build")
+    expect(names).toContain("research")
+    expect(names).toContain("chat")
+    expect(names).toContain("data_extractor")
+    expect(names).toContain("news_agent")
+    expect(names).toContain("researcher")
+    expect(names).toContain("sec_agent")
+    expect(names).toContain("portfolio_builder")
+    expect(names).toContain("general")
+    expect(names).toContain("explore")
+    expect(names).toContain("compaction")
+    expect(names).toContain("title")
+    expect(names).toContain("summary")
+  }),
+)
 
-test("build agent has correct default properties", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build).toBeDefined()
-      expect(build?.mode).toBe("primary")
-      expect(build?.native).toBe(true)
-      expect(evalPerm(build, "edit")).toBe("deny")
-      expect(evalPerm(build, "bash")).toBe("deny")
-      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
-      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
-      expect(Permission.evaluate("read", "algos/_template/README.md", build!.permission).action).toBe("allow")
-      // Bare directory listing must be allowed too (was denied: `/*` glob does not match the dir itself)
-      expect(Permission.evaluate("read", "algos/_template", build!.permission).action).toBe("allow")
-      expect(Permission.evaluate("read", path.join(tmp.path, "algos/_template/README.md"), build!.permission).action).toBe(
-        "allow",
-      )
-      expect(Permission.evaluate("read", path.join(tmp.path, "package.json"), build!.permission).action).toBe("deny")
-    },
-  })
-})
+it.instance("build agent has correct default properties", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    expect(build).toBeDefined()
+    expect(build?.mode).toBe("primary")
+    expect(build?.native).toBe(true)
+    expect(evalPerm(build, "edit")).toBe("deny")
+    expect(evalPerm(build, "bash")).toBe("deny")
+    expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+    expect(Permission.evaluate("task", "data_extractor", build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("task", "general", build!.permission).action).toBe("deny")
+  }),
+)
 
-test("build agent allows repo-root template reads when launched from packages/opencode", async () => {
-  await using tmp = await tmpdir({
-    config: {
-      permission: {
-        read: "deny",
-        external_directory: "deny",
-      },
-    },
-    init: async (dir) => {
-      await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
-      await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
-    },
-  })
-  const nested = path.join(tmp.path, "packages/opencode")
-  await Bun.$`mkdir -p ${nested}`.quiet()
-  await Instance.provide({
-    directory: nested,
-    fn: async () => {
-      const build = await Agent.get("build")
-      const templatePath = path.join(tmp.path, "algos/_template/README.md")
-      expect(Permission.evaluate("read", templatePath, build!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/*"), build!.permission).action).toBe(
-        "allow",
-      )
-      expect(Permission.evaluate("read", path.join(tmp.path, "package.json"), build!.permission).action).toBe("deny")
-    },
-  })
-})
+it.instance("returns Build, Research, and Chat as visible primary agents", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const visibleModes = agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name)
+    expect(visibleModes).toEqual(["build", "research", "chat"])
+  }),
+)
 
-test("mandatory Finny subagents keep repo-root data access after broad user denies", async () => {
-  await using tmp = await tmpdir({
+it.instance("research agent is a visible primary agent", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    const research = yield* load((svc) => svc.get("research"))
+    expect(build).toBeDefined()
+    expect(research).toBeDefined()
+    expect(build?.mode).toBe("primary")
+    expect(build?.native).toBe(true)
+    expect(build?.hidden).toBeUndefined()
+    expect(research?.mode).toBe("primary")
+    expect(research?.native).toBe(true)
+    expect(research?.hidden).toBe(false)
+    expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
+    expect(evalPerm(research, "finny_backtest_run")).toBe("deny")
+    expect(evalPerm(research, "edit")).toBe("deny")
+    expect(evalPerm(research, "bash")).toBe("deny")
+  }),
+)
+
+it.instance("explore agent denies edit and write", () =>
+  Effect.gen(function* () {
+    const explore = yield* load((svc) => svc.get("explore"))
+    expect(explore).toBeDefined()
+    expect(explore?.mode).toBe("subagent")
+    expect(evalPerm(explore, "edit")).toBe("deny")
+    expect(evalPerm(explore, "write")).toBe("deny")
+    expect(evalPerm(explore, "todowrite")).toBe("deny")
+  }),
+)
+
+it.instance("explore agent asks for external directories and allows whitelisted external paths", () =>
+  Effect.gen(function* () {
+    const explore = yield* load((svc) => svc.get("explore"))
+    expect(explore).toBeDefined()
+    expect(Permission.evaluate("external_directory", "/some/other/path", explore!.permission).action).toBe("ask")
+    expect(Permission.evaluate("external_directory", Truncate.GLOB, explore!.permission).action).toBe("allow")
+    expect(
+      Permission.evaluate("external_directory", path.join(Global.Path.tmp, "agent-work"), explore!.permission).action,
+    ).toBe("allow")
+  }),
+)
+
+it.instance(
+  "mandatory Finny subagents keep template mission read access after broad user denies",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const dataExtractor = yield* load((svc) => svc.get("data_extractor"))
+      const newsAgent = yield* load((svc) => svc.get("news_agent"))
+      const missionPath = path.join(test.directory, "algos/_template/mission.md")
+
+      expect(Permission.evaluate("read", missionPath, dataExtractor!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", missionPath, dataExtractor!.permission).action).toBe("allow")
+      expect(Permission.evaluate("read", missionPath, newsAgent!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", missionPath, newsAgent!.permission).action).toBe("allow")
+      expect(Permission.evaluate("edit", missionPath, dataExtractor!.permission).action).toBe("deny")
+      expect(Permission.evaluate("edit", missionPath, newsAgent!.permission).action).toBe("deny")
+    }),
+  {
     config: {
       permission: {
         read: "deny",
@@ -96,160 +158,106 @@ test("mandatory Finny subagents keep repo-root data access after broad user deni
         external_directory: "deny",
       },
     },
-    init: async (dir) => {
-      await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
-      await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
+    init: (dir) =>
+      Effect.promise(async () => {
+        await Bun.$`mkdir -p ${path.join(dir, "algos/_template")}`.quiet()
+        await Bun.write(path.join(dir, "algos/_template/README.md"), "# Template\n")
+        await Bun.write(path.join(dir, "algos/_template/mission.md"), "---\nschema_version: 1\n---\n")
+      }),
+  },
+)
+
+it.instance("build agent can read Data Agent artifacts without write access", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    const dataFile = path.join(algosRoot(), "spy-5m-momentum.abc12345", "data", "stock", "SPY.csv")
+    const nestedResearchFile = path.join(
+      algosRoot(),
+      "spy-5m-momentum.abc12345",
+      "data",
+      "news",
+      "body",
+      "spy-execution-provenance-brief.md",
+    )
+    const dataDir = path.join(algosRoot(), "spy-5m-momentum.abc12345", "data", "stock")
+    const missionFile = path.join(algosRoot(), "spy-5m-momentum.abc12345", "mission.md")
+
+    expect(Permission.evaluate("read", dataFile, build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("read", nestedResearchFile, build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", dataFile, build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", nestedResearchFile, build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", dataDir, build!.permission).action).toBe("allow")
+    expect(Permission.evaluate("edit", dataFile, build!.permission).action).toBe("deny")
+    expect(Permission.evaluate("edit", nestedResearchFile, build!.permission).action).toBe("deny")
+    expect(Permission.evaluate("write", dataFile, build!.permission).action).toBe("deny")
+    expect(Permission.evaluate("read", missionFile, build!.permission).action).toBe("deny")
+  }),
+)
+
+it.instance(
+  "reference config does not create subagents",
+  () =>
+    Effect.gen(function* () {
+      const agents = yield* load((svc) => svc.list())
+      const names = agents.map((agent) => agent.name)
+      expect(names).not.toContain("effect")
+      expect(names).not.toContain("effectFull")
+      expect(names).not.toContain("localdocs")
+      expect(names).not.toContain("localdocsFull")
+    }),
+  {
+    config: {
+      references: {
+        effect: "github.com/effect/effect-smol",
+        effectFull: {
+          repository: "Effect-TS/effect",
+          branch: "main",
+        },
+        localdocs: "../docs",
+        localdocsFull: {
+          path: "../local-docs",
+        },
+      },
     },
-  })
-  const nested = path.join(tmp.path, "packages/opencode")
-  await Bun.$`mkdir -p ${nested}`.quiet()
-  await Instance.provide({
-    directory: nested,
-    fn: async () => {
-      const dataExtractor = await Agent.get("data_extractor")
-      const researcher = await Agent.get("researcher")
-      const dataPath = path.join(tmp.path, "algos/_template/data/spy.md")
-      const newsPath = path.join(tmp.path, "algos/_template/data/news/body/spy.md")
+  },
+)
 
-      expect(Permission.evaluate("read", dataPath, dataExtractor!.permission).action).toBe("allow")
-      expect(Permission.evaluate("edit", dataPath, dataExtractor!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/data/*"), dataExtractor!.permission).action).toBe(
-        "allow",
-      )
-      expect(Permission.evaluate("read", newsPath, researcher!.permission).action).toBe("allow")
-      expect(Permission.evaluate("edit", newsPath, researcher!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", path.join(tmp.path, "algos/_template/data/news/*"), researcher!.permission).action).toBe(
-        "allow",
-      )
-      expect(Permission.evaluate("edit", path.join(tmp.path, "package.json"), dataExtractor!.permission).action).toBe("deny")
-    },
-  })
-})
+it.instance("general agent denies todo tools", () =>
+  Effect.gen(function* () {
+    const general = yield* load((svc) => svc.get("general"))
+    expect(general).toBeDefined()
+    expect(general?.mode).toBe("subagent")
+    expect(general?.hidden).toBeUndefined()
+    expect(evalPerm(general, "todowrite")).toBe("deny")
+  }),
+)
 
-test("returns Build and Chat as visible primary agents", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agents = await Agent.list()
-      const names = agents.map((a) => a.name)
-      expect(names).toContain("build")
-      expect(names).toContain("research")
-      expect(names).toContain("chat")
-      expect(names).toContain("general")
-      expect(names).toContain("explore")
-      expect(names).toContain("compaction")
-      expect(names).toContain("title")
-      expect(names).toContain("summary")
+it.instance("compaction agent denies all permissions", () =>
+  Effect.gen(function* () {
+    const compaction = yield* load((svc) => svc.get("compaction"))
+    expect(compaction).toBeDefined()
+    expect(compaction?.hidden).toBe(true)
+    expect(evalPerm(compaction, "bash")).toBe("deny")
+    expect(evalPerm(compaction, "edit")).toBe("deny")
+    expect(evalPerm(compaction, "read")).toBe("deny")
+  }),
+)
 
-      const visibleModes = agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name)
-      expect(visibleModes).toEqual(["build", "chat"])
-    },
-  })
-})
-
-test("research agent is a hidden compatibility alias", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      const research = await Agent.get("research")
-      expect(build).toBeDefined()
-      expect(research).toBeDefined()
-      expect(build?.mode).toBe("primary")
-      expect(build?.native).toBe(true)
-      expect(build?.hidden).toBeUndefined()
-      expect(research?.mode).toBe("primary")
-      expect(research?.native).toBe(true)
-      expect(research?.hidden).toBe(true)
-      expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
-      expect(evalPerm(research, "finny_backtest_run")).toBe("deny")
-      expect(evalPerm(research, "edit")).toBe("deny")
-      expect(evalPerm(research, "bash")).toBe("deny")
-    },
-  })
-})
-
-test("build agent asks questions and can save/backtest strategies", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build).toBeDefined()
-      expect(build?.mode).toBe("primary")
-      expect(build?.hidden).toBeUndefined()
-      expect(evalPerm(build, "question")).toBe("allow")
-      expect(evalPerm(build, "finny_algorithm_scaffold")).toBe("allow")
-      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
-      expect(evalPerm(build, "finny_backtest_run")).toBe("allow")
-      expect(evalPerm(build, "edit")).toBe("deny")
-      expect(evalPerm(build, "bash")).toBe("deny")
-    },
-  })
-})
-
-test("explore agent denies edit and write", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const explore = await Agent.get("explore")
-      expect(explore).toBeDefined()
-      expect(explore?.mode).toBe("subagent")
-      expect(evalPerm(explore, "edit")).toBe("deny")
-      expect(evalPerm(explore, "write")).toBe("deny")
-      expect(evalPerm(explore, "todowrite")).toBe("deny")
-    },
-  })
-})
-
-test("explore agent asks for external directories and allows Truncate.GLOB", async () => {
-  const { Truncate } = await import("../../src/tool/truncate")
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const explore = await Agent.get("explore")
-      expect(explore).toBeDefined()
-      expect(Permission.evaluate("external_directory", "/some/other/path", explore!.permission).action).toBe("ask")
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, explore!.permission).action).toBe("allow")
-    },
-  })
-})
-
-test("general agent denies todo tools", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const general = await Agent.get("general")
-      expect(general).toBeDefined()
-      expect(general?.mode).toBe("subagent")
-      expect(general?.hidden).toBeUndefined()
-      expect(evalPerm(general, "todowrite")).toBe("deny")
-    },
-  })
-})
-
-test("compaction agent denies all permissions", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const compaction = await Agent.get("compaction")
-      expect(compaction).toBeDefined()
-      expect(compaction?.hidden).toBe(true)
-      expect(evalPerm(compaction, "bash")).toBe("deny")
-      expect(evalPerm(compaction, "edit")).toBe("deny")
-      expect(evalPerm(compaction, "read")).toBe("deny")
-    },
-  })
-})
-
-test("custom agent from config creates new agent", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "custom agent from config creates new agent",
+  () =>
+    Effect.gen(function* () {
+      const custom = yield* load((svc) => svc.get("my_custom_agent"))
+      expect(custom).toBeDefined()
+      expect(String(custom?.model?.providerID)).toBe("openai")
+      expect(String(custom?.model?.modelID)).toBe("gpt-4")
+      expect(custom?.description).toBe("My custom agent")
+      expect(custom?.temperature).toBe(0.5)
+      expect(custom?.topP).toBe(0.9)
+      expect(custom?.native).toBe(false)
+      expect(custom?.mode).toBe("all")
+    }),
+  {
     config: {
       agent: {
         my_custom_agent: {
@@ -260,25 +268,23 @@ test("custom agent from config creates new agent", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const custom = await Agent.get("my_custom_agent")
-      expect(custom).toBeDefined()
-      expect(String(custom?.model?.providerID)).toBe("openai")
-      expect(String(custom?.model?.modelID)).toBe("gpt-4")
-      expect(custom?.description).toBe("My custom agent")
-      expect(custom?.temperature).toBe(0.5)
-      expect(custom?.topP).toBe(0.9)
-      expect(custom?.native).toBe(false)
-      expect(custom?.mode).toBe("all")
-    },
-  })
-})
+  },
+)
 
-test("custom agent config overrides native agent properties", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "custom agent config overrides native agent properties",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build).toBeDefined()
+      expect(String(build?.model?.providerID)).toBe("anthropic")
+      expect(String(build?.model?.modelID)).toBe("claude-3")
+      expect(build?.description).toBe("Custom build agent")
+      expect(build?.temperature).toBe(0.7)
+      expect(build?.color).toBe("#FF0000")
+      expect(build?.native).toBe(true)
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -289,44 +295,41 @@ test("custom agent config overrides native agent properties", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build).toBeDefined()
-      expect(String(build?.model?.providerID)).toBe("anthropic")
-      expect(String(build?.model?.modelID)).toBe("claude-3")
-      expect(build?.description).toBe("Custom build agent")
-      expect(build?.temperature).toBe(0.7)
-      expect(build?.color).toBe("#FF0000")
-      expect(build?.native).toBe(true)
-    },
-  })
-})
+  },
+)
 
-test("agent disable removes agent from list", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent disable removes agent from list",
+  () =>
+    Effect.gen(function* () {
+      const explore = yield* load((svc) => svc.get("explore"))
+      expect(explore).toBeUndefined()
+      const agents = yield* load((svc) => svc.list())
+      const names = agents.map((a) => a.name)
+      expect(names).not.toContain("explore")
+    }),
+  {
     config: {
       agent: {
         explore: { disable: true },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const explore = await Agent.get("explore")
-      expect(explore).toBeUndefined()
-      const agents = await Agent.list()
-      const names = agents.map((a) => a.name)
-      expect(names).not.toContain("explore")
-    },
-  })
-})
+  },
+)
 
-test("agent permission config merges with defaults", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent permission config merges with defaults",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build).toBeDefined()
+      // Specific pattern is denied
+      expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("deny")
+      // Finny Build keeps generic file edits denied while allowing strategy tools.
+      expect(evalPerm(build, "edit")).toBe("deny")
+      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -338,112 +341,102 @@ test("agent permission config merges with defaults", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build).toBeDefined()
-      // Specific pattern is denied
-      expect(Permission.evaluate("bash", "rm -rf *", build!.permission).action).toBe("deny")
-      // Finny build tools remain allowed while generic coding tools stay denied.
-      expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
-      expect(evalPerm(build, "edit")).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("global permission config applies to all agents", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "global permission config applies to all agents",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build).toBeDefined()
+      expect(evalPerm(build, "bash")).toBe("deny")
+    }),
+  {
     config: {
       permission: {
         bash: "deny",
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build).toBeDefined()
-      expect(evalPerm(build, "bash")).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("agent steps/maxSteps config sets steps property", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent steps/maxSteps config sets steps property",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      const plan = yield* load((svc) => svc.get("plan"))
+      expect(build?.steps).toBe(50)
+      expect(plan?.steps).toBe(100)
+    }),
+  {
     config: {
       agent: {
         build: { steps: 50 },
         plan: { maxSteps: 100 },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      const plan = await Agent.get("plan")
-      expect(build?.steps).toBe(50)
-      expect(plan?.steps).toBe(100)
-    },
-  })
-})
+  },
+)
 
-test("agent mode can be overridden", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent mode can be overridden",
+  () =>
+    Effect.gen(function* () {
+      const explore = yield* load((svc) => svc.get("explore"))
+      expect(explore?.mode).toBe("primary")
+    }),
+  {
     config: {
       agent: {
         explore: { mode: "primary" },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const explore = await Agent.get("explore")
-      expect(explore?.mode).toBe("primary")
-    },
-  })
-})
+  },
+)
 
-test("agent name can be overridden", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent name can be overridden",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build?.name).toBe("Builder")
+    }),
+  {
     config: {
       agent: {
         build: { name: "Builder" },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build?.name).toBe("Builder")
-    },
-  })
-})
+  },
+)
 
-test("agent prompt can be set from config", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent prompt can be set from config",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build?.prompt).toBe("Custom system prompt")
+    }),
+  {
     config: {
       agent: {
         build: { prompt: "Custom system prompt" },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build?.prompt).toBe("Custom system prompt")
-    },
-  })
-})
+  },
+)
 
-test("unknown agent properties are placed into options", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "unknown agent properties are placed into options",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build?.options.random_property).toBe("hello")
+      expect(build?.options.another_random).toBe(123)
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -452,19 +445,18 @@ test("unknown agent properties are placed into options", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build?.options.random_property).toBe("hello")
-      expect(build?.options.another_random).toBe(123)
-    },
-  })
-})
+  },
+)
 
-test("agent options merge correctly", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "agent options merge correctly",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(build?.options.custom_option).toBe(true)
+      expect(build?.options.another_option).toBe("value")
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -475,19 +467,21 @@ test("agent options merge correctly", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(build?.options.custom_option).toBe(true)
-      expect(build?.options.another_option).toBe("value")
-    },
-  })
-})
+  },
+)
 
-test("multiple custom agents can be defined", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "multiple custom agents can be defined",
+  () =>
+    Effect.gen(function* () {
+      const agentA = yield* load((svc) => svc.get("agent_a"))
+      const agentB = yield* load((svc) => svc.get("agent_b"))
+      expect(agentA?.description).toBe("Agent A")
+      expect(agentA?.mode).toBe("subagent")
+      expect(agentB?.description).toBe("Agent B")
+      expect(agentB?.mode).toBe("primary")
+    }),
+  {
     config: {
       agent: {
         agent_a: {
@@ -500,22 +494,19 @@ test("multiple custom agents can be defined", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agentA = await Agent.get("agent_a")
-      const agentB = await Agent.get("agent_b")
-      expect(agentA?.description).toBe("Agent A")
-      expect(agentA?.mode).toBe("subagent")
-      expect(agentB?.description).toBe("Agent B")
-      expect(agentB?.mode).toBe("primary")
-    },
-  })
-})
+  },
+)
 
-test("Agent.list keeps the default agent first and sorts the rest by name", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "Agent.list keeps the default agent first, then Finny primary modes, then names",
+  () =>
+    Effect.gen(function* () {
+      const names = (yield* load((svc) => svc.list())).map((a) => a.name)
+      expect(names[0]).toBe("chat")
+      expect(names.slice(1, 4)).toEqual(["build", "research", "portfolio_builder"])
+      expect(names.slice(4)).toEqual(names.slice(4).toSorted((a, b) => a.localeCompare(b)))
+    }),
+  {
     config: {
       default_agent: "chat",
       agent: {
@@ -529,53 +520,40 @@ test("Agent.list keeps the default agent first and sorts the rest by name", asyn
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const names = (await Agent.list()).map((a) => a.name)
-      expect(names[0]).toBe("chat")
-      expect(names.slice(1)).toEqual(names.slice(1).toSorted((a, b) => a.localeCompare(b)))
-    },
-  })
-})
+  },
+)
 
-test("Agent.get returns undefined for non-existent agent", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const nonExistent = await Agent.get("does_not_exist")
-      expect(nonExistent).toBeUndefined()
-    },
-  })
-})
+it.instance("Agent.get returns undefined for non-existent agent", () =>
+  Effect.gen(function* () {
+    const nonExistent = yield* load((svc) => svc.get("does_not_exist"))
+    expect(nonExistent).toBeUndefined()
+  }),
+)
 
-test("Finny build denies non-bundled default tools", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(evalPerm(build, "doom_loop")).toBe("deny")
-      expect(evalPerm(build, "external_directory")).toBe("deny")
-    },
-  })
-})
+it.instance("default permission includes doom_loop and external_directory as ask", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    expect(evalPerm(build, "doom_loop")).toBe("deny")
+    expect(evalPerm(build, "external_directory")).toBe("deny")
+  }),
+)
 
-test("webfetch is allowed by default", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(evalPerm(build, "webfetch")).toBe("allow")
-    },
-  })
-})
+it.instance("webfetch is allowed by default", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    expect(evalPerm(build, "webfetch")).toBe("allow")
+  }),
+)
 
-test("legacy tools config converts to permissions", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "legacy tools config converts to permissions",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(evalPerm(build, "bash")).toBe("deny")
+      expect(evalPerm(build, "read")).toBe("deny")
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -586,19 +564,17 @@ test("legacy tools config converts to permissions", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(evalPerm(build, "bash")).toBe("deny")
-      expect(evalPerm(build, "read")).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("legacy tools config maps write/edit/patch/multiedit to edit permission", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "legacy tools config maps write/edit/patch to edit permission",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(evalPerm(build, "edit")).toBe("deny")
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -608,39 +584,47 @@ test("legacy tools config maps write/edit/patch/multiedit to edit permission", a
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(evalPerm(build, "edit")).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("Truncate.GLOB is allowed even when user denies external_directory globally", async () => {
-  const { Truncate } = await import("../../src/tool/truncate")
-  await using tmp = await tmpdir({
+it.instance(
+  "Truncate.GLOB is allowed even when user denies external_directory globally",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("allow")
+      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
+      expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
+    }),
+  {
     config: {
       permission: {
         external_directory: "deny",
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
+  },
+)
+
+it.instance("global tmp directory children are allowed for external_directory", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("build"))
+    expect(
+      Permission.evaluate("external_directory", path.join(Global.Path.tmp, "scratch"), build!.permission).action,
+    ).toBe("deny")
+    expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
+  }),
+)
+
+it.instance(
+  "Truncate.GLOB is allowed even when user denies external_directory per-agent",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
       expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("allow")
       expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
       expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
-    },
-  })
-})
-
-test("Truncate.GLOB is allowed even when user denies external_directory per-agent", async () => {
-  const { Truncate } = await import("../../src/tool/truncate")
-  await using tmp = await tmpdir({
+    }),
+  {
     config: {
       agent: {
         build: {
@@ -650,21 +634,18 @@ test("Truncate.GLOB is allowed even when user denies external_directory per-agen
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("allow")
-      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
-      expect(Permission.evaluate("external_directory", "/some/other/path", build!.permission).action).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("explicit Truncate.GLOB deny is respected", async () => {
-  const { Truncate } = await import("../../src/tool/truncate")
-  await using tmp = await tmpdir({
+it.instance(
+  "explicit Truncate.GLOB deny is respected",
+  () =>
+    Effect.gen(function* () {
+      const build = yield* load((svc) => svc.get("build"))
+      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("deny")
+      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
+    }),
+  {
     config: {
       permission: {
         external_directory: {
@@ -673,96 +654,113 @@ test("explicit Truncate.GLOB deny is respected", async () => {
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const build = await Agent.get("build")
-      expect(Permission.evaluate("external_directory", Truncate.GLOB, build!.permission).action).toBe("deny")
-      expect(Permission.evaluate("external_directory", Truncate.DIR, build!.permission).action).toBe("deny")
-    },
-  })
-})
+  },
+)
 
-test("skill directories are allowed for external_directory", async () => {
-  await using tmp = await tmpdir({
-    git: true,
-    init: async (dir) => {
-      const skillDir = path.join(dir, ".opencode", "skill", "perm-skill")
-      await Bun.write(
-        path.join(skillDir, "SKILL.md"),
-        `---
+it.instance(
+  "skill directories are allowed for external_directory",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const skillDir = path.join(test.directory, ".opencode", "skill", "perm-skill")
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(skillDir, "SKILL.md"),
+          `---
 name: perm-skill
 description: Permission skill.
 ---
 
 # Permission Skill
 `,
+        ),
       )
-    },
-  })
 
-  const home = process.env.OPENCODE_TEST_HOME
-  process.env.OPENCODE_TEST_HOME = tmp.path
+      const home = process.env.OPENCODE_TEST_HOME
+      process.env.OPENCODE_TEST_HOME = test.directory
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          process.env.OPENCODE_TEST_HOME = home
+        }),
+      )
 
-  try {
-    await Instance.provide({
-      directory: tmp.path,
-      fn: async () => {
-        const explore = await Agent.get("explore")
-        const skillDir = path.join(tmp.path, ".opencode", "skill", "perm-skill")
-        const target = path.join(skillDir, "reference", "notes.md")
-        expect(Permission.evaluate("external_directory", target, explore!.permission).action).toBe("allow")
+      const build = yield* load((svc) => svc.get("build"))
+      const target = path.join(skillDir, "reference", "notes.md")
+      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("deny")
+    }),
+  { git: true },
+)
+
+it.instance(
+  "project reference directories are allowed for external_directory",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const build = yield* load((svc) => svc.get("build"))
+      const target = path.resolve(test.directory, "../docs/reference/notes.md")
+      expect(Permission.evaluate("external_directory", target, build!.permission).action).toBe("deny")
+    }),
+  {
+    git: true,
+    config: {
+      references: {
+        docs: "../docs",
       },
-    })
-  } finally {
-    process.env.OPENCODE_TEST_HOME = home
-  }
-})
-
-test("defaultAgent returns build when no default_agent config", async () => {
-  await using tmp = await tmpdir()
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("build")
     },
-  })
-})
+  },
+)
 
-test("defaultAgent respects default_agent config set to chat", async () => {
-  await using tmp = await tmpdir({
+it.instance("defaultAgent returns build when no default_agent config", () =>
+  Effect.gen(function* () {
+    const agent = yield* load((svc) => svc.defaultAgent())
+    expect(agent).toBe("build")
+  }),
+)
+
+it.instance("defaultInfo returns resolved build agent when no default_agent config", () =>
+  Effect.gen(function* () {
+    const agent = yield* load((svc) => svc.defaultInfo())
+    expect(agent.name).toBe("build")
+    expect(agent.mode).toBe("primary")
+  }),
+)
+
+it.instance(
+  "defaultAgent respects default_agent config set to chat",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* load((svc) => svc.defaultAgent())
+      expect(agent).toBe("chat")
+    }),
+  {
     config: {
       default_agent: "chat",
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("chat")
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent accepts hidden research compatibility alias from config", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent accepts hidden research compatibility alias from config",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* load((svc) => svc.defaultAgent())
+      expect(agent).toBe("research")
+    }),
+  {
     config: {
       default_agent: "research",
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("research")
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent respects default_agent config set to custom agent with mode all", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent respects default_agent config set to custom agent with mode all",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* load((svc) => svc.defaultAgent())
+      expect(agent).toBe("my_custom")
+    }),
+  {
     config: {
       default_agent: "my_custom",
       agent: {
@@ -771,90 +769,66 @@ test("defaultAgent respects default_agent config set to custom agent with mode a
         },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("my_custom")
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent throws when default_agent points to subagent", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent throws when default_agent points to subagent",
+  () => expectDefaultAgentError('default agent "explore" is a subagent'),
+  {
     config: {
       default_agent: "explore",
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      await expect(Agent.defaultAgent()).rejects.toThrow('default agent "explore" is a subagent')
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent throws when default_agent points to hidden agent", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent throws when default_agent points to hidden agent",
+  () => expectDefaultAgentError('default agent "compaction" is hidden'),
+  {
     config: {
       default_agent: "compaction",
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      await expect(Agent.defaultAgent()).rejects.toThrow('default agent "compaction" is hidden')
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent throws when default_agent points to non-existent agent", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent throws when default_agent points to non-existent agent",
+  () => expectDefaultAgentError('default agent "does_not_exist" not found'),
+  {
     config: {
       default_agent: "does_not_exist",
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      await expect(Agent.defaultAgent()).rejects.toThrow('default agent "does_not_exist" not found')
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent returns chat when build is disabled and default_agent not set", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent returns chat when build is disabled and default_agent not set",
+  () =>
+    Effect.gen(function* () {
+      const agent = yield* load((svc) => svc.defaultAgent())
+      expect(agent).toBe("chat")
+    }),
+  {
     config: {
       agent: {
         build: { disable: true },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      const agent = await Agent.defaultAgent()
-      expect(agent).toBe("chat")
-    },
-  })
-})
+  },
+)
 
-test("defaultAgent throws when all primary agents are disabled", async () => {
-  await using tmp = await tmpdir({
+it.instance(
+  "defaultAgent throws when all primary agents are disabled",
+  () => expectDefaultAgentError("no primary visible agent found"),
+  {
     config: {
       agent: {
         build: { disable: true },
         research: { disable: true },
         chat: { disable: true },
+        plan: { disable: true },
       },
     },
-  })
-  await Instance.provide({
-    directory: tmp.path,
-    fn: async () => {
-      // build, research, and chat are disabled, so no visible primary agent remains
-      await expect(Agent.defaultAgent()).rejects.toThrow("no primary visible agent found")
-    },
-  })
-})
+  },
+)

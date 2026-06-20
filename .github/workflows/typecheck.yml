@@ -1,15 +1,35 @@
-name: typecheck
+name: cli-smoke
 
 on:
   push:
-    branches: [dev]
+    branches: [staging-dev]
+    paths:
+      - ".github/workflows/typecheck.yml"
+      - "bun.lock"
+      - "package.json"
+      - "packages/opencode/**"
   pull_request:
-    branches: [dev]
+    branches: [staging-dev]
+    paths:
+      - ".github/workflows/typecheck.yml"
+      - "bun.lock"
+      - "package.json"
+      - "packages/opencode/**"
   workflow_dispatch:
 
 jobs:
-  typecheck:
-    runs-on: ubuntu-latest
+  pr-cli-build:
+    name: pr cli build smoke
+    if: github.event_name == 'pull_request'
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    defaults:
+      run:
+        shell: bash
+    env:
+      ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+      MODELS_DEV_API_JSON: ${{ github.workspace }}/packages/opencode/test/tool/fixtures/models-api.json
+      OPENCODE_VERSION: 0.0.0-pr-${{ github.run_id }}
+      OPENCODE_CHANNEL: pr
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -17,20 +37,29 @@ jobs:
       - name: Setup Bun
         uses: ./.github/actions/setup-bun
 
-      - name: Run typecheck
-        run: bun typecheck
+      - name: Install cross-platform native deps
+        run: bun install --os="*" --cpu="*"
 
-  cli-publish-build:
-    name: cli publish build smoke (${{ matrix.arch }})
+      - name: Build CLI package
+        run: ./packages/opencode/script/build.ts --single --skip-install --skip-embed-web-ui
+
+  staging-platform-build:
+    name: staging platform build smoke (${{ matrix.platform }})
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:
         include:
-          - arch: linux-x64
-            runner: ubuntu-latest
-          - arch: linux-arm64
-            runner: ubuntu-24.04-arm
+          - platform: linux-x64
+            runner: blacksmith-2vcpu-ubuntu-2404
+          - platform: macos-arm64
+            runner: blacksmith-6vcpu-macos-15
+          - platform: windows-x64
+            runner: blacksmith-2vcpu-windows-2025
     runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
     env:
       ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
       MODELS_DEV_API_JSON: ${{ github.workspace }}/packages/opencode/test/tool/fixtures/models-api.json

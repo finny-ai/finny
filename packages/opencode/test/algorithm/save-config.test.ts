@@ -7,11 +7,10 @@ import {
   parseConfig,
   unsupportedNewSaveConfigReasons,
 } from "../../src/algorithm/strategy-params"
-import { Instance } from "../../src/project/instance"
-import { tmpdir } from "../fixture/fixture"
+import { disposeAllInstances, provideTestInstance, tmpdir } from "../fixture/fixture"
 
 afterEach(async () => {
-  await Instance.disposeAll()
+  await disposeAllInstances()
 })
 
 describe("algorithm save config normalization", () => {
@@ -138,7 +137,7 @@ describe("algorithm save config normalization", () => {
 
   test("Algorithm.save preserves execution config on version bump", async () => {
     await using tmp = await tmpdir()
-    await Instance.provide({
+    await provideTestInstance({
       directory: tmp.path,
       fn: async () => {
         await Algorithm.save({

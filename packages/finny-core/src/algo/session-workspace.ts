@@ -1,6 +1,6 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { homedir } from "node:os"
+import { finnyArtifactPath } from "../prefs"
 import { isValidAlgoId } from "./schemas"
 
 /**
@@ -12,7 +12,7 @@ import { isValidAlgoId } from "./schemas"
  * binds workspace slugs to individual session IDs instead. Storage-resolving
  * tools read ONLY this binding — never the global marker.
  *
- * One file per session: `~/.local/share/finny/session-workspaces/<sessionID>`
+ * One file per session: `$FINNY_HOME/session-workspaces/<sessionID>`
  * containing the workspace slug. Files are tiny and cleaned up opportunistically;
  * a stale file for a dead session is harmless because session IDs are unique.
  */
@@ -23,14 +23,7 @@ export interface SessionWorkspaceOptions {
 }
 
 function bindingsDir(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") {
-    const local = env.LOCALAPPDATA
-    const base = local && local.length > 0 ? local : path.join(homedir(), "AppData", "Local")
-    return path.join(base, "finny", "session-workspaces")
-  }
-  const xdg = env.XDG_DATA_HOME
-  const base = xdg && xdg.length > 0 ? xdg : path.join(homedir(), ".local", "share")
-  return path.join(base, "finny", "session-workspaces")
+  return finnyArtifactPath("sessionWorkspaces", { env, platform })
 }
 
 // Session IDs become filenames — restrict to a safe charset so a malformed ID
@@ -80,10 +73,7 @@ export async function getSessionWorkspace(
 }
 
 /** Remove a session's workspace binding. Idempotent. */
-export async function clearSessionWorkspace(
-  sessionID: string,
-  opts: SessionWorkspaceOptions = {},
-): Promise<void> {
+export async function clearSessionWorkspace(sessionID: string, opts: SessionWorkspaceOptions = {}): Promise<void> {
   let file: string
   try {
     file = bindingPath(sessionID, opts)

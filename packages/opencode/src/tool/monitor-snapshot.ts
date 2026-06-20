@@ -30,7 +30,7 @@ async function latestBacktest(algorithm: Algorithm.Info | null): Promise<Backtes
   if (!algorithm) return null
   try {
     const kvPath = path.join(Global.Path.state, "kv.json")
-    const kv = await Filesystem.readJson(kvPath)
+    const kv = await Filesystem.readJson<Record<string, unknown>>(kvPath)
     const raw = Array.isArray(kv?.backtest_history) ? (kv.backtest_history as BacktestHistoryEntry[]) : []
     const matches = raw
       .filter((entry) => entry.algorithmId === algorithm.algorithmId || entry.algorithmName === algorithm.name)

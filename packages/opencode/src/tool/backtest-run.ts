@@ -6,6 +6,20 @@ import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
 import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
+import {
+  analyzeStrategyCodePatterns,
+  classifyCompletedBacktestFailure,
+  classifyConceptExhaustedFailure,
+  classifyDataBlockedFailure,
+  classifyEngineFailedFailure,
+  classifyValidationFailedFailure,
+  formatFailureDiagnosisBlock,
+  priorBacktestsHadMetrics,
+  zeroTradeLikelyCause,
+  type FailureDiagnosis,
+} from "./backtest-failure-diagnosis"
+
+export const MAX_CONSECUTIVE_FAILED_BACKTESTS = 5
 
 const parameters = z.object({
   algorithmName: z
@@ -27,6 +41,16 @@ const parameters = z.object({
     .string()
     .default("10000")
     .describe("Starting capital in USD (e.g. '10000')"),
+  startDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD")
+    .optional()
+    .describe("Exact backtest start date YYYY-MM-DD. Required when the user requested explicit dates."),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD")
+    .optional()
+    .describe("Exact backtest end date YYYY-MM-DD. Required when the user requested explicit dates."),
   dataQualityMode: z
     .enum(["strict", "repair_outliers"])
     .default("strict")
@@ -41,7 +65,7 @@ const parameters = z.object({
     .boolean()
     .optional()
     .describe(
-      "Set true ONLY after the user explicitly approved continuing past two consecutive failed backtests for this symbol/interval. Renaming the algorithm does not reset the failure budget.",
+      `Set true ONLY after the user explicitly approved continuing past ${MAX_CONSECUTIVE_FAILED_BACKTESTS} consecutive failed backtests for this symbol/interval. Renaming the algorithm does not reset the failure budget.`,
     ),
 })
 
@@ -61,7 +85,14 @@ type BacktestMessageLike = {
 export type DataQualityFailureMetadata = {
   kind: "data_quality_failed"
   algorithmName: string
-  params: { duration: string; interval: string; capital: string; dataQualityMode: "strict" | "repair_outliers" }
+  params: {
+    duration: string
+    interval: string
+    capital: string
+    startDate?: string
+    endDate?: string
+    dataQualityMode: "strict" | "repair_outliers"
+  }
   phase?: "before_resample" | "after_resample"
   reason: string
   symbol?: string
@@ -149,52 +180,41 @@ export function strictDataQualityNextSteps() {
   ].join("\n")
 }
 
-/**
- * Diagnose WHY a zero-trade backtest produced no fills. Returns display lines
- * (without the leading blank). Exported for tests.
- *
- * The margin branch exists because of a real failure mode: sizing like
- * `max(1, int(qty))` forces a 1-whole-unit order even when one unit costs more
- * than the whole account (1 BTC ≈ $60K on $10K capital), so EVERY order —
- * buys and shorts alike — is rejected for insufficient margin, and shrinking
- * the allocation % changes nothing because the 1-unit clamp wins.
- */
-export function zeroTradeLikelyCause(d: {
-  buyAttempts: number
-  sellAttempts: number
-  rejectedOrders: number
-  rejectionReasons: Record<string, number>
-  strategyErrors: number
-}): string[] {
-  const reasons = Object.keys(d.rejectionReasons)
-  const attempts = d.buyAttempts + d.sellAttempts
-  const marginRejected = reasons.some((r) => /margin|buying_?power|insufficient/i.test(r))
-
-  if (attempts > 0 && d.rejectedOrders >= attempts && marginRejected) {
-    return [
-      `LIKELY CAUSE: Every order (${d.buyAttempts} buys, ${d.sellAttempts} sells) was rejected for ${reasons.join(", ")}.`,
-      `The order notional exceeds buying power. Check the sizing math:`,
-      `  • A \`max(1, int(qty))\` clamp forces a 1-whole-unit order even when 1 unit costs more than total`,
-      `    equity (e.g. 1 BTC ≈ $60K on $10K capital). Reducing the allocation/risk % does NOT fix this —`,
-      `    the 1-unit minimum wins. Remove the clamp.`,
-      `  • For crypto, use fractional qty: \`qty = round(equity * alloc_pct / price, 6)\`.`,
-      `  • For whole-share assets, skip the trade when the computed qty floors to 0.`,
-    ]
-  }
-  if (attempts > 0 && d.rejectedOrders >= attempts) {
-    return [`LIKELY CAUSE: All ${d.rejectedOrders} orders were rejected (${reasons.join(", ")}).`]
-  }
-  if (d.buyAttempts === 0 && d.strategyErrors === 0) {
-    return [
-      `LIKELY CAUSE: Entry conditions never triggered, OR position size too small (see above).`,
-      `Check the computed qty against the asset price/stop distance — math.floor(qty) may be rounding to 0.`,
-    ]
-  }
-  if (d.strategyErrors > 0) {
-    return [`LIKELY CAUSE: Strategy raised ${d.strategyErrors} exceptions — the trading logic may be broken.`]
-  }
-  return []
+function stringDate(value: unknown): string | undefined {
+  return typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined
 }
+
+export function inferSavedBacktestDates(configText: string | undefined) {
+  if (!configText?.trim()) return {}
+  try {
+    const config = JSON.parse(configText)
+    const candidates = [
+      config?.backtest,
+      config?.backtest_window,
+      config?.data,
+      config?.evidence,
+      config?.params,
+    ]
+    for (const candidate of candidates) {
+      if (!candidate || typeof candidate !== "object") continue
+      const startDate =
+        stringDate(candidate.startDate) ??
+        stringDate(candidate.start_date) ??
+        stringDate(candidate.start) ??
+        stringDate(candidate.requested_start)
+      const endDate =
+        stringDate(candidate.endDate) ??
+        stringDate(candidate.end_date) ??
+        stringDate(candidate.end) ??
+        stringDate(candidate.requested_end)
+      if (startDate && endDate) return { startDate, endDate }
+    }
+  } catch {}
+  return {}
+}
+
+export { zeroTradeLikelyCause } from "./backtest-failure-diagnosis"
+export type { FailureDiagnosis } from "./backtest-failure-diagnosis"
 
 function parseNumberField(text: string, field: string) {
   const match = text.match(new RegExp(`${field}=(-?\\d+(?:\\.\\d+)?)`))
@@ -213,6 +233,8 @@ export function parseDataQualityFailure(
     duration: string
     interval: string
     capital: string
+    startDate?: string
+    endDate?: string
     dataQualityMode: "strict" | "repair_outliers"
   },
 ): DataQualityFailureMetadata | undefined {
@@ -316,17 +338,36 @@ export const BacktestRunTool = Tool.define(
             symbol: (algo.config as any)?.symbol,
             interval: params.interval,
           })
-          if (consecutiveFailures >= 2) {
+          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILED_BACKTESTS) {
+            const hadMetrics = priorBacktestsHadMetrics(ctx.messages, {
+              symbol: (algo.config as any)?.symbol,
+              interval: params.interval,
+            })
+            const failureDiagnosis = classifyConceptExhaustedFailure({
+              consecutiveFailures,
+              algorithmName: params.algorithmName,
+              priorRunsHadMetrics: hadMetrics,
+            })
+            const diagnosisLines = formatFailureDiagnosisBlock(failureDiagnosis)
             return {
               title: "Backtest blocked by failure budget",
               output:
                 `Backtest blocked: this symbol/interval already has ${consecutiveFailures} consecutive failed backtests in this session (latest: "${params.algorithmName}").\n\n` +
-                `Renaming the algorithm does not reset this budget. Stop and summarize the blocker. ` +
-                `If the user explicitly approves continuing (new concept, asset, timeframe, or venue), rerun with userApproved: true.`,
-              metadata: { ...emptyMeta },
+                `${failureDiagnosis.summary}\n` +
+                `Likely cause: ${failureDiagnosis.likelyCause === "strategy_code" ? "strategy code/design" : failureDiagnosis.likelyCause === "backtest_data" ? "backtest/data" : "concept weakness"}.\n` +
+                `Renaming the algorithm does not reset this budget. Stop and summarize the blocker with classification.\n` +
+                `If the user explicitly approves continuing (new concept, asset, timeframe, or venue), rerun with userApproved: true.` +
+                diagnosisLines.join("\n"),
+              metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
             }
           }
         }
+
+        const assetClass = typeof (algo.config as any)?.asset_class === "string" ? (algo.config as any).asset_class : undefined
+        const codePatternWarnings = analyzeStrategyCodePatterns(algo.code, {
+          assetClass,
+          interval: params.interval,
+        })
 
         let riskBanner = ""
         try {
@@ -334,28 +375,44 @@ export const BacktestRunTool = Tool.define(
             config: algo.config,
           })
           if (!v.valid) {
+            const failureDiagnosis = classifyValidationFailedFailure()
             return {
               title: "Backtest blocked by validation",
-              output: Validate.format(v),
-              metadata: { ...emptyMeta },
+              output: `${Validate.format(v)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
+              metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
             }
           }
           riskBanner = Validate.formatRiskBanner(v)
         } catch (e: any) {
+          const failureDiagnosis = classifyValidationFailedFailure()
           return {
             title: "Backtest blocked by validation",
-            output: `Validation failed to run: ${e?.message ?? String(e)}`,
-            metadata: { ...emptyMeta },
+            output: `Validation failed to run: ${e?.message ?? String(e)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
+            metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
 
+        if (codePatternWarnings.length > 0) {
+          const preflight = [
+            `[!] CODE PATTERN PREFLIGHT (${codePatternWarnings.length}) — review before interpreting zero-trade or sizing failures:`,
+            ...codePatternWarnings.map((w) => `  • ${w}`),
+          ].join("\n")
+          riskBanner = riskBanner ? `${riskBanner}\n\n${preflight}` : preflight
+        }
+
+        const savedBacktestDates = inferSavedBacktestDates(algo.config)
+        const effectiveStartDate = params.startDate ?? savedBacktestDates.startDate
+        const effectiveEndDate = params.endDate ?? savedBacktestDates.endDate
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
           interval: params.interval,
           capital: params.capital,
+          startDate: effectiveStartDate,
+          endDate: effectiveEndDate,
           dataQualityMode: params.dataQualityMode,
           robustness: { monteCarloPaths: 500, regimes: true },
+          sessionID: ctx.sessionID,
         })
 
         if (!result.ok) {
@@ -364,9 +421,12 @@ export const BacktestRunTool = Tool.define(
             duration: params.duration,
             interval: params.interval,
             capital: params.capital,
+            startDate: effectiveStartDate,
+            endDate: effectiveEndDate,
             dataQualityMode: params.dataQualityMode,
           })
           if (dataQualityFailure) {
+            const failureDiagnosis = classifyDataBlockedFailure(dataQualityFailure.reason)
             const details = dataQualityFailure.outlierDetails
               .map(
                 (d) =>
@@ -379,17 +439,22 @@ export const BacktestRunTool = Tool.define(
                 `Strict data quality blocked "${params.algorithmName}".\n` +
                 `${dataQualityFailure.reason}\n` +
                 (details ? `\n${details}\n` : "") +
-                `\nStopped without running repair_outliers.\n\n${strictDataQualityNextSteps()}`,
+                `\nStopped without running repair_outliers.\n\n${strictDataQualityNextSteps()}` +
+                formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
               metadata: {
                 ...emptyMeta,
                 ...dataQualityFailure,
+                failure_diagnosis: failureDiagnosis,
               },
             }
           }
+          const failureDiagnosis = classifyEngineFailedFailure(result.error)
           return {
             title: "Backtest failed",
-            output: `Backtest of "${params.algorithmName}" failed:\n${result.error}`,
-            metadata: { ...emptyMeta },
+            output:
+              `Backtest of "${params.algorithmName}" failed:\n${result.error}` +
+              formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
+            metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
 
@@ -400,7 +465,9 @@ export const BacktestRunTool = Tool.define(
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
-          `Duration: ${params.duration} | Interval: ${params.interval} | Capital: $${params.capital}`,
+          `Duration: ${params.duration}` +
+            (effectiveStartDate && effectiveEndDate ? ` (${effectiveStartDate} → ${effectiveEndDate})` : "") +
+            ` | Interval: ${params.interval} | Capital: $${params.capital}`,
           params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
           ``,
           `┌──────────────────────────────────────────────────┐`,
@@ -524,6 +591,29 @@ export const BacktestRunTool = Tool.define(
           lines.push(`────────────────────────────────────────────────────`)
         }
 
+        let failureDiagnosis: FailureDiagnosis | undefined
+        if (quality.label === "failed" || r.totalReturn <= 0 || r.sharpeRatio <= 0) {
+          failureDiagnosis = classifyCompletedBacktestFailure({
+            results: r,
+            quality,
+            code: algo.code,
+            assetClass,
+            interval: params.interval,
+          })
+          if (failureDiagnosis && codePatternWarnings.length > 0) {
+            failureDiagnosis = {
+              ...failureDiagnosis,
+              codePatternWarnings: [
+                ...(failureDiagnosis.codePatternWarnings ?? []),
+                ...codePatternWarnings.filter((w) => !(failureDiagnosis?.codePatternWarnings ?? []).includes(w)),
+              ],
+            }
+          }
+          if (failureDiagnosis) {
+            lines.push(...formatFailureDiagnosisBlock(failureDiagnosis))
+          }
+        }
+
         // Engine + assumptions footer — surfaces fill model, fee/slippage
         // assumptions, kill-switch trips, and parse-warning fallout so
         // consumers don't silently miss them.
@@ -574,8 +664,11 @@ export const BacktestRunTool = Tool.define(
               duration: params.duration,
               interval: params.interval,
               capital: params.capital,
+              startDate: effectiveStartDate,
+              endDate: effectiveEndDate,
             },
             results: { ...r, v2: undefined },
+            ...(failureDiagnosis ? { failure_diagnosis: failureDiagnosis } : {}),
           },
         }
       }),

@@ -3,7 +3,7 @@ import {
   formatBacktestPlainMetrics,
   formatTableRowLine,
   formatHeaderRowLine,
-} from "../../src/cli/cmd/tui/component/backtest-results-view"
+} from "@tui/component/backtest-results-view"
 import type { BacktestRunner } from "../../src/backtest/runner"
 
 describe("backtest result plain metrics", () => {

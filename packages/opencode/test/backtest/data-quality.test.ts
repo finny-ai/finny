@@ -20,7 +20,10 @@ describe("engine_v2 data quality source contract", () => {
     expect(source).toContain("repaired_outliers")
     expect(source).toContain("def is_intraday_interval")
     expect(source).toContain("def _continuous_return_mask")
+    expect(source).toContain("def _minimum_outlier_log_return")
     expect(source).toContain("overnight/weekend gaps")
+    expect(source).toContain("statistically extreme and large enough")
+    expect(source).toContain("isolated_tolerance")
   })
 
   test("strict engine has explicit repair_outliers mode and keeps strict default", async () => {

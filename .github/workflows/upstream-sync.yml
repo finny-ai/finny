@@ -1,0 +1,80 @@
+name: upstream-sync
+
+# Weekly attempt to merge anomalyco/opencode dev into this fork.
+# Clean merge + green typecheck -> opens a sync PR.
+# Conflicts -> opens an issue listing the conflicting files so the merge can
+# be done locally per UPSTREAM_SYNC.md.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  sync:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_BRANCH: dev
+      UPSTREAM_BRANCH: dev
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: dev
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "finny-sync-bot"
+          git config user.email "finny-sync-bot@users.noreply.github.com"
+          git remote add upstream https://github.com/anomalyco/opencode.git
+          git fetch upstream "$UPSTREAM_BRANCH"
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          BEHIND=$(git rev-list --count "HEAD..upstream/$UPSTREAM_BRANCH")
+          echo "behind=$BEHIND" >> "$GITHUB_OUTPUT"
+          echo "Fork is $BEHIND commits behind upstream/$UPSTREAM_BRANCH"
+
+      - name: Attempt merge
+        id: merge
+        if: steps.check.outputs.behind != '0'
+        run: |
+          BRANCH="sync/upstream-$(date +%Y%m%d)"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git switch -c "$BRANCH"
+          if git merge --no-edit "upstream/$UPSTREAM_BRANCH"; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+            git diff --name-only --diff-filter=U > /tmp/conflicts.txt
+            git merge --abort
+          fi
+
+      - name: Push branch and open PR
+        if: steps.merge.outputs.clean == 'true'
+        run: |
+          BRANCH="${{ steps.merge.outputs.branch }}"
+          git push -u origin "$BRANCH"
+          gh pr create \
+            --base "$TARGET_BRANCH" \
+            --head "$BRANCH" \
+            --title "Sync upstream OpenCode ($(date +%Y-%m-%d))" \
+            --body "$(printf 'Automated manual merge of upstream `anomalyco/opencode` `%s` (clean merge, %s commits).\n\nVerification gate before merging — see UPSTREAM_SYNC.md:\n- [ ] bun run typecheck\n- [ ] packages/opencode bun test (Finny suites)\n- [ ] TUI smoke: splash, agent modes, Settings > Data Sources\n' "$UPSTREAM_BRANCH" "${{ steps.check.outputs.behind }}")"
+
+      - name: Open conflict issue
+        if: steps.merge.outputs.clean == 'false'
+        run: |
+          EXISTING=$(gh issue list --state open --search "in:title Upstream sync conflicts" --json number --jq 'length')
+          if [ "$EXISTING" != "0" ]; then
+            echo "Open conflict issue already exists; skipping."
+            exit 0
+          fi
+          gh issue create \
+            --title "Upstream sync conflicts ($(date +%Y-%m-%d))" \
+            --body "$(printf 'Weekly upstream merge of `anomalyco/opencode` `%s` hit conflicts (%s commits behind).\n\nRun `./script/sync-upstream.sh` locally and resolve per UPSTREAM_SYNC.md.\n\nConflicting files:\n```\n%s\n```\n' "$UPSTREAM_BRANCH" "${{ steps.check.outputs.behind }}" "$(cat /tmp/conflicts.txt)")"

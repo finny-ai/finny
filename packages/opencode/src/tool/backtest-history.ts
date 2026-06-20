@@ -27,7 +27,7 @@ interface BacktestHistoryEntry {
 async function readHistory(): Promise<BacktestHistoryEntry[]> {
   try {
     const kvPath = path.join(Global.Path.state, "kv.json")
-    const kv = await Filesystem.readJson(kvPath)
+    const kv = await Filesystem.readJson<Record<string, unknown>>(kvPath)
     const raw = kv?.backtest_history
     return Array.isArray(raw) ? raw : []
   } catch {

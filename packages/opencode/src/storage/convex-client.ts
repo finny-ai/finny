@@ -1,5 +1,5 @@
 import { ConvexHttpClient } from "convex/browser"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "../util/error"
 import z from "zod"
 import { lazy } from "../util/lazy"
 import { Log } from "../util/log"

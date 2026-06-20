@@ -21,7 +21,7 @@ from engine_v2.data.cache import (
     _write_partition_path,
     load_range,
 )
-from engine_v2.data.quality import analyze, expected_step
+from engine_v2.data.quality import QualityReport, analyze, blocking_reasons, expected_step
 
 
 def _toy_df(n: int = 200, gap_at: int = -1) -> pd.DataFrame:
@@ -126,6 +126,112 @@ def test_expected_step_bare_unit_letters():
     assert expected_step("m") == pd.Timedelta(minutes=1)
     assert expected_step("4h") == pd.Timedelta(hours=4)
     assert expected_step("15m") == pd.Timedelta(minutes=15)
+
+
+def test_equity_intraday_outlier_requires_material_move():
+    ts = pd.date_range("2026-06-11T13:30:00Z", periods=120, freq="5min", tz="UTC")
+    prices = np.full(len(ts), 726.07)
+    prices += np.sin(np.arange(len(ts))) * 0.05
+    prices[47] = 732.52  # ~0.89% 5-minute move, plausible for SPY during a rally.
+    prices[48:] += 6.45
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": prices,
+        "high": prices + 0.5,
+        "low": prices - 0.5,
+        "close": prices,
+        "volume": 1_000_000,
+    })
+
+    rep = analyze(df, "5min", "equity", provider="test")
+
+    assert rep.outlier_bars == 0
+
+
+def test_equity_intraday_outlier_keeps_large_bad_bar():
+    ts = pd.date_range("2026-06-11T13:30:00Z", periods=120, freq="5min", tz="UTC")
+    prices = np.full(len(ts), 100.0)
+    prices += np.sin(np.arange(len(ts))) * 0.02
+    prices[47] = 120.0
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": prices,
+        "high": prices + 0.5,
+        "low": prices - 0.5,
+        "close": prices,
+        "volume": 1_000_000,
+    })
+
+    rep = analyze(df, "5min", "equity", provider="test")
+
+    assert rep.outlier_bars >= 1
+
+
+def test_equity_daily_outlier_tolerates_real_market_shock():
+    ts = pd.date_range("2025-06-01", periods=220, freq="B", tz="UTC")
+    prices = np.full(len(ts), 495.90)
+    prices += np.sin(np.arange(len(ts))) * 0.20
+    prices[160] = 444.95  # ~10.8% daily drop, large but plausible for strict daily equity data.
+    prices[161:] -= 50.95
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": prices,
+        "high": prices + 25.0,
+        "low": prices - 25.0,
+        "close": prices,
+        "volume": 1_000_000,
+    })
+
+    rep = analyze(df, "1d", "equity", provider="test")
+
+    assert rep.outlier_bars == 0
+
+
+def test_equity_daily_outlier_keeps_impossible_bad_bar():
+    ts = pd.date_range("2025-06-01", periods=220, freq="B", tz="UTC")
+    prices = np.full(len(ts), 100.0)
+    prices += np.sin(np.arange(len(ts))) * 0.02
+    prices[160] = 150.0
+    df = pd.DataFrame({
+        "timestamp": ts,
+        "open": prices,
+        "high": prices + 5.0,
+        "low": prices - 5.0,
+        "close": prices,
+        "volume": 1_000_000,
+    })
+
+    rep = analyze(df, "1d", "equity", provider="test")
+
+    assert rep.outlier_bars >= 1
+
+
+def test_equity_zero_volume_tolerates_isolated_provider_artifacts():
+    report = QualityReport(
+        n_bars=1716,
+        coverage_pct=1.0,
+        gap_count=0,
+        duplicate_ts_count=0,
+        ohlc_violations=0,
+        outlier_bars=0,
+        zero_volume_bars=1,
+    )
+
+    assert blocking_reasons(report, "equity") == []
+
+
+def test_equity_zero_volume_blocks_material_clusters():
+    report = QualityReport(
+        n_bars=300,
+        coverage_pct=1.0,
+        gap_count=0,
+        duplicate_ts_count=0,
+        ohlc_violations=0,
+        outlier_bars=0,
+        zero_volume_bars=8,
+    )
+
+    assert "8 zero-volume bar(s)" in blocking_reasons(report, "equity")
 
 
 def test_cache_concurrent_writes_no_corruption(tmp_path):

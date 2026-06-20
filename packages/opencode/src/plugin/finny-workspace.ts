@@ -6,12 +6,15 @@ import {
   bindSessionWorkspace,
   ensureAlgoWorkspace,
   getSessionWorkspace,
+  isValidAlgoId,
 } from "@finny-ai/core/algo"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { parseRequestFacts, workspaceMatchesRequest, type RequestFacts } from "../agent/request-identity"
-import { Global } from "../global"
+import { syncWorkspaceRequestContext } from "../agent/finny-workspace-context"
 import { Log } from "../util/log"
 
 const log = Log.create({ service: "plugin.finny-workspace" })
+const STRATEGY_ORIGIN_FILE = ".strategy-origin"
 
 /**
  * Per-request workspace bootstrap — the "startup script" that runs the moment
@@ -25,7 +28,17 @@ const log = Log.create({ service: "plugin.finny-workspace" })
  * algorithm's workspace into this request (the SPY-data-in-btc-workspace bug).
  */
 
-const BOOTSTRAP_AGENTS = new Set(["build", "research"])
+const CONTINUATION_RE =
+  /\b(continue|pick\s+up|where\s+you\s+left\s+off|tighten|save\s+it|run\s+(the\s+)?backtest|backtest\s+it|update\s+(the\s+)?stops?|fix\s+(the\s+)?strategy|validate\s+it)\b/i
+
+const RESEARCH_RE =
+  /\b(search|look\s+up|find\s+out|news|headline|ipo|earnings|current\s+event|latest\s+on|what(?:'s|\s+is)\s+happening|status\s+of|when\s+is|who\s+is|tell\s+me\s+about)\b/i
+
+const EXPLICIT_RESEARCH_RE =
+  /\b(search|look\s+up|find\s+out|news|headline|ipo|earnings|current\s+event|latest(?:\s+on)?|what(?:'s|\s+is)\s+happening|status\s+of|when\s+is|who\s+is)\b/i
+
+const STRATEGY_REFERENCE_RE =
+  /\b(strategy|algo(?:rithm)?|backtest|entry|exit|signal|stops?|risk|position\s+sizing)\b/i
 
 /** Strategy-intent keywords, scanned in order; first hit names the workspace. */
 const INTENT_PATTERNS: Array<[RegExp, string]> = [
@@ -37,6 +50,8 @@ const INTENT_PATTERNS: Array<[RegExp, string]> = [
   [/pairs?[\s-]trad/i, "pairs"],
   [/dca|dollar[\s-]cost/i, "dca"],
   [/swing/i, "swing"],
+  [/options/i, "options"],
+  [/algo(rithm)?/i, "algo"],
 ]
 
 export function deriveIntent(prompt: string): string | undefined {
@@ -46,17 +61,113 @@ export function deriveIntent(prompt: string): string | undefined {
   return undefined
 }
 
-/** Kebab-case workspace name from request facts, e.g. "spy-15m-mean-reversion". */
-export function deriveWorkspaceName(facts: RequestFacts, intent?: string): string | undefined {
+export function hasStrategyContinuationIntent(prompt: string): boolean {
+  return CONTINUATION_RE.test(prompt)
+}
+
+export function isNewsResearchPrompt(prompt: string): boolean {
+  return RESEARCH_RE.test(prompt)
+}
+
+export function deriveResearchWorkspaceName(prompt: string): string {
+  return joinWorkspaceParts([derivePromptSlug(prompt), "research"])
+}
+
+function researchSlugBase(slug: string): string {
+  return (slug.split(".")[0] ?? slug).toLowerCase()
+}
+
+function existingResearchSlugMatches(slug: string, researchName: string): boolean {
+  const base = researchSlugBase(slug)
+  return base === researchName || base.startsWith(`${researchName}-`)
+}
+
+function isResearchWorkspace(slug: string): boolean {
+  return researchSlugBase(slug).endsWith("-research")
+}
+
+async function readStrategyOrigin(researchSlug: string): Promise<string | null> {
+  try {
+    const origin = (await fs.readFile(path.join(algoDir(researchSlug), STRATEGY_ORIGIN_FILE), "utf8")).trim()
+    return isValidAlgoId(origin) ? origin : null
+  } catch {
+    return null
+  }
+}
+
+async function writeStrategyOrigin(researchDir: string, strategySlug: string | null): Promise<void> {
+  if (!strategySlug || isResearchWorkspace(strategySlug)) return
+  await fs.writeFile(path.join(researchDir, STRATEGY_ORIGIN_FILE), `${strategySlug}\n`, "utf8")
+}
+
+function isExistingStrategyFollowup(existing: string | null, prompt: string): boolean {
+  if (!existing || isResearchWorkspace(existing)) return false
+  return STRATEGY_REFERENCE_RE.test(prompt) && !EXPLICIT_RESEARCH_RE.test(prompt)
+}
+
+export function derivePromptSlug(prompt: string): string {
+  const stop = new Set([
+    "a",
+    "an",
+    "the",
+    "for",
+    "and",
+    "with",
+    "build",
+    "create",
+    "make",
+    "new",
+    "me",
+    "help",
+    "is",
+    "on",
+    "of",
+    "about",
+    "tell",
+    "search",
+    "latest",
+  ])
+  const words = prompt
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 1 && !stop.has(word))
+    .slice(0, 3)
+  return (words.join("-") || "session").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "")
+}
+
+/** Kebab-case workspace name from request facts, e.g. "spy-15m-mean-reversion" or "options-algo-strategy". */
+export function deriveWorkspaceName(facts: RequestFacts, intent?: string, prompt = ""): string {
+  const tail = intent ?? "strategy"
   const symbol = facts.requested_symbol?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
-  if (!symbol) return undefined
-  const parts = [symbol]
+  if (symbol) {
+    const parts = [symbol]
+    if (facts.requested_interval) parts.push(facts.requested_interval)
+    parts.push(tail)
+    return joinWorkspaceParts(parts)
+  }
+
+  const slug = derivePromptSlug(prompt)
+  const parts = [slug]
   if (facts.requested_interval) parts.push(facts.requested_interval)
-  parts.push(intent ?? "strategy")
+  if (intent && !slug.includes(intent)) parts.push(intent)
+  else parts.push("strategy")
+  return joinWorkspaceParts(parts)
+}
+
+function joinWorkspaceParts(parts: string[]): string {
   return parts
     .join("-")
     .replace(/-{2,}/g, "-")
     .replace(/^-+|-+$/g, "")
+}
+
+function slugMatchesRequest(slug: string, facts: RequestFacts): boolean {
+  if (!workspaceMatchesRequest(slug, facts)) return false
+  const sym = facts.requested_symbol?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  if (!sym) return true
+  const base = (slug.split(".")[0] ?? slug).toLowerCase()
+  return base.includes(sym)
 }
 
 export interface BootstrapResult {
@@ -76,39 +187,46 @@ export async function bootstrapWorkspace(
   prompt: string,
 ): Promise<BootstrapResult | undefined> {
   const facts = parseRequestFacts(prompt)
-  // Conceptual questions (no symbol) must not create junk workspaces.
-  if (!facts.requested_symbol) return undefined
-
   const existing = await getSessionWorkspace(sessionID)
-  if (existing && workspaceMatchesRequest(existing, facts)) {
+  const strategyOrigin = existing && isResearchWorkspace(existing) ? await readStrategyOrigin(existing) : null
+  const continuation = hasStrategyContinuationIntent(prompt)
+  const strategyFollowup = isExistingStrategyFollowup(strategyOrigin ?? existing, prompt)
+  const research = isNewsResearchPrompt(prompt) && !continuation && !strategyFollowup && !deriveIntent(prompt)
+
+  if (!research && strategyOrigin && (continuation || strategyFollowup)) {
+    await bindSessionWorkspace(sessionID, strategyOrigin)
+    await syncWorkspaceRequestContext({ sessionID, slug: strategyOrigin, prompt, facts })
+    return { slug: strategyOrigin, dir: algoDir(strategyOrigin), created: false, rebound: true }
+  }
+
+  if (research) {
+    const researchName = deriveResearchWorkspaceName(prompt)
+    if (existing && existingResearchSlugMatches(existing, researchName)) {
+      await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
+      return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
+    }
+
+    const ensured = await ensureAlgoWorkspace(researchName)
+    await writeStrategyOrigin(ensured.dir, strategyOrigin ?? existing)
+    await bindSessionWorkspace(sessionID, ensured.slug)
+    await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts })
+    return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, rebound: Boolean(existing) }
+  }
+
+  if (existing && slugMatchesRequest(existing, facts)) {
+    await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }
 
-  const name = deriveWorkspaceName(facts, deriveIntent(prompt))
-  if (!name) return undefined
+  const name = deriveWorkspaceName(facts, deriveIntent(prompt), prompt)
 
   // Never pass setActive — the machine-global marker stays untouched.
   const ensured = await ensureAlgoWorkspace(name)
   await bindSessionWorkspace(sessionID, ensured.slug)
 
-  // request.json is the workspace's identity ground truth: subagent results
-  // and artifacts are verified against these facts before use.
-  const requestFile = path.join(ensured.dir, "request.json")
-  await fs.writeFile(
-    requestFile,
-    JSON.stringify(
-      {
-        requested_symbol: facts.requested_symbol,
-        requested_interval: facts.requested_interval,
-        requested_asset_class: facts.requested_asset_class,
-        request_id: sessionID,
-        created: new Date().toISOString(),
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
-  )
+  // request.json and placeholder mission.md are the workspace identity ground
+  // truth before the strategy is authored.
+  await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts })
 
   return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, rebound: Boolean(existing) }
 }
@@ -138,7 +256,7 @@ export async function linkAlgorithmToWorkspace(
   const slug = await getSessionWorkspace(sessionID)
   if (!slug) return undefined
   const wsDir = algoDir(slug)
-  const storePath = path.join(Global.Path.data, "algorithms", meta.algorithmId)
+  const storePath = path.join(finnyArtifactPath("algorithms"), meta.algorithmId)
 
   const linksDir = path.join(wsDir, "algorithms")
   await fs.mkdir(linksDir, { recursive: true })
@@ -190,33 +308,6 @@ export async function mirrorNewsToWorkspace(sessionID: string, filePath: string)
 
 export async function FinnyWorkspacePlugin(_input: PluginInput): Promise<Hooks> {
   return {
-    "chat.message": async (input, output) => {
-      if (!input.agent || !BOOTSTRAP_AGENTS.has(input.agent)) return
-      const text = (output.parts ?? [])
-        .filter((p: any) => p?.type === "text" && typeof p.text === "string" && !p.synthetic)
-        .map((p: any) => p.text as string)
-        .join("\n")
-      if (!text.trim()) return
-      try {
-        const result = await bootstrapWorkspace(input.sessionID, text)
-        if (result) {
-          log.info("workspace bootstrapped", {
-            sessionID: input.sessionID,
-            slug: result.slug,
-            created: result.created,
-            rebound: result.rebound,
-          })
-        }
-      } catch (err) {
-        // Bootstrap failures must never block the prompt — tools fall back to
-        // provisioning a pending workspace themselves.
-        log.warn("workspace bootstrap failed", {
-          sessionID: input.sessionID,
-          err: err instanceof Error ? err.message : String(err),
-        })
-      }
-    },
-
     "tool.execute.after": async (input, output) => {
       try {
         if (input.tool === "finny_algorithm_save") {

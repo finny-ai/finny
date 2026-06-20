@@ -148,6 +148,8 @@ describe("missionRejectionMessage", () => {
     const message = missionRejectionMessage(["status: Invalid option"])
     expect(message).toContain("  - status: Invalid option")
     expect(message).toContain("schema_version: 3")
+    expect(message).toContain("hypothesis: |")
+    expect(message).toContain("YAML safety")
     expect(message).toContain("status: research | backtested | paper | live | retired")
     for (const id of Mission.CORE8_IDS) {
       expect(message).toContain(`- id: ${id}`)

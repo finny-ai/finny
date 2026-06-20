@@ -1,8 +1,8 @@
 import crypto from "crypto"
 import path from "path"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { DeviceProfile } from "@/device"
 import { Global } from "@/global"
-import { Installation } from "@/installation"
 import { Filesystem } from "@/util/filesystem"
 
 const CACHE_FILE = "license-cache.json"
@@ -226,7 +226,7 @@ export namespace License {
           org_id: orgID,
           license_key_hash: licenseKeyHash,
           machine_id_hash: machineIdHash,
-          app_version: Installation.VERSION,
+          app_version: InstallationVersion,
           timestamp: new Date(nowImpl()).toISOString(),
         }),
       })

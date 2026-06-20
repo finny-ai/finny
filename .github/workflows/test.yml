@@ -3,14 +3,31 @@ name: test
 on:
   push:
     branches:
-      - dev
+      - staging-dev
+    paths:
+      - ".github/workflows/test.yml"
+      - "bun.lock"
+      - "package.json"
+      - "packages/opencode/**"
+      - "packages/finny-core/**"
+      - "packages/finny-integrations/**"
+      - "packages/finny-registry/**"
   pull_request:
+    branches:
+      - staging-dev
+    paths:
+      - ".github/workflows/test.yml"
+      - "bun.lock"
+      - "package.json"
+      - "packages/opencode/**"
+      - "packages/finny-core/**"
+      - "packages/finny-integrations/**"
+      - "packages/finny-registry/**"
   workflow_dispatch:
 
 concurrency:
-  # Keep every run on dev so cancelled checks do not pollute the default branch
-  # commit history. PRs and other branches still share a group and cancel stale runs.
-  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/dev' && github.run_id || github.event.pull_request.number || github.ref }}
+  # Keep every staging-dev push run while cancelling stale PR runs.
+  group: ${{ github.workflow }}-${{ github.ref == 'refs/heads/staging-dev' && github.run_id || github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -22,16 +39,8 @@ env:
 
 jobs:
   unit:
-    name: unit (${{ matrix.settings.name }})
-    strategy:
-      fail-fast: false
-      matrix:
-        settings:
-          - name: linux
-            host: ubuntu-latest
-          - name: windows
-            host: windows-latest
-    runs-on: ${{ matrix.settings.host }}
+    name: unit
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     defaults:
       run:
         shell: bash
@@ -73,7 +82,7 @@ jobs:
         uses: mikepenz/action-junit-report@v6
         with:
           report_paths: packages/*/.artifacts/unit/junit.xml
-          check_name: "unit results (${{ matrix.settings.name }})"
+          check_name: unit results
           detailed_summary: true
           include_time_in_summary: true
           fail_on_failure: false
@@ -82,7 +91,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: unit-${{ matrix.settings.name }}-${{ github.run_attempt }}
+          name: unit-${{ github.run_attempt }}
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 7
@@ -99,9 +108,7 @@ jobs:
   #     matrix:
   #       settings:
   #         - name: linux
-  #           host: ubuntu-latest
-  #         - name: windows
-  #           host: windows-latest
+  #           host: blacksmith-2vcpu-ubuntu-2404
   #   runs-on: ${{ matrix.settings.host }}
   #   env:
   #     PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers

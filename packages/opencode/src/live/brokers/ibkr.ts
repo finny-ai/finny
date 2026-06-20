@@ -1,6 +1,7 @@
 import crypto from "crypto"
 import { Auth } from "@/auth"
 import type { BrokerAccount, BrokerCredentials, BrokerMode, BrokerSpec } from "./types"
+import { brokerModeChoices } from "./live-trading"
 
 export const IBKR_PROVIDER_PREFIX = "ibkr"
 
@@ -94,7 +95,7 @@ export const ibkrSpec: BrokerSpec = {
     { name: "label", label: "Label" },
     { name: "keyId", label: "Account ID", placeholder: "DU1234567 (paper) or U1234567 (live)" },
     { name: "endpoint", label: "TWS host:port", default: DEFAULT_ENDPOINT, placeholder: "127.0.0.1:7497" },
-    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: ["paper", "live"] },
+    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: brokerModeChoices(["paper", "live"]) },
   ],
   promptFragment: [
     "## Active brokerage: IBKR (Interactive Brokers)",

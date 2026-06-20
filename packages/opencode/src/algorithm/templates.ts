@@ -106,6 +106,8 @@ class Strategy:
             return
 
         # RSI from settled state (no current-bar close in the decision path)
+        if self.period <= 0:
+            return
         avg_gain = sum(self.gains) / self.period
         avg_loss = sum(self.losses) / self.period
         if avg_loss > 1e-10:

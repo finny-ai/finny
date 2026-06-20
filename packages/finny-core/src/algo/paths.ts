@@ -1,19 +1,16 @@
-import { homedir } from "node:os"
 import path from "node:path"
 import fs from "node:fs/promises"
+import { finnyArtifactPath } from "../prefs"
 import { ALGO_NAME_RE, ALGO_SLUG_RE, VERSION_DIR_RE, isValidAlgoId, MISSION_FILE } from "./schemas"
 
 const TEMPLATE_DIR = "_template"
 
-export function algosRoot(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") {
-    const local = env.LOCALAPPDATA
-    if (local && local.length > 0) return path.join(local, "finny", "algos")
-    return path.join(homedir(), "AppData", "Local", "finny", "algos")
-  }
-  const xdg = env.XDG_DATA_HOME
-  if (xdg && xdg.length > 0) return path.join(xdg, "finny", "algos")
-  return path.join(homedir(), ".local", "share", "finny", "algos")
+export function algosRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  prefsPath?: string,
+): string {
+  return finnyArtifactPath("algos", { env, platform, prefsPath })
 }
 
 /**
@@ -72,9 +69,7 @@ export async function resolveAlgoDir(
   }
 
   const prefix = nameOrSlug + "."
-  const matches = entries.filter(
-    (e) => e.isDirectory() && e.name.startsWith(prefix) && ALGO_SLUG_RE.test(e.name),
-  )
+  const matches = entries.filter((e) => e.isDirectory() && e.name.startsWith(prefix) && ALGO_SLUG_RE.test(e.name))
 
   if (matches.length === 0) {
     throw new Error(`algo "${nameOrSlug}" not found in ${root}`)
@@ -105,7 +100,9 @@ export async function resolveAlgoDir(
     }
   }
   if (!best) {
-    throw new Error(`algo "${nameOrSlug}": found ${matches.length} slug directories but none contain a valid ${MISSION_FILE}`)
+    throw new Error(
+      `algo "${nameOrSlug}": found ${matches.length} slug directories but none contain a valid ${MISSION_FILE}`,
+    )
   }
   return { dir: path.join(root, best.name), slug: best.name }
 }

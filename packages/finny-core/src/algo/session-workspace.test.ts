@@ -11,16 +11,21 @@ import {
 
 let sandbox: string
 let prevXdg: string | undefined
+let prevFinnyHome: string | undefined
 
 beforeEach(async () => {
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "finny-session-ws-"))
   prevXdg = process.env.XDG_DATA_HOME
+  prevFinnyHome = process.env.FINNY_HOME
   process.env.XDG_DATA_HOME = sandbox
+  delete process.env.FINNY_HOME
 })
 
 afterEach(async () => {
   if (prevXdg === undefined) delete process.env.XDG_DATA_HOME
   else process.env.XDG_DATA_HOME = prevXdg
+  if (prevFinnyHome === undefined) delete process.env.FINNY_HOME
+  else process.env.FINNY_HOME = prevFinnyHome
   await fs.rm(sandbox, { recursive: true, force: true })
 })
 
@@ -69,5 +74,10 @@ describe("session workspace binding", () => {
     expect(dir.startsWith(sandbox)).toBe(true)
     const raw = await fs.readFile(path.join(dir, "ses_loc"), "utf8")
     expect(raw.trim()).toBe("spy-15m-pending")
+  })
+
+  test("FINNY_HOME controls the binding directory", () => {
+    const dir = _sessionWorkspaceBindingsDir({ FINNY_HOME: "/tmp/finny-home", XDG_DATA_HOME: sandbox } as any, "linux")
+    expect(dir).toBe(path.join("/tmp/finny-home", "session-workspaces"))
   })
 })

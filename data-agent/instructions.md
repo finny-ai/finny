@@ -1,0 +1,497 @@
+## Data Source Instructions
+
+This file is the main source cookbook for Finny's Data Agent. It tells the agent
+how to connect to data sources with host `bash` and defines the stable artifact
+contract that every source recipe must follow. The runtime-injected context remains
+the authority for each specific request.
+
+Run write commands with `workdir` set to the active algorithm `data/` directory. Use
+literal output paths such as `stock/AAPL_1d_2024-01-01_2024-12-31.csv`; do not hide
+write paths behind shell variables when redirecting output.
+
+## Runtime Contract
+
+The runtime-injected `Data request context` is authoritative. Use this cookbook only
+after parsing that context. Recipes must be parameterized with the requested symbol
+or universe, interval, absolute start date, absolute end date, asset class, and active
+`allowed_data_dir`.
+Treat `workspace_slug` as the storage workspace only. If
+`requested_algorithm_name` is present, use that value for identity metadata; do
+not replace it with the workspace slug.
+
+Do not read `algos/_template/README.md` for data extraction. Do not write into
+repo-local `algos/_template` or another algorithm's `data/` tree. If a recipe writes
+files, set bash `workdir` to `allowed_data_dir` and write relative paths under one of
+the market folders below.
+
+Always keep requested coverage separate from actual saved coverage. If a provider
+truncates intraday history, returns no rows for part of the window, or rejects the
+requested lookback, keep `requested_start` and `requested_end` unchanged in the
+manifest, compute `actual_start` and `actual_end` from saved rows, set coverage to
+`"partial"`, and include a short coverage note.
+
+## Environment
+
+Real local credentials belong in `.env`, not in this file. Copy `.env.example` to
+`.env` and fill only the variables needed by the selected source.
+
+Finny also stores brokerage API keys in local Auth storage when you connect an
+account via **Settings → Brokerages**. The Data Agent bash runtime injects the
+first connected Alpaca account into the process environment as
+`ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY` when they are not already set in
+`.env`. Do not read `.env` or Auth files directly; test with:
+
+```bash
+test -n "${ALPACA_API_KEY_ID:-}" && test -n "${ALPACA_API_SECRET_KEY:-}"
+```
+
+Relevant variables:
+
+```text
+MARKET_DATA_URL=
+MARKET_DATA_TOKEN=
+BINANCE_BASE_URL=https://data-api.binance.vision
+POLYGON_API_KEY=
+ALPACA_API_KEY_ID=
+ALPACA_API_SECRET_KEY=
+ALPACA_DATA_FEED=iex
+ORACLE_DSN=
+ORACLE_USER=
+ORACLE_PASSWORD=
+BLOOMBERG_HOST=
+BLOOMBERG_API_KEY=
+```
+
+Public yfinance and Binance spot klines do not require API keys. Finny injects
+`BINANCE_BASE_URL=https://data-api.binance.vision` into every Data Agent shell,
+so users need no local setup. An explicit environment value may override the
+application default. Prefer the configured value, then try `https://api.binance.com` and
+`https://data-api.binance.vision` before falling back to another provider.
+
+## Source Selection
+
+Use the source requested in the task or mission when it is explicit. Otherwise:
+
+1. Use enterprise/internal instructions when a matching source is configured.
+2. Use Binance public klines for crypto spot pairs such as `BTC/USD`.
+3. For **equities and ETFs**, when both `ALPACA_API_KEY_ID` and
+   `ALPACA_API_SECRET_KEY` are present in the bash environment, **try Alpaca
+   first** before any public fallback.
+4. Use yfinance for public equities, ETFs, futures roots, and fallback public
+   OHLCV when Alpaca is unavailable, fails, or returns unusable coverage.
+   If Python `yfinance` is unavailable, use the same Yahoo source through the
+   v8 chart HTTP API with Python stdlib `urllib.request`; do not try the v7 CSV
+   download endpoint first because it often requires Yahoo auth.
+
+If a selected source is unavailable because a CLI, Python package, or credential is
+missing, report that source error and try the next appropriate configured source.
+Do not install packages during extraction. Package installation changes the
+runtime and adds noisy, non-reproducible demo behavior; treat missing packages
+as a source/runtime availability blocker or fallback reason.
+Use heredoc/stdin for short helper scripts. Do not write helper scripts to `/tmp`
+or call generic `write`; guarded `bash` is the only write path.
+
+## Alpaca-First With yfinance Fallback (Equity/ETF)
+
+For equity/ETF requests, detect Alpaca credentials from the bash environment
+without reading `.env` files:
+
+```bash
+test -n "${ALPACA_API_KEY_ID:-}" && test -n "${ALPACA_API_SECRET_KEY:-}"
+```
+
+When both are set:
+
+1. **Fetch from Alpaca first** using the Alpaca recipe below. Alpaca supports
+   multi-month sub-hour equity history (for example `5Min` over 90 days) when
+   credentials are valid. Paginate with `next_page_token` until exhausted.
+2. **Verify the Alpaca result** before accepting it:
+   - row count is greater than zero
+   - `actual_start` / `actual_end` are computed from saved rows
+   - for full-window parent requests, coverage is not materially short of
+     `requested_start` / `requested_end` (weekend/holiday endpoint gaps may be
+     `trading_day_complete`)
+   - no material quality blockers (`duplicates`, `invalid_ohlc`, large session
+     gaps) that make the window unusable
+3. If Alpaca fails (missing creds, HTTP/auth error, empty window, partial
+   coverage for a full-window request, or failed verification), **record the
+   Alpaca attempt and fall back to yfinance**.
+4. If yfinance also cannot cover the requested window, return
+   `BLOCKED: requested evidence window unavailable` with both source attempts.
+
+When Alpaca credentials are **not** present, skip straight to yfinance (and other
+configured sources) using the rules below. Do not return a yfinance-only blocker
+before checking whether Alpaca credentials exist in bash.
+
+## Provider Capability Preflight
+
+Before running a fetch, compare the requested asset class, interval, and date span
+with known source limits. This is a guardrail, not a backtest shortcut.
+
+- Public yfinance equity/ETF intraday history is limited. Treat sub-hour
+  intervals over roughly 60 calendar days, including `5min` over `3m`, as unable
+  to provide full-window validation evidence **when Alpaca and other configured
+  paid/internal sources are unavailable or have already failed verification**.
+- When Alpaca credentials are present for an equity/ETF request, **do not**
+  hard-stop on the yfinance 60-day intraday limit before attempting Alpaca.
+- If Alpaca, Polygon, Oracle, Bloomberg, or an internal HTTP source is configured
+  for the requested market and can cover the window, use that source first.
+- If only a limited public fallback remains after Alpaca (or other configured
+  sources) fail, do not make repeated doomed yfinance retries. Return
+  `BLOCKED: requested evidence window unavailable`, include the requested_start/
+  requested_end, the requested interval, each attempted source, and why fallback
+  could not cover the window.
+- Optional diagnostic partial files may be written only when useful, but mark
+  `coverage` as `"partial"` and `usable_for_parent` as `"no"` for full-window
+  validation/backtest requests unless trading-day-complete rules apply.
+
+## Output Convention
+
+Write OHLCV CSV columns in this order:
+
+```text
+timestamp,open,high,low,close,volume
+```
+
+Use the closest existing folder:
+
+```text
+stock/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
+crypto/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
+future/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
+option/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
+```
+
+For durable artifacts, write a small `.manifest.json` sidecar when practical. Every
+successful extraction must write both CSV and manifest under `allowed_data_dir` only.
+Include identity fields that match the digest:
+
+```json
+{
+  "schema_version": 1,
+  "source": "yfinance",
+  "symbols": ["AAPL"],
+  "interval": "1d",
+  "requested_symbol": "AAPL",
+  "actual_symbol": "AAPL",
+  "requested_interval": "1d",
+  "actual_interval": "1d",
+  "requested_asset_class": "equity",
+  "actual_asset_class": "equity",
+  "requested_algorithm_name": "aapl-breakout",
+  "requested_start": "2024-01-01",
+  "requested_end": "2024-12-31",
+  "actual_start": "2024-01-02",
+  "actual_end": "2024-12-30",
+  "output_path": "stock/AAPL_1d_2024-01-01_2024-12-31.csv",
+  "rows": 252,
+  "run_id": "20260616T120000Z-aapl",
+  "coverage": "partial",
+  "coverage_note": "source did not return requested boundary dates",
+  "usable_for_parent": "no",
+  "created_at": "2026-06-04T00:00:00Z"
+}
+```
+
+Use `actual_start`/`actual_end` from the first and last saved row after timezone
+normalization and deduplication. Use `requested_start`/`requested_end` for the
+requested window. If a source truncates history, set `coverage` to `"partial"`
+and include a concise `coverage_note`; do not label requested dates as actual
+coverage.
+If `actual_end` is before `requested_end` only because the requested end falls on
+a weekend/market holiday and the saved rows include the last trading day before
+that date, set `coverage` to `"trading_day_complete"` and `usable_for_parent` to
+`"yes"` with the non-trading-day caveat.
+
+Do not store command text, credential names, or secret values in manifests.
+
+## Strict Quality Vocabulary
+
+Use the same labels in verification summaries and digests that strict backtests use:
+`duplicates`, `gaps`, `invalid_ohlc`, `zero_volume`, `outliers`,
+`partial_provider_coverage`. Set `usable_for_parent: no` when any blocker is
+material for the parent's requested window. Do not estimate missing summary stats;
+return `not_returned` instead of guessing mean, std dev, first/last close, or CAGR.
+
+## Python Runtime
+
+Prefer `$FINNY_MANAGED_PYTHON` or `$FINNY_PYTHON_BIN` when exported into bash.
+When either variable is set, use it for every Python invocation instead of bare
+`python3`/`python` so the workspace `.venv` packages (yfinance, pandas, etc.) are
+available. Example: `"$FINNY_PYTHON_BIN" <<'PY'` or `"$FINNY_PYTHON_BIN" -c '...'`.
+Do not run `pip`, `pip3`, `brew install`, or package installs during extraction.
+If Python or a required import is unavailable, return
+`BLOCKED: runtime/source unavailable` for that source and try the next configured
+source. On macOS/homebrew failures (for example Python 3.14 ABI issues), report the
+clean blocker instead of retrying installs.
+
+## Provider Limits
+
+When the parent requires full-window evidence and Alpaca (or another configured
+paid/internal source) is available, try that source first and verify coverage.
+Only when every configured source fails should you hard-stop. When the parent
+requires full-window evidence and **only** public yfinance remains after Alpaca
+and other configured sources fail, hard-stop before saving a partial public fetch.
+Example: SPY 5m over three months with no Alpaca credentials should return
+`BLOCKED: provider limit` with the source error instead of writing truncated
+OHLCV and marking it usable.
+
+## Artifact Verification
+
+After writing a CSV and manifest, run a local verification command that reads both
+files back from `allowed_data_dir`. At minimum, verify:
+
+- row count is greater than zero
+- the manifest output path points to the saved CSV
+- requested_start/requested_end match the request context
+- actual_start/actual_end match the first and last saved timestamps
+- timestamp duplicates, null OHLCV values, invalid OHLC relationships, and large
+  intraday gaps are reported when practical
+
+Valid OHLC for each bar requires `high >= low`, `high >= max(open, close)`, and
+`low <= min(open, close)`. Bullish and bearish candles are both valid.
+
+Verification example (stdlib):
+
+```bash
+"$FINNY_PYTHON_BIN" <<'PY'
+import csv
+
+def valid_ohlc(o, h, l, c):
+    body_top = max(o, c)
+    body_bottom = min(o, c)
+    return h >= l and h >= body_top and l <= body_bottom
+
+invalid_ohlc = 0
+rows = 0
+with open("stock/AAPL_5m_2026-03-16_2026-06-15.csv", newline="") as f:
+    for row in csv.DictReader(f):
+        rows += 1
+        o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
+        if not valid_ohlc(o, h, l, c):
+            invalid_ohlc += 1
+print(f"rows={rows} invalid_ohlc={invalid_ohlc}")
+PY
+```
+
+Return the verification summary to the parent. Do not dump raw rows or full gap arrays; report counts and at most three sample timestamps/gaps.
+
+## yfinance
+
+Use yfinance for public equities, ETFs, futures roots, and public fallback OHLCV.
+This recipe requires the host Python environment to have `yfinance` and `pandas`
+available.
+
+Public yfinance is a fallback source, not the preferred production feed when paid
+or internal market data is configured. If yfinance is selected as the fallback, try
+the requested window first. For intraday intervals, yfinance may reject long
+lookbacks; when the provider-capability preflight already proves the full window
+cannot be covered, do not retry repeatedly. Return the full-window blocker, or make
+one diagnostic partial attempt only if it will help explain coverage, and record
+the limitation in the manifest.
+
+Example: AAPL daily bars.
+
+```bash
+"${FINNY_PYTHON_BIN:-python3}" -c 'import sys, pandas as pd, yfinance as yf
+df = yf.Ticker("AAPL").history(start="2024-01-01", end="2024-12-31", interval="1d").reset_index()
+df = df.rename(columns={"Date":"timestamp","Datetime":"timestamp","Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
+df[["timestamp","open","high","low","close","volume"]].to_csv(sys.stdout, index=False)' \
+  > stock/AAPL_1d_2024-01-01_2024-12-31.csv
+```
+
+Manifest:
+
+```bash
+"${FINNY_PYTHON_BIN:-python3}" -c 'import json, datetime, pandas as pd
+df = pd.read_csv("stock/AAPL_1d_2024-01-01_2024-12-31.csv", parse_dates=["timestamp"])
+actual_start = df["timestamp"].min().date().isoformat()
+actual_end = df["timestamp"].max().date().isoformat()
+coverage = "complete" if actual_start <= "2024-01-01" and actual_end >= "2024-12-31" else "partial"
+print(json.dumps({"schema_version":1,"source":"yfinance","symbols":["AAPL"],"interval":"1d","requested_start":"2024-01-01","requested_end":"2024-12-31","actual_start":actual_start,"actual_end":actual_end,"output_path":"stock/AAPL_1d_2024-01-01_2024-12-31.csv","rows":len(df),"coverage":coverage,"created_at":datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"}, indent=2))' \
+  > stock/AAPL_1d_2024-01-01_2024-12-31.manifest.json
+```
+
+## Binance Public Klines
+
+Use Binance public klines for crypto spot OHLCV. Convert Finny pairs to Binance
+symbols: `BTC/USD` -> `BTCUSDT`, `ETH/USD` -> `ETHUSDT`.
+
+Public klines need no API key or signed headers. Use
+`${BINANCE_BASE_URL:-https://api.binance.com}/api/v3/klines`. On DNS failure,
+connection timeout, HTTP 403, or HTTP 451, retry transient failures with bounded
+backoff and try the alternate public host `https://data-api.binance.vision`
+before using yfinance. Record every attempted host and failure in
+`source_attempts`. Do not describe a fallback result as successful evidence
+unless its coverage and quality pass verification.
+
+Binance returns at most 1000 klines per request. That is a page size, not a
+lookback limit. For any requested window that can exceed 1000 bars, page forward
+until the requested end is reached, de-duplicate by open time, and only then
+compute actual coverage. Do not report `partial_provider_coverage` just because
+the first response had 1000 rows.
+
+For 1h data, 90 days is roughly 2160 bars and must be collected in multiple
+requests. Continue with `startTime = last_open_time + interval_ms`; stop only
+when the next page is empty, the cursor reaches requested_end, or Binance returns
+an actual API error.
+
+Example: BTC/USD daily bars.
+
+```bash
+START_MS=$(python -c 'import datetime; print(int(datetime.datetime.fromisoformat("2024-01-01").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000))')
+END_MS=$(python -c 'import datetime; print(int(datetime.datetime.fromisoformat("2024-12-31").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000))')
+curl -fsS "${BINANCE_BASE_URL:-https://api.binance.com}/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime=${START_MS}&endTime=${END_MS}&limit=1000" \
+  | python -c 'import csv, json, sys
+rows = json.load(sys.stdin)
+w = csv.writer(sys.stdout)
+w.writerow(["timestamp","open","high","low","close","volume"])
+for r in rows:
+    w.writerow([r[0], r[1], r[2], r[3], r[4], r[5]])' \
+  > crypto/BTC-USD_1d_2024-01-01_2024-12-31.csv
+```
+
+## Alpaca Market Data
+
+Use Alpaca for equities/options when credentials are present in the bash
+environment. For equity/ETF OHLCV this is the **preferred first source**; fall
+back to yfinance only when Alpaca is unavailable or verification shows unusable
+coverage/quality.
+
+Required variables:
+
+```text
+ALPACA_API_KEY_ID=
+ALPACA_API_SECRET_KEY=
+ALPACA_DATA_FEED=iex
+```
+
+Map the requested Finny interval exactly to Alpaca: `1m`/`1min` -> `1Min`,
+`5m`/`5min` -> `5Min`, `15m`/`15min` -> `15Min`, `30m`/`30min` -> `30Min`,
+`1h` -> `1Hour`, and `1d` -> `1Day`. Never substitute the `5Min` example for a
+different requested interval. Alpaca returns at most 10000 bars per page; follow
+`next_page_token` until exhausted before computing actual coverage.
+
+Example: AAPL daily stock bars.
+
+```bash
+curl -fsS \
+  -H "APCA-API-KEY-ID: ${ALPACA_API_KEY_ID}" \
+  -H "APCA-API-SECRET-KEY: ${ALPACA_API_SECRET_KEY}" \
+  "https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL&timeframe=1Day&start=2024-01-01T00:00:00Z&end=2024-12-31T00:00:00Z&limit=10000&adjustment=raw&feed=${ALPACA_DATA_FEED:-iex}" \
+  | python -c 'import csv, json, sys
+payload = json.load(sys.stdin)
+rows = (payload.get("bars") or {}).get("AAPL") or []
+w = csv.writer(sys.stdout)
+w.writerow(["timestamp","open","high","low","close","volume"])
+for r in rows:
+    w.writerow([r["t"], r["o"], r["h"], r["l"], r["c"], r.get("v", 0)])' \
+  > stock/AAPL_1d_2024-01-01_2024-12-31.csv
+```
+
+Example: AAPL 5-minute bars with pagination (preferred for multi-month intraday).
+
+```bash
+"$FINNY_PYTHON_BIN" <<'PY'
+import csv, json, os, sys, urllib.parse, urllib.request
+symbol = "AAPL"
+timeframe = "5Min"
+start = "2026-03-16T00:00:00Z"
+end = "2026-06-16T00:00:00Z"
+out = "stock/AAPL_5m_2026-03-16_2026-06-16.csv"
+feed = os.environ.get("ALPACA_DATA_FEED", "iex")
+headers = {
+    "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY_ID"],
+    "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET_KEY"],
+}
+rows = []
+page_token = None
+while True:
+    params = {
+        "symbols": symbol,
+        "timeframe": timeframe,
+        "start": start,
+        "end": end,
+        "limit": "10000",
+        "adjustment": "raw",
+        "feed": feed,
+    }
+    if page_token:
+        params["page_token"] = page_token
+    url = "https://data.alpaca.markets/v2/stocks/bars?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers=headers)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        payload = json.load(resp)
+    bars = (payload.get("bars") or {}).get(symbol) or []
+    rows.extend(bars)
+    page_token = payload.get("next_page_token")
+    if not page_token:
+        break
+if not rows:
+    raise SystemExit("alpaca returned no bars for requested window")
+with open(out, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+    for r in rows:
+        w.writerow([r["t"], r["o"], r["h"], r["l"], r["c"], r.get("v", 0)])
+print(f"wrote {len(rows)} rows to {out}")
+PY
+```
+
+After Alpaca writes the CSV, verify coverage and timestamp cadence. The shortest
+positive intraday timestamp delta must not be smaller than the requested interval;
+for example, a `15m` request containing 5-minute deltas is unusable even if its
+filename and manifest say `15m`. Echo the exact CSV and manifest paths that were
+read back; do not reconstruct or retype them from memory. If verification fails, delete or
+ignore the Alpaca artifact for the final manifest and retry with yfinance. Record
+`source_attempts: ["alpaca", "yfinance"]` and the fallback reason in the return
+summary.
+
+For options, use Alpaca's options bars endpoint and OCC-formatted symbols. Add the
+exact option symbol mapping to this file when an enterprise fork needs options data.
+
+## Generic HTTP API
+
+Use this pattern for proprietary HTTP APIs. Keep responses projected to the requested
+fields and date window.
+
+```bash
+curl -fsS "$MARKET_DATA_URL/bars?symbol=AAPL&interval=1d&start=2024-01-01&end=2024-12-31" \
+  -H "Authorization: Bearer $MARKET_DATA_TOKEN" \
+  | python -c 'import csv, json, sys
+payload = json.load(sys.stdin)
+rows = payload.get("bars", [])
+w = csv.writer(sys.stdout)
+w.writerow(["timestamp","open","high","low","close","volume"])
+for r in rows:
+    w.writerow([r["timestamp"], r["open"], r["high"], r["low"], r["close"], r["volume"]])' \
+  > stock/AAPL_1d_2024-01-01_2024-12-31.csv
+```
+
+## Oracle Read-Only SQL
+
+Use this pattern when a quant engineer configures Oracle market bars. Keep SQL
+read-only and scoped by symbol, interval, start, and end.
+
+```bash
+sqlplus -S "$ORACLE_USER/$ORACLE_PASSWORD@$ORACLE_DSN" <<'SQL' > stock/AAPL_1d_2024-01-01_2024-12-31.csv
+set heading off feedback off pagesize 0
+select timestamp || ',' || open || ',' || high || ',' || low || ',' || close || ',' || volume
+from market_bars
+where symbol = 'AAPL'
+  and interval = '1d'
+  and timestamp >= date '2024-01-01'
+  and timestamp < date '2024-12-31'
+order by timestamp;
+SQL
+```
+
+## Bloomberg Or Internal CLIs
+
+Add the enterprise-specific command here. The command should:
+
+- accept symbol, interval, start, and end
+- run read-only
+- emit `timestamp,open,high,low,close,volume`
+- write only under the active algo `data/` directory
+- avoid printing credential values

@@ -75,6 +75,119 @@ export namespace Mission {
     })
     .loose()
 
+  export type MissionAssetClass = "equities" | "crypto" | "futures" | "fx" | "options" | "mixed"
+  export type MissionHorizon = "intraday" | "days" | "weeks" | "months"
+  export type MissionDirection = "long" | "short" | "both"
+  export type MissionStatus = "research" | "backtested" | "paper" | "live" | "retired"
+
+  export interface QuestionnaireAnswer {
+    id: (typeof CORE8_IDS)[number]
+    question: string
+    answer: string
+    status: "answered" | "skipped"
+  }
+
+  /** Deterministic input for Build-mode mission.md generation. */
+  export interface RenderV3Input {
+    name: string
+    status?: MissionStatus
+    created?: string
+    hypothesis: string
+    scope: {
+      asset_class: MissionAssetClass
+      universe: string[]
+      horizon: MissionHorizon
+    }
+    strategy: {
+      bar_interval: string | number
+      type: string
+      direction: MissionDirection
+      entry_signal: string
+      risk_profile: string
+      max_drawdown_pct: string | number
+      backtest_window: string | number
+      success_metric: string
+    }
+    exit_conditions: string
+    questionnaire: QuestionnaireAnswer[]
+    /** Rendered after the closing `---` under `## User Preferences`. */
+    userPreferences?: string
+    bodyTitle?: string
+    body?: string
+  }
+
+  function yamlBlockScalar(value: string): string {
+    const normalized = value.replace(/\r\n/g, "\n").trimEnd()
+    if (normalized.includes("\n")) {
+      return `|\n${normalized
+        .split("\n")
+        .map((line) => `  ${line}`)
+        .join("\n")}`
+    }
+    if (/[:>#@`|]/.test(normalized) || /^[\s-]/.test(normalized)) return yamlQuoted(normalized)
+    return normalized
+  }
+
+  function yamlQuoted(value: string | number): string {
+    return JSON.stringify(String(value))
+  }
+
+  function renderQuestionnaire(items: QuestionnaireAnswer[]): string {
+    return items
+      .map((item) => {
+        const answer = item.status === "skipped" ? '""' : yamlQuoted(item.answer)
+        return [
+          `  - id: ${item.id}`,
+          `    question: ${yamlQuoted(item.question)}`,
+          `    answer: ${answer}`,
+          `    status: ${item.status}`,
+        ].join("\n")
+      })
+      .join("\n")
+  }
+
+  /**
+   * Render a schema_version: 3 mission.md string from structured Build inputs.
+   * Uses block scalars for colon-heavy prose and keeps user preferences in the
+   * markdown body after the closing frontmatter delimiter.
+   */
+  export function renderV3(input: RenderV3Input): string {
+    const created = input.created ?? new Date().toISOString().slice(0, 10)
+    const status = input.status ?? "research"
+    const bodyTitle = input.bodyTitle ?? input.name
+    const body = input.body?.trim()
+    const prefs = input.userPreferences?.trim()
+    const frontmatter = [
+      "---",
+      "schema_version: 3",
+      `name: ${input.name}`,
+      `status: ${status}`,
+      `created: ${created}`,
+      `hypothesis: ${yamlBlockScalar(input.hypothesis)}`,
+      "scope:",
+      `  asset_class: ${input.scope.asset_class}`,
+      `  universe: [${input.scope.universe.map((sym) => yamlQuoted(sym)).join(", ")}]`,
+      `  horizon: ${input.scope.horizon}`,
+      "strategy:",
+      `  bar_interval: ${yamlQuoted(input.strategy.bar_interval)}`,
+      `  type: ${yamlQuoted(input.strategy.type)}`,
+      `  direction: ${input.strategy.direction}`,
+      `  entry_signal: ${yamlBlockScalar(input.strategy.entry_signal)}`,
+      `  risk_profile: ${yamlQuoted(input.strategy.risk_profile)}`,
+      `  max_drawdown_pct: ${yamlQuoted(input.strategy.max_drawdown_pct)}`,
+      `  backtest_window: ${yamlQuoted(input.strategy.backtest_window)}`,
+      `  success_metric: ${yamlBlockScalar(input.strategy.success_metric)}`,
+      `exit_conditions: ${yamlBlockScalar(input.exit_conditions)}`,
+      "questionnaire:",
+      renderQuestionnaire(input.questionnaire),
+      "---",
+    ].join("\n")
+
+    const sections = [`# ${bodyTitle}`, body ?? ""]
+    if (prefs) sections.push("## User Preferences", prefs)
+    return `${frontmatter}\n\n${sections.filter(Boolean).join("\n\n")}\n`
+  }
+
   /**
    * Validate a mission.md string against the v3 contract. Returns a list of
    * human-readable issues; empty means valid.

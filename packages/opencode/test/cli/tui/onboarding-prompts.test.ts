@@ -2,7 +2,7 @@ import { expect, test } from "bun:test"
 import {
   ONBOARDING_BEGINNER_PROMPT,
   ONBOARDING_TRADER_PROMPT,
-} from "../../../src/cli/cmd/tui/component/dialog-onboarding-choose-path"
+} from "@tui/component/dialog-onboarding-prompts"
 
 // The two prompt constants are the visible first message of a real model
 // session — see `app.tsx` onboarding-v2 orchestration. If either one is

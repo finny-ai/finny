@@ -5,7 +5,7 @@ import fs from "fs/promises"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Process } from "@/util/process"
-import { ensurePythonEnv } from "@/python/env"
+import { resolveSessionPythonEnv } from "@/python/session-env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
 
 const parameters = z.object({
@@ -86,7 +86,9 @@ export const QuoteTool = Tool.define(
 
           let pythonCmd: string
           try {
-            const env = await ensurePythonEnv([{ spec: "yfinance", importCheck: "yfinance" }])
+            const env = await resolveSessionPythonEnv(ctx.sessionID, [
+              { spec: "yfinance", importCheck: "yfinance" },
+            ])
             pythonCmd = env.python
           } catch (e: any) {
             return {

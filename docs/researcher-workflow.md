@@ -1,5 +1,9 @@
 # Research Subagent — Visual TUI Workflow
 
+> Stale as of 2026-06-16: the preferred subagent is now `news_agent`, not
+> `researcher`, and the old `finny_research_dispatch` flow described below is
+> not the current implementation. See `docs/news-agent-audit.md`.
+
 How the researcher subagent looks and behaves in the Finny TUI, step by step.
 
 ---

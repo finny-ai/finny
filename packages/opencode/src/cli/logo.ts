@@ -1,6 +1,7 @@
-import { VERSION } from "@/installation/meta"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
+export { go } from "@opencode-ai/tui/logo"
 
-const version = VERSION.startsWith("v") ? VERSION : `v${VERSION}`
+const version = InstallationVersion.startsWith("v") ? InstallationVersion : `v${InstallationVersion}`
 
 export const logo = {
   lines: [
@@ -14,5 +15,3 @@ export const logo = {
   tagline: "Think Strategies, Ship Alpha",
   version: `${version} • AI Financial Harness`,
 }
-
-export const marks = "_^~"

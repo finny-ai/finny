@@ -1,5 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { countConsecutiveFailedBacktests, parseDataQualityFailure, repairOutliersBlockMessage, strictDataQualityNextSteps } from "../../src/tool/backtest-run"
+import {
+  countConsecutiveFailedBacktests,
+  inferSavedBacktestDates,
+  MAX_CONSECUTIVE_FAILED_BACKTESTS,
+  parseDataQualityFailure,
+  repairOutliersBlockMessage,
+  strictDataQualityNextSteps,
+} from "../../src/tool/backtest-run"
+import { classifyConceptExhaustedFailure } from "../../src/tool/backtest-failure-diagnosis"
 
 function backtestPart(algorithmName: string, output: string) {
   return {
@@ -19,6 +27,10 @@ function backtestPart(algorithmName: string, output: string) {
 }
 
 describe("backtest failure budget", () => {
+  test("allows a full optimization loop before requiring explicit approval", () => {
+    expect(MAX_CONSECUTIVE_FAILED_BACKTESTS).toBe(5)
+  })
+
   test("counts consecutive failed backtests for the same algorithm", () => {
     const messages = [
       backtestPart("btc-trend-follower", "Verdict: failed"),
@@ -147,6 +159,33 @@ describe("backtest repair approval", () => {
   })
 })
 
+describe("backtest exact date windows", () => {
+  test("infers saved explicit dates from common config fields", () => {
+    expect(
+      inferSavedBacktestDates(
+        JSON.stringify({
+          symbol: "ETH/USD",
+          interval: "1h",
+          backtest: { start: "2024-01-01", end: "2024-03-31" },
+        }),
+      ),
+    ).toEqual({ startDate: "2024-01-01", endDate: "2024-03-31" })
+
+    expect(
+      inferSavedBacktestDates(
+        JSON.stringify({
+          evidence: { requested_start: "2024-01-01", requested_end: "2024-03-31" },
+        }),
+      ),
+    ).toEqual({ startDate: "2024-01-01", endDate: "2024-03-31" })
+  })
+
+  test("ignores missing or non-ISO saved dates", () => {
+    expect(inferSavedBacktestDates(JSON.stringify({ backtest: { start: "Jan 1 2024", end: "Mar 31 2024" } }))).toEqual({})
+    expect(inferSavedBacktestDates(undefined)).toEqual({})
+  })
+})
+
 describe("strict data quality next steps", () => {
   test("tells the agent not to call a blocked strict backtest ready", () => {
     const output = strictDataQualityNextSteps()
@@ -156,6 +195,24 @@ describe("strict data quality next steps", () => {
     expect(output).toContain("Only after explicit user approval")
     expect(output.indexOf("Verify the flagged candles first")).toBeLessThan(output.indexOf("Only after explicit user approval"))
     expect(output).toContain("before changing the backtest window, interval, provider, or data-quality strictness")
+  })
+})
+
+describe("backtest failure budget stop message", () => {
+  test("concept exhaustion distinguishes engine success from blockers", () => {
+    const withMetrics = classifyConceptExhaustedFailure({
+      consecutiveFailures: 5,
+      algorithmName: "btc-daily-rsi",
+      priorRunsHadMetrics: true,
+    })
+    expect(withMetrics.summary).toContain("Backtest engine ran successfully")
+
+    const withoutMetrics = classifyConceptExhaustedFailure({
+      consecutiveFailures: 5,
+      algorithmName: "btc-daily-rsi",
+      priorRunsHadMetrics: false,
+    })
+    expect(withoutMetrics.summary).toContain("Backtest did not run")
   })
 })
 

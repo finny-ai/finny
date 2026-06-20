@@ -18,6 +18,21 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **prefs**: (new algorithms only) HOW: sizing, risk, constraints, interval, asset. Written to `prefs.md`.
 - **decisions**: (new algorithms only) Design decisions log. Written to `decisions.md`.
 
+## Mission YAML Safety
+
+Mission frontmatter is parsed as strict YAML before save. Any prose that may
+contain `:`, `#`, `{}`, `[]`, commas, or multiple sentences must use a block
+scalar (`|` or `>-`) instead of an inline value. Use block scalars for
+`hypothesis`, `strategy.entry_signal`, `strategy.risk_profile`,
+`strategy.success_metric`, `exit_conditions`, and long questionnaire answers.
+Never write colon-bearing prose like `Strategy adapts: enters...` on the same
+line as a YAML key.
+Use these exact Core 8 `questionnaire[].id` values once each and no others:
+`market_universe`, `timeframe_bar_interval`, `strategy_family`,
+`directional_thesis_regime`, `entry_signal_idea`,
+`exit_invalidation_rules`, `risk_tolerance_max_drawdown`,
+`backtest_window_success_metric`.
+
 ## Choosing saveMode
 
 You MUST decide explicitly. Versions cannot be split apart later — getting this wrong has frustrated real users.
@@ -31,7 +46,7 @@ If you pass `saveMode: "new"` and the name is already taken, the tool returns an
 If you pass `saveMode: "version"` and no algorithm with that name exists yet, the tool returns an error — switch to `saveMode: "new"`.
 
 ## Directory Layout (on disk)
-Each algorithm is stored under `~/.local/share/finny/algorithms/<id>/` with this structure:
+Each algorithm is stored under `$FINNY_HOME/algorithms/<id>/` with this structure:
 ```
 <algorithmId>/
   meta.json               ← internal metadata (do not reference)

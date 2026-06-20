@@ -73,6 +73,40 @@ def _continuous_return_mask(ts: pd.Series, interval: str, asset_class: str) -> n
     return np.ones(len(ts) - 1, dtype=bool)
 
 
+def _minimum_outlier_log_return(interval: str, asset_class: str) -> float:
+    """Minimum absolute move before a z-score can become a hard outlier.
+
+    A z-score-only detector is too brittle for quiet intraday equity samples:
+    a plausible SPY 5-minute rally can be many standard deviations without
+    being a provider defect. Keep strict mode focused on moves that are both
+    statistically extreme and large enough to plausibly indicate bad data.
+    """
+    asset_group = _asset_group(asset_class)
+    if not is_intraday_interval(interval):
+        return {"equity": 0.20, "crypto": 0.35}.get(asset_group, 0.0)
+    step = expected_step(interval)
+    return _intraday_outlier_floor(step, asset_group)
+
+
+def _asset_group(asset_class: str) -> str:
+    if asset_class in {"equity", "future", "option"}:
+        return "equity"
+    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"}:
+        return "crypto"
+    return "other"
+
+
+def _intraday_outlier_floor(step: pd.Timedelta, asset_group: str) -> float:
+    by_group = {
+        "equity": [(pd.Timedelta(minutes=5), 0.03), (pd.Timedelta(minutes=15), 0.04), (None, 0.05)],
+        "crypto": [(pd.Timedelta(minutes=5), 0.08), (pd.Timedelta(minutes=15), 0.10), (None, 0.12)],
+    }
+    for limit, value in by_group.get(asset_group, []):
+        if limit is None or step <= limit:
+            return value
+    return 0.0
+
+
 def _outlier_indexes_and_details(
     df: pd.DataFrame,
     provider: str = "unknown",
@@ -87,15 +121,20 @@ def _outlier_indexes_and_details(
     if scored.size <= 30:
         return [], []
     mu, sd = float(scored.mean()), float(scored.std(ddof=0))
-    if sd <= 0:
+    median = float(np.median(scored))
+    mad = float(np.median(np.abs(scored - median)))
+    if sd <= 0 and mad <= 0:
         return [], []
+    min_abs_return = _minimum_outlier_log_return(interval, asset_class)
     idxs: List[int] = []
     details: List[OutlierDetail] = []
     for i, r in enumerate(log_ret):
         if not continuous[i]:
             continue
-        z = float((r - mu) / sd)
-        if abs(z) > 8.0:
+        std_z = float((r - mu) / sd) if sd > 0 else 0.0
+        robust_z = float(0.6745 * (r - median) / mad) if mad > 0 else 0.0
+        z = robust_z if abs(robust_z) > abs(std_z) else std_z
+        if abs(z) > 8.0 and abs(float(r)) >= min_abs_return:
             row_idx = i + 1
             idxs.append(row_idx)
             details.append(OutlierDetail(
@@ -146,7 +185,7 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", p
     # Duplicates
     dupes = int(ts.duplicated().sum())
 
-    # OHLC sanity: low ≤ open,close ≤ high
+    # OHLC sanity: high >= max(open, close) and low <= min(open, close)
     ohlc_viol = int(((low > o) | (low > c) | (h < o) | (h < c) | (h < low)).sum())
 
     # Outliers (>8σ close moves)
@@ -210,6 +249,10 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
         reasons.append(f"coverage {report.coverage_pct:.1%} below {missing_threshold:.0%} threshold")
     if report.outlier_bars > 0:
         reasons.append(f"{report.outlier_bars} severe outlier bar(s)")
-    if asset_class in {"crypto_spot", "crypto_perp", "equity", "future", "option"} and report.zero_volume_bars > 0:
+    if asset_class in {"crypto_spot", "crypto_perp"} and report.zero_volume_bars > 0:
         reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")
+    if asset_class in {"equity", "future", "option"} and report.zero_volume_bars > 0:
+        isolated_tolerance = max(3, int(np.ceil(report.n_bars * 0.01)))
+        if report.zero_volume_bars > isolated_tolerance:
+            reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")
     return reasons

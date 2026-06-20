@@ -1,6 +1,6 @@
 import { integer, index, sqliteTable, text } from "drizzle-orm/sqlite-core"
 import type { SessionID } from "@/session/schema"
-import { SessionTable } from "@/session/session.sql"
+import { SessionTable } from "@opencode-ai/core/session/sql"
 import { Timestamps } from "@/storage/schema.sql"
 
 export const TaskRunTable = sqliteTable(

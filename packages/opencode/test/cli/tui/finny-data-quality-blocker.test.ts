@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { formatFinnyDataQualityBlocker } from "../../../src/cli/cmd/tui/component/finny-data-quality-blocker"
+import { formatFinnyDataQualityBlocker } from "@tui/component/finny-data-quality-blocker"
 
 test("formats Finny strict data quality blocker details", () => {
   const output = formatFinnyDataQualityBlocker({

@@ -1,14 +1,12 @@
 import fs from "fs/promises"
 import path from "path"
-import { Global } from "../../global"
 import { Filesystem } from "../../util/filesystem"
 import { Log } from "../../util/log"
 import type { BrokerKind } from "@/live/brokers"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
 
 const log = Log.create({ service: "local-algorithm-store" })
 
-const ALGORITHMS_DIR = path.join(Global.Path.data, "algorithms")
-const NAME_INDEX = path.join(ALGORITHMS_DIR, "_by-name.json")
 const MAX_RETRY = 5
 
 interface AlgorithmRow {
@@ -43,7 +41,15 @@ interface AlgorithmMeta {
 }
 
 function algoDir(algorithmId: string) {
-  return path.join(ALGORITHMS_DIR, algorithmId)
+  return path.join(algorithmsDir(), algorithmId)
+}
+
+export function algorithmsDir() {
+  return finnyArtifactPath("algorithms")
+}
+
+function nameIndexPath() {
+  return path.join(algorithmsDir(), "_by-name.json")
 }
 
 function metaPath(algorithmId: string) {
@@ -126,14 +132,14 @@ async function writeMeta(meta: AlgorithmMeta): Promise<void> {
 
 async function readNameIndex(): Promise<Record<string, string>> {
   try {
-    return await Filesystem.readJson<Record<string, string>>(NAME_INDEX)
+    return await Filesystem.readJson<Record<string, string>>(nameIndexPath())
   } catch {
     return {}
   }
 }
 
 async function writeNameIndex(index: Record<string, string>): Promise<void> {
-  await Filesystem.writeJson(NAME_INDEX, index)
+  await Filesystem.writeJson(nameIndexPath(), index)
 }
 
 function nameKey(userId: string, name: string): string {
@@ -143,7 +149,7 @@ function nameKey(userId: string, name: string): string {
 async function rebuildNameIndex(): Promise<Record<string, string>> {
   const index: Record<string, string> = {}
   try {
-    const entries = await fs.readdir(ALGORITHMS_DIR)
+    const entries = await fs.readdir(algorithmsDir())
     for (const entry of entries) {
       if (entry.startsWith("_")) continue
       const meta = await readMeta(entry)
@@ -414,7 +420,7 @@ export namespace LocalAlgorithmStore {
   export async function listByUser(userId: string): Promise<AlgorithmRow[]> {
     const results: AlgorithmRow[] = []
     try {
-      const entries = await fs.readdir(ALGORITHMS_DIR)
+      const entries = await fs.readdir(algorithmsDir())
       for (const entry of entries) {
         if (entry.startsWith("_")) continue
         const meta = await readMeta(entry)

@@ -1,6 +1,6 @@
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { ConvexAnalytics, type InteractionEvent } from "../storage/convex/analytics"
 import { Log } from "../util/log"
-import { Installation } from "../installation"
 import { DeviceProfile } from "../device"
 
 const log = Log.create({ service: "analytics" })
@@ -66,7 +66,7 @@ export namespace Analytics {
     const entry: InteractionEvent = {
       ...event,
       timestamp: Date.now(),
-      version: Installation.VERSION,
+      version: InstallationVersion,
     }
     if (debug) log.info("tracking", { eventName: entry.eventName })
     return ConvexAnalytics.trackInteraction(entry)

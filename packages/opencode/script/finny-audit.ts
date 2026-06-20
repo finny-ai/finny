@@ -1,8 +1,9 @@
 import { chmodSync, mkdirSync, mkdtempSync, rmSync } from "fs"
 import { tmpdir } from "os"
 import path from "path"
+import type { Effect as EffectModule } from "effect"
 
-const AGENTS = ["build", "research", "chat", "data_extractor", "researcher"] as const
+const AGENTS = ["build", "research", "chat", "data_extractor", "news_agent"] as const
 
 const KNOWN_TOOL_IDS = [
   "invalid",
@@ -76,21 +77,33 @@ process.env.OPENCODE_MODELS_PATH = path.join(import.meta.dir, "..", "test", "too
 const { Log } = await import("../src/util/log")
 await Log.init({ print: false, dev: true, level: "ERROR" })
 chmodSync(path.join(sandboxRoot, "config", "finny"), 0o555)
+const { Effect } = await import("effect")
+const { AppRuntime } = await import("../src/effect/app-runtime")
 const { Agent } = await import("../src/agent/agent")
+const { InstanceStore } = await import("../src/project/instance-store")
 const { Permission } = await import("../src/permission")
-const { Instance } = await import("../src/project/instance")
 const { default: PROMPT_BUILD } = await import("../src/agent/prompt/finny-build.txt")
 const { default: PROMPT_RESEARCH } = await import("../src/agent/prompt/finny-research.txt")
 const { default: PROMPT_CHAT } = await import("../src/agent/prompt/finny-chat.txt")
 const { default: PROMPT_DATA_EXTRACTOR } = await import("../src/agent/prompt/finny-data-extractor.txt")
-const { default: PROMPT_RESEARCHER } = await import("../src/agent/prompt/finny-researcher.txt")
+const { default: PROMPT_NEWS_AGENT } = await import("../src/agent/prompt/finny-news-agent.txt")
 
 const PROMPTS: Record<(typeof AGENTS)[number], string> = {
   build: PROMPT_BUILD,
   research: PROMPT_RESEARCH,
   chat: PROMPT_CHAT,
   data_extractor: PROMPT_DATA_EXTRACTOR,
-  researcher: PROMPT_RESEARCHER,
+  news_agent: PROMPT_NEWS_AGENT,
+}
+
+const Instance = {
+  provide: <A, E, R>(input: { directory: string; effect: EffectModule.Effect<A, E, R> }) =>
+    AppRuntime.runPromise(
+      InstanceStore.Service.use((store) =>
+        store.provide({ directory: input.directory }, input.effect as EffectModule.Effect<A, E, never>),
+      ),
+    ),
+  disposeAll: () => AppRuntime.runPromise(InstanceStore.Service.use((store) => store.disposeAll())),
 }
 
 function lineCount(text: string) {
@@ -120,10 +133,11 @@ const directory = mkdtempSync(path.join(tmpdir(), "finny-audit-"))
 
 await Instance.provide({
   directory,
-  fn: async () => {
+  effect: Effect.gen(function* () {
+    const agents = yield* Agent.Service
     const rows = []
     for (const name of AGENTS) {
-      const agent = await Agent.get(name)
+      const agent = yield* agents.get(name)
       if (!agent) throw new Error(`Missing agent: ${name}`)
 
       const prompt = PROMPTS[name]
@@ -142,10 +156,10 @@ await Instance.provide({
         duplicatedSections: duplicatedSections(prompt),
       })
     }
-
     console.log(JSON.stringify(rows, null, 2))
-  },
+  }),
 })
 
 await Instance.disposeAll()
 rmSync(sandboxRoot, { recursive: true, force: true })
+await AppRuntime.dispose()

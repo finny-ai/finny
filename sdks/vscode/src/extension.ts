@@ -3,15 +3,15 @@ export function deactivate() {}
 
 import * as vscode from "vscode"
 
-const TERMINAL_NAME = "finny"
+const TERMINAL_NAME = "opencode"
 
 export function activate(context: vscode.ExtensionContext) {
-  const openNewTerminal = async () => {
+  const openNewTerminalDisposable = vscode.commands.registerCommand("opencode.openNewTerminal", async () => {
     await openTerminal()
-  }
+  })
 
-  const openTerminalOrFocus = async () => {
-    // A Finny terminal already exists => focus it
+  const openTerminalDisposable = vscode.commands.registerCommand("opencode.openTerminal", async () => {
+    // An opencode terminal already exists => focus it
     const existingTerminal = vscode.window.terminals.find((t) => t.name === TERMINAL_NAME)
     if (existingTerminal) {
       existingTerminal.show()
@@ -19,9 +19,9 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     await openTerminal()
-  }
+  })
 
-  const addFilepathToTerminal = async () => {
+  let addFilepathDisposable = vscode.commands.registerCommand("opencode.addFilepathToTerminal", async () => {
     const fileRef = getActiveFile()
     if (!fileRef) {
       return
@@ -38,16 +38,9 @@ export function activate(context: vscode.ExtensionContext) {
       port ? await appendPrompt(parseInt(port), fileRef) : terminal.sendText(fileRef, false)
       terminal.show()
     }
-  }
+  })
 
-  context.subscriptions.push(
-    vscode.commands.registerCommand("finny.openNewTerminal", openNewTerminal),
-    vscode.commands.registerCommand("opencode.openNewTerminal", openNewTerminal),
-    vscode.commands.registerCommand("finny.openTerminal", openTerminalOrFocus),
-    vscode.commands.registerCommand("opencode.openTerminal", openTerminalOrFocus),
-    vscode.commands.registerCommand("finny.addFilepathToTerminal", addFilepathToTerminal),
-    vscode.commands.registerCommand("opencode.addFilepathToTerminal", addFilepathToTerminal),
-  )
+  context.subscriptions.push(openNewTerminalDisposable, openTerminalDisposable, addFilepathDisposable)
 
   async function openTerminal() {
     // Create a new terminal in split screen
@@ -69,7 +62,7 @@ export function activate(context: vscode.ExtensionContext) {
     })
 
     terminal.show()
-    terminal.sendText(`finny --port ${port}`)
+    terminal.sendText(`opencode --port ${port}`)
 
     const fileRef = getActiveFile()
     if (!fileRef) {
@@ -85,7 +78,7 @@ export function activate(context: vscode.ExtensionContext) {
         await fetch(`http://localhost:${port}/app`)
         connected = true
         break
-      } catch (e) {}
+      } catch {}
 
       tries--
     } while (tries > 0)

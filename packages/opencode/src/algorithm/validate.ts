@@ -517,11 +517,6 @@ export namespace Validate {
       })
     }
 
-    // DIVISION_NO_ZERO_CHECK moved to ast_analyzer.py: the old line-window
-    // regex flagged un-zero-able denominators (e.g. `period + 1`) and missed
-    // guards more than 3 lines away, which dead-ended save loops once
-    // warnings became blocking.
-
     // on_tick warnings
     const classResult = extractClassBody(normalized, "Strategy")
     if (classResult) {

@@ -8,13 +8,14 @@ import type { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
+import { resolveSessionPythonEnv, SESSION_PREFLIGHT_PACKAGES } from "@/python/session-env"
 import { resolveSymbol } from "@/data/symbols"
 import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
-import { Global } from "@/global"
 import { resolveAssetSpec } from "./asset-spec"
 import { BrokerRegistry } from "@/live/brokers"
 import { evaluateBacktestQuality } from "./evaluation"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -43,6 +44,7 @@ export namespace BacktestRunner {
       regimes?: boolean
       walkForwardFolds?: number
     }
+    sessionID?: string
   }
 
   export interface Assumptions {
@@ -1306,7 +1308,13 @@ if __name__ == "__main__":
     seed: number
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
-    const base = path.join(Global.Path.data, "algorithms", input.algorithm.algorithmId, `v${String(version).padStart(2, "0")}`, "runs", input.runId)
+    const base = path.join(
+      finnyArtifactPath("algorithms"),
+      input.algorithm.algorithmId,
+      `v${String(version).padStart(2, "0")}`,
+      "runs",
+      input.runId,
+    )
     await fs.mkdir(base, { recursive: true })
 
     const assetSpec = buildArtifactAssetSpec(input.config, input.algorithm)
@@ -1384,6 +1392,7 @@ if __name__ == "__main__":
       engineMode = "strict_v2",
       dataQualityMode = "strict",
       robustness = {},
+      sessionID,
     } = params
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
     if (!sweepDone) { sweepDone = true; void sweepStaleTmpdirs() }
@@ -1544,14 +1553,16 @@ if __name__ == "__main__":
       // Use the managed venv. Data-provider packages are installed once, lazily, on first use.
       let pythonCmd: string
       try {
-        const env = await ensurePythonEnv([
-          { spec: "numpy", importCheck: "numpy" },
-          { spec: "pandas", importCheck: "pandas" },
-          { spec: "yfinance", importCheck: "yfinance" },
-          { spec: "requests", importCheck: "requests" },
-          { spec: "scipy", importCheck: "scipy" },
-          { spec: "pyarrow", importCheck: "pyarrow" },
-        ])
+        const env = sessionID
+          ? await resolveSessionPythonEnv(sessionID, SESSION_PREFLIGHT_PACKAGES)
+          : await ensurePythonEnv([
+              { spec: "numpy", importCheck: "numpy" },
+              { spec: "pandas", importCheck: "pandas" },
+              { spec: "yfinance", importCheck: "yfinance" },
+              { spec: "requests", importCheck: "requests" },
+              { spec: "scipy", importCheck: "scipy" },
+              { spec: "pyarrow", importCheck: "pyarrow" },
+            ])
         pythonCmd = env.python
       } catch (e: any) {
         return {

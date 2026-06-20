@@ -1,0 +1,720 @@
+import { describe, expect, test } from "bun:test"
+import fs from "fs/promises"
+import os from "os"
+import path from "path"
+import { Mission } from "../../src/algorithm/mission"
+import {
+  REQUIRED_DIGEST_FIELDS,
+  validateDataExtractorTaskText,
+} from "../../src/data/data-extractor-evidence"
+import { classifyText, gradeSessions } from "../../script/phoenix-trace-grader"
+
+const questionnaire = () =>
+  Mission.CORE8_IDS.map((id) => ({
+    id,
+    question: `Question for ${id}?`,
+    answer: "answer",
+    status: "answered" as const,
+  }))
+
+describe("Mission.renderV3", () => {
+  test("renders valid schema_version 3 mission with body preferences after frontmatter", () => {
+    const mission = Mission.renderV3({
+      name: "spy-5m-momentum",
+      hypothesis: "Momentum after consolidation: edge comes from continuation, not mean reversion.",
+      scope: { asset_class: "equities", universe: ["SPY"], horizon: "intraday" },
+      strategy: {
+        bar_interval: "5min",
+        type: "momentum",
+        direction: "long",
+        entry_signal: "Breakout above prior range with volume confirmation",
+        risk_profile: "moderate",
+        max_drawdown_pct: "15",
+        backtest_window: "3mo",
+        success_metric: "Sharpe above 0.8 with max drawdown under 15%",
+      },
+      exit_conditions: "- Exit on momentum failure\n- Stop: 2%",
+      questionnaire: questionnaire(),
+      userPreferences: "- Capital: $10,000\n- Data depth: Alpaca primary, yfinance fallback",
+    })
+
+    expect(Mission.validate(mission)).toEqual([])
+    expect(mission).toContain("schema_version: 3")
+    expect(mission).toContain("status: research")
+    expect(mission).toContain("asset_class: equities")
+    expect(mission).toContain("horizon: intraday")
+    expect(mission).toContain("direction: long")
+    const bodyStart = mission.indexOf("\n# spy-5m-momentum")
+    const prefsStart = mission.indexOf("## User Preferences")
+    expect(bodyStart).toBeGreaterThan(mission.indexOf("---", 4))
+    expect(prefsStart).toBeGreaterThan(bodyStart)
+  })
+
+  test("uses block scalars for colon-heavy prose", () => {
+    const mission = Mission.renderV3({
+      name: "btc-mean-reversion",
+      hypothesis: "Risk note: max drawdown target 15% with stop: 2% and take profit: 4%",
+      scope: { asset_class: "crypto", universe: ["BTC"], horizon: "weeks" },
+      strategy: {
+        bar_interval: "1h",
+        type: "mean-reversion",
+        direction: "both",
+        entry_signal: "RSI: oversold with filter",
+        risk_profile: "moderate",
+        max_drawdown_pct: "15",
+        backtest_window: "6mo",
+        success_metric: "Sharpe: > 0.8",
+      },
+      exit_conditions: "Exit: RSI normalization",
+      questionnaire: questionnaire(),
+    })
+    expect(Mission.validate(mission)).toEqual([])
+    expect(mission).toContain('"Sharpe: > 0.8"')
+  })
+})
+
+describe("validateDataExtractorTaskText", () => {
+  test("blocks incomplete digest without manifest evidence", async () => {
+    const result = await validateDataExtractorTaskText({
+      text: "saved SPY data under stock/SPY.csv",
+      workspaceSlug: "spy-5m-momentum",
+    })
+    expect(result.ok).toBe(false)
+    expect(result.text).toContain("BLOCKED: data_extractor returned incomplete evidence artifacts")
+  })
+
+  test("accepts matching CSV, manifest, and digest identity fields", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-"))
+    const slug = "btc-q1-hourly"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "crypto/BTC-USD_1h_2024-01-01_2024-03-31.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2024-01-01T00:00:00Z,1,2,1,2,100\n",
+    )
+    const manifest = {
+      schema_version: 1,
+      source: "binance",
+      symbols: ["BTC"],
+      interval: "1h",
+      requested_symbol: "BTC",
+      actual_symbol: "BTC",
+      requested_interval: "1h",
+      actual_interval: "1h",
+      requested_asset_class: "crypto",
+      actual_asset_class: "crypto",
+      requested_algorithm_name: slug,
+      requested_start: "2024-01-01",
+      requested_end: "2024-03-31",
+      actual_start: "2024-01-01",
+      actual_end: "2024-01-01",
+      output_path: csvRel,
+      rows: 1,
+      run_id: "run-1",
+    }
+    await fs.writeFile(`${csvPath.replace(/\.csv$/, ".manifest.json")}`, JSON.stringify(manifest, null, 2))
+
+    const digest = [
+      "requested_algorithm_name: btc-q1-hourly",
+      "workspace_slug: btc-q1-hourly",
+      "requested_symbol: BTC",
+      "actual_symbol: BTC",
+      "requested_interval: 1h",
+      "actual_interval: 1h",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_start: 2024-01-01",
+      "requested_end: 2024-03-31",
+      "actual_start: 2024-01-01",
+      "actual_end: 2024-01-01",
+      `artifact_paths: ${csvRel}, ${csvRel.replace(/\.csv$/, ".manifest.json")}`,
+      "run_id: run-1",
+      "usable_for_parent: yes",
+      "quality: duplicates=0, gaps=0, invalid_ohlc=0, zero_volume=0, outliers=0",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(REQUIRED_DIGEST_FIELDS.every((field) => digest.includes(`${field}:`))).toBe(true)
+  })
+
+  test("accepts date-only manifest boundaries when CSV timestamps fall on those UTC dates", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-date-boundary-"))
+    const slug = "spy-date-boundaries"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "stock")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "stock/SPY_15m.csv"
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", csvRel),
+      "timestamp,open,high,low,close,volume\n2026-03-23T12:00:00Z,1,2,1,2,100\n2026-03-23T12:15:00Z,2,3,2,3,100\n",
+    )
+    const manifest = {
+      schema_version: 1,
+      source: "alpaca",
+      requested_symbol: "SPY",
+      actual_symbol: "SPY",
+      requested_interval: "15m",
+      actual_interval: "15m",
+      requested_asset_class: "equity",
+      actual_asset_class: "equity",
+      requested_algorithm_name: "spy-date-boundaries",
+      requested_start: "2026-03-23",
+      requested_end: "2026-03-23",
+      actual_start: "2026-03-23",
+      actual_end: "2026-03-23",
+      output_path: csvRel,
+      rows: 2,
+      run_id: "date-boundaries",
+      coverage: "trading_day_complete",
+    }
+    const manifestRel = "stock/SPY_15m.manifest.json"
+    await fs.writeFile(path.join(root, "finny", "algos", slug, "data", manifestRel), JSON.stringify(manifest))
+    const text = [
+      "requested_algorithm_name: spy-date-boundaries",
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 15m",
+      "actual_interval: 15m",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2026-03-23",
+      "requested_end: 2026-03-23",
+      "actual_start: 2026-03-23",
+      "actual_end: 2026-03-23",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: date-boundaries",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("usable_for_parent: yes")
+  })
+
+  test("accepts Binance numeric epoch millisecond timestamps in crypto CSV evidence", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-binance-epoch-"))
+    const slug = "btc-15m-momentum"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "crypto/BTC_15m_2026-06-11_2026-06-18.csv"
+    const manifestRel = "crypto/BTC_15m_2026-06-11_2026-06-18.manifest.json"
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "1781136000000,61510.99000000,61692.10000000,61510.99000000,61690.01000000,130.11216000",
+        "1781136900000,61690.00000000,61974.70000000,61690.00000000,61884.00000000,200.30491000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          source: "binance",
+          requested_symbol: "BTC",
+          actual_symbol: "BTC",
+          requested_interval: "15m",
+          actual_interval: "15m",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2026-06-11",
+          requested_end: "2026-06-18",
+          actual_start: "2026-06-11",
+          actual_end: "2026-06-11",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "run-binance-epoch",
+          coverage: "complete",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const text = [
+      `workspace_slug: ${slug}`,
+      "requested_symbol: BTC",
+      "actual_symbol: BTC",
+      "requested_interval: 15m",
+      "actual_interval: 15m",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_algorithm_name: btc-15m-momentum",
+      "requested_start: 2026-06-11",
+      "requested_end: 2026-06-18",
+      "actual_start: 2026-06-11",
+      "actual_end: 2026-06-11",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: run-binance-epoch",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("usable_for_parent: yes")
+  })
+
+  test("blocks header-only CSV even when manifest exists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-header-"))
+    const slug = "spy-header-only"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "stock")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "stock/SPY_5m_2024-01-01_2024-03-31.csv"
+    const csvPath = path.join(dataDir, "SPY_5m_2024-01-01_2024-03-31.csv")
+    await fs.writeFile(csvPath, "timestamp,open,high,low,close,volume\n")
+    await fs.writeFile(
+      `${csvPath.replace(/\.csv$/, ".manifest.json")}`,
+      JSON.stringify(
+        {
+          requested_symbol: "SPY",
+          actual_symbol: "SPY",
+          requested_interval: "5m",
+          actual_interval: "5m",
+          requested_asset_class: "equity",
+          actual_asset_class: "equity",
+          requested_algorithm_name: slug,
+          requested_start: "2024-01-01",
+          requested_end: "2024-03-31",
+          actual_start: "2024-01-01",
+          actual_end: "2024-01-01",
+          output_path: csvRel,
+          rows: 0,
+          run_id: "run-header",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const digest = [
+      "requested_algorithm_name: spy-header-only",
+      "workspace_slug: spy-header-only",
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 5m",
+      "actual_interval: 5m",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2024-01-01",
+      "requested_end: 2024-03-31",
+      "actual_start: 2024-01-01",
+      "actual_end: 2024-01-01",
+      `artifact_paths: ${csvRel}`,
+      "run_id: run-header",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(false)
+    expect(result.text).toContain("header-only")
+  })
+
+  test("accepts table-style digest when CSV and manifest evidence are valid", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-table-"))
+    const slug = "btc-1h-mean-reversion"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "crypto/BTC-USD_1h_2024-01-01_2024-03-31.csv"
+    const manifestRel = "crypto/BTC-USD_1h_2024-01-01_2024-03-31.manifest.json"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2024-01-01T00:00:00Z,1,2,1,2,100\n2024-01-01T01:00:00Z,2,3,2,3,100\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify(
+        {
+          requested_symbol: "BTC-USD",
+          actual_symbol: "BTC-USD",
+          requested_interval: "1h",
+          actual_interval: "1h",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2024-01-01",
+          requested_end: "2024-03-31",
+          actual_start: "2024-01-01T00:00:00Z",
+          actual_end: "2024-01-01T01:00:00Z",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "run-table",
+          coverage: "complete",
+          usable_for_parent: "yes",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const digest = [
+      "Data Extraction Summary",
+      "Identity",
+      "Value",
+      "BTC-USD",
+      "BTC-USD",
+      "1h",
+      "1h",
+      "Window Coverage",
+      "usable_for_parent yes",
+      "Artifact Paths",
+      `CSV: ${csvRel} (123 bytes)`,
+      `Manifest: ${manifestRel} (456 bytes)`,
+      "Statistics: mean price and std dev were computed from saved rows.",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+  })
+
+  test("reports manifest usability instead of a path error when prose annotates actual_symbol", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-annotated-symbol-"))
+    const slug = "btc-1h-strategy"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "crypto/BTC-USD_1h_2026-03-21_2026-06-18.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2026-03-21T00:00:00Z,1,2,1,2,100\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify({
+        requested_symbol: "BTC",
+        actual_symbol: "BTC-USD",
+        requested_interval: "1h",
+        actual_interval: "1h",
+        requested_asset_class: "crypto",
+        actual_asset_class: "crypto",
+        requested_algorithm_name: slug,
+        requested_start: "2026-03-21",
+        requested_end: "2026-06-18",
+        actual_start: "2026-03-21T00:00:00Z",
+        actual_end: "2026-06-17T23:00:00Z",
+        output_path: csvRel,
+        rows: 1,
+        run_id: "run-btc-fallback",
+        coverage: "partial",
+        usable_for_parent: "no",
+      }),
+    )
+    const digest = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: BTC",
+      "actual_symbol: BTC-USD (yfinance symbol)",
+      "requested_interval: 1h",
+      "actual_interval: 1h",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_start: 2026-03-21",
+      "requested_end: 2026-06-18",
+      "actual_start: 2026-03-21T00:00:00Z",
+      "actual_end: 2026-06-17T23:00:00Z",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: run-btc-fallback",
+      "usable_for_parent: no",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(false)
+    expect(result.text).toContain("marked evidence unusable_for_parent")
+    expect(result.text).not.toContain("could not resolve manifest path")
+  })
+
+  test("falls back to the session workspace manifest when artifact_paths are missing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-fallback-"))
+    const slug = "eth-1h-mean-reversion"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "crypto/ETH-USD_1h_2024-01-01_2024-03-31.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2024-01-01T00:00:00Z,1,2,1,2,100\n2024-01-01T01:00:00Z,2,3,2,3,100\n",
+    )
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify(
+        {
+          requested_symbol: "ETH-USD",
+          actual_symbol: "ETH-USD",
+          requested_interval: "1h",
+          actual_interval: "1h",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2024-01-01",
+          requested_end: "2024-03-31",
+          actual_start: "2024-01-01T00:00:00Z",
+          actual_end: "2024-01-01T01:00:00Z",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "run-eth",
+          coverage: "complete",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const result = await validateDataExtractorTaskText({
+      text: "Data extraction complete. CSV and manifest were written and verified for the full requested window.",
+      workspaceSlug: slug,
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  test("derives usable yes for clean trading-day-complete evidence when the manifest flag is absent", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-trading-day-"))
+    const slug = "spy-15m-breakout"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_15m_2026-03-21_2026-06-18.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2026-03-23T13:30:00Z,1,2,1,2,100\n2026-03-23T13:45:00Z,2,3,2,3,100\n",
+    )
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify({
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "15m",
+        actual_interval: "15m",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2026-03-21",
+        requested_end: "2026-06-18",
+        actual_start: "2026-03-23T13:30:00Z",
+        actual_end: "2026-03-23T13:45:00Z",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "run-spy-15m",
+        coverage: "trading_day_complete",
+      }),
+    )
+    const digest = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 15m",
+      "actual_interval: 15m",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2026-03-21",
+      "requested_end: 2026-06-18",
+      "actual_start: 2026-03-23T13:30:00Z",
+      "actual_end: 2026-03-23T13:45:00Z",
+      `artifact_paths: ${csvRel}, ${csvRel.replace(/\.csv$/, ".manifest.json")}`,
+      "run_id: run-spy-15m",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("<data-extractor-manifest>")
+    expect(result.text).toContain("usable_for_parent: yes")
+  })
+
+  test("rejects a 15m artifact whose timestamps reveal 5m bars", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-cadence-"))
+    const slug = "spy-15m-wrong-cadence"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_15m.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2026-03-23T13:30:00Z,1,2,1,2,100\n2026-03-23T13:35:00Z,2,3,2,3,100\n",
+    )
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify({
+        requested_symbol: "SPY", actual_symbol: "SPY", requested_interval: "15m", actual_interval: "15m",
+        requested_asset_class: "equity", actual_asset_class: "equity", requested_algorithm_name: slug,
+        requested_start: "2026-03-21", requested_end: "2026-06-18",
+        actual_start: "2026-03-23T13:30:00Z", actual_end: "2026-03-23T13:35:00Z",
+        output_path: csvRel, rows: 2, run_id: "run-wrong-cadence", coverage: "trading_day_complete",
+      }),
+    )
+    const digest = [
+      `requested_algorithm_name: ${slug}`, `workspace_slug: ${slug}`, "requested_symbol: SPY", "actual_symbol: SPY",
+      "requested_interval: 15m", "actual_interval: 15m", "requested_asset_class: equity", "actual_asset_class: equity",
+      "requested_start: 2026-03-21", "requested_end: 2026-06-18", "actual_start: 2026-03-23T13:30:00Z",
+      "actual_end: 2026-03-23T13:35:00Z", `artifact_paths: ${csvRel}`, "run_id: run-wrong-cadence",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(false)
+    expect(result.text).toContain("requested 15m, observed 5m")
+  })
+
+  test("recovers canonical paths from the only identity-matching manifest", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-path-recovery-"))
+    const slug = "spy-path-recovery"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_15m_actual.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(csvPath, "timestamp,open,high,low,close,volume\n2026-03-23T13:30:00Z,1,2,1,2,100\n")
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify({
+        requested_symbol: "SPY", actual_symbol: "SPY", requested_interval: "15m", actual_interval: "15m",
+        requested_asset_class: "equity", actual_asset_class: "equity", requested_algorithm_name: slug,
+        requested_start: "2026-03-21", requested_end: "2026-06-18",
+        actual_start: "2026-03-23T13:30:00Z", actual_end: "2026-03-23T13:30:00Z",
+        output_path: csvRel, rows: 1, run_id: "run-path", coverage: "complete",
+      }),
+    )
+    const digest = [
+      `requested_algorithm_name: ${slug}`, `workspace_slug: ${slug}`, "requested_symbol: SPY", "actual_symbol: SPY",
+      "requested_interval: 15m", "actual_interval: 15m", "requested_asset_class: equity", "actual_asset_class: equity",
+      "requested_start: 2026-03-21", "requested_end: 2026-06-18", "actual_start: 2026-03-23T13:30:00Z",
+      "actual_end: 2026-03-23T13:30:00Z", "artifact_paths: stock/hallucinated.csv, stock/hallucinated.manifest.json",
+      "run_id: run-path", "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text.split("<data-extractor-manifest>")[1]).toContain(csvRel)
+
+    await fs.copyFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      path.join(path.dirname(csvPath), "duplicate.manifest.json"),
+    )
+    const ambiguous = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(ambiguous.ok).toBe(false)
+    expect(ambiguous.text).toContain("could not resolve a unique identity-matching manifest (2 candidates)")
+  })
+
+  test("accepts clean completed bars when only the current candle is unavailable", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-open-candle-"))
+    const slug = "btc-1d-trend-following"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+
+    const today = new Date().toISOString().slice(0, 10)
+    const yesterdayDate = new Date(`${today}T00:00:00Z`)
+    yesterdayDate.setUTCDate(yesterdayDate.getUTCDate() - 1)
+    const yesterday = yesterdayDate.toISOString().slice(0, 10)
+    const csvRel = `crypto/BTCUSDT_1d_2025-06-16_${today}.csv`
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.writeFile(
+      csvPath,
+      `timestamp,open,high,low,close,volume\n2025-06-16,100,110,90,105,1000\n${yesterday},105,115,95,110,1000\n`,
+    )
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify(
+        {
+          requested_symbol: "BTC",
+          actual_symbol: "BTCUSDT",
+          requested_interval: "1d",
+          actual_interval: "1d",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2025-06-16",
+          requested_end: today,
+          actual_start: "2025-06-16",
+          actual_end: yesterday,
+          output_path: csvRel,
+          rows: 2,
+          run_id: "run-open-candle",
+          coverage: "partial",
+          coverage_note: `${today} daily candle is still open; saved completed bars through ${yesterday}`,
+          usable_for_parent: "no",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const digest = [
+      "requested_algorithm_name: btc-1d-trend-following",
+      "workspace_slug: btc-1d-trend-following",
+      "request_id: ses_test",
+      "requested_symbol: BTC",
+      "actual_symbol: BTCUSDT",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_start: 2025-06-16",
+      `requested_end: ${today}`,
+      "actual_start: 2025-06-16",
+      `actual_end: ${yesterday}`,
+      `artifact_paths: ${csvRel}, ${csvRel.replace(/\.csv$/, ".manifest.json")}`,
+      "run_id: run-open-candle",
+      "coverage: partial; requested_end excluded because current daily candle was not closed",
+      "quality: rows=2, duplicates=0, gaps=0, invalid_ohlc=0, zero_volume=0, outliers=0, partial_provider_coverage=yes",
+      "usable_for_parent: no — full requested window not covered",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+  })
+})
+
+describe("phoenix trace grader", () => {
+  test("classifies old failing signatures and clean synthetic runs", () => {
+    expect(classifyText("tool call glob blocked")).toContain("unavailable_tool")
+    expect(classifyText("Data Agent bash write blocked: algos/_template/data/stock/foo.csv")).toContain("bad_write_path")
+    expect(classifyText("BLOCKED: data_extractor returned incomplete evidence artifacts: missing manifest")).toContain(
+      "missing_manifest",
+    )
+    expect(classifyText("BLOCKED: context mismatch — requested SPY 5min equity")).toContain("identity_mismatch")
+    expect(classifyText("estimated mean close 420.5")).toContain("estimated_metric")
+    expect(classifyText("BLOCKED: provider limit for SPY 5m yfinance")).toContain("provider_limit_handled")
+    expect(classifyText("Data quality failed before resample")).toContain("strict_quality_mismatch")
+    expect(classifyText("frontmatter is not valid YAML status: draft")).toContain("mission_yaml_failure")
+    expect(classifyText("LOOKAHEAD_BIAS_FLOW same-bar lookahead")).toContain("lookahead_validation")
+    expect(classifyText("usable_for_parent: yes, manifest verified")).toEqual(["clean"])
+  })
+
+  test("groups spans by session", () => {
+    const grades = gradeSessions([
+      {
+        span_id: "s1",
+        trace_id: "t1",
+        session_id: "ses_a",
+        name: "task data_extractor",
+        attributes: { "session.id": "ses_a", message: "BLOCKED: context mismatch" },
+      },
+      {
+        span_id: "s2",
+        trace_id: "t1",
+        session_id: "ses_a",
+        name: "bash",
+        attributes: { "session.id": "ses_a" },
+      },
+      {
+        span_id: "s3",
+        trace_id: "t2",
+        session_id: "ses_b",
+        name: "finny_algorithm_save",
+        attributes: { "session.id": "ses_b", message: "usable_for_parent: yes, manifest verified" },
+      },
+    ])
+    expect(grades).toHaveLength(2)
+    expect(grades.find((g) => g.session_id === "ses_a")?.critical).toContain("identity_mismatch")
+    expect(grades.find((g) => g.session_id === "ses_b")?.classes).toEqual(["clean"])
+  })
+})

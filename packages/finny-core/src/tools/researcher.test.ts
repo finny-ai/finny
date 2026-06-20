@@ -112,10 +112,6 @@ describe("researcher agent definition", () => {
     }
   })
 
-  test("has a step limit of 30", () => {
-    expect(content).toContain("steps: 30")
-  })
-
   test("documents all six workflow phases", () => {
     for (const phase of [
       "Understand the topic",

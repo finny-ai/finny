@@ -1,7 +1,7 @@
 /**
  * Request identity contract.
  *
- * Build mode launches mandatory subagents (data_extractor, researcher) that can
+ * Build mode launches mandatory subagents (data_extractor, news_agent) that can
  * write and read artifacts under `algos/_template/data/`. Those artifacts are
  * NOT globally reusable: a note written for one algorithm/symbol must never be
  * reused as evidence for a different request. This module parses the immutable
@@ -144,6 +144,8 @@ function normalizeAssetClass(input?: string): AssetClass | undefined {
 // ── Prompt fact parsing ─────────────────────────────────────────────────────
 
 const INTERVAL_RE = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i
+const REQUESTED_ALGORITHM_NAME_RE =
+  /\b(?:requested_algorithm_name|algorithm\s+name|strategy\s+name)\s*[:=]\s*[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?|\b(?:name\s+it|named|called)\s+[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i
 
 /**
  * Extract the immutable request facts from a free-form user prompt. Only facts
@@ -163,10 +165,27 @@ export function parseRequestFacts(prompt: string): RequestFacts {
       facts.requested_asset_class = recognized.asset
       break
     }
+
+    // Terse prompts often arrive as strategy slugs, e.g. "spy-5m-momentum".
+    // The regex above sees "spy-5m" as one token, which is not a market pair.
+    // Fall back to strict recognition of each slug segment without enabling
+    // arbitrary ticker guesses.
+    for (const part of tok.split(/[\/\-_]+/)) {
+      const segment = recognizeToken(part)
+      if (!segment) continue
+      facts.requested_symbol = segment.sym
+      facts.requested_asset_class = segment.asset
+      break
+    }
+    if (facts.requested_symbol) break
   }
 
   const im = INTERVAL_RE.exec(prompt)
   if (im) facts.requested_interval = normalizeInterval(im[0])
+
+  const nm = REQUESTED_ALGORITHM_NAME_RE.exec(prompt)
+  const name = nm?.[1] ?? nm?.[2]
+  if (name) facts.requested_algorithm_name = name.replace(/[.,;:!?]+$/g, "")
 
   if (!facts.requested_asset_class) {
     const am = /\b(crypto|cryptocurrency|equity|equities|stock|stocks|etf)\b/i.exec(prompt)

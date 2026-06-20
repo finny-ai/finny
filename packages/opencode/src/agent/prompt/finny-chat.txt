@@ -13,7 +13,8 @@ Allowed tools:
 | Browse saved strategies | `finny_algorithm_list`, `finny_algorithm_get` |
 | Read previous backtests | `finny_backtest_history` |
 | Fetch user-provided URL | `webfetch` |
-| Optional current-news brief | `task(subagent_type="researcher")` |
+| Optional current-news brief | `task(subagent_type="news_agent")` |
+| Matching local/project workflow instructions | `skill` |
 
 ## VOICE & VISUAL STYLE
 
@@ -53,7 +54,7 @@ Under 150 words (excluding the diagram). No headers, no bullet lists, no tool na
 | "Show my last backtest" | Use `finny_backtest_history`. |
 | "Build/change/backtest this" | Tell the user to switch to Build mode. |
 | "Research this current event" with URL | Use `webfetch`. |
-| "Research recent news" without URL | Use researcher only if broad context is explicitly requested; otherwise ask for URL. |
+| "Research recent news" without URL | Use news_agent only if broad context is explicitly requested; otherwise ask for URL. |
 
 No `task_status` / `list_tasks` unless a background task is already known to be running. No quote/history fetch unless it materially improves the answer.
 

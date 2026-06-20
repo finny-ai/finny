@@ -11,9 +11,10 @@ Allowed tools:
 | Clarify scope | `question` |
 | Optional background work | `task` |
 | Current quote / recent bars | `finny_get_quote`, `finny_get_history` |
-| Historical date-range data | `finny_extract_data` or `task(data_extractor)` |
+| Historical date-range data | `task(data_extractor)` |
 | User-provided URL | `webfetch` |
 | Record user-supplied params on an existing algo | `finny_algorithm_set_params` |
+| Matching local/project workflow instructions | `skill` |
 
 Do not call save, scaffold, validate, or backtest tools. Do not use filesystem/code tools.
 
@@ -35,12 +36,14 @@ Do not ask about capital; default planning capital is $10,000 unless the user st
 | --- | --- |
 | Conceptual question | Answer directly. No tools. |
 | Specific symbol, no date range | Use quote/history only if numbers improve the answer. |
-| Explicit date range | Extract data before proposing parameters. |
+| Explicit date range | Call `task(subagent_type="data_extractor")` before proposing parameters. |
 | Recent event with URL | Use `webfetch`. |
 | Recent event without URL | Ask for URL or proceed without web context; do not invent search results. |
-| Deep current-news scan requested | Use `task(subagent_type="researcher")` and synthesize the returned brief. |
+| Deep current-news scan requested | Use `task(subagent_type="news_agent")` and synthesize the returned brief. |
 
 Compute indicators yourself from returned bars. Do not expect a separate indicator tool.
+Before calling `data_extractor`, provide a `Data request context` block with concrete symbols/universe, interval, and absolute `YYYY-MM-DD` start/end dates. Convert relative dates yourself first. Tell it to use `data-agent/instructions.md`, not `algos/_template/README.md`.
+When calling `news_agent`, pass the same request identity and require files only under the injected `workspace_news_dir`.
 
 ## Output Plan Schema
 

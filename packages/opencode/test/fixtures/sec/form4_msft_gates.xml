@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<ownershipDocument>
+  <issuer>
+    <issuerCik>0000789019</issuerCik>
+    <issuerName>MICROSOFT CORP</issuerName>
+    <issuerTradingSymbol>MSFT</issuerTradingSymbol>
+  </issuer>
+  <reportingOwner>
+    <reportingOwnerId>
+      <rptOwnerCik>0001182480</rptOwnerCik>
+      <rptOwnerName>Gates William H III</rptOwnerName>
+    </reportingOwnerId>
+    <reportingOwnerRelationship>
+      <isDirector>0</isDirector>
+      <isOfficer>0</isOfficer>
+      <isTenPercentOwner>1</isTenPercentOwner>
+    </reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <securityTitle><value>Common Stock</value></securityTitle>
+      <transactionDate><value>2024-02-02</value></transactionDate>
+      <transactionCoding>
+        <transactionCode>S</transactionCode>
+      </transactionCoding>
+      <transactionAmounts>
+        <transactionShares><value>22000</value></transactionShares>
+        <transactionPricePerShare><value>403.50</value></transactionPricePerShare>
+      </transactionAmounts>
+      <postTransactionAmounts>
+        <sharesOwnedFollowingTransaction><value>1025000</value></sharesOwnedFollowingTransaction>
+      </postTransactionAmounts>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>

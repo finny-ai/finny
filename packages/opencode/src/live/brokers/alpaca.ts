@@ -1,6 +1,7 @@
 import crypto from "crypto"
 import { Auth } from "@/auth"
 import type { BrokerAccount, BrokerCredentials, BrokerMode, BrokerSpec } from "./types"
+import { brokerModeChoices } from "./live-trading"
 
 export const ALPACA_PROVIDER_PREFIX = "alpaca-paper"
 const PAPER_ENDPOINT = "https://paper-api.alpaca.markets"
@@ -80,7 +81,7 @@ export const alpacaSpec: BrokerSpec = {
     { name: "label", label: "Label" },
     { name: "keyId", label: "Key ID" },
     { name: "secret", label: "Secret", secret: true },
-    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: ["paper", "live"] },
+    { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: brokerModeChoices(["paper", "live"]) },
     { name: "endpoint", label: "Endpoint", default: DEFAULT_ENDPOINT },
   ],
   promptFragment: [

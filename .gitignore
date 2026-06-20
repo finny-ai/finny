@@ -3,6 +3,8 @@ node_modules
 .worktrees
 .sst
 .env
+.env.*
+!.env.example
 .idea
 .vscode
 .codex
@@ -14,6 +16,8 @@ ts-dist
 .turbo
 **/.serena
 .serena/
+**/.omo
+.omo/
 /result
 refs
 Session.vim
@@ -29,8 +33,6 @@ UPCOMING_CHANGELOG.md
 logs/
 *.bun-build
 tsconfig.tsbuildinfo
-
-.env.local
 
 # Claude Code per-developer state — permission allowlists, local commands, etc.
 .claude/settings.local.json

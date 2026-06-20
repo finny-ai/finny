@@ -1,15 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { homedir } from "node:os"
-import {
-  ALGO_NAME_RE,
-  DATA_SUBDIRS,
-  MISSION_FILE,
-  isValidAlgoId,
-  isSlug,
-  makeSlug,
-  humanNameOf,
-} from "./schemas"
+import { resolveFinnyHome } from "../prefs"
+import { ALGO_NAME_RE, DATA_SUBDIRS, MISSION_FILE, isValidAlgoId, isSlug, makeSlug, humanNameOf } from "./schemas"
 import { algoDir, algosRoot } from "./paths"
 
 /**
@@ -25,14 +17,7 @@ import { algoDir, algosRoot } from "./paths"
  */
 
 function activeMarkerPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
-  if (platform === "win32") {
-    const local = env.LOCALAPPDATA
-    const base = local && local.length > 0 ? local : path.join(homedir(), "AppData", "Local")
-    return path.join(base, "finny", "active-algo")
-  }
-  const xdg = env.XDG_DATA_HOME
-  const base = xdg && xdg.length > 0 ? xdg : path.join(homedir(), ".local", "share")
-  return path.join(base, "finny", "active-algo")
+  return path.join(resolveFinnyHome({ env, platform }).path, "active-algo")
 }
 
 async function readMarker(env?: NodeJS.ProcessEnv, platform?: NodeJS.Platform): Promise<string | null> {
@@ -82,7 +67,10 @@ export async function getActiveAlgo(opts: ActiveAlgoOptions = {}): Promise<strin
 }
 
 /** Set the active algo. Accepts a slug or legacy plain name. Validates that the algo dir exists. */
-export async function setActiveAlgo(nameOrSlug: string, opts: ActiveAlgoOptions & { root?: string } = {}): Promise<void> {
+export async function setActiveAlgo(
+  nameOrSlug: string,
+  opts: ActiveAlgoOptions & { root?: string } = {},
+): Promise<void> {
   if (!isValidAlgoId(nameOrSlug)) {
     throw new Error(`invalid algo identifier: ${JSON.stringify(nameOrSlug)} (must be kebab-case or kebab-case.shortid)`)
   }
@@ -153,7 +141,7 @@ export interface EnsureAlgoWorkspaceOptions extends ActiveAlgoOptions {
  *
  * Idempotent when called with the same slug. Never overwrites an existing `mission.md`.
  *
- * Used by `finny_extract_data` and the researcher subagent workflow
+ * Used by data-agent and researcher subagent workflows.
  * so data gathering can start before strategy authoring.
  */
 export async function ensureAlgoWorkspace(

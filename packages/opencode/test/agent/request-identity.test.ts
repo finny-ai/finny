@@ -38,6 +38,28 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_interval).toBe("15m")
     expect(facts.requested_asset_class).toBe("equity")
   })
+
+  test("extracts immutable facts from a compact strategy slug", () => {
+    const facts = parseRequestFacts("spy-5m-momentum")
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_interval).toBe("5m")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("preserves crypto pair recognition inside compact slugs", () => {
+    const facts = parseRequestFacts("btc-usdt-5m-momentum")
+    expect(facts.requested_symbol).toBe("BTC")
+    expect(facts.requested_interval).toBe("5m")
+    expect(facts.requested_asset_class).toBe("crypto")
+  })
+
+  test("extracts explicitly requested algorithm names without using generic slugs", () => {
+    const facts = parseRequestFacts("Build SPY 5-minute equity. Name it spy-5m-product-demo-20260614-v2.")
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_interval).toBe("5m")
+    expect(facts.requested_algorithm_name).toBe("spy-5m-product-demo-20260614-v2")
+    expect(parseRequestFacts("spy-5m-momentum").requested_algorithm_name).toBeUndefined()
+  })
 })
 
 describe("verifyIdentity", () => {

@@ -37,6 +37,7 @@ beforeEach(async () => {
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "finny-e2e-ws-"))
   process.env.XDG_DATA_HOME = sandbox
   delete process.env.LOCALAPPDATA
+  delete process.env.FINNY_HOME
   root = path.join(sandbox, "finny", "algos")
   await fs.mkdir(root, { recursive: true })
 })

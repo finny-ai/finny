@@ -1,5 +1,6 @@
 research
 dist
+dist-*
 gen
 app.log
 src/provider/models-snapshot.js
@@ -9,3 +10,6 @@ src/provider/models-snapshot.d.ts
 __pycache__/
 *.pyc
 .pytest_cache/
+script/build-*.ts
+temporary-*.md
+.artifacts
