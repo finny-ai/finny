@@ -421,19 +421,31 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
   // valid license. Mirrors the pre-refactor runLicenseActivation/runStartupGate
   // wiring that was dropped when the TUI moved to packages/tui. The dialog is
   // non-dismissible — Esc/Ctrl+C quit finny (handled inside the dialog), a valid
-  // key proceeds. Dev/CI bypass is honored inside License.isUnlockedForToday().
+  // key proceeds. Dev/CI bypass, stale-cache revalidation, and FINNY_LICENSE_KEY
+  // are all handled by License.ensureActive() before any interactive prompt.
+  const [licenseGatePassed, setLicenseGatePassed] = createSignal(false)
   let gateStarted = false
   async function runLicenseGate() {
+    // Non-interactive path first: honors the bypass, revalidates a stale cache
+    // against the server, and consumes FINNY_LICENSE_KEY (CI/automation). Only
+    // prompt when there is genuinely no valid license for this workstation.
+    try {
+      await License.ensureActive()
+      setLicenseGatePassed(true)
+      return
+    } catch {
+      // No usable license — fall through to the interactive activation prompt.
+    }
     while (!(await License.isUnlockedForToday())) {
       const result = await DialogLicenseActivation.show(dialog)
-      if (result === "activated") {
-        dialog.clear()
+      if (result !== "activated") {
+        // Esc/Ctrl+C resolve "dismissed"; quit finny (fail-closed).
+        await exit()
         return
       }
-      // Fail-closed safety net; with the non-dismissible dialog this is unreachable.
-      await exit()
-      return
+      dialog.clear()
     }
+    setLicenseGatePassed(true)
   }
   createEffect(
     on(
@@ -566,7 +578,11 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
 
   createEffect(
     on(
-      () => sync.status === "complete" && sync.data.provider.length === 0,
+      // Wait for the license gate to pass before opening the empty-provider
+      // onboarding dialog — otherwise it would dialog.replace() over the
+      // non-dismissible license dialog, resolving it as "dismissed" and
+      // quitting the TUI before the user can activate.
+      () => licenseGatePassed() && sync.status === "complete" && sync.data.provider.length === 0,
       (isEmpty, wasEmpty) => {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
