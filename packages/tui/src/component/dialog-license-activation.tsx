@@ -151,6 +151,7 @@ DialogLicenseActivation.show = (dialog: DialogContext) => {
         picked = "dismissed"
         resolve("dismissed")
       },
+      { dismissible: false },
     )
   })
 }

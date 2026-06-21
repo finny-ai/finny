@@ -68,6 +68,7 @@ function init() {
     stack: [] as {
       element: JSX.Element
       onClose?: () => void
+      dismissible?: boolean
     }[],
     size: "medium" as "medium" | "large" | "xlarge",
   })
@@ -144,7 +145,7 @@ function init() {
       })
       refocus()
     },
-    replace(input: any, onClose?: () => void) {
+    replace(input: any, onClose?: () => void, opts?: { dismissible?: boolean }) {
       if (store.stack.length === 0) {
         focus = renderer.currentFocusedRenderable
         focus?.blur()
@@ -157,6 +158,7 @@ function init() {
         {
           element: input,
           onClose,
+          dismissible: opts?.dismissible ?? true,
         },
       ])
     },
@@ -210,7 +212,13 @@ export function DialogProvider(props: ParentProps) {
         onMouseUp={!Flag.OPENCODE_EXPERIMENTAL_DISABLE_COPY_ON_SELECT ? copySelection : undefined}
       >
         <Show when={value.stack.length}>
-          <Dialog onClose={() => value.clear()} size={value.size}>
+          <Dialog
+            onClose={() => {
+              if (value.stack.at(-1)?.dismissible === false) return
+              value.clear()
+            }}
+            size={value.size}
+          >
             {value.stack.at(-1)!.element}
           </Dialog>
         </Show>
