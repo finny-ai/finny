@@ -116,6 +116,44 @@ def _effective_fill_cfg(fill_cfg: FillConfig, asset_class: str) -> FillConfig:
     return effective
 
 
+def _trailing_stop_sell(order: Order, o: float, h: float, low: float, *, conservative: bool) -> Tuple[bool, float]:
+    sp = float(order.stop_price)  # type: ignore[arg-type]
+    if conservative:
+        if low <= sp:
+            return True, min(o, sp) if o <= sp else sp
+        order.high_water = max(order.high_water, h)
+        order.stop_price = order.high_water - float(order.trail_amount or 0.0)
+        return False, 0.0
+    order.high_water = max(order.high_water, h)
+    order.stop_price = order.high_water - float(order.trail_amount or 0.0)
+    triggered = low <= float(order.stop_price)
+    if not triggered:
+        return False, 0.0
+    tp = float(order.stop_price)
+    return True, min(o, tp) if o <= tp else tp
+
+
+def _trailing_stop_buy(order: Order, o: float, h: float, low: float, *, conservative: bool) -> Tuple[bool, float]:
+    sp = float(order.stop_price)  # type: ignore[arg-type]
+    if conservative:
+        if h >= sp:
+            return True, max(o, sp) if o >= sp else sp
+        if order.high_water == 0.0:
+            order.high_water = low
+        order.high_water = min(order.high_water, low) if order.high_water > 0 else low
+        order.stop_price = order.high_water + float(order.trail_amount or 0.0)
+        return False, 0.0
+    if order.high_water == 0.0:
+        order.high_water = low
+    order.high_water = min(order.high_water, low) if order.high_water > 0 else low
+    order.stop_price = order.high_water + float(order.trail_amount or 0.0)
+    triggered = h >= float(order.stop_price)
+    if not triggered:
+        return False, 0.0
+    tp = float(order.stop_price)
+    return True, max(o, tp) if o >= tp else tp
+
+
 def _trailing_stop_triggered(
     order: Order,
     o: float,
@@ -131,38 +169,9 @@ def _trailing_stop_triggered(
     """
     if order.stop_price is None:
         return False, 0.0
-    sp = float(order.stop_price)
     if order.side == "sell":
-        if conservative:
-            if low <= sp:
-                return True, min(o, sp) if o <= sp else sp
-            order.high_water = max(order.high_water, h)
-            order.stop_price = order.high_water - float(order.trail_amount or 0.0)
-            return False, 0.0
-        order.high_water = max(order.high_water, h)
-        order.stop_price = order.high_water - float(order.trail_amount or 0.0)
-        triggered = low <= float(order.stop_price)
-        if triggered:
-            tp = float(order.stop_price)
-            return True, min(o, tp) if o <= tp else tp
-        return False, 0.0
-    if conservative:
-        if h >= sp:
-            return True, max(o, sp) if o >= sp else sp
-        if order.high_water == 0.0:
-            order.high_water = low
-        order.high_water = min(order.high_water, low) if order.high_water > 0 else low
-        order.stop_price = order.high_water + float(order.trail_amount or 0.0)
-        return False, 0.0
-    if order.high_water == 0.0:
-        order.high_water = low
-    order.high_water = min(order.high_water, low) if order.high_water > 0 else low
-    order.stop_price = order.high_water + float(order.trail_amount or 0.0)
-    triggered = h >= float(order.stop_price)
-    if triggered:
-        tp = float(order.stop_price)
-        return True, max(o, tp) if o >= tp else tp
-    return False, 0.0
+        return _trailing_stop_sell(order, o, h, low, conservative=conservative)
+    return _trailing_stop_buy(order, o, h, low, conservative=conservative)
 
 
 def _resolve_limit_trigger(order: Order, h: float, low: float) -> Optional[Tuple[float, bool, bool]]:
