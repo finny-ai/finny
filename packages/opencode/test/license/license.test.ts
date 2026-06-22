@@ -54,7 +54,7 @@ describe("License", () => {
       "org_id",
       "timestamp",
     ])
-    expect(payload!.org_id).toBe("dv_trading")
+    expect(payload!.org_id).toBe("consumer")
     expect(payload!.license_key_hash).toMatch(/^[a-f0-9]{64}$/)
     expect(payload!.machine_id_hash).toMatch(/^[a-f0-9]{64}$/)
 
@@ -73,7 +73,7 @@ describe("License", () => {
     }
 
     const cache = JSON.parse(await fs.readFile(path.join(tempDir, "license-cache.json"), "utf8"))
-    expect(cache.org_id).toBe("dv_trading")
+    expect(cache.org_id).toBe("consumer")
     expect(cache.license_key_hash).toEqual(payload!.license_key_hash)
     expect(cache.machine_id_hash).toEqual(payload!.machine_id_hash)
     expect(cache.last_ok_at).toEqual(expect.any(String))

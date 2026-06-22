@@ -8,7 +8,7 @@ import { Filesystem } from "@/util/filesystem"
 const CACHE_FILE = "license-cache.json"
 const GRACE_MS = 24 * 60 * 60 * 1000
 const DEFAULT_CHECK_URL = "https://api.finnyai.tech/v1/license/check"
-const DEFAULT_ORG_ID = "dv_trading"
+const DEFAULT_ORG_ID = "consumer"
 
 type Cache = {
   org_id: string

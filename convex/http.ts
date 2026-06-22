@@ -6,6 +6,17 @@ const http = httpRouter()
 const HASH_RE = /^[a-f0-9]{64}$/i
 const ORG_RE = /^[a-z0-9_-]{1,64}$/
 const PAYLOAD_KEYS = new Set(["org_id", "license_key_hash", "machine_id_hash", "app_version", "timestamp"])
+const ISSUE_PAYLOAD_KEYS = new Set([
+  "org_id",
+  "license_key_hash",
+  "plan_type",
+  "max_devices_per_key",
+  "tier",
+  "email",
+  "source",
+  "source_id",
+])
+const REVOKE_PAYLOAD_KEYS = new Set(["source_id"])
 
 function requestId() {
   const cryptoApi = globalThis.crypto
@@ -29,7 +40,7 @@ function metadata(request: Request) {
   }
 }
 
-function json(input: unknown, status: 200 | 403) {
+function json(input: unknown, status: 200 | 400 | 403 | 500) {
   return new Response(JSON.stringify(input), {
     status,
     headers: { "content-type": "application/json" },
@@ -72,6 +83,50 @@ function isPayload(input: unknown): input is {
   )
 }
 
+function optionalString(value: unknown) {
+  return value === undefined || typeof value === "string"
+}
+
+function isIssuePayload(input: unknown): input is {
+  org_id: string
+  license_key_hash: string
+  plan_type: "enterprise" | "per_head"
+  max_devices_per_key?: number
+  tier?: string
+  email?: string
+  source?: string
+  source_id?: string
+} {
+  if (!input || typeof input !== "object") return false
+  const value = input as Record<string, unknown>
+  return (
+    Object.keys(value).every((key) => ISSUE_PAYLOAD_KEYS.has(key)) &&
+    typeof value.org_id === "string" &&
+    ORG_RE.test(value.org_id) &&
+    typeof value.license_key_hash === "string" &&
+    HASH_RE.test(value.license_key_hash) &&
+    (value.plan_type === "enterprise" || value.plan_type === "per_head") &&
+    (value.max_devices_per_key === undefined ||
+      (typeof value.max_devices_per_key === "number" &&
+        Number.isInteger(value.max_devices_per_key) &&
+        value.max_devices_per_key > 0)) &&
+    optionalString(value.tier) &&
+    optionalString(value.email) &&
+    optionalString(value.source) &&
+    optionalString(value.source_id)
+  )
+}
+
+function isRevokePayload(input: unknown): input is { source_id: string } {
+  if (!input || typeof input !== "object") return false
+  const value = input as Record<string, unknown>
+  return (
+    Object.keys(value).every((key) => REVOKE_PAYLOAD_KEYS.has(key)) &&
+    typeof value.source_id === "string" &&
+    value.source_id.trim().length > 0
+  )
+}
+
 http.route({
   path: "/license/check",
   method: "POST",
@@ -107,6 +162,73 @@ http.route({
       return json(result, result?.ok ? 200 : 403)
     } catch {
       return denied("verification_failed")
+    }
+  }),
+})
+
+http.route({
+  path: "/license/issue",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!hasValidProxySecret(request)) {
+      return denied("verification_failed")
+    }
+
+    let payload: unknown
+    try {
+      payload = await request.json()
+    } catch {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    if (!isIssuePayload(payload)) {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    try {
+      const result = await ctx.runMutation(internal.licenses.issue, {
+        org_id: payload.org_id,
+        license_key_hash: payload.license_key_hash,
+        plan_type: payload.plan_type,
+        max_devices_per_key: payload.max_devices_per_key,
+        tier: payload.tier,
+        email: payload.email,
+        source: payload.source,
+        source_id: payload.source_id,
+      })
+      return json(result, result?.ok ? 200 : 400)
+    } catch {
+      return json({ ok: false, error_code: "internal_error" }, 500)
+    }
+  }),
+})
+
+http.route({
+  path: "/license/revoke",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!hasValidProxySecret(request)) {
+      return denied("verification_failed")
+    }
+
+    let payload: unknown
+    try {
+      payload = await request.json()
+    } catch {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    if (!isRevokePayload(payload)) {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    try {
+      const result = await ctx.runMutation(internal.licenses.revoke, {
+        source_id: payload.source_id,
+      })
+      return json(result, result?.ok ? 200 : 400)
+    } catch {
+      return json({ ok: false, error_code: "internal_error" }, 500)
     }
   }),
 })

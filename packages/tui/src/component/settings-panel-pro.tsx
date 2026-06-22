@@ -127,7 +127,7 @@ export function SettingsPanelPro() {
               {status()?.active ? "License is active" : "License verification required"}
             </text>
 
-            <Row label="Organization" value={status()?.org_id ?? "dv_trading"} />
+            <Row label="Organization" value={status()?.org_id ?? "consumer"} />
             <Row label="Plan" value={planLabel(status())} accent={status()?.active} />
             <Row label="Device usage" value={deviceUsage(status())} />
             <Row label="Machine hash" value={shortHash(status()?.machine_id_hash)} />

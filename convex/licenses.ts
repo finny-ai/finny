@@ -202,3 +202,111 @@ export const check = internalMutation({
     return result
   },
 })
+
+export const issue = internalMutation({
+  args: {
+    org_id: v.string(),
+    license_key_hash: v.string(),
+    plan_type: v.union(v.literal("enterprise"), v.literal("per_head")),
+    max_devices_per_key: v.optional(v.number()),
+    tier: v.optional(v.string()),
+    email: v.optional(v.string()),
+    source: v.optional(v.string()),
+    source_id: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now()
+    const licenseKeyHash = args.license_key_hash.toLowerCase()
+
+    if (!validOrg(args.org_id) || !validHash(args.license_key_hash)) {
+      return { ok: false, error_code: "invalid_license" }
+    }
+
+    const activePatch = {
+      plan_type: args.plan_type,
+      status: "active" as const,
+      time_updated: now,
+      // Clear any stale active window so a renewal/resume reactivates the
+      // license; check() denies rows whose active_from/active_until are stale.
+      active_from: undefined,
+      active_until: undefined,
+      ...(args.max_devices_per_key !== undefined ? { max_devices_per_key: args.max_devices_per_key } : {}),
+      ...(args.source !== undefined ? { source: args.source } : {}),
+      ...(args.source_id !== undefined ? { source_id: args.source_id } : {}),
+      ...(args.tier !== undefined ? { tier: args.tier } : {}),
+      ...(args.email !== undefined ? { email: args.email } : {}),
+    }
+
+    if (args.source_id) {
+      const existingBySource = await ctx.db
+        .query("licenses")
+        .withIndex("by_source_id", (q) => q.eq("source_id", args.source_id))
+        .first()
+
+      if (existingBySource) {
+        // Apply the requested identity so a rotated/reissued key takes effect;
+        // check() looks the license up by (org_id, license_key_hash).
+        await ctx.db.patch(existingBySource._id, {
+          ...activePatch,
+          org_id: args.org_id,
+          license_key_hash: licenseKeyHash,
+        })
+        return { ok: true, license_id: existingBySource._id, deduped: true }
+      }
+    }
+
+    const existingByHash = await ctx.db
+      .query("licenses")
+      .withIndex("by_org_license_key_hash", (q) =>
+        q.eq("org_id", args.org_id).eq("license_key_hash", licenseKeyHash),
+      )
+      .unique()
+
+    if (existingByHash) {
+      await ctx.db.patch(existingByHash._id, activePatch)
+      return { ok: true, license_id: existingByHash._id, deduped: true }
+    }
+
+    const licenseId = await ctx.db.insert("licenses", {
+      org_id: args.org_id,
+      license_key_hash: licenseKeyHash,
+      plan_type: args.plan_type,
+      status: "active",
+      max_devices_per_key: args.max_devices_per_key,
+      source: args.source,
+      source_id: args.source_id,
+      tier: args.tier,
+      email: args.email,
+      devices: [],
+      time_created: now,
+      time_updated: now,
+    })
+
+    return { ok: true, license_id: licenseId, deduped: false }
+  },
+})
+
+export const revoke = internalMutation({
+  args: {
+    source_id: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const sourceId = args.source_id.trim()
+    if (!sourceId) return { ok: false, error_code: "invalid_source_id" }
+
+    const license = await ctx.db
+      .query("licenses")
+      .withIndex("by_source_id", (q) => q.eq("source_id", sourceId))
+      .first()
+
+    if (!license) return { ok: true, revoked: false, missing: true }
+    if (license.status === "revoked") return { ok: true, revoked: false, deduped: true }
+
+    await ctx.db.patch(license._id, {
+      status: "revoked",
+      time_updated: Date.now(),
+    })
+
+    return { ok: true, revoked: true }
+  },
+})
