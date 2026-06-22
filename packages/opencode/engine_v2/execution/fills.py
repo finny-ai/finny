@@ -17,7 +17,7 @@ Two realism modes:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -79,10 +79,9 @@ class ParticipationBudget:
             return 0.0
         return max(0.0, self.forecast_volume * self.participation_pct - self.used_qty)
 
-    def take(self, qty: float) -> float:
-        allowed = min(float(qty), self.remaining())
-        self.used_qty += allowed
-        return allowed
+    def record(self, qty: float) -> None:
+        if qty > 0:
+            self.used_qty += float(qty)
 
 
 def volume_forecast(ba: BarArrays, i: int) -> float:
@@ -103,12 +102,6 @@ def _completed_close_window(ba: BarArrays, i: int, lookback: int) -> np.ndarray:
     end = i
     start = max(0, end - lookback)
     return ba.close[start:end]
-
-
-def _fill_qty_capped(qty_remaining: float, budget: ParticipationBudget) -> float:
-    if qty_remaining <= 0:
-        return 0.0
-    return budget.take(qty_remaining)
 
 
 def _effective_fill_cfg(fill_cfg: FillConfig, asset_class: str) -> FillConfig:
@@ -153,7 +146,6 @@ def _trailing_stop_triggered(
             tp = float(order.stop_price)
             return True, min(o, tp) if o <= tp else tp
         return False, 0.0
-    # buy-side trailing (cover short)
     if conservative:
         if h >= sp:
             return True, max(o, sp) if o >= sp else sp
@@ -171,6 +163,69 @@ def _trailing_stop_triggered(
         tp = float(order.stop_price)
         return True, max(o, tp) if o >= tp else tp
     return False, 0.0
+
+
+def _resolve_intrabar_trigger(
+    order: Order,
+    o: float,
+    h: float,
+    low: float,
+) -> Optional[Tuple[float, bool, bool]]:
+    """Return (base_px, is_maker, apply_spread) when the order triggers."""
+    if order.order_type == "trailing_stop" and order.trail_amount is not None:
+        triggered, trigger_px = _trailing_stop_triggered(order, o, h, low, conservative=True)
+        if not triggered:
+            return None
+        return trigger_px, False, True
+    if order.order_type == "limit":
+        if order.limit_price is None:
+            raise ValueError(f"limit order {order.id} missing limit_price")
+        lp = float(order.limit_price)
+        traded_through = (order.side == "buy" and low < lp) or (order.side == "sell" and h > lp)
+        if not traded_through:
+            return None
+        return lp, True, False
+    if order.order_type in ("stop", "stop_limit", "trailing_stop"):
+        if order.stop_price is None:
+            raise ValueError(f"stop-like order {order.id} missing stop_price")
+        sp = float(order.stop_price)
+        triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and low <= sp)
+        if not triggered:
+            return None
+        base_px = max(o, sp) if order.side == "buy" else min(o, sp)
+        if order.order_type == "stop_limit":
+            if order.limit_price is None:
+                raise ValueError(f"stop_limit order {order.id} missing limit_price")
+            lp = float(order.limit_price)
+            if order.side == "buy" and low > lp:
+                return None
+            if order.side == "sell" and h < lp:
+                return None
+            return lp, True, False
+        return base_px, False, True
+    return None
+
+
+def _finalize_participation_qty(
+    order: Order,
+    budget: ParticipationBudget,
+    spec: Optional[AssetSpec],
+    margin_check: Optional[Callable[[Order, float, float], float]],
+    base_px: float,
+) -> float:
+    fill_qty = min(float(order.qty_remaining), budget.remaining())
+    if spec is not None:
+        fill_qty = spec.round_qty(fill_qty)
+    if fill_qty <= 0:
+        return 0.0
+    if margin_check is not None:
+        fill_qty = margin_check(order, fill_qty, base_px)
+        if spec is not None:
+            fill_qty = spec.round_qty(fill_qty)
+    if fill_qty <= 0:
+        return 0.0
+    budget.record(fill_qty)
+    return fill_qty
 
 
 def _append_fill(
@@ -202,6 +257,62 @@ def _finalize_queue(queue: List[Order], drop_ids: List[str]) -> None:
         queue[:] = [o for o in queue if o.id not in drop_set]
 
 
+def _ttl_expired(order: Order, drop_ids: List[str]) -> bool:
+    if order.qty_remaining <= 0:
+        drop_ids.append(order.id)
+        return True
+    order.bars_alive += 1
+    if order.ttl_bars is not None and order.bars_alive > order.ttl_bars:
+        drop_ids.append(order.id)
+        return True
+    return False
+
+
+def _price_open_market_fill(
+    order: Order,
+    o: float,
+    fill_qty: float,
+    forecast_v: float,
+    prior_atr: float,
+    close_win: np.ndarray,
+    effective_cfg: FillConfig,
+    spec: Optional[AssetSpec],
+) -> float:
+    slip = slippage_price_delta(
+        order.side, o, fill_qty, forecast_v, prior_atr, effective_cfg.slippage,
+    )
+    spr = half_spread(close_win, effective_cfg.spread, o)
+    fill_px = o + slip + (spr if order.side == "buy" else -spr)
+    if spec is not None:
+        fill_px = spec.round_price(fill_px)
+    return fill_px
+
+
+def _price_intrabar_fill(
+    order: Order,
+    base_px: float,
+    fill_qty: float,
+    slip_volume: float,
+    slip_atr: float,
+    close_win: np.ndarray,
+    effective_cfg: FillConfig,
+    *,
+    is_maker: bool,
+    apply_spread: bool,
+    spec: Optional[AssetSpec],
+) -> float:
+    slip = slippage_price_delta(
+        order.side, base_px, fill_qty, slip_volume, slip_atr, effective_cfg.slippage,
+    )
+    fill_px = base_px + slip
+    if apply_spread and not is_maker:
+        spr = half_spread(close_win, effective_cfg.spread, base_px)
+        fill_px = base_px + slip + (spr if order.side == "buy" else -spr)
+    if spec is not None:
+        fill_px = spec.round_price(fill_px)
+    return fill_px
+
+
 def process_open_orders_for_bar(
     queue: List[Order],
     ba: BarArrays,
@@ -209,16 +320,22 @@ def process_open_orders_for_bar(
     costs: CostConfig,
     fill_cfg: FillConfig,
     asset_specs: Optional[Dict[str, AssetSpec]] = None,
+    participation_budget: Optional[ParticipationBudget] = None,
     margin_check: Optional[Callable[[Order, float, float], float]] = None,
 ) -> List[Fill]:
     """Open-phase fills: market orders at bar open using prior-bar inputs only."""
     if i >= len(ba) or fill_cfg.mode == "v1_compat":
-        return process_orders_for_bar(queue, ba, i, costs, fill_cfg, asset_specs, margin_check=margin_check)
+        return process_orders_for_bar(
+            queue, ba, i, costs, fill_cfg, asset_specs,
+            participation_budget=participation_budget, margin_check=margin_check,
+        )
     o = float(ba.open[i])
     ts_ns = int(ba.ts[i])
     forecast_v = volume_forecast(ba, i)
     prior_atr = _prior_atr(ba, i)
-    budget = ParticipationBudget(forecast_volume=forecast_v, participation_pct=fill_cfg.participation_pct)
+    budget = participation_budget or ParticipationBudget(
+        forecast_volume=forecast_v, participation_pct=fill_cfg.participation_pct,
+    )
     close_win = _completed_close_window(ba, i, fill_cfg.spread.lookback_bars)
     fills: List[Fill] = []
     drop_ids: List[str] = []
@@ -229,43 +346,22 @@ def process_open_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol or order.order_type != "market":
             continue
-        if order.qty_remaining <= 0:
-            drop_ids.append(order.id)
-            continue
-        order.bars_alive += 1
-        if order.ttl_bars is not None and order.bars_alive > order.ttl_bars:
-            drop_ids.append(order.id)
+        if _ttl_expired(order, drop_ids):
             continue
 
-        fill_qty_max = _fill_qty_capped(order.qty_remaining, budget)
-        if spec is not None:
-            fill_qty_max = spec.round_qty(fill_qty_max)
-        if fill_qty_max <= 0:
+        fill_qty = _finalize_participation_qty(order, budget, spec, margin_check, o)
+        if fill_qty <= 0:
             continue
 
-        if margin_check is not None:
-            fill_qty_max = margin_check(order, fill_qty_max, o)
-            if spec is not None:
-                fill_qty_max = spec.round_qty(fill_qty_max)
-            if fill_qty_max <= 0:
-                continue
-
-        slip = slippage_price_delta(
-            order.side, o, fill_qty_max, forecast_v, prior_atr, effective_cfg.slippage,
+        fill_px = _price_open_market_fill(
+            order, o, fill_qty, forecast_v, prior_atr, close_win, effective_cfg, spec,
         )
-        spr = half_spread(close_win, effective_cfg.spread, o)
-        fill_px = o + slip + (spr if order.side == "buy" else -spr)
-        if spec is not None:
-            fill_px = spec.round_price(fill_px)
         fee = commission(
-            fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0),
-            is_maker=False,
-            cfg=costs,
-            qty=fill_qty_max,
-            asset_class=asset_class,
+            fill_qty * fill_px * (spec.multiplier if spec is not None else 1.0),
+            is_maker=False, cfg=costs, qty=fill_qty, asset_class=asset_class,
         )
         _append_fill(
-            fills=fills, order=order, fill_qty=fill_qty_max, fill_px=fill_px, fee=fee,
+            fills=fills, order=order, fill_qty=fill_qty, fill_px=fill_px, fee=fee,
             i=i, ts_ns=ts_ns, is_maker=False, drop_ids=drop_ids,
         )
 
@@ -289,14 +385,12 @@ def process_intrabar_orders_for_bar(
     o = float(ba.open[i])
     h = float(ba.high[i])
     low = float(ba.low[i])
-    v = float(ba.volume[i])
-    atr_v = float(ba.atr[i]) if ba.atr is not None else float("nan")
+    slip_volume = volume_forecast(ba, i)
+    slip_atr = _prior_atr(ba, i)
     ts_ns = int(ba.ts[i])
-    if participation_budget is None:
-        participation_budget = ParticipationBudget(
-            forecast_volume=volume_forecast(ba, i),
-            participation_pct=fill_cfg.participation_pct,
-        )
+    budget = participation_budget or ParticipationBudget(
+        forecast_volume=slip_volume, participation_pct=fill_cfg.participation_pct,
+    )
     close_win = ba.close[max(0, i - fill_cfg.spread.lookback_bars + 1): i + 1]
     fills: List[Fill] = []
     drop_ids: List[str] = []
@@ -307,90 +401,28 @@ def process_intrabar_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol or order.order_type == "market":
             continue
-        if order.qty_remaining <= 0:
-            drop_ids.append(order.id)
-            continue
-        order.bars_alive += 1
-        if order.ttl_bars is not None and order.bars_alive > order.ttl_bars:
-            drop_ids.append(order.id)
+        if _ttl_expired(order, drop_ids):
             continue
 
-        fill_qty_max = _fill_qty_capped(order.qty_remaining, participation_budget)
-        if spec is not None:
-            fill_qty_max = spec.round_qty(fill_qty_max)
-        if fill_qty_max <= 0:
+        resolved = _resolve_intrabar_trigger(order, o, h, low)
+        if resolved is None:
+            continue
+        base_px, is_maker, apply_spread = resolved
+
+        fill_qty = _finalize_participation_qty(order, budget, spec, margin_check, base_px)
+        if fill_qty <= 0:
             continue
 
-        if order.order_type == "trailing_stop" and order.trail_amount is not None:
-            triggered, trigger_px = _trailing_stop_triggered(
-                order, o, h, low, conservative=True,
-            )
-            if not triggered:
-                continue
-            base_px = trigger_px
-            is_maker = False
-        elif order.order_type == "limit":
-            if order.limit_price is None:
-                raise ValueError(f"limit order {order.id} missing limit_price")
-            lp = float(order.limit_price)
-            traded_through = (order.side == "buy" and low < lp) or (order.side == "sell" and h > lp)
-            if not traded_through:
-                continue
-            base_px = lp
-            is_maker = True
-        elif order.order_type in ("stop", "stop_limit", "trailing_stop"):
-            if order.stop_price is None:
-                raise ValueError(f"stop-like order {order.id} missing stop_price")
-            sp = float(order.stop_price)
-            triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and low <= sp)
-            if not triggered:
-                continue
-            if order.side == "buy":
-                base_px = max(o, sp)
-            else:
-                base_px = min(o, sp)
-            if order.order_type == "stop_limit":
-                if order.limit_price is None:
-                    raise ValueError(f"stop_limit order {order.id} missing limit_price")
-                lp = float(order.limit_price)
-                if order.side == "buy" and low > lp:
-                    continue
-                if order.side == "sell" and h < lp:
-                    continue
-                base_px = lp
-                is_maker = True
-            else:
-                is_maker = False
-        else:
-            continue
-
-        if margin_check is not None:
-            fill_qty_max = margin_check(order, fill_qty_max, base_px)
-            if spec is not None:
-                fill_qty_max = spec.round_qty(fill_qty_max)
-            if fill_qty_max <= 0:
-                continue
-
-        slip = slippage_price_delta(
-            order.side, base_px, fill_qty_max, v, atr_v, effective_cfg.slippage,
+        fill_px = _price_intrabar_fill(
+            order, base_px, fill_qty, slip_volume, slip_atr, close_win, effective_cfg,
+            is_maker=is_maker, apply_spread=apply_spread, spec=spec,
         )
-        fill_px = base_px + slip
-        if order.order_type == "limit" or (order.order_type == "stop_limit" and is_maker):
-            pass  # limit fills: slip only, no spread re-add
-        elif order.order_type == "market":
-            spr = half_spread(close_win, effective_cfg.spread, base_px)
-            fill_px = base_px + slip + (spr if order.side == "buy" else -spr)
-        if spec is not None:
-            fill_px = spec.round_price(fill_px)
         fee = commission(
-            fill_qty_max * fill_px * (spec.multiplier if spec is not None else 1.0),
-            is_maker=is_maker,
-            cfg=costs,
-            qty=fill_qty_max,
-            asset_class=asset_class,
+            fill_qty * fill_px * (spec.multiplier if spec is not None else 1.0),
+            is_maker=is_maker, cfg=costs, qty=fill_qty, asset_class=asset_class,
         )
         _append_fill(
-            fills=fills, order=order, fill_qty=fill_qty_max, fill_px=fill_px, fee=fee,
+            fills=fills, order=order, fill_qty=fill_qty, fill_px=fill_px, fee=fee,
             i=i, ts_ns=ts_ns, is_maker=is_maker, drop_ids=drop_ids,
         )
 
@@ -405,18 +437,20 @@ def process_orders_for_bar(
     costs: CostConfig,
     fill_cfg: FillConfig,
     asset_specs: Optional[Dict[str, AssetSpec]] = None,
+    participation_budget: Optional[ParticipationBudget] = None,
     margin_check: Optional[Callable[[Order, float, float], float]] = None,
 ) -> List[Fill]:
     """Process all queued orders against bar `i` (v1_compat path or legacy callers)."""
     if i >= len(ba):
         return []
     if fill_cfg.mode == "v2":
-        budget = ParticipationBudget(
+        budget = participation_budget or ParticipationBudget(
             forecast_volume=volume_forecast(ba, i),
             participation_pct=fill_cfg.participation_pct,
         )
         open_fills = process_open_orders_for_bar(
-            queue, ba, i, costs, fill_cfg, asset_specs, margin_check=margin_check,
+            queue, ba, i, costs, fill_cfg, asset_specs,
+            participation_budget=budget, margin_check=margin_check,
         )
         intrabar_fills = process_intrabar_orders_for_bar(
             queue, ba, i, costs, fill_cfg, asset_specs,
@@ -440,12 +474,7 @@ def process_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol:
             continue
-        if order.qty_remaining <= 0:
-            drop_ids.append(order.id)
-            continue
-        order.bars_alive += 1
-        if order.ttl_bars is not None and order.bars_alive > order.ttl_bars:
-            drop_ids.append(order.id)
+        if _ttl_expired(order, drop_ids):
             continue
 
         fill_qty_max = order.qty_remaining

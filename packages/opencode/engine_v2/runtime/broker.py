@@ -194,6 +194,7 @@ class PortfolioBroker:
             sym_orders = [o for o in self.orders if o.symbol == sym]
             fills = process_open_orders_for_bar(
                 sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
+                participation_budget=self._participation_budgets[sym],
                 margin_check=self._margin_cap_at_fill,
             )
             for f in fills:
@@ -280,6 +281,23 @@ class PortfolioBroker:
 
     # ---------- Internals ----------
 
+    def _fill_time_prices(self, fill_symbol: str, fill_price: float) -> Dict[str, float]:
+        """Mark all symbols to the current bar open, overriding the fill symbol."""
+        i = self.market.i
+        return {
+            sym: float(fill_price if sym == fill_symbol else self.market.arrays[sym].open[i])
+            for sym in self.market.symbols
+        }
+
+    def _equity_at_prices(self, prices: Dict[str, float]) -> float:
+        unrealized = 0.0
+        for sym, pos in self.book.positions.items():
+            if pos.qty == 0:
+                continue
+            px = float(prices.get(sym, pos.avg_price))
+            unrealized += pos.qty * (px - pos.avg_price) * self._multiplier(sym)
+        return self.account.cash + unrealized
+
     def _margin_cap_at_fill(self, order, qty: float, price: float) -> float:
         """Recheck buying power at the actual fill price; return affordable qty."""
         if qty <= 0:
@@ -289,19 +307,17 @@ class PortfolioBroker:
         spec = self.asset_specs.get(sym)
         mult = spec.multiplier if spec is not None else 1.0
         asset_class = spec.assetClass if spec is not None else ""
+        fill_prices = self._fill_time_prices(sym, float(price))
         projected_qty: Dict[str, float] = {s: float(p.qty) for s, p in self.book.positions.items()}
         for s in self.market.symbols:
             projected_qty.setdefault(s, 0.0)
         delta = qty if side == "buy" else -qty
         projected_qty[sym] = projected_qty.get(sym, 0.0) + delta
-        projected_prices = {s: self.latest_price(s) for s in projected_qty}
-        projected_prices[sym] = float(price)
         fee = commission(abs(qty * price * mult), is_maker=False, cfg=self.costs, qty=qty, asset_class=asset_class)
-        required = self.account.required_initial_margin_for_quantities(projected_qty, projected_prices) + fee
-        allowed = self.account.equity(self.book.positions)
+        required = self.account.required_initial_margin_for_quantities(projected_qty, fill_prices) + fee
+        allowed = self._equity_at_prices(fill_prices)
         if required <= allowed + 1e-9:
             return qty
-        # Binary search affordable qty when full size breaches margin.
         lo, hi = 0.0, qty
         for _ in range(40):
             mid = (lo + hi) / 2.0
@@ -311,12 +327,11 @@ class PortfolioBroker:
             test_delta = test_qty if side == "buy" else -test_qty
             test_proj = dict(projected_qty)
             test_proj[sym] = test_proj.get(sym, 0.0) - delta + test_delta
-            test_prices = dict(projected_prices)
             test_fee = commission(
                 abs(test_qty * price * mult), is_maker=False, cfg=self.costs,
                 qty=test_qty, asset_class=asset_class,
             )
-            test_required = self.account.required_initial_margin_for_quantities(test_proj, test_prices) + test_fee
+            test_required = self.account.required_initial_margin_for_quantities(test_proj, fill_prices) + test_fee
             if test_required <= allowed + 1e-9:
                 lo = mid
             else:

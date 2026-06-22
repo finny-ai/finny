@@ -411,6 +411,40 @@ def test_aggregate_participation_cap_across_orders_same_bar():
     assert total == 100.0  # 10% of prior bar volume 1000, not 160
 
 
+def test_open_and_intrabar_share_participation_budget():
+    ba = _bars(
+        (100, 101, 99, 100, 1000),
+        (100, 105, 95, 100, 1000),
+    )
+    broker, snap = _setup(ba, mode="v2", participation=0.10)
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=60, order_type="market"))
+    snap.set_index(1)
+    open_fills = broker.process_open(1)
+    broker.submit_order(Order(id="o2", symbol="X", side="buy", qty=60, order_type="limit", limit_price=100.0))
+    intrabar_fills = broker.process_intrabar(1)
+    total = sum(f.qty for f in open_fills + intrabar_fills)
+    assert total == 100.0
+
+
+def test_margin_equity_uses_fill_time_open_prices():
+    ba = _bars((100, 101, 99, 100, 1_000_000), (50, 55, 45, 50, 1_000_000))
+    snap = MarketSnapshot({"X": ba})
+    acct = Account.new(starting_cash=10_000.0, max_leverage=2.0, maintenance_margin_pct=0.0)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m")
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=100, order_type="market"))
+    snap.set_index(1)
+    broker.process_bar(1)
+    acct.mark_prices({"X": 100.0})  # stale prior close
+    open_prices = broker._fill_time_prices("X", 50.0)
+    assert open_prices["X"] == 50.0
+    assert broker._equity_at_prices(open_prices) < broker.account.equity(broker.book.positions)
+
+
 def test_margin_partial_fill_at_actual_price():
     ba = _bars((100, 101, 99, 100, 1_000_000), (200, 201, 199, 200, 1_000_000))
     snap = MarketSnapshot({"X": ba})
