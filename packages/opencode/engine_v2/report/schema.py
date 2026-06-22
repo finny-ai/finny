@@ -9,6 +9,7 @@ CHANGELOG:
   2.0.0  initial engine_v2 release.
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
   3.1.0  asset spec adds optional margin/commission metadata.
+  3.2.0  execution profile metadata, terminal NAV, and open trade rows.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "3.1.0"
+SCHEMA_VERSION = "3.2.0"
 
 
 @dataclass
@@ -41,6 +42,23 @@ class TradeRow:
     entry_tag: str
     exit_tag: str
     liquidation: bool = False
+
+
+@dataclass
+class OpenTradeRow:
+    symbol: str
+    side: str
+    qty: float
+    entry_ts: str
+    entry_price: float
+    mark_price: float
+    multiplier: float
+    unrealized_pnl: float
+    fees_accrued: float
+    funding_accrued: float
+    borrow_accrued: float
+    hold_bars: int
+    entry_tag: str
 
 
 @dataclass
@@ -314,6 +332,7 @@ class Results:
     stability: StabilityMetrics
 
     trades: List[TradeRow]
+    open_trades: List[OpenTradeRow]
     per_symbol: List[PerSymbolAttribution]
     data_quality: DataQualityReport
 

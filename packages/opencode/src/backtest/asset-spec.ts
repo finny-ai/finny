@@ -25,6 +25,7 @@ export interface AssetSpec {
 }
 
 const CRYPTO_BASES = new Set(["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"])
+const OPTION_RE = /^[A-Z]{1,6}\/\d{8}\/\d+(?:\.\d+)?[CP]$/i
 const FUTURES_SPECS = {
   ES: { venue: "CME", tickSize: 0.25, multiplier: 50, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
   NQ: { venue: "CME", tickSize: 0.25, multiplier: 20, currency: "USD", initialMarginPct: 0.06, maintenanceMarginPct: 0.05, commissionPerContract: 2.25 },
@@ -51,6 +52,7 @@ export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass
     return raw
   }
   const sym = String(symbol ?? "").toUpperCase()
+  if (OPTION_RE.test(sym)) return "option"
   if (futuresRoot(sym)) return "future"
   if (/^[A-Z]{6}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
   if (/^[A-Z]{3}[/-][A-Z]{3}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
@@ -66,12 +68,32 @@ export function resolveAssetSpec(config: any, symbolFallback: string): AssetSpec
   const symbol = String(config?.symbol ?? symbolFallback).toUpperCase()
   const rawAssetClass = config?.asset_class ?? config?.assetClass
   const assetClass = normalizeAssetClass(rawAssetClass, symbol)
+  const inferredAssetClass = normalizeAssetClass(undefined, symbol)
   if (requiresExplicitAssetClass(assetClass) && typeof rawAssetClass !== "string") {
     throw new Error(`asset_class must be explicit for ${assetClass} strategies.`)
   }
 
   const specOverrides = (config?.asset_spec ?? config?.assetSpec ?? {}) as Record<string, unknown>
   const execution = (config?.execution ?? {}) as Record<string, unknown>
+  const hasCompleteCustomSpec = [
+    "tickSize",
+    "lotSize",
+    "multiplier",
+    "calendar",
+    "currency",
+    "feeModel",
+    "marginModel",
+    "dataProvider",
+  ].every((key) => specOverrides[key] != null)
+  const compatibleOverride = new Set([assetClass, inferredAssetClass])
+  const compatibleCryptoMode =
+    compatibleOverride.size <= 2 && compatibleOverride.has("crypto_spot") && compatibleOverride.has("crypto_perp")
+  if (typeof rawAssetClass === "string" && assetClass !== inferredAssetClass && !compatibleCryptoMode && !hasCompleteCustomSpec) {
+    throw new Error(
+      `asset_class ${assetClass} is inconsistent with symbol "${symbol}" ` +
+        `(inferred ${inferredAssetClass}). Supply a complete custom asset_spec to override inference.`,
+    )
+  }
 
   // Guard unknown futures roots: silently simulating an unsupported/typo'd
   // contract with ES specs would produce wrong margin/tick/multiplier (and thus

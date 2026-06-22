@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date, timedelta
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -107,6 +108,91 @@ def _intraday_outlier_floor(step: pd.Timedelta, asset_group: str) -> float:
     return 0.0
 
 
+def _exchange_session_bounds(day: pd.Timestamp, asset_class: str) -> Tuple[pd.Timestamp, pd.Timestamp] | None:
+    weekday = day.weekday()
+    if weekday >= 5:
+        return None
+    if asset_class == "future":
+        session_start = day
+        session_end = day + pd.Timedelta(hours=23)
+        return session_start, session_end
+    local_day = day.tz_convert("America/New_York")
+    session_start = pd.Timestamp(
+        local_day.year, local_day.month, local_day.day, 9, 30,
+        tz="America/New_York",
+    ).tz_convert("UTC")
+    session_end = pd.Timestamp(
+        local_day.year, local_day.month, local_day.day, 16, 0,
+        tz="America/New_York",
+    ).tz_convert("UTC")
+    if session_end <= session_start:
+        return None
+    return session_start, session_end
+
+
+def _bars_in_session(session_start: pd.Timestamp, session_end: pd.Timestamp, step: pd.Timedelta) -> int:
+    return max(0, int((session_end - session_start) / step))
+
+
+def _exchange_expected_count(ts: pd.Series, interval: str, asset_class: str) -> int:
+    if len(ts) <= 1 or asset_class not in {"equity", "future", "option"}:
+        return max(1, len(ts))
+    step = expected_step(interval)
+    start = ts.iloc[0].floor("D")
+    # Floor the last bar's UTC day so a session ending before midnight UTC does
+    # not inflate coverage with an extra calendar day.
+    end = ts.iloc[-1].floor("D")
+    days = pd.date_range(start, end, freq="D", tz="UTC")
+    expected = 0
+    for day in days:
+        bounds = _exchange_session_bounds(day, asset_class)
+        if bounds is None:
+            continue
+        expected += _bars_in_session(bounds[0], bounds[1], step)
+    return max(1, expected)
+
+
+def _effective_trading_start(start: pd.Timestamp, asset_class: str) -> date:
+    """First weekday on or after start for exchange-traded assets."""
+    if asset_class not in {"equity", "future", "option"}:
+        return start.date()
+    cursor = start.date()
+    while cursor.weekday() >= 5:
+        cursor += timedelta(days=1)
+    return cursor
+
+
+def _start_window_reason(
+    first: pd.Timestamp,
+    start: pd.Timestamp,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    if asset_class in {"equity", "future", "option"}:
+        if first.date() > _effective_trading_start(start, asset_class):
+            return f"first bar {first} is after requested start {start}"
+        return None
+    if first > start + step * 1.5:
+        return f"first bar {first} is after requested start {start}"
+    return None
+
+
+def _end_window_reason(
+    last: pd.Timestamp,
+    requested_end: str,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    end = pd.to_datetime(requested_end, utc=True) + pd.Timedelta(days=1)
+    if asset_class in {"equity", "future", "option"}:
+        if last.date() < (end - pd.Timedelta(days=1)).date():
+            return f"last bar {last} is before requested end {requested_end}"
+        return None
+    if last < end - step * 1.5:
+        return f"last bar {last} is before requested end {requested_end}"
+    return None
+
+
 def _outlier_indexes_and_details(
     df: pd.DataFrame,
     provider: str = "unknown",
@@ -195,18 +281,25 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", p
     # Zero volume
     zero_vol = int((v <= 0).sum())
 
-    # Gaps: count bars where the diff exceeds expected step (crypto-only here;
-    # equities skipped because we don't have a market calendar in scope).
+    # Gaps and coverage.
     gaps = 0
     if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
         diffs = ts.diff().dropna()
         step = expected_step(interval)
         gaps = int((diffs > step * 1.5).sum())
+    if asset_class in {"equity", "future", "option"} and len(ts) > 1:
+        diffs = ts.diff().dropna()
+        step = expected_step(interval)
+        continuous = _continuous_return_mask(ts, interval, asset_class)
+        gaps = int(((diffs > step * 1.5).to_numpy() & continuous).sum())
     coverage = 1.0
     if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
         actual = len(ts)
         expected = max(1, int((ts.iloc[-1] - ts.iloc[0]) / expected_step(interval)) + 1)
         coverage = min(1.0, actual / expected)
+    if asset_class in {"equity", "future", "option"} and len(ts) > 1:
+        expected = _exchange_expected_count(ts, interval, asset_class)
+        coverage = min(1.0, len(ts) / expected)
 
     notes: List[str] = []
     if dupes:
@@ -256,3 +349,47 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
         if report.zero_volume_bars > isolated_tolerance:
             reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")
     return reasons
+
+
+def _maybe_start_window_reason(
+    first: pd.Timestamp,
+    requested_start: str | None,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    if not requested_start:
+        return None
+    start = pd.to_datetime(requested_start, utc=True)
+    return _start_window_reason(first, start, step, asset_class)
+
+
+def _maybe_end_window_reason(
+    last: pd.Timestamp,
+    requested_end: str | None,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    if not requested_end:
+        return None
+    return _end_window_reason(last, requested_end, step, asset_class)
+
+
+def requested_window_reasons(
+    df: pd.DataFrame,
+    interval: str,
+    asset_class: str,
+    requested_start: str | None,
+    requested_end: str | None,
+) -> List[str]:
+    """Strict-mode guard against silently truncated provider windows."""
+    if df.empty:
+        return ["empty input"]
+    step = expected_step(interval)
+    ts = pd.to_datetime(df["timestamp"], utc=True)
+    return [
+        reason for reason in (
+            _maybe_start_window_reason(ts.iloc[0], requested_start, step, asset_class),
+            _maybe_end_window_reason(ts.iloc[-1], requested_end, step, asset_class),
+        )
+        if reason
+    ]

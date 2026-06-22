@@ -159,7 +159,7 @@ for src in fx_needed:
         s = fx[col]
         if isinstance(s, pd.DataFrame):
             s = s.iloc[:, 0]
-        fx_series[src] = s.reindex(px.index).ffill().bfill()
+        fx_series[src] = s.reindex(px.index).ffill()
     except Exception:
         fx_failures.append(src)
 
@@ -175,7 +175,9 @@ for t in present:
     if src != target_ccy:
         px[t] = px[t] * fx_series[src]
 
-# After FX, drop any rows where conversion left NaNs.
+# After FX, drop any rows where conversion left NaNs. This begins the
+# portfolio at the first jointly observable date across assets and FX rates;
+# no future FX rates are backfilled into earlier portfolio dates.
 px = px.dropna()
 if len(px) < 2:
     print(json.dumps({"ok": False, "error": "Not enough overlapping data after FX conversion."}))
@@ -291,6 +293,9 @@ result = {
     "max_drawdown": max_dd,
     "annualization_periods_per_year": round(periods_per_year, 2),
     "rebalance": rebalance,
+    "analytics_only": True,
+    "production_eligible": False,
+    "eligibility_reason": "Portfolio rebalancing path does not yet apply engine_v2 execution profiles/costs to rebalance trades.",
     "window_days": days,
     "start": str(px.index[0].date()),
     "end": str(px.index[-1].date()),
@@ -474,6 +479,9 @@ export const PortfolioBacktestTool = Tool.define(
           const lines: string[] = []
           lines.push(`Portfolio Backtest — ${parsed.start} → ${parsed.end} (${parsed.window_days} days)`)
           lines.push(`Currency: ${ccy} · Rebalance: ${parsed.rebalance}`)
+          if (parsed.analytics_only) {
+            lines.push("Eligibility: analytics-only; not production eligible until rebalance trades use engine_v2 execution profiles/costs.")
+          }
           lines.push("")
           lines.push(`Starting Capital: ${fmtMoney(parsed.starting_capital, ccy)}`)
           lines.push(`Ending Equity:    ${fmtMoney(parsed.ending_equity, ccy)}`)

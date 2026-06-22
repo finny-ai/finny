@@ -201,6 +201,27 @@ def assemble(
             mae=t.mae, mfe=t.mfe, hold_bars=t.hold_bars,
             entry_tag=t.entry_tag, exit_tag=t.exit_tag, liquidation=t.liquidation,
         ))
+    open_trade_rows: List[S.OpenTradeRow] = []
+    for sym, pos in broker.book.positions.items():
+        if pos.qty == 0:
+            continue
+        mark = float(broker.account.last_prices.get(sym, pos.avg_price))
+        side = pos.side_at_open or ("long" if pos.qty > 0 else "short")
+        open_trade_rows.append(S.OpenTradeRow(
+            symbol=sym,
+            side=side,
+            qty=abs(float(pos.qty)),
+            entry_ts=str(pd.Timestamp(int(pos.entry_ts_ns), unit="ns", tz="UTC")),
+            entry_price=float(pos.entry_price),
+            mark_price=mark,
+            multiplier=float(pos.multiplier or 1.0),
+            unrealized_pnl=float(pos.unrealized_pnl(mark)),
+            fees_accrued=float(pos.fees_accum),
+            funding_accrued=float(pos.funding_accum),
+            borrow_accrued=float(pos.borrow_accum),
+            hold_bars=int(pos.bars_held),
+            entry_tag=pos.entry_tag,
+        ))
 
     # Per-symbol attribution
     last_prices = {s: float(snap.arrays[s].close[-1]) for s in snap.symbols}
@@ -297,7 +318,7 @@ def assemble(
         profit_factor=trade_block.profit_factor,
         returns=ret_block, risk=risk_block, ratios=ratios_block,
         drawdown=dd_block, trade=trade_block, exposure=ex_block, stability=stab_block,
-        trades=trades_rows, per_symbol=attrib_rows, data_quality=data_quality,
+        trades=trades_rows, open_trades=open_trade_rows, per_symbol=attrib_rows, data_quality=data_quality,
         benchmark=bench_block, monte_carlo=mc_block,
         walk_forward=wf_block, regimes=regimes_block,
         execution_config=execution_config,

@@ -163,7 +163,7 @@ def _roll_adjust_futures(df: pd.DataFrame) -> tuple[pd.DataFrame, List[RollBound
         if abs(shift) < 1e-9:
             continue
         cumulative += shift
-        offsets[:i] = cumulative
+        offsets[:i] += shift
         boundaries.append(RollBoundary(
             index=i,
             timestamp=pd.Timestamp(adjusted.loc[i, "timestamp"]).isoformat(),
@@ -174,6 +174,14 @@ def _roll_adjust_futures(df: pd.DataFrame) -> tuple[pd.DataFrame, List[RollBound
 
     for col in ("open", "high", "low", "close"):
         adjusted[col] = adjusted[col] + offsets
+    for b in boundaries:
+        i = b.index
+        continuity_gap = abs(float(adjusted.loc[i, "open"]) - float(adjusted.loc[i - 1, "close"]))
+        if continuity_gap > max(1e-8, abs(float(adjusted.loc[i, "open"])) * 1e-8):
+            raise ValueError(
+                f"Futures roll adjustment failed continuity at {b.timestamp}: "
+                f"adjusted open/previous close gap {continuity_gap:.12g}"
+            )
     return adjusted, boundaries
 
 

@@ -25,10 +25,18 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   const repaired = results.v2?.data_quality?.repair_applied === true
   const wf = results.v2?.walk_forward
   const profitFactor = results.profitFactor
+  const liquidationNav = (results.v2?.run_metadata as any)?.liquidation_nav
+  const liquidationAdjustedReturn = typeof liquidationNav?.nav === "number" && typeof results.v2?.starting_equity === "number"
+    ? (liquidationNav.nav - results.v2.starting_equity) / results.v2.starting_equity
+    : results.totalReturn
+  const terminalDrawdown = typeof liquidationNav?.nav === "number" && typeof results.v2?.starting_equity === "number"
+    ? Math.max(0, (results.v2.starting_equity - liquidationNav.nav) / results.v2.starting_equity)
+    : results.maxDrawdown
+  const liquidationAdjustedDrawdown = Math.max(results.maxDrawdown, terminalDrawdown)
 
-  if (results.totalReturn <= 0) reasons.push("return <= 0")
+  if (liquidationAdjustedReturn <= 0) reasons.push("liquidation-adjusted return <= 0")
   if (results.sharpeRatio <= 0) reasons.push("Sharpe <= 0")
-  if (results.maxDrawdown >= 0.5) reasons.push("max drawdown >= 50%")
+  if (liquidationAdjustedDrawdown >= 0.5) reasons.push("liquidation-adjusted max drawdown >= 50%")
   if (repaired) reasons.push("uses repaired data")
 
   if (reasons.length > 0) {
@@ -38,7 +46,7 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   if (results.totalTrades < minTrades)
     reasons.push(`trade count low for this window (${results.totalTrades} trades) — confidence limited`)
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
-  if (results.maxDrawdown > 0.15) reasons.push("max drawdown > 15%")
+  if (liquidationAdjustedDrawdown > 0.15) reasons.push("liquidation-adjusted max drawdown > 15%")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")
   if (wf && (wf.flagged || finite(wf.oos_sharpe_mean, -Infinity) <= 0)) reasons.push("walk-forward failed")
 
