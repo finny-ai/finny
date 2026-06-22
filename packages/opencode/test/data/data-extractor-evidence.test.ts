@@ -375,6 +375,72 @@ describe("validateDataExtractorTaskText", () => {
     expect(result.ok).toBe(true)
   })
 
+  test("accepts table and JSON artifact paths from a human-formatted final summary", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-human-summary-"))
+    const slug = "spy-strategy.21.6.23.32.b2859eb3"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_1d_2025-06-21_2026-06-21.csv"
+    const manifestRel = "stock/SPY_1d_2025-06-21_2026-06-21.manifest.json"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-06-23T04:00:00Z,600,610,590,605,1000000\n2026-06-18T04:00:00Z,740,750,730,746.75,1200000\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["SPY"],
+        interval: "1d",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: "spy-strategy",
+        requested_start: "2025-06-21",
+        requested_end: "2026-06-21",
+        actual_start: "2025-06-23",
+        actual_end: "2026-06-18",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "20260621T233200Z-spy",
+        coverage: "trading_day_complete",
+        usable_for_parent: "yes",
+      }),
+    )
+
+    const digest = [
+      "SPY Daily OHLCV Extraction Complete",
+      "Request Identity",
+      "Field",
+      "requested_algorithm_name",
+      "workspace_slug",
+      "requested_symbol",
+      "Artifact Paths",
+      "Artifact\tPath",
+      `CSV\t${csvRel} (14,567 bytes)`,
+      `Manifest\t${manifestRel}`,
+      "Return Summary",
+      "{",
+      '  "identity": { "symbol": "SPY", "interval": "1d", "asset_class": "equity", "algorithm": "spy-strategy" },',
+      '  "coverage": { "status": "trading_day_complete", "bars": 250, "requested": "2025-06-21 -> 2026-06-21", "actual": "2025-06-23 -> 2026-06-18", "usable": true },',
+      `  "paths": { "csv": "${csvRel}", "manifest": "${manifestRel}" },`,
+      '  "source": "alpaca"',
+      "}",
+      "Data is ready for backtesting. No blockers identified.",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("<data-extractor-manifest>")
+    expect(result.text).toContain("usable_for_parent: yes")
+    expect(result.text).toContain(`artifact_paths: ${csvRel}, ${manifestRel}`)
+  })
+
   test("reports manifest usability instead of a path error when prose annotates actual_symbol", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-annotated-symbol-"))
     const slug = "btc-1h-strategy"

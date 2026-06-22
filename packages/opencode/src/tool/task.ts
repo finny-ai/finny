@@ -26,7 +26,10 @@ import {
   type WorkspaceRequestContext,
 } from "@/agent/finny-workspace-context"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
-import { validateDataExtractorTaskText } from "@/data/data-extractor-evidence"
+import {
+  validateDataExtractorTaskText,
+  validateExistingDataExtractorEvidence,
+} from "@/data/data-extractor-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
 
 /**
@@ -107,6 +110,21 @@ export function completedIntradayWindow(input: {
     return { start: input.start, end: input.end, adjusted: false }
   }
   return { start: input.start, end: previousUtcDate(now), adjusted: true }
+}
+
+function dataExtractorValidationContext(context: WorkspaceRequestContext | undefined): WorkspaceRequestContext | undefined {
+  if (!context) return undefined
+  const window = completedIntradayWindow({
+    start: context.requested_start,
+    end: context.requested_end,
+    interval: context.requested_interval,
+  })
+  if (!window.adjusted) return context
+  return {
+    ...context,
+    requested_start: window.start,
+    requested_end: window.end,
+  }
 }
 
 function withFinnySubagentContext(
@@ -464,6 +482,17 @@ export const TaskTool = Tool.define(
             }).catch(() => undefined),
           )
         }
+        const validationContext =
+          params.subagent_type === "data_extractor" ? dataExtractorValidationContext(workspaceContext) : workspaceContext
+        if (params.subagent_type === "data_extractor") {
+          const existing = yield* Effect.promise(() =>
+            validateExistingDataExtractorEvidence({
+              workspaceSlug: workspace,
+              context: validationContext,
+            }),
+          )
+          if (existing.found && existing.result?.ok) return existing.result.text
+        }
         const parts = yield* ops.resolvePromptParts(
           withFinnySubagentContext(params, params.prompt, workspace, workspaceContext),
         )
@@ -484,9 +513,18 @@ export const TaskTool = Tool.define(
           validateDataExtractorTaskText({
             text,
             workspaceSlug: workspace,
-            context: workspaceContext,
+            context: validationContext,
           }),
         )
+        if (!validated.ok) {
+          const existing = yield* Effect.promise(() =>
+            validateExistingDataExtractorEvidence({
+              workspaceSlug: workspace,
+              context: validationContext,
+            }),
+          )
+          if (existing.found && existing.result?.ok) return existing.result.text
+        }
         return validated.text
       })
 

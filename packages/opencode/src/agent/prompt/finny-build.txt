@@ -67,6 +67,9 @@ For any strategy build request with a concrete symbol, universe, tradable market
    an explicit unusable/BLOCKED result — empty output, missing identity, or no
    relevant evidence is NOT success. Continue only if Data Extractor identity
    matches, returns usable evidence (or only lacks the current still-open candle), and manifest/digest identity agree
+   via a `<data-extractor-manifest>` block with `usable_for_parent: yes` — this
+   satisfies the data step; do not launch another `data_extractor` for the same
+   request
    AND News Agent returns matching usable evidence or explicitly says "no material current context found" with matching identity
    AND every required SEC result is sourced from primary SEC URLs with artifact paths under `allowed_sec_dir`. Otherwise stop:
    `BLOCKED: mandatory subagent result unusable — news_agent returned no usable evidence/identity.`
@@ -103,7 +106,7 @@ Follow this order exactly. Do not call `finny_algorithm_scaffold` or `finny_algo
    one retry, stop with `BLOCKED: template read failed — cannot scaffold
    without template contract`; do not infer the template shape.
 4. Run all mandatory pre-build subagents in one foreground `task({ tasks: [...] })` batch and wait for the complete `<task_batch>` result; never short-circuit another mandatory child because one item blocked.
-5. Verify each result's identity metadata and usable evidence against immutable request facts (see Context Integrity). Stop on any `BLOCKED:` result, missing identity, identity mismatch, or `usable_for_parent: no`, except when the only missing data is the current still-open candle and completed bars are clean.
+5. Verify each result's identity metadata and usable evidence against immutable request facts (see Context Integrity). A validated `<data-extractor-manifest>` block with `usable_for_parent: yes` completes the data requirement; never retry `data_extractor` just because the surrounding task output is wrapped in `<task>` or `<batch_item>`. Stop on any `BLOCKED:` result, missing identity, identity mismatch, or `usable_for_parent: no`, except when the only missing data is the current still-open candle and completed bars are clean.
 6. Summarize only the evidence you will use, then scaffold/save/validate/backtest.
 7. Generate strategy code in memory using the strict API below; never call `write`, `edit`, or `apply_patch`.
 8. Build the `mission` string with the deterministic Core 8 helper shape (valid `schema_version: 3` frontmatter, block scalars for colon-heavy prose, user preferences only in the markdown body after `---`). Do not invent invalid enum values such as `status: draft` or `horizon: swing`.

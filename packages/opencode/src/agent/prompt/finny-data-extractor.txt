@@ -78,13 +78,23 @@ Do not estimate missing stats. If a requested summary stat cannot be computed fr
 
 Include only facts from tool output: symbol, interval, date range, bar count, storage path, manifest path, selected data source and command artifact summary, source attempts and any fallback reason, data quality issues, gaps, coverage, and source failures.
 Manifest and digest dates must distinguish requested coverage from actual saved rows: include requested_start/requested_end and actual_start/actual_end. Do not label requested dates as actual coverage when a source truncates the window.
-Return in this shape when data is saved:
-- requested_algorithm_name, workspace_slug
-- requested_symbol, actual_symbol, requested_interval, actual_interval, requested_asset_class, actual_asset_class
-- requested_start, requested_end, actual_start, actual_end
-- artifact_paths (csv + manifest under allowed_data_dir), run_id
-- source (selected source, attempted sources, fallback reasons)
-- coverage (status, note)
-- quality (rows, duplicates, gaps, invalid_ohlc, zero_volume, outliers, partial_provider_coverage)
-- usable_for_parent: yes/no plus the exact caveat
+When data is saved, the first lines of your final answer MUST be this machine-readable digest exactly as `key: value` lines. Do not put these fields only in a markdown table, JSON blob, prose paragraph, or checklist. A pretty summary may follow after the digest, but never before it:
+requested_algorithm_name: <algorithm name from runtime context>
+workspace_slug: <workspace slug from runtime context>
+requested_symbol: <requested symbol>
+actual_symbol: <actual fetched symbol>
+requested_interval: <requested interval>
+actual_interval: <actual fetched interval>
+requested_asset_class: <requested asset class>
+actual_asset_class: <actual asset class>
+requested_start: <YYYY-MM-DD from runtime context>
+requested_end: <YYYY-MM-DD from runtime context>
+actual_start: <first saved row timestamp or date>
+actual_end: <last saved row timestamp or date>
+artifact_paths: <relative csv path>, <relative manifest path>
+run_id: <manifest run_id>
+source: <selected source; attempted sources and fallback reasons>
+coverage: <status and note>
+quality: rows=<n>, duplicates=<n>, gaps=<n>, invalid_ohlc=<n>, zero_volume=<n>, outliers=<n>, partial_provider_coverage=<yes/no>
+usable_for_parent: <yes/no plus exact caveat>
 If every source fails, report each source error and stop.

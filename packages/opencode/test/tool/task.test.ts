@@ -392,6 +392,98 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("reuses verified data_extractor manifest for an already completed intraday window", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "eth-1h-mean-reversion.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+
+          const today = new Date().toISOString().slice(0, 10)
+          const yesterday = new Date(
+            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()),
+          )
+          yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+          const yesterdayIso = yesterday.toISOString().slice(0, 10)
+          const dataDir = path.join(algoDir(slug), "data", "crypto")
+          const csvRel = `crypto/ETHUSDT_1h_2025-06-16_${yesterdayIso}.csv`
+          const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+          yield* Effect.promise(() => fs.mkdir(dataDir, { recursive: true }))
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(algoDir(slug), "data", csvRel),
+              `timestamp,open,high,low,close,volume\n2025-06-16T00:00:00Z,100,110,90,105,1000\n${yesterdayIso}T00:00:00Z,105,115,95,110,1000\n`,
+              "utf8",
+            ),
+          )
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(algoDir(slug), "data", manifestRel),
+              JSON.stringify(
+                {
+                  schema_version: 1,
+                  source: "binance",
+                  requested_symbol: "ETH",
+                  actual_symbol: "ETHUSDT",
+                  requested_interval: "1h",
+                  actual_interval: "1h",
+                  requested_asset_class: "crypto",
+                  actual_asset_class: "crypto",
+                  requested_algorithm_name: "eth-1h-mean-reversion",
+                  requested_start: "2025-06-16",
+                  requested_end: yesterdayIso,
+                  actual_start: "2025-06-16T00:00:00Z",
+                  actual_end: `${yesterdayIso}T00:00:00Z`,
+                  output_path: csvRel,
+                  rows: 2,
+                  run_id: "reuse-existing",
+                  coverage: "complete",
+                },
+                null,
+                2,
+              ),
+              "utf8",
+            ),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "ETH data extraction retry",
+              prompt: `Extract ETHUSDT 1h data from 2025-06-16 to ${today}.`,
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("reusing verified workspace artifacts")
+          expect(result.output).toContain("usable_for_parent: yes")
+          expect(result.output).toContain(`requested_end: ${yesterdayIso}`)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("passes requested algorithm name separately from workspace slug", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
