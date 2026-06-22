@@ -165,45 +165,47 @@ def _trailing_stop_triggered(
     return False, 0.0
 
 
-def _resolve_intrabar_trigger(
-    order: Order,
-    o: float,
-    h: float,
-    low: float,
+def _resolve_limit_trigger(order: Order, h: float, low: float) -> Optional[Tuple[float, bool, bool]]:
+    if order.limit_price is None:
+        raise ValueError(f"limit order {order.id} missing limit_price")
+    lp = float(order.limit_price)
+    traded_through = (order.side == "buy" and low < lp) or (order.side == "sell" and h > lp)
+    if not traded_through:
+        return None
+    return lp, True, False
+
+
+def _resolve_stop_trigger(
+    order: Order, o: float, h: float, low: float,
 ) -> Optional[Tuple[float, bool, bool]]:
-    """Return (base_px, is_maker, apply_spread) when the order triggers."""
-    if order.order_type == "trailing_stop" and order.trail_amount is not None:
-        triggered, trigger_px = _trailing_stop_triggered(order, o, h, low, conservative=True)
-        if not triggered:
-            return None
-        return trigger_px, False, True
-    if order.order_type == "limit":
+    if order.stop_price is None:
+        raise ValueError(f"stop-like order {order.id} missing stop_price")
+    sp = float(order.stop_price)
+    triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and low <= sp)
+    if not triggered:
+        return None
+    base_px = max(o, sp) if order.side == "buy" else min(o, sp)
+    if order.order_type == "stop_limit":
         if order.limit_price is None:
-            raise ValueError(f"limit order {order.id} missing limit_price")
+            raise ValueError(f"stop_limit order {order.id} missing limit_price")
         lp = float(order.limit_price)
-        traded_through = (order.side == "buy" and low < lp) or (order.side == "sell" and h > lp)
-        if not traded_through:
+        if order.side == "buy" and low > lp:
+            return None
+        if order.side == "sell" and h < lp:
             return None
         return lp, True, False
-    if order.order_type in ("stop", "stop_limit", "trailing_stop"):
-        if order.stop_price is None:
-            raise ValueError(f"stop-like order {order.id} missing stop_price")
-        sp = float(order.stop_price)
-        triggered = (order.side == "buy" and h >= sp) or (order.side == "sell" and low <= sp)
-        if not triggered:
-            return None
-        base_px = max(o, sp) if order.side == "buy" else min(o, sp)
-        if order.order_type == "stop_limit":
-            if order.limit_price is None:
-                raise ValueError(f"stop_limit order {order.id} missing limit_price")
-            lp = float(order.limit_price)
-            if order.side == "buy" and low > lp:
-                return None
-            if order.side == "sell" and h < lp:
-                return None
-            return lp, True, False
-        return base_px, False, True
-    return None
+    return base_px, False, True
+
+
+def _resolve_trailing_trigger(
+    order: Order, o: float, h: float, low: float,
+) -> Optional[Tuple[float, bool, bool]]:
+    if order.trail_amount is None:
+        return None
+    triggered, trigger_px = _trailing_stop_triggered(order, o, h, low, conservative=True)
+    if not triggered:
+        return None
+    return trigger_px, False, True
 
 
 def _finalize_participation_qty(
@@ -404,7 +406,14 @@ def process_intrabar_orders_for_bar(
         if _ttl_expired(order, drop_ids):
             continue
 
-        resolved = _resolve_intrabar_trigger(order, o, h, low)
+        if order.order_type == "trailing_stop":
+            resolved = _resolve_trailing_trigger(order, o, h, low)
+        elif order.order_type == "limit":
+            resolved = _resolve_limit_trigger(order, h, low)
+        elif order.order_type in ("stop", "stop_limit"):
+            resolved = _resolve_stop_trigger(order, o, h, low)
+        else:
+            resolved = None
         if resolved is None:
             continue
         base_px, is_maker, apply_spread = resolved
