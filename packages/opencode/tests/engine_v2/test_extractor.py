@@ -183,9 +183,13 @@ class TestAssetClassification:
             assert _classify_asset(sym) == "equity", f"{sym} should be equity"
 
     def test_unknown_defaults_to_equity(self):
-        # An unrecognized ticker that is not crypto-, futures-, option-, or
-        # FX-shaped (the 6/7-char alpha FX heuristic) falls through to equity.
+        # Short unrecognized tickers skip the FX heuristic and fall through.
         assert _classify_asset("ZZZ") == "equity"
+
+    def test_six_char_alpha_classified_as_fx(self):
+        # 6-char all-alpha symbols (e.g. EURUSD-style) match the FX heuristic
+        # even when unknown — the old "ZZZXXX" fixture hit this path, not equity.
+        assert _classify_asset("ZZZXXX") == "fx"
 
 
 # ---------------------------------------------------------------------------
