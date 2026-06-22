@@ -29,6 +29,43 @@ def interval_to_rule_and_bars_per_year(interval: str) -> Tuple[str, float]:
     raise ValueError(f"Unsupported interval: {interval}")
 
 
+def _normalize_interval(interval: str) -> str:
+    s = interval.strip().lower()
+    if s.endswith("mins"):
+        return s[:-4] + "m"
+    if s.endswith("min"):
+        return s[:-3] + "m"
+    return s
+
+
+def _intraday_bars_per_year(minutes: float, session_minutes: float, trading_days: float) -> float:
+    return (session_minutes / minutes) * trading_days
+
+
+def _daily_bars_per_year(day_span: float, trading_days: float) -> float:
+    return trading_days / day_span
+
+
+def _calendar_bars_per_year_for_calendar(interval: str, calendar: str, bars_per_day: float) -> float:
+    cal = calendar.upper()
+    s = _normalize_interval(interval)
+    if cal in {"US_EQUITIES", "US_OPTIONS"}:
+        if s.endswith(("m", "h")):
+            minutes = int(s[:-1]) if s.endswith("m") else int(s[:-1]) * 60
+            return _intraday_bars_per_year(minutes, 6.5 * 60.0, 252.0)
+        days = int(s[:-1]) if s.endswith("d") else 1
+        return _daily_bars_per_year(days, 252.0)
+    if cal == "US_FUTURES":
+        if s.endswith(("m", "h")):
+            minutes = int(s[:-1]) if s.endswith("m") else int(s[:-1]) * 60
+            return _intraday_bars_per_year(minutes, 23.0 * 60.0, 252.0)
+        days = int(s[:-1]) if s.endswith("d") else 1
+        return _daily_bars_per_year(days, 252.0)
+    if cal == "FX_24_5":
+        return bars_per_day * 260.0
+    return bars_per_day * 365.0
+
+
 def calendar_bars_per_year(interval: str, calendar: str) -> float:
     """Annualization from asset calendar and interval.
 
@@ -36,11 +73,7 @@ def calendar_bars_per_year(interval: str, calendar: str) -> float:
     6.5 hour sessions and 252 trading days. Listed futures use a conservative
     23 hour, 252 session-year approximation; FX uses 24x5.
     """
-    s = interval.strip().lower()
-    if s.endswith("mins"):
-        s = s[:-4] + "m"
-    elif s.endswith("min"):
-        s = s[:-3] + "m"
+    s = _normalize_interval(interval)
     if s.endswith("m"):
         minutes = int(s[:-1])
         bars_per_day = 24.0 * 60.0 / minutes
@@ -53,18 +86,7 @@ def calendar_bars_per_year(interval: str, calendar: str) -> float:
     else:
         raise ValueError(f"Unsupported interval: {interval}")
 
-    cal = calendar.upper()
-    if cal in {"US_EQUITIES", "US_OPTIONS"}:
-        if s.endswith(("m", "h")):
-            return (6.5 * 60.0 / (minutes if s.endswith("m") else hours * 60.0)) * 252.0
-        return 252.0 / (days if s.endswith("d") else 1.0)
-    if cal == "US_FUTURES":
-        if s.endswith(("m", "h")):
-            return (23.0 * 60.0 / (minutes if s.endswith("m") else hours * 60.0)) * 252.0
-        return 252.0 / (days if s.endswith("d") else 1.0)
-    if cal == "FX_24_5":
-        return bars_per_day * 260.0
-    return bars_per_day * 365.0
+    return _calendar_bars_per_year_for_calendar(interval, calendar, bars_per_day)
 
 
 def bars_per_day(interval: str) -> float:

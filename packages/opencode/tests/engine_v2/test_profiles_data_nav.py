@@ -104,7 +104,53 @@ def test_terminal_liquidation_nav_cancels_pending_and_closes_positions():
     assert terminal["nav"] < broker.get_equity()
 
 
-def test_multi_roll_back_adjustment_validates_every_boundary():
+def test_exchange_calendar_coverage_flags_truncated_equity_window():
+    ts = pd.date_range("2024-01-02 14:30", periods=10, freq="15min", tz="UTC")
+    rows = pd.DataFrame({
+        "timestamp": ts,
+        "open": np.full(len(ts), 100.0),
+        "high": np.full(len(ts), 101.0),
+        "low": np.full(len(ts), 99.0),
+        "close": np.full(len(ts), 100.0),
+        "volume": np.full(len(ts), 1000.0),
+    })
+    report = DQ.analyze(rows, "15min", "equity", provider="test")
+    assert report.coverage_pct < 1.0
+    assert any("coverage" in reason for reason in DQ.blocking_reasons(report, "equity"))
+
+
+def test_exchange_calendar_coverage_accepts_full_single_session():
+    ts = pd.date_range("2024-01-02 14:30", periods=26, freq="15min", tz="UTC")
+    rows = pd.DataFrame({
+        "timestamp": ts,
+        "open": np.full(len(ts), 100.0),
+        "high": np.full(len(ts), 101.0),
+        "low": np.full(len(ts), 99.0),
+        "close": np.full(len(ts), 100.0),
+        "volume": np.full(len(ts), 1000.0),
+    })
+    report = DQ.analyze(rows, "15min", "equity", provider="test")
+    assert report.coverage_pct >= 0.95
+    assert not any("coverage" in reason for reason in DQ.blocking_reasons(report, "equity"))
+
+
+def test_requested_window_allows_weekend_start_for_equity():
+    ts = pd.date_range("2024-01-08 14:30", periods=10, freq="15min", tz="UTC")
+    rows = pd.DataFrame({
+        "timestamp": ts,
+        "open": np.full(len(ts), 100.0),
+        "high": np.full(len(ts), 101.0),
+        "low": np.full(len(ts), 99.0),
+        "close": np.full(len(ts), 100.0),
+        "volume": np.full(len(ts), 1000.0),
+    })
+    reasons = DQ.requested_window_reasons(
+        rows, "15min", "equity", requested_start="2024-01-07", requested_end=None,
+    )
+    assert reasons == []
+
+
+def _multi_roll_futures_rows() -> pd.DataFrame:
     rows = []
     ts = pd.date_range("2024-01-01", periods=80, freq="D", tz="UTC")
     for i, t in enumerate(ts):
@@ -116,8 +162,19 @@ def test_multi_roll_back_adjustment_validates_every_boundary():
         if i >= 60:
             base -= 15.0
             volume = 5000.0 if i == 60 else volume
-        rows.append({"timestamp": t, "open": base, "high": base + 1, "low": base - 1, "close": base, "volume": volume})
-    adjusted, boundaries = _roll_adjust_futures(pd.DataFrame(rows))
+        rows.append({
+            "timestamp": t,
+            "open": base,
+            "high": base + 1,
+            "low": base - 1,
+            "close": base,
+            "volume": volume,
+        })
+    return pd.DataFrame(rows)
+
+
+def test_multi_roll_back_adjustment_validates_every_boundary():
+    adjusted, boundaries = _roll_adjust_futures(_multi_roll_futures_rows())
     assert len(boundaries) >= 2
     for boundary in boundaries:
         i = boundary.index

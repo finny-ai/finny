@@ -31,7 +31,7 @@ describe("AssetSpec registry", () => {
   })
 
   test("represents options but marks them ineligible", () => {
-    const spec = resolveAssetSpec({ symbol: "AAPL240621C00100000", asset_class: "option" }, "AAPL240621C00100000")
+    const spec = resolveAssetSpec({ symbol: "AAPL/20240621/100C", asset_class: "option" }, "AAPL/20240621/100C")
     expect(spec.assetClass).toBe("option")
     expect(spec.productionEligible).toBe(false)
     expect(spec.blockingReason).toContain("Options require")

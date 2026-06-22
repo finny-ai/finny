@@ -25,7 +25,7 @@ export interface AssetSpec {
 }
 
 const CRYPTO_BASES = new Set(["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"])
-const OPTION_RE = /^(?:[A-Z]{1,6}\/\d{8}\/\d+(?:\.\d+)?[CP]|[A-Z]{1,6}\d{6}[CP]\d{8})$/i
+const OPTION_RE = /^[A-Z]{1,6}\/\d{8}\/\d+(?:\.\d+)?[CP]$/i
 const FUTURES_SPECS = {
   ES: { venue: "CME", tickSize: 0.25, multiplier: 50, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
   NQ: { venue: "CME", tickSize: 0.25, multiplier: 20, currency: "USD", initialMarginPct: 0.06, maintenanceMarginPct: 0.05, commissionPerContract: 2.25 },

@@ -9,10 +9,7 @@ from typing import Any, Dict, Optional
 
 
 AssetClass = str
-_OPTION_RE = re.compile(
-    r"^(?:[A-Z]{1,6}/\d{8}/\d+(?:\.\d+)?[CP]|[A-Z]{1,6}\d{6}[CP]\d{8})$",
-    re.IGNORECASE,
-)
+_OPTION_RE = re.compile(r"^[A-Z]{1,6}/\d{8}/\d+(?:\.\d+)?[CP]$", re.IGNORECASE)
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"}
 
 # Roots accepted as futures in backtest. yfinance serves these as e.g. "ES=F";
