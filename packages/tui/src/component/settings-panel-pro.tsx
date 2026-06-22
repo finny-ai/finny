@@ -1,5 +1,6 @@
 import { createSignal, onMount, Show } from "solid-js"
 import { TextAttributes, MouseEvent } from "@opentui/core"
+import { finnyEnterpriseEnabled, finnyProductName } from "@/cloud-mode"
 import { useTheme } from "../context/theme"
 import { useToast } from "../ui/toast"
 import { Card } from "./card"
@@ -34,6 +35,10 @@ function deviceUsage(status: LicenseStatus | null) {
 export function SettingsPanelPro() {
   const { theme } = useTheme()
   const toast = useToast()
+  const enterprise = finnyEnterpriseEnabled()
+  const productName = finnyProductName()
+  const licenseTitle = enterprise ? "Enterprise license key" : "Finny license key"
+  const licenseName = enterprise ? "enterprise license key" : "Finny license key"
 
   const [status, setStatus] = createSignal<LicenseStatus | null>(null)
   const [licenseInput, setLicenseInput] = createSignal("")
@@ -49,7 +54,7 @@ export function SettingsPanelPro() {
     if (busy()) return
     const key = licenseInput().trim()
     if (!key) {
-      toast.show({ message: "Please enter a Finny license key", variant: "warning", duration: 3000 })
+      toast.show({ message: `Please enter ${enterprise ? "an" : "a"} ${licenseName}`, variant: "warning", duration: 3000 })
       return
     }
     setBusy(true)
@@ -57,7 +62,7 @@ export function SettingsPanelPro() {
       await License.activate(key)
       setLicenseInput("")
       await refresh()
-      toast.show({ message: "Enterprise license verified", variant: "info", duration: 3000 })
+      toast.show({ message: `${productName} license verified`, variant: "info", duration: 3000 })
     } catch (e) {
       const message = e instanceof Error ? e.message : "Access denied. Please contact Finny."
       toast.show({ message, variant: "error", duration: 5000 })
@@ -105,7 +110,7 @@ export function SettingsPanelPro() {
             <box flexDirection="row" gap={1}>
               <text fg={status()?.active ? theme.success : theme.textMuted}>{status()?.active ? "✓" : "○"}</text>
               <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                {planLabel(status())}
+                {enterprise ? planLabel(status()) : productName}
               </text>
             </box>
             <text fg={theme.textMuted}>Local install license</text>
@@ -116,7 +121,7 @@ export function SettingsPanelPro() {
       </box>
 
       <box flexGrow={1} minHeight={0}>
-        <Card title={` Finny ${planLabel(status())} `}>
+        <Card title={` ${enterprise ? `Finny ${planLabel(status())}` : productName} `}>
           <box flexDirection="column" gap={1} flexGrow={1} minHeight={0}>
             <text fg={status()?.active ? theme.success : theme.error} attributes={TextAttributes.BOLD}>
               {status()?.active ? "License is active" : "License verification required"}
@@ -132,10 +137,12 @@ export function SettingsPanelPro() {
 
             <box paddingTop={2}>
               <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                License key
+                {licenseTitle}
               </text>
             </box>
-            <text fg={theme.textMuted}>Enter a new key only if Finny asks you to rotate this installation.</text>
+            <text fg={theme.textMuted}>
+              Enter a new {licenseName} only if Finny asks you to rotate this installation.
+            </text>
             <box maxWidth={64}>
               <InputBox onInput={setLicenseInput} />
             </box>

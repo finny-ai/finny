@@ -170,4 +170,47 @@ describe("License", () => {
     await expect(License.ensureActive()).rejects.toThrow("Access denied. Please contact Finny.")
     expect(rechecked).toBe(true)
   })
+
+  test("explicit FINNY_LICENSE_KEY activates even when a stale cache exists", async () => {
+    const t0 = Date.parse("2026-06-01T12:00:00.000Z")
+    const payloads: Record<string, unknown>[] = []
+    License._setNowForTests(() => t0)
+    License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      payloads.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as unknown as typeof fetch)
+    await License.activate("old_key")
+
+    process.env.FINNY_LICENSE_KEY = "new_key"
+    License._setNowForTests(() => t0 + 25 * 60 * 60 * 1000)
+    await License.ensureActive()
+
+    expect(payloads).toHaveLength(2)
+    expect(payloads[1]!.license_key_hash).toBe(License.hashLicenseKey("new_key"))
+    expect(payloads[1]!.license_key_hash).not.toBe(payloads[0]!.license_key_hash)
+  })
+
+  test("fresh cache avoids remote activation when FINNY_LICENSE_KEY matches", async () => {
+    let calls = 0
+    License._setFetchForTests((async () => {
+      calls++
+      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as unknown as typeof fetch)
+
+    await License.activate("finny_valid_key")
+    process.env.FINNY_LICENSE_KEY = "finny_valid_key"
+
+    License._setFetchForTests((async () => {
+      throw new Error("unexpected remote check")
+    }) as unknown as typeof fetch)
+
+    await License.ensureActive()
+    expect(calls).toBe(1)
+  })
 })

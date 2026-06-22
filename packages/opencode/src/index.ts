@@ -65,11 +65,18 @@ const cli = yargs(args)
     describe: "run without external plugins",
     type: "boolean",
   })
+  .option("license-key", {
+    describe: "Finny license key for this startup (also available via FINNY_LICENSE_KEY)",
+    type: "string",
+  })
   .middleware(async (opts) => {
     if (opts.printLogs) process.env.OPENCODE_PRINT_LOGS = "1"
     if (opts.logLevel) process.env.OPENCODE_LOG_LEVEL = opts.logLevel
     if (opts.pure) {
       process.env.OPENCODE_PURE = "1"
+    }
+    if (opts.licenseKey) {
+      process.env.FINNY_LICENSE_KEY = opts.licenseKey
     }
 
     Heap.start()

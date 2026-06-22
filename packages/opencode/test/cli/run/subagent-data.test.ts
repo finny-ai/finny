@@ -281,6 +281,89 @@ describe("run subagent data", () => {
     ])
   })
 
+  test("bootstraps child tabs even when task metadata is missing from replay", () => {
+    const data = createSubagentData()
+
+    expect(
+      bootstrapSubagentData({
+        data,
+        messages: [],
+        children: [{ id: "child-1", title: "Scan reducer paths (@explore subagent)" }],
+        permissions: [],
+        questions: [],
+      }),
+    ).toBe(true)
+
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({
+        sessionID: "child-1",
+        label: "Scan reducer paths (@explore subagent)",
+        description: "Scan reducer paths (@explore subagent)",
+        status: "running",
+      }),
+    ])
+  })
+
+  test("marks fallback child tabs completed from persisted child history", () => {
+    const data = createSubagentData()
+
+    bootstrapSubagentData({
+      data,
+      messages: [],
+      children: [{ id: "child-1", title: "Scan reducer paths (@explore subagent)" }],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(
+      bootstrapSubagentCalls({
+        data,
+        sessionID: "child-1",
+        messages: [
+          childMessage({
+            messageID: "msg-user-1",
+            sessionID: "child-1",
+            role: "user",
+            parts: [
+              {
+                id: "txt-user-1",
+                messageID: "msg-user-1",
+                sessionID: "child-1",
+                type: "text",
+                text: "Inspect footer tabs",
+                time: { start: 1, end: 1 },
+              },
+            ],
+          }),
+          childMessage({
+            messageID: "msg-assistant-1",
+            sessionID: "child-1",
+            role: "assistant",
+            parts: [
+              {
+                id: "txt-1",
+                messageID: "msg-assistant-1",
+                sessionID: "child-1",
+                type: "text",
+                text: "done",
+                time: { start: 2, end: 3 },
+              },
+            ],
+          }),
+        ],
+        thinking: true,
+        limits: {},
+      }),
+    ).toBe(true)
+
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({
+        sessionID: "child-1",
+        status: "completed",
+      }),
+    ])
+  })
+
   test("bootstraps all child tabs from foreground batch task metadata", () => {
     const data = createSubagentData()
 

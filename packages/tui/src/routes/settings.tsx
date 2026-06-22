@@ -1,6 +1,5 @@
 import { createMemo, For, Show, type JSX } from "solid-js"
 import { TextAttributes } from "@opentui/core"
-import { finnyCloudEnabled } from "@/cloud-mode"
 import { useTheme } from "../context/theme"
 import { useRoute, type SettingsTab } from "../context/route"
 import { useDialog } from "../ui/dialog"
@@ -53,13 +52,11 @@ export function Settings() {
   const { theme } = useTheme()
   const route = useRoute()
   const dialog = useDialog()
-  const hidePlan = finnyCloudEnabled()
-  const visibleTabs = createMemo(() => TABS.filter((tab) => !(hidePlan && tab.id === "pro")))
+  const visibleTabs = createMemo(() => TABS)
 
   const activeTab = createMemo<SettingsTab>(() => {
     const data = route.data
     if (data.type !== "settings") return "appearance"
-    if (hidePlan && data.tab === "pro") return "appearance"
     return data.tab ?? "appearance"
   })
   const activeTopTab = createMemo<SettingsTab>(() =>
@@ -86,7 +83,7 @@ export function Settings() {
       <RouteHeader
         icon={ROUTE_ICONS.settings as unknown as string[]}
         title="Settings"
-        subtitle={hidePlan ? "Appearance, data sources, MCP, skills" : "Appearance, data sources, MCP, skills, plan"}
+        subtitle="Appearance, data sources, MCP, skills, plan"
       />
 
       <box

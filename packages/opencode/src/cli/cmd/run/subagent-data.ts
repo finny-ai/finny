@@ -520,8 +520,89 @@ function ensureBlockerTab(
   return true
 }
 
+function ensureChildTab(data: SubagentData, child: { id: string; title?: string }) {
+  if (data.tabs.has(child.id)) {
+    ensureDetail(data, child.id)
+    return false
+  }
+
+  data.tabs.set(child.id, {
+    sessionID: child.id,
+    partID: `bootstrap:${child.id}`,
+    callID: `bootstrap:${child.id}`,
+    label: text(child.title) ?? "Subagent",
+    description: text(child.title) ?? "Subagent session",
+    status: "running",
+    lastUpdatedAt: Date.now(),
+  })
+  ensureDetail(data, child.id)
+  return true
+}
+
+function isBootstrappedChildTab(tab: FooterSubagentTab, sessionID: string) {
+  return tab.partID === `bootstrap:${sessionID}` && tab.callID === `bootstrap:${sessionID}`
+}
+
 function isAbortedAssistantMessage(info: Message) {
   return info.role === "assistant" && info.error?.name === "MessageAbortedError"
+}
+
+function assistantMessageStatus(info: Message): FooterSubagentTab["status"] | undefined {
+  if (info.role !== "assistant") {
+    return undefined
+  }
+
+  if (isAbortedAssistantMessage(info)) {
+    return "cancelled"
+  }
+
+  if (info.error) {
+    return "error"
+  }
+
+  const completedAt = "completed" in info.time ? info.time.completed : undefined
+  if (completedAt !== undefined || info.finish) {
+    return "completed"
+  }
+
+  return undefined
+}
+
+function messageUpdatedAt(info: Message) {
+  return ("completed" in info.time ? info.time.completed : undefined) ?? info.time.created ?? Date.now()
+}
+
+function syncBootstrappedChildTabStatus(input: {
+  data: SubagentData
+  sessionID: string
+  messages: BootstrapChildMessage[]
+}) {
+  const current = input.data.tabs.get(input.sessionID)
+  if (!current || !isBootstrappedChildTab(current, input.sessionID)) {
+    return false
+  }
+
+  const status = recent(input.messages, input.messages.length)
+    .reverse()
+    .map((message) => assistantMessageStatus(message.info))
+    .find((item): item is FooterSubagentTab["status"] => item !== undefined)
+
+  if (!status) {
+    return false
+  }
+
+  const latestMessage = recent(input.messages, input.messages.length).reverse()[0]?.info
+  const next = {
+    ...current,
+    status,
+    lastUpdatedAt: latestMessage ? messageUpdatedAt(latestMessage) : Date.now(),
+  }
+  if (sameSubagentTab(current, next)) {
+    return false
+  }
+
+  input.data.tabs.set(input.sessionID, next)
+  return true
 }
 
 function cancelSubagentTab(data: SubagentData, sessionID: string) {
@@ -769,6 +850,12 @@ export function bootstrapSubagentData(input: BootstrapSubagentInput) {
     }
   }
 
+  if (input.data.tabs.size === 0) {
+    for (const item of input.children) {
+      changed = ensureChildTab(input.data, item) || changed
+    }
+  }
+
   for (const item of input.permissions) {
     if (!children.has(item.sessionID)) {
       continue
@@ -833,8 +920,9 @@ export function bootstrapSubagentCalls(input: {
     thinking: input.thinking,
     limits: input.limits,
   })
+  const statusChanged = syncBootstrappedChildTabStatus(input)
 
-  return changed || beforeCallCount !== detail.data.call.size || queueChanged(detail.data, before)
+  return statusChanged || changed || beforeCallCount !== detail.data.call.size || queueChanged(detail.data, before)
 }
 
 export function reduceSubagentData(input: {

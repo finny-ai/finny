@@ -182,16 +182,17 @@ export namespace License {
 
     const cache = await readCache()
     const currentMachineHash = await machineIdHash()
-    if (cache && cache.org_id === orgId() && isFresh(cache) && cache.machine_id_hash === currentMachineHash) return
-
-    if (!cache) {
-      const envKey = process.env.FINNY_LICENSE_KEY?.trim()
-      if (envKey) {
-        await activate(envKey)
-        return
-      }
-      throw new AccessDeniedError()
+    const envKey = process.env.FINNY_LICENSE_KEY?.trim()
+    if (cache && cache.org_id === orgId() && isFresh(cache) && cache.machine_id_hash === currentMachineHash) {
+      if (!envKey || cache.license_key_hash === hashLicenseKey(envKey)) return
     }
+
+    if (envKey) {
+      await activate(envKey)
+      return
+    }
+
+    if (!cache) throw new AccessDeniedError()
 
     const result = await checkRemote(orgId(), cache.license_key_hash, currentMachineHash)
     if (!result.ok) throw new AccessDeniedError(result.message)

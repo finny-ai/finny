@@ -1,6 +1,6 @@
 import { createMemo, For } from "solid-js"
 import { TextAttributes } from "@opentui/core"
-import { finnyCloudEnabled } from "@/cloud-mode"
+import { finnyProductMode } from "@/cloud-mode"
 import { useTheme } from "../context/theme"
 import { useRoute, type Route } from "../context/route"
 
@@ -54,7 +54,8 @@ function NavRow(props: { item: NavItem; isActive: boolean; onSelect: () => void 
 export function SidebarNav() {
   const { theme } = useTheme()
   const route = useRoute()
-  const productLabel = finnyCloudEnabled() ? "CLOUD" : "ENTERPRISE"
+  const productMode = finnyProductMode()
+  const productLabel = productMode === "cloud" ? "CLOUD" : productMode === "enterprise" ? "ENTERPRISE" : undefined
 
   const activeType = createMemo(() => {
     const t = route.data.type
@@ -95,9 +96,11 @@ export function SidebarNav() {
               FINNY
             </text>
           </box>
-          <text fg="#00cab4" attributes={TextAttributes.BOLD}>
-            {productLabel}
-          </text>
+          {productLabel && (
+            <text fg="#00cab4" attributes={TextAttributes.BOLD}>
+              {productLabel}
+            </text>
+          )}
         </box>
         <text fg={theme.textMuted} selectable={false}>
           Financial AI Harness
