@@ -47,4 +47,23 @@ describe("AssetSpec registry", () => {
     }, "BTC-USD")
     expect(eligible.productionEligible).toBe(true)
   })
+
+  test("rejects inconsistent symbol and asset class unless custom spec is complete", () => {
+    expect(() => resolveAssetSpec({ symbol: "BTC-USD", asset_class: "equity" }, "BTC-USD")).toThrow("inconsistent")
+    const spec = resolveAssetSpec({
+      symbol: "BTC-USD",
+      asset_class: "equity",
+      asset_spec: {
+        tickSize: 0.01,
+        lotSize: 1,
+        multiplier: 1,
+        calendar: "US_EQUITIES",
+        currency: "USD",
+        feeModel: "custom",
+        marginModel: "custom",
+        dataProvider: "custom",
+      },
+    }, "BTC-USD")
+    expect(spec.assetClass).toBe("equity")
+  })
 })

@@ -89,4 +89,20 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.paperEligible).toBe(false)
     expect(quality.reasons).toContain("uses repaired data")
   })
+
+  test("uses liquidation-adjusted NAV for eligibility", () => {
+    const quality = evaluateBacktestQuality(result({
+      totalReturn: 0.1,
+      maxDrawdown: 0.05,
+      v2: {
+        starting_equity: 10000,
+        run_metadata: {
+          liquidation_nav: { nav: 9900, canceled_pending_orders: 1, hypothetical_closes: [] },
+        },
+      } as any,
+    }))
+    expect(quality.label).toBe("failed")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("liquidation-adjusted return <= 0")
+  })
 })
