@@ -176,14 +176,20 @@ class TestBinanceProviderFetch:
 class TestAssetClassification:
     def test_crypto_symbols(self):
         for sym in ["BTC/USD", "ETH/USDT", "SOL", "DOGE/USD", "PEPE/USD"]:
-            assert _classify_asset(sym) == "crypto", f"{sym} should be crypto"
+            assert _classify_asset(sym) == "crypto_spot", f"{sym} should be crypto_spot"
 
     def test_stock_symbols(self):
         for sym in ["AAPL", "MSFT", "TSLA", "SPY", "QQQ"]:
-            assert _classify_asset(sym) == "stock", f"{sym} should be stock"
+            assert _classify_asset(sym) == "equity", f"{sym} should be equity"
 
-    def test_unknown_defaults_to_stock(self):
-        assert _classify_asset("ZZZXXX") == "stock"
+    def test_unknown_defaults_to_equity(self):
+        # Short unrecognized tickers skip the FX heuristic and fall through.
+        assert _classify_asset("ZZZ") == "equity"
+
+    def test_six_char_alpha_classified_as_fx(self):
+        # 6-char all-alpha symbols (e.g. EURUSD-style) match the FX heuristic
+        # even when unknown — the old "ZZZXXX" fixture hit this path, not equity.
+        assert _classify_asset("ZZZXXX") == "fx"
 
 
 # ---------------------------------------------------------------------------
@@ -305,7 +311,7 @@ class TestExtractPipeline:
             result = extract("BTC/USD", "1h", "2024-01-01", "2024-01-05", str(algo_dir))
 
         assert result.bars_written == 100
-        assert result.asset_class == "crypto"
+        assert result.asset_class == "crypto_spot"
         assert "data/crypto" in result.parquet_path
         assert Path(result.parquet_path).exists()
         assert result.digest["source"] == "binance"
@@ -324,7 +330,7 @@ class TestExtractPipeline:
             result = extract("AAPL", "1d", "2024-01-01", "2024-04-01", str(algo_dir))
 
         assert result.bars_written == 60
-        assert result.asset_class == "stock"
+        assert result.asset_class == "equity"
         assert "data/stock" in result.parquet_path
         assert Path(result.parquet_path).exists()
         assert result.digest["source"] == "yfinance"
@@ -484,7 +490,7 @@ class TestResultSerialization:
         parsed = json.loads(j)
 
         assert parsed["symbol"] == "BTC/USD"
-        assert parsed["asset_class"] == "crypto"
+        assert parsed["asset_class"] == "crypto_spot"
         assert parsed["bars_written"] == 50
         assert "digest" in parsed
         assert "sources" in parsed

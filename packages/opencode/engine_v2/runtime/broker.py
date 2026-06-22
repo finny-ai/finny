@@ -277,11 +277,17 @@ class PortfolioBroker:
         if not np.isfinite(price) or price <= 0:
             self._reject(symbol, side, qty, "invalid_decision_price")
             return False
+        # Liquidity gate uses the most recent *settled* bar's volume as a
+        # forecast (no lookahead). On the very first bar there is no prior
+        # volume to forecast from — allow the order through; the fill engine
+        # still refuses to fill on a zero-volume fill bar, so a genuinely
+        # illiquid bar produces no fill rather than a spurious submission reject.
         prev_i = self.market.i - 1
-        volume = float(self.market.arrays[symbol].volume[prev_i]) if prev_i >= 0 else np.nan
-        if (spec is None or spec.volume_required) and (not np.isfinite(volume) or volume <= 0):
-            self._reject(symbol, side, qty, "zero_volume_bar")
-            return False
+        if prev_i >= 0:
+            volume = float(self.market.arrays[symbol].volume[prev_i])
+            if (spec is None or spec.volume_required) and (not np.isfinite(volume) or volume <= 0):
+                self._reject(symbol, side, qty, "zero_volume_bar")
+                return False
         # Participation is enforced by the fill engine as partial fills. Do not
         # reject larger parent orders here; the unfilled remainder carries until
         # filled or TTL-expired. Margin, however, must be checked against the

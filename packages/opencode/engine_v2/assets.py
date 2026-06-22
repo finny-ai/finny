@@ -131,6 +131,11 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
         return "fx"
     if "/" in sym or "-" in sym or sym.endswith("USDT") or sym.endswith("USD"):
         return "crypto_spot"
+    # A bare ticker that exactly matches a curated major crypto base (e.g.
+    # "BTC", "ETH", "SOL") is crypto spot. Restricted to the explicit
+    # CRYPTO_BASES set so ordinary equity tickers are never misrouted.
+    if sym in CRYPTO_BASES:
+        return "crypto_spot"
     return "equity"
 
 
