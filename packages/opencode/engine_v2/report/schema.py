@@ -222,8 +222,6 @@ class WalkForwardSummary:
     stitched_oos_bars: int
     stitched_oos_coverage: float
     ruined_folds: int
-    tested_models: int
-    tested_parameter_combinations: int
     multiple_testing_trials: int
     folds: List[WalkForwardFold]
 

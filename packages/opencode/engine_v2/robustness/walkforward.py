@@ -7,9 +7,10 @@ are trials.
 
 from __future__ import annotations
 
+import inspect
 import math
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -73,8 +74,6 @@ class WalkForwardResult:
     stitched_oos_bars: int = 0
     stitched_oos_coverage: float = 0.0
     ruined_folds: int = 0
-    tested_models: int = 1
-    tested_parameter_combinations: int = 1
     multiple_testing_trials: int = 1
     folds: List[Fold] = field(default_factory=list)
 
@@ -98,6 +97,105 @@ def probabilistic_sharpe(sharpe_hat: float, t: int, skew: float, ex_kurt: float,
     return float(_norm_cdf(z))
 
 
+def _runner_accepts_eval_window(runner: Callable[..., Dict[str, Any]]) -> bool:
+    try:
+        sig = inspect.signature(runner)
+    except (TypeError, ValueError):
+        return False
+    positional = [
+        p for p in sig.parameters.values()
+        if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    return len(positional) >= 4
+
+
+def _expected_oos_return_bars(train_end: int, test_end: int) -> int:
+    """Return-observation count for an OOS window (equity points minus one)."""
+    return max(0, test_end - train_end - 1)
+
+
+def _candidate_score(result: Dict[str, Any]) -> Tuple[float, float, int]:
+    return (
+        float(result.get("sharpe", 0.0)),
+        float(result.get("total_return", 0.0)),
+        int(result.get("trades", 0) or 0),
+    )
+
+
+def _select_in_sample_params(
+    call_runner: Callable[[int, int, int, Optional[Dict[str, Any]]], Dict[str, Any]],
+    warm_train_start: int,
+    train_end: int,
+    start: int,
+    tested_params: List[Optional[Dict[str, Any]]],
+    optimize: bool,
+) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    best_params = tested_params[0]
+    best_res = call_runner(warm_train_start, train_end, start, best_params)
+    if not optimize:
+        return best_params, best_res
+
+    best_score = _candidate_score(best_res)
+    for candidate in tested_params[1:]:
+        candidate_res = call_runner(warm_train_start, train_end, start, candidate)
+        if _candidate_score(candidate_res) > best_score:
+            best_params = candidate
+            best_res = candidate_res
+            best_score = _candidate_score(candidate_res)
+    return best_params, best_res
+
+
+def _fold_from_oos_result(
+    *,
+    fold_idx: int,
+    ts_ns: np.ndarray,
+    start: int,
+    train_end: int,
+    test_end: int,
+    is_res: Dict[str, Any],
+    oos_res: Dict[str, Any],
+    best_params: Optional[Dict[str, Any]],
+    expected_oos_bars: int,
+) -> Fold:
+    oos_returns = np.asarray(oos_res.get("returns", np.zeros(0)), dtype=float)
+    oos_bars = int(oos_res.get("bars", oos_returns.size) or 0)
+    coverage = float(oos_bars / max(1, expected_oos_bars))
+    min_equity = float(oos_res.get("min_equity", 1.0))
+    ruined = bool(oos_res.get("ruined", False) or min_equity <= 0.0)
+    return Fold(
+        fold=fold_idx,
+        train_start_ns=int(ts_ns[start]),
+        train_end_ns=int(ts_ns[train_end - 1]),
+        test_start_ns=int(ts_ns[train_end]),
+        test_end_ns=int(ts_ns[test_end - 1]),
+        is_sharpe=float(is_res.get("sharpe", 0.0)),
+        oos_sharpe=float(oos_res.get("sharpe", 0.0)),
+        is_return=float(is_res.get("total_return", 0.0)),
+        oos_return=float(oos_res.get("total_return", 0.0)),
+        oos_trades=int(oos_res.get("trades", 0) or 0),
+        oos_bars=oos_bars,
+        oos_coverage=coverage,
+        oos_max_drawdown=float(oos_res.get("max_drawdown", 0.0)),
+        ruined=ruined,
+        selected_params=dict(best_params) if isinstance(best_params, dict) else None,
+    )
+
+
+def _stitched_dsr_psr(
+    stitched: np.ndarray,
+    stitched_sharpe: float,
+    trials: int,
+) -> Tuple[float, float]:
+    if stitched.size <= 2:
+        return 0.0, 0.0
+    from ..metrics import risk as RR
+    sk = RR.skewness(stitched)
+    kt = RR.kurtosis(stitched)
+    ds = deflated_sharpe(stitched_sharpe, stitched.size, sk, kt, trials=trials)
+    ps = probabilistic_sharpe(stitched_sharpe, stitched.size, sk, kt, sr_benchmark=0.0)
+    return ds, ps
+
+
 def run_walk_forward(
     full_runner: Callable[..., Dict[str, Any]],
     n_bars: int,
@@ -107,6 +205,7 @@ def run_walk_forward(
     flag_threshold: float = 0.5,
     required_history_bars: int = 0,
     param_grid: Optional[List[Dict[str, Any]]] = None,
+    bars_per_year: float = 252.0,
 ) -> WalkForwardResult:
     """Run rolling out-of-sample validation.
 
@@ -115,21 +214,27 @@ def run_walk_forward(
     Metrics are computed only from `eval_start_idx:end_idx`; earlier bars are
     warm-up history for strategy state.
     """
+    empty = WalkForwardResult(0, 0.0, 0.0, 0.0, 0.0, flag_threshold, False, 0.0, 0.0)
     if n_bars < 100 or n_folds < 2:
-        return WalkForwardResult(0, 0.0, 0.0, 0.0, 0.0, flag_threshold, False, 0.0, 0.0)
+        return empty
+
     fold_size = n_bars // n_folds
     train_size = int(fold_size * train_frac)
-    folds: List[Fold] = []
-    is_sharpes, oos_sharpes = [], []
-    oos_returns_all: List[np.ndarray] = []
-    total_oos_bars = 0
     tested_params: List[Optional[Dict[str, Any]]] = list(param_grid) if param_grid else [None]
+    use_eval_window = _runner_accepts_eval_window(full_runner)
 
     def call_runner(start_idx: int, end_idx: int, eval_start_idx: int, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        try:
+        if use_eval_window:
             return full_runner(start_idx, end_idx, eval_start_idx, params)
-        except TypeError:
-            return full_runner(eval_start_idx, end_idx)
+        return full_runner(eval_start_idx, end_idx)
+
+    folds: List[Fold] = []
+    is_sharpes: List[float] = []
+    oos_sharpes: List[float] = []
+    oos_returns_all: List[np.ndarray] = []
+    total_expected_oos_bars = 0
+    history = max(0, required_history_bars)
+    optimize = param_grid is not None
 
     for f in range(n_folds):
         start = f * fold_size
@@ -138,77 +243,45 @@ def run_walk_forward(
         if train_end >= test_end:
             continue
 
-        warm_train_start = max(0, start - max(0, required_history_bars))
-        best_params = tested_params[0]
-        is_res = call_runner(warm_train_start, train_end, start, best_params)
-        if param_grid:
-            for candidate in tested_params:
-                candidate_res = call_runner(warm_train_start, train_end, start, candidate)
-                score = (
-                    float(candidate_res.get("sharpe", 0.0)),
-                    float(candidate_res.get("total_return", 0.0)),
-                    int(candidate_res.get("trades", 0) or 0),
-                )
-                best_score = (
-                    float(is_res.get("sharpe", 0.0)),
-                    float(is_res.get("total_return", 0.0)),
-                    int(is_res.get("trades", 0) or 0),
-                )
-                if score > best_score:
-                    best_params = candidate
-                    is_res = candidate_res
-
-        warm_test_start = max(0, train_end - max(0, required_history_bars))
+        expected_oos_bars = _expected_oos_return_bars(train_end, test_end)
+        total_expected_oos_bars += expected_oos_bars
+        warm_train_start = max(0, start - history)
+        best_params, is_res = _select_in_sample_params(
+            call_runner, warm_train_start, train_end, start, tested_params, optimize,
+        )
+        warm_test_start = max(0, train_end - history)
         oos_res = call_runner(warm_test_start, test_end, train_end, best_params)
-        oos_returns = np.asarray(oos_res.get("returns", np.zeros(0)), dtype=float)
-        oos_bars = int(oos_res.get("bars", oos_returns.size) or 0)
-        expected_oos_bars = max(0, test_end - train_end)
-        total_oos_bars += expected_oos_bars
-        coverage = float(oos_bars / max(1, expected_oos_bars))
-        min_equity = float(oos_res.get("min_equity", 1.0))
-        ruined = bool(oos_res.get("ruined", False) or min_equity <= 0.0)
-        folds.append(Fold(
-            fold=f,
-            train_start_ns=int(ts_ns[start]),
-            train_end_ns=int(ts_ns[train_end - 1]),
-            test_start_ns=int(ts_ns[train_end]),
-            test_end_ns=int(ts_ns[test_end - 1]),
-            is_sharpe=float(is_res.get("sharpe", 0.0)),
-            oos_sharpe=float(oos_res.get("sharpe", 0.0)),
-            is_return=float(is_res.get("total_return", 0.0)),
-            oos_return=float(oos_res.get("total_return", 0.0)),
-            oos_trades=int(oos_res.get("trades", 0) or 0),
-            oos_bars=oos_bars,
-            oos_coverage=coverage,
-            oos_max_drawdown=float(oos_res.get("max_drawdown", 0.0)),
-            ruined=ruined,
-            selected_params=dict(best_params) if isinstance(best_params, dict) else None,
-        ))
-        is_sharpes.append(folds[-1].is_sharpe)
-        oos_sharpes.append(folds[-1].oos_sharpe)
-        oos_returns_all.append(oos_returns)
+        fold = _fold_from_oos_result(
+            fold_idx=f,
+            ts_ns=ts_ns,
+            start=start,
+            train_end=train_end,
+            test_end=test_end,
+            is_res=is_res,
+            oos_res=oos_res,
+            best_params=best_params,
+            expected_oos_bars=expected_oos_bars,
+        )
+        folds.append(fold)
+        is_sharpes.append(fold.is_sharpe)
+        oos_sharpes.append(fold.oos_sharpe)
+        oos_returns_all.append(np.asarray(oos_res.get("returns", np.zeros(0)), dtype=float))
 
     if not folds:
-        return WalkForwardResult(0, 0.0, 0.0, 0.0, 0.0, flag_threshold, False, 0.0, 0.0)
+        return empty
 
     is_mean = float(np.mean(is_sharpes))
     oos_mean = float(np.mean(oos_sharpes))
-    decay = float(oos_mean / is_mean) if is_mean > 1e-9 and oos_mean >= 0.0 else 0.0
+    decay = float(oos_mean / is_mean) if abs(is_mean) > 1e-9 else 0.0
     abs_change = float(oos_mean - is_mean)
     flagged = decay < flag_threshold
     stitched = np.concatenate(oos_returns_all) if oos_returns_all else np.zeros(0)
     stitched_ret = float(np.prod(1.0 + stitched) - 1.0) if stitched.size else 0.0
     from ..metrics import ratios as RAT
-    stitched_sharpe = RAT.sharpe(stitched, bars_per_year=float(n_bars)) if stitched.size else 0.0
+    stitched_sharpe = RAT.sharpe(stitched, bars_per_year=bars_per_year) if stitched.size else 0.0
     trials = max(1, len(tested_params))
-    if stitched.size > 2:
-        from ..metrics import risk as RR
-        sk = RR.skewness(stitched)
-        kt = RR.kurtosis(stitched)
-        ds = deflated_sharpe(stitched_sharpe, stitched.size, sk, kt, trials=trials)
-        ps = probabilistic_sharpe(stitched_sharpe, stitched.size, sk, kt, sr_benchmark=0.0)
-    else:
-        ds, ps = 0.0, 0.0
+    ds, ps = _stitched_dsr_psr(stitched, stitched_sharpe, trials)
+    stitched_oos_bars = sum(fold.oos_bars for fold in folds)
 
     return WalkForwardResult(
         n_folds=len(folds),
@@ -223,11 +296,9 @@ def run_walk_forward(
         stitched_oos_return=stitched_ret,
         stitched_oos_sharpe=stitched_sharpe,
         stitched_oos_trades=sum(fold.oos_trades for fold in folds),
-        stitched_oos_bars=sum(fold.oos_bars for fold in folds),
-        stitched_oos_coverage=float(sum(fold.oos_bars for fold in folds) / max(1, total_oos_bars)),
+        stitched_oos_bars=stitched_oos_bars,
+        stitched_oos_coverage=float(stitched_oos_bars / max(1, total_expected_oos_bars)),
         ruined_folds=sum(1 for fold in folds if fold.ruined),
-        tested_models=trials,
-        tested_parameter_combinations=trials,
         multiple_testing_trials=trials,
         folds=folds,
     )

@@ -199,8 +199,6 @@ export namespace EngineV2 {
     stitched_oos_bars?: number
     stitched_oos_coverage?: number
     ruined_folds?: number
-    tested_models?: number
-    tested_parameter_combinations?: number
     multiple_testing_trials?: number
     folds: WalkForwardFold[]
   }

@@ -48,7 +48,6 @@ type WfMeta = {
     stitched_oos_bars?: number
     stitched_oos_coverage?: number
     ruined_folds?: number
-    tested_models?: number
     multiple_testing_trials?: number
     folds: Array<{
       fold: number
@@ -96,7 +95,7 @@ export function formatWalkForwardLines(input: {
     `Stitched OOS trades:   ${walkForward.stitched_oos_trades ?? "N/A"}`,
     `OOS coverage:          ${fmtNum((walkForward.stitched_oos_coverage ?? 0) * 100)}%`,
     `Ruined folds:          ${walkForward.ruined_folds ?? 0}`,
-    `Multiple-test trials:  ${walkForward.multiple_testing_trials ?? walkForward.tested_models ?? 1}`,
+    `Multiple-test trials:  ${walkForward.multiple_testing_trials ?? 1}`,
     `Deflated Sharpe prob:  ${fmtNum(walkForward.deflated_sharpe, 3)}`,
     `Prob. Sharpe ratio:    ${fmtNum(walkForward.probabilistic_sharpe, 3)}`,
     ``,

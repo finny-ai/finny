@@ -67,8 +67,6 @@ describe("evaluateBacktestQuality", () => {
           stitched_oos_bars: 300,
           stitched_oos_coverage: 1,
           ruined_folds: 0,
-          tested_models: 1,
-          tested_parameter_combinations: 1,
           multiple_testing_trials: 1,
           folds: [],
         },

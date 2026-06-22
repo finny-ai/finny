@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -102,11 +103,11 @@ def test_walk_forward_preloads_history_but_scores_eval_window_only():
 
     def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
         calls.append((start, end, eval_start))
-        bars = end - eval_start
+        bars = max(0, end - eval_start - 1)
         return {
             "sharpe": 1.0,
             "total_return": 0.1,
-            "returns": np.full(bars, 0.001),
+            "returns": np.full(bars, 0.001) if bars else np.zeros(0),
             "bars": bars,
             "trades": bars,
             "min_equity": 100.0,
@@ -126,11 +127,11 @@ def test_walk_forward_grid_counts_combinations_not_folds_as_trials():
     def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
         period = (params or {}).get("period", 0)
         sharpe = 2.0 if period == 20 else 0.5
-        bars = end - eval_start
+        bars = max(0, end - eval_start - 1)
         return {
             "sharpe": sharpe,
             "total_return": sharpe / 10.0,
-            "returns": np.full(bars, 0.001 * sharpe),
+            "returns": np.full(bars, 0.001 * sharpe) if bars else np.zeros(0),
             "bars": bars,
             "trades": bars,
             "min_equity": 100.0,
@@ -138,7 +139,6 @@ def test_walk_forward_grid_counts_combinations_not_folds_as_trials():
 
     wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5, param_grid=grid)
     assert wf.multiple_testing_trials == 3
-    assert wf.tested_parameter_combinations == 3
     assert all(f.selected_params == {"period": 20} for f in wf.folds)
 
 
@@ -148,18 +148,18 @@ def test_walk_forward_negative_is_sharpe_reports_absolute_change():
     def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
         is_slice = end - eval_start > 50
         sharpe = -0.5 if is_slice else 0.2
-        bars = end - eval_start
+        bars = max(0, end - eval_start - 1)
         return {
             "sharpe": sharpe,
             "total_return": 0.01,
-            "returns": np.full(bars, 0.001),
+            "returns": np.full(bars, 0.001) if bars else np.zeros(0),
             "bars": bars,
             "trades": bars,
             "min_equity": 100.0,
         }
 
     wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
-    assert wf.oos_decay == 0.0
+    assert wf.oos_decay == pytest.approx(-0.4)
     assert wf.is_to_oos_sharpe_change > 0.0
 
 

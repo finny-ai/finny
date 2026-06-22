@@ -260,8 +260,6 @@ def assemble(
             stitched_oos_bars=walk_forward.stitched_oos_bars,
             stitched_oos_coverage=walk_forward.stitched_oos_coverage,
             ruined_folds=walk_forward.ruined_folds,
-            tested_models=walk_forward.tested_models,
-            tested_parameter_combinations=walk_forward.tested_parameter_combinations,
             multiple_testing_trials=walk_forward.multiple_testing_trials,
             folds=[
                 S.WalkForwardFold(
