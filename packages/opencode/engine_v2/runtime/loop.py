@@ -36,7 +36,8 @@ def run_loop(
             diag = on_bar() or {}
         finally:
             market.set_decision_phase(False)
-        broker.process_close(i, bar_fills)
+        intrabar_fills = broker.process_intrabar(i)
+        broker.process_close(i, bar_fills + intrabar_fills)
         eq = broker.get_equity()
         diag["equity"] = eq
         diag["bar"] = i

@@ -136,19 +136,28 @@ def test_limit_fills_when_traded_through():
 
 
 def test_partial_fill_carries_until_ttl_expires():
-    # Bar volume 100, qty 50, participation 0.10 → cap 10/bar
-    ba = _bars((100, 101, 99, 100, 100), (100, 101, 99, 100, 100), (100, 101, 99, 100, 100))
+    # Bar volume 100, qty 50, participation 0.10 → cap 10/bar. Open fills use
+    # the *prior* bar's volume forecast, so bar 0 cannot fill; submit after a
+    # warmup bar so TTL counts only active queue bars.
+    ba = _bars(
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+    )
     broker, snap = _setup(ba, mode="v2", participation=0.10)
+    snap.set_index(0)
+    broker.process_bar(0)
+    snap.set_index(1)
     broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=50, order_type="market",
                               ttl_bars=2, tag="t"))
-    broker.process_bar(0)  # fills 10 (bar0)
-    broker.process_bar(1)  # fills 10 (bar1) — but TTL=2 means bars_alive≤2
-    broker.process_bar(2)  # bars_alive=3 → TTL expired, cancels remainder
+    broker.process_bar(2)  # first partial (forecast from bar 1 volume)
+    broker.process_bar(3)  # second partial
+    broker.process_bar(4)  # TTL expired, cancels remainder
     fills = broker.fills_log
-    # We get 2 partial fills of 10 each, then cancellation
     total = sum(f.qty for f in fills)
     assert total == 20.0
-    # Position carries the 20
     assert broker.get_position("X").qty == 20.0
 
 
@@ -234,11 +243,22 @@ def test_fillconfig_rejects_bad_inputs():
 
 
 def test_zero_volume_bar_does_not_fill_in_v2():
+    # Open fills use the prior bar's volume forecast. Zero fill-bar volume alone
+    # is not sufficient to block when the prior bar had liquidity.
     ba = _bars((100, 101, 99, 100, 1000), (100, 101, 99, 100, 0))
     broker, snap = _setup(ba, mode="v2", participation=0.10)
+    snap.set_index(0)
     broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=5, order_type="market", tag="t"))
     broker.process_bar(1)
-    assert len(broker.fills_log) == 0
+    assert len(broker.fills_log) == 1
+
+    # When both the prior and fill bars have zero forecast volume, no open fill.
+    ba2 = _bars((100, 101, 99, 100, 0), (100, 101, 99, 100, 0))
+    broker2, snap2 = _setup(ba2, mode="v2", participation=0.10)
+    snap2.set_index(0)
+    broker2.submit_order(Order(id="o2", symbol="X", side="buy", qty=5, order_type="market", tag="t"))
+    broker2.process_bar(1)
+    assert len(broker2.fills_log) == 0
 
 
 def test_aggregate_queued_exposure_rejects_split_oversized_orders():
@@ -351,3 +371,109 @@ def test_intra_bar_liquidation_long():
               or any(f.tag == "LIQUIDATION" for f in broker.fills_log)
     assert has_liq, "expected intra-bar liquidation"
     assert broker.get_position("X").qty == 0
+
+
+def test_current_bar_volume_does_not_change_open_fill():
+    # PR2 causal-execution invariant: a market order filling at the next bar's
+    # open must be sized from a *prior-bar* volume forecast, never the fill
+    # bar's own realized volume/high/low/close. Using the fill bar's eventual
+    # data is lookahead — the engine would "know" how much it could trade
+    # before the bar completed.
+    def run(fill_bar_volume, fill_bar_hlc):
+        high, low, close = fill_bar_hlc
+        ba = _bars(
+            (100, 101, 99, 100, 1000),                  # bar 0: prior (identical in both runs)
+            (100, high, low, close, fill_bar_volume),   # bar 1: fill bar (varies)
+        )
+        broker, _snap = _setup(ba, mode="v2", participation=0.10)
+        _snap.set_index(0)
+        broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=10_000,
+                                  order_type="market", tag="t"))
+        broker.process_bar(1)
+        return sum(f.qty for f in broker.fills_log)
+
+    quiet = run(1_000, (101, 99, 100))
+    busy = run(1_000_000, (200, 50, 150))
+    assert quiet == busy, (
+        f"open fill size depended on the fill bar's own data: {quiet} vs {busy} "
+        "(participation must use a prior-bar volume forecast)"
+    )
+
+
+def test_aggregate_participation_cap_across_orders_same_bar():
+    ba = _bars((100, 101, 99, 100, 1000), (100, 101, 99, 100, 1_000_000))
+    broker, snap = _setup(ba, mode="v2", participation=0.10)
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=80, order_type="market"))
+    broker.submit_order(Order(id="o2", symbol="X", side="buy", qty=80, order_type="market"))
+    broker.process_bar(1)
+    total = sum(f.qty for f in broker.fills_log)
+    assert total == 100.0  # 10% of prior bar volume 1000, not 160
+
+
+def test_margin_partial_fill_at_actual_price():
+    ba = _bars((100, 101, 99, 100, 1_000_000), (200, 201, 199, 200, 1_000_000))
+    snap = MarketSnapshot({"X": ba})
+    acct = Account.new(starting_cash=10_000.0, max_leverage=2.0, maintenance_margin_pct=0.0)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m")
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=200, order_type="market"))
+    broker.process_bar(1)  # fill at open=200; full 200 needs ~40k notional at 2x
+    total = sum(f.qty for f in broker.fills_log)
+    assert 0 < total < 200
+
+
+def test_funding_can_turn_trade_pnl_negative():
+    ba = _bars(
+        (100, 101, 99, 100, 1_000_000),
+        (110, 111, 109, 110, 1_000_000),
+        (110, 111, 109, 110, 1_000_000),
+    )
+    snap = MarketSnapshot({"X": ba})
+    spec = resolve_asset_spec({
+        "symbol": "BTC-USD", "asset_class": "crypto_perp",
+        "execution": {"funding_rate_bps": 50, "maintenance_margin_pct": 0.05},
+    })
+    acct = Account.new(starting_cash=100_000.0, max_leverage=5.0, maintenance_margin_pct=0.05)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0, funding_rate_bps_per_interval=50.0,
+                       funding_interval_hours=8.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m", asset_specs={"X": spec})
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=10, order_type="market", tag="entry"))
+    broker.process_bar(1)
+    pos = broker.get_position("X")
+    pos.funding_accum = 500.0
+    broker.submit_order(Order(id="o2", symbol="X", side="sell", qty=10, order_type="market", tag="exit"))
+    broker.process_bar(2)
+    trade = broker.book.trades[0]
+    assert trade.pnl < 100.0  # 10*(110-100) gross minus heavy funding
+
+
+def test_insolvency_halts_and_caps_drawdown():
+    from engine_v2.metrics.drawdown import max_drawdown
+
+    ba = _bars(
+        (100, 101, 99, 100, 1e9),
+        (100, 101, 99, 100, 1e9),
+        (100, 101, 99, 10, 1e9),
+    )
+    snap = MarketSnapshot({"X": ba})
+    acct = Account.new(starting_cash=1_000.0, max_leverage=5.0, maintenance_margin_pct=0.0)
+    costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
+    fcfg = FillConfig(mode="v2", participation_pct=1.0,
+                      slippage=SlippageConfig(base_bps=0.0, k_atr=0.0, k_vol=0.0))
+    broker = PortfolioBroker(snap, acct, costs, fcfg, interval="1m")
+    snap.set_index(0)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=50, order_type="market"))
+    equity = []
+    for i in range(len(ba)):
+        snap.set_index(i)
+        broker.process_bar(i)
+        equity.append(broker.get_equity())
+    assert broker.halted or min(equity) <= 0.0
+    assert max_drawdown(np.array(equity, dtype=np.float64)) <= -0.99

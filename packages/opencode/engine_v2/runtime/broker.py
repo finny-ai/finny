@@ -26,7 +26,15 @@ from ..options.pricing import option_price
 from ..options.calendar import time_to_expiry_years
 from ..core.clock import interval_to_rule_and_bars_per_year
 from ..execution.costs import CostConfig, borrow_charge_per_bar, commission, funding_charge
-from ..execution.fills import Fill, FillConfig, process_orders_for_bar
+from ..execution.fills import (
+    Fill,
+    FillConfig,
+    ParticipationBudget,
+    volume_forecast,
+    process_intrabar_orders_for_bar,
+    process_open_orders_for_bar,
+    process_orders_for_bar,
+)
 from ..portfolio.account import Account
 from ..portfolio.liquidation import liquidation_price
 from ..portfolio.positions import Position, PositionBook
@@ -61,6 +69,9 @@ class PortfolioBroker:
         self.funding_period_bars = max(1, int(round(costs.funding_interval_hours * bars_per_hour))) \
             if costs.funding_rate_bps_per_interval != 0 else 0
         self.bar_counter = 0
+        self.halted = False
+        self.dust_adjustments: List[Dict[str, object]] = []
+        self._participation_budgets: Dict[str, ParticipationBudget] = {}
 
     # ---------- Strategy-facing API ----------
 
@@ -162,26 +173,62 @@ class PortfolioBroker:
             "rejection_reasons": reasons,
             "rejections": list(self.rejections[-100:]),
             "pending_orders_at_end": len(self.orders),
+            "halted": self.halted,
+            "dust_adjustments": len(self.dust_adjustments),
         }
 
     # ---------- Runtime-facing API ----------
 
     def process_open(self, i: int) -> List[Fill]:
-        """Fill queued orders at the decision-time-safe open and mark to open."""
+        """Fill queued market orders at the decision-time-safe open and mark to open."""
+        if self.halted:
+            return []
+        bar_fills: List[Fill] = []
+        self._participation_budgets = {}
+        for sym in self.market.symbols:
+            ba = self.market.arrays[sym]
+            self._participation_budgets[sym] = ParticipationBudget(
+                forecast_volume=volume_forecast(ba, i),
+                participation_pct=self.fill_cfg.participation_pct,
+            )
+            sym_orders = [o for o in self.orders if o.symbol == sym]
+            fills = process_open_orders_for_bar(
+                sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
+                margin_check=self._margin_cap_at_fill,
+            )
+            for f in fills:
+                self._apply_fill(f)
+                bar_fills.append(f)
+            kept_ids = {o.id for o in sym_orders}
+            self.orders = [o for o in self.orders if o.symbol != sym or o.id in kept_ids]
+            self._settle_dust(sym, i)
+
+        open_prices = {sym: float(self.market.arrays[sym].open[i]) for sym in self.market.symbols}
+        self.account.mark_prices(open_prices)
+        self._check_insolvency(i)
+        return bar_fills
+
+    def process_intrabar(self, i: int) -> List[Fill]:
+        """Process limit/stop/trailing orders using current-bar OHLC after decision."""
+        if self.halted:
+            return []
         bar_fills: List[Fill] = []
         for sym in self.market.symbols:
             ba = self.market.arrays[sym]
             sym_orders = [o for o in self.orders if o.symbol == sym]
-            fills = process_orders_for_bar(sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs)
+            budget = self._participation_budgets.get(sym)
+            fills = process_intrabar_orders_for_bar(
+                sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
+                participation_budget=budget,
+                margin_check=self._margin_cap_at_fill,
+            )
             for f in fills:
                 self._apply_fill(f)
                 bar_fills.append(f)
-            # process_orders_for_bar mutates sym_orders in-place; sync back
             kept_ids = {o.id for o in sym_orders}
             self.orders = [o for o in self.orders if o.symbol != sym or o.id in kept_ids]
-
-        open_prices = {sym: float(self.market.arrays[sym].open[i]) for sym in self.market.symbols}
-        self.account.mark_prices(open_prices)
+            self._settle_dust(sym, i)
+        self._check_insolvency(i)
         return bar_fills
 
     def process_close(self, i: int, bar_fills: Optional[List[Fill]] = None) -> List[Fill]:
@@ -228,9 +275,86 @@ class PortfolioBroker:
 
     def process_bar(self, i: int) -> List[Fill]:
         bar_fills = self.process_open(i)
+        bar_fills.extend(self.process_intrabar(i))
         return self.process_close(i, bar_fills)
 
     # ---------- Internals ----------
+
+    def _margin_cap_at_fill(self, order, qty: float, price: float) -> float:
+        """Recheck buying power at the actual fill price; return affordable qty."""
+        if qty <= 0:
+            return 0.0
+        sym = str(order.symbol)
+        side = str(order.side)
+        spec = self.asset_specs.get(sym)
+        mult = spec.multiplier if spec is not None else 1.0
+        asset_class = spec.assetClass if spec is not None else ""
+        projected_qty: Dict[str, float] = {s: float(p.qty) for s, p in self.book.positions.items()}
+        for s in self.market.symbols:
+            projected_qty.setdefault(s, 0.0)
+        delta = qty if side == "buy" else -qty
+        projected_qty[sym] = projected_qty.get(sym, 0.0) + delta
+        projected_prices = {s: self.latest_price(s) for s in projected_qty}
+        projected_prices[sym] = float(price)
+        fee = commission(abs(qty * price * mult), is_maker=False, cfg=self.costs, qty=qty, asset_class=asset_class)
+        required = self.account.required_initial_margin_for_quantities(projected_qty, projected_prices) + fee
+        allowed = self.account.equity(self.book.positions)
+        if required <= allowed + 1e-9:
+            return qty
+        # Binary search affordable qty when full size breaches margin.
+        lo, hi = 0.0, qty
+        for _ in range(40):
+            mid = (lo + hi) / 2.0
+            if mid <= 0:
+                break
+            test_qty = mid
+            test_delta = test_qty if side == "buy" else -test_qty
+            test_proj = dict(projected_qty)
+            test_proj[sym] = test_proj.get(sym, 0.0) - delta + test_delta
+            test_prices = dict(projected_prices)
+            test_fee = commission(
+                abs(test_qty * price * mult), is_maker=False, cfg=self.costs,
+                qty=test_qty, asset_class=asset_class,
+            )
+            test_required = self.account.required_initial_margin_for_quantities(test_proj, test_prices) + test_fee
+            if test_required <= allowed + 1e-9:
+                lo = mid
+            else:
+                hi = mid
+        if spec is not None:
+            return spec.round_qty(lo)
+        return lo
+
+    def _check_insolvency(self, i: int) -> None:
+        if self.get_equity() <= 0.0:
+            self.halted = True
+            self.orders.clear()
+
+    def _settle_dust(self, symbol: str, i: int) -> None:
+        """Close sub-lot residuals below venue precision without re-queueing orders."""
+        spec = self.asset_specs.get(symbol)
+        if spec is None:
+            return
+        pos = self.book.get(symbol)
+        if pos.qty == 0:
+            return
+        if spec.round_qty(abs(pos.qty)) > 0:
+            return
+        px = self.latest_price(symbol)
+        if not np.isfinite(px) or px <= 0:
+            return
+        side = "sell" if pos.qty > 0 else "buy"
+        qty = abs(pos.qty)
+        fee = 0.0
+        realized = self.book.apply_fill(
+            symbol=symbol, side=side, qty=qty, price=px,
+            fee=fee, ts_ns=int(self.market.arrays[symbol].ts[i]), tag="DUST",
+            stop_distance=None, liquidation=False, multiplier=self._multiplier(symbol),
+        )
+        self.account.apply_realized(realized)
+        self.dust_adjustments.append({
+            "bar_index": i, "symbol": symbol, "qty": qty, "price": px, "realized": realized,
+        })
 
     def _apply_fill(self, f: Fill) -> None:
         realized = self.book.apply_fill(
