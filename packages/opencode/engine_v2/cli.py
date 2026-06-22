@@ -17,6 +17,7 @@ import select
 import subprocess
 import sys
 import time
+from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -525,17 +526,27 @@ def _run_shapec_strict_worker(
         worker.close()
 
 
-def _expand_param_grid(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
-    combos: List[Dict[str, Any]] = [{}]
+def _param_grid_values(key: str, values: Any) -> List[Any]:
+    if not isinstance(values, list) or len(values) == 0:
+        raise SystemExit(f"param grid key {key!r} must map to a non-empty list")
+    return values
+
+
+def _param_grid_axes(parsed: Dict[str, Any]) -> Tuple[List[str], List[List[Any]]]:
+    keys: List[str] = []
+    value_lists: List[List[Any]] = []
     for key, values in parsed.items():
-        if not isinstance(values, list) or len(values) == 0:
-            raise SystemExit(f"param grid key {key!r} must map to a non-empty list")
-        next_combos: List[Dict[str, Any]] = []
-        for combo in combos:
-            for value in values:
-                next_combos.append({**combo, str(key): value})
-        combos = next_combos
-    return combos
+        key_name = str(key)
+        keys.append(key_name)
+        value_lists.append(_param_grid_values(key_name, values))
+    return keys, value_lists
+
+
+def _expand_param_grid(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    keys, value_lists = _param_grid_axes(parsed)
+    if not keys:
+        return [{}]
+    return [dict(zip(keys, combo)) for combo in product(*value_lists)]
 
 
 def _param_grid_from_json(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
