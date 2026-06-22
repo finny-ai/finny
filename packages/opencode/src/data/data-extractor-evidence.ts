@@ -88,6 +88,11 @@ export interface ValidateDataExtractorResult {
   issues: string[]
 }
 
+export interface ExistingDataExtractorEvidenceResult {
+  found: boolean
+  result?: ValidateDataExtractorResult
+}
+
 function fieldValue(text: string, name: string): string | undefined {
   const patterns = [
     new RegExp(`(?:^|\\n|\\s)${name}\\s*[:=]\\s*([^\\n,;]+)`, "i"),
@@ -118,6 +123,14 @@ function parseArtifactPaths(text: string): string[] {
     fieldValue(text, "csv path"),
     fieldValue(text, "manifest path"),
     ...Array.from(text.matchAll(/(?:^|\n)\s*(?:CSV|Manifest)\s*:\s*([^\n]+?)(?=\s+\(|\n|$)/gi), (match) => match[1]),
+    ...Array.from(
+      text.matchAll(/(?:^|\n)\s*(?:CSV|Manifest)\s+(?:Path\s+)?([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?:\s|\n|$)/gi),
+      (match) => match[1],
+    ),
+    ...Array.from(
+      text.matchAll(/"(?:csv|manifest)"\s*:\s*"([^"]+\.(?:csv|manifest\.json))"/gi),
+      (match) => match[1],
+    ),
     ...Array.from(text.matchAll(/(?:^|\s)([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?=\s|,|;|\)|$)/gi), (match) => match[1]),
   ].filter((value): value is string => Boolean(value))
   if (rawValues.length === 0) return []
@@ -691,6 +704,29 @@ function digestFields(text: string): Record<string, string | undefined> {
   return Object.fromEntries(REQUIRED_DIGEST_FIELDS.map((field) => [field, digestFieldValue(text, field)]))
 }
 
+function digestFieldsFromContext(
+  context: WorkspaceRequestContext | undefined,
+  workspaceSlug: string,
+): Record<string, string | undefined> {
+  return {
+    requested_algorithm_name: context?.requested_algorithm_name ?? workspaceSlug,
+    workspace_slug: workspaceSlug,
+    requested_symbol: context?.requested_symbol,
+    actual_symbol: undefined,
+    requested_interval: context?.requested_interval,
+    actual_interval: undefined,
+    requested_asset_class: context?.requested_asset_class,
+    actual_asset_class: undefined,
+    requested_start: context?.requested_start,
+    requested_end: context?.requested_end,
+    actual_start: undefined,
+    actual_end: undefined,
+    artifact_paths: undefined,
+    run_id: undefined,
+    usable_for_parent: undefined,
+  }
+}
+
 function workspaceMismatchIssue(digest: Record<string, string | undefined>, workspaceSlug: string): string | undefined {
   if (!digest.workspace_slug || digest.workspace_slug === workspaceSlug) return undefined
   return `workspace_slug mismatch (digest=${digest.workspace_slug}, expected=${workspaceSlug})`
@@ -751,6 +787,66 @@ export async function validateDataExtractorTaskText(
   const manifest = loaded.manifest!
   const artifacts = canonicalArtifacts(manifestFile, manifest, dataRoot)
   return validateLoadedEvidence({ manifest, artifacts, preamble, context: input.context })
+}
+
+/**
+ * Reuse already-written data_extractor artifacts for the active request.
+ *
+ * This is intentionally identity-gated: a previous extraction only satisfies the
+ * mandatory data step when exactly one manifest in the bound workspace matches
+ * the current request context and the CSV evidence still passes validation.
+ */
+export async function validateExistingDataExtractorEvidence(input: {
+  workspaceSlug: string | null
+  context?: WorkspaceRequestContext
+}): Promise<ExistingDataExtractorEvidenceResult> {
+  if (!input.workspaceSlug) return { found: false }
+
+  const workspaceSlug = input.workspaceSlug
+  const dataRoot = path.join(algoDir(workspaceSlug), "data")
+  const baseDigest = digestFieldsFromContext(input.context, workspaceSlug)
+  // Require the manifest's actual_* identity to satisfy the request's
+  // requested_* identity. Without this, a stale or mislabeled manifest (e.g.
+  // requested_symbol: SPY with actual_symbol: QQQ, or a requested 15m file
+  // containing 5m bars) would slip through because manifestDigestMismatches
+  // treats undefined digest values as wildcards.
+  const digest: ManifestDigest = {
+    ...baseDigest,
+    actual_symbol: baseDigest.requested_symbol,
+    actual_interval: baseDigest.requested_interval,
+    actual_asset_class: baseDigest.requested_asset_class,
+  }
+  const matches = await findIdentityMatchingManifests(dataRoot, digest)
+  if (matches.length === 0) return { found: false }
+  if (matches.length > 1) {
+    return {
+      found: true,
+      result: blocked([`could not resolve a unique identity-matching manifest (${matches.length} candidates)`]),
+    }
+  }
+
+  const manifestFile = matches[0]
+  const loaded = await readManifestFile(manifestFile, [], dataRoot, [])
+  if (loaded.result) return { found: true, result: loaded.result }
+
+  const manifest = loaded.manifest!
+  const artifacts = canonicalArtifacts(manifestFile, manifest, dataRoot)
+  const preamble = {
+    text: [
+      "Data extraction already completed for this request; reusing verified workspace artifacts instead of launching another data_extractor.",
+      "This satisfies the mandatory data_extractor step for the current workspace.",
+    ].join("\n"),
+    textUsable: "",
+    workspaceSlug,
+    dataRoot,
+    digest,
+    issues: [],
+  }
+
+  return {
+    found: true,
+    result: await validateLoadedEvidence({ manifest, artifacts, preamble, context: input.context }),
+  }
 }
 
 export function strictQualityLabelsPresent(text: string): boolean {

@@ -392,6 +392,99 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("reuses verified data_extractor manifest for an already completed intraday window", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "eth-1h-mean-reversion.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+
+          const today = new Date().toISOString().slice(0, 10)
+          const yesterday = new Date(
+            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()),
+          )
+          yesterday.setUTCDate(yesterday.getUTCDate() - 1)
+          const yesterdayIso = yesterday.toISOString().slice(0, 10)
+          const dataDir = path.join(algoDir(slug), "data", "crypto")
+          const csvRel = `crypto/ETHUSDT_1h_2025-06-16_${yesterdayIso}.csv`
+          const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+          yield* Effect.promise(() => fs.mkdir(dataDir, { recursive: true }))
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(algoDir(slug), "data", csvRel),
+              `timestamp,open,high,low,close,volume\n2025-06-16T00:00:00Z,100,110,90,105,1000\n${yesterdayIso}T00:00:00Z,105,115,95,110,1000\n`,
+              "utf8",
+            ),
+          )
+          yield* Effect.promise(() =>
+            fs.writeFile(
+              path.join(algoDir(slug), "data", manifestRel),
+              JSON.stringify(
+                {
+                  schema_version: 1,
+                  source: "binance",
+                  requested_symbol: "ETH",
+                  actual_symbol: "ETHUSDT",
+                  requested_interval: "1h",
+                  actual_interval: "1h",
+                  requested_asset_class: "crypto",
+                  actual_asset_class: "crypto",
+                  requested_algorithm_name: "eth-1h-mean-reversion",
+                  requested_start: "2025-06-16",
+                  requested_end: yesterdayIso,
+                  actual_start: "2025-06-16T00:00:00Z",
+                  actual_end: `${yesterdayIso}T00:00:00Z`,
+                  output_path: csvRel,
+                  rows: 2,
+                  run_id: "reuse-existing",
+                  coverage: "complete",
+                  usable_for_parent: "yes",
+                },
+                null,
+                2,
+              ),
+              "utf8",
+            ),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "ETH data extraction retry",
+              prompt: `Extract ETHUSDT 1h data from 2025-06-16 to ${today}.`,
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("reusing verified workspace artifacts")
+          expect(result.output).toContain("usable_for_parent: yes")
+          expect(result.output).toContain(`requested_end: ${yesterdayIso}`)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("passes requested algorithm name separately from workspace slug", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -430,6 +523,64 @@ describe("tool.task", () => {
           expect(text).toContain("- workspace_slug: spy-5m-strategy.1.1.00.00")
           expect(text).toContain("- requested_algorithm_name: spy-5m-product-demo-20260614-v2")
           expect(text).not.toContain("- algorithm: spy-5m-strategy.1.1.00.00")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("overrides stale workspace algorithm name from explicit existing algorithm prompt", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "p500-1hr-trade-1h-strategy.22.6.00.39.0f9d37af"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt:
+                "Extract SPY 1h equity data from 2025-12-22 to 2026-06-21. requested_algorithm_name=p500-1hr-trade-1h-strategy",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          yield* def.execute(
+            {
+              description: "SPY robustness data",
+              prompt:
+                "Data request context: Build is improving EXISTING algorithm `spy-1h-momentum-breakout` v2 for SPY ETF, asset_class equity, interval 1h, full window 2025-12-22 to 2026-06-21.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain(`- workspace_slug: ${slug}`)
+          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
+          expect(text).not.toContain("- requested_algorithm_name: p500-1hr-trade-1h-strategy")
+          const persisted = yield* Effect.promise(() =>
+            fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
+          )
+          expect(persisted.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

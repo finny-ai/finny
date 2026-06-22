@@ -193,11 +193,6 @@ export function Backtests() {
               {/* Rows */}
               <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: true }}>
                 <box flexDirection="column">
-                  <Show when={crucibleRuns().length > 0}>
-                    <box paddingLeft={1} paddingTop={1}>
-                      <text fg={theme.text} attributes={TextAttributes.BOLD}>Crucible 2.0 runs</text>
-                    </box>
-                  </Show>
                   <For each={crucibleRuns()}>
                     {(entry) => <RunRow entry={entry} onOpen={openRun} />}
                   </For>
