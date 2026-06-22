@@ -56,16 +56,52 @@ describe("evaluateBacktestQuality", () => {
           is_sharpe_mean: 1.4,
           oos_sharpe_mean: 1.1,
           oos_decay: 0.78,
+          is_to_oos_sharpe_change: -0.3,
           flag_threshold: 0.7,
           flagged: false,
           deflated_sharpe: 0.8,
           probabilistic_sharpe: 0.9,
+          stitched_oos_return: 0.08,
+          stitched_oos_sharpe: 1.1,
+          stitched_oos_trades: 30,
+          stitched_oos_bars: 300,
+          stitched_oos_coverage: 1,
+          ruined_folds: 0,
+          multiple_testing_trials: 1,
           folds: [],
         },
       } as any,
     }))
     expect(quality.label).toBe("paper_eligible")
     expect(quality.paperEligible).toBe(true)
+  })
+
+  test("requires positive stitched OOS return and enough OOS trades", () => {
+    const quality = evaluateBacktestQuality(result({
+      v2: {
+        walk_forward: {
+          n_folds: 5,
+          is_sharpe_mean: 1.4,
+          oos_sharpe_mean: 1.1,
+          oos_decay: 0.78,
+          is_to_oos_sharpe_change: -0.3,
+          flag_threshold: 0.7,
+          flagged: false,
+          deflated_sharpe: 0.8,
+          probabilistic_sharpe: 0.9,
+          stitched_oos_return: -0.01,
+          stitched_oos_sharpe: 1.1,
+          stitched_oos_trades: 2,
+          stitched_oos_bars: 300,
+          stitched_oos_coverage: 1,
+          ruined_folds: 0,
+          folds: [],
+        },
+      } as any,
+    }))
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("stitched OOS return <= 0")
+    expect(quality.reasons.join("; ")).toContain("stitched OOS trade count low")
   })
 
   test("repaired-data result cannot be paper eligible", () => {

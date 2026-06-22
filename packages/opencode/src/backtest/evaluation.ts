@@ -24,6 +24,7 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   const minTrades = dynamicMinTrades(results)
   const repaired = results.v2?.data_quality?.repair_applied === true
   const wf = results.v2?.walk_forward
+  const mc = results.v2?.monte_carlo
   const profitFactor = results.profitFactor
   const liquidationNav = (results.v2?.run_metadata as any)?.liquidation_nav
   const liquidationAdjustedReturn = typeof liquidationNav?.nav === "number" && typeof results.v2?.starting_equity === "number"
@@ -48,7 +49,17 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
   if (liquidationAdjustedDrawdown > 0.15) reasons.push("liquidation-adjusted max drawdown > 15%")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")
-  if (wf && (wf.flagged || finite(wf.oos_sharpe_mean, -Infinity) <= 0)) reasons.push("walk-forward failed")
+  if (wf) {
+    const oosTrades = finite(wf.stitched_oos_trades, 0)
+    const oosCoverage = finite(wf.stitched_oos_coverage, 0)
+    if (wf.flagged) reasons.push("rolling OOS validation flagged")
+    if (finite(wf.stitched_oos_return, -Infinity) <= 0) reasons.push("stitched OOS return <= 0")
+    if (finite(wf.stitched_oos_sharpe ?? wf.oos_sharpe_mean, -Infinity) <= 0) reasons.push("stitched OOS Sharpe <= 0")
+    if (oosTrades < minTrades) reasons.push(`stitched OOS trade count low (${oosTrades} trades)`)
+    if (oosCoverage < 0.95) reasons.push(`stitched OOS coverage < 95% (${(oosCoverage * 100).toFixed(1)}%)`)
+    if (finite(wf.ruined_folds, 0) > 0) reasons.push("one or more OOS folds were ruined")
+  }
+  if (mc && finite(mc.max_dd_p99, 0) <= -0.5) reasons.push("stressed profile breaches 50% drawdown ceiling")
 
   if (reasons.length > 0) {
     return { label: "weak_positive", paperEligible: false, reasons, minTrades }

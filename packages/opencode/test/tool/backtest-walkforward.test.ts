@@ -16,10 +16,18 @@ describe("backtest walk-forward formatting", () => {
         is_sharpe_mean: 1.2,
         oos_sharpe_mean: 0.4,
         oos_decay: 0.33,
+        is_to_oos_sharpe_change: -0.8,
         flag_threshold: 0.7,
         flagged: false,
         deflated_sharpe: null,
         probabilistic_sharpe: null,
+        stitched_oos_return: 0.01,
+        stitched_oos_sharpe: 0.4,
+        stitched_oos_trades: 3,
+        stitched_oos_bars: 50,
+        stitched_oos_coverage: 1,
+        ruined_folds: 0,
+        multiple_testing_trials: 1,
         folds: [
           {
             fold: 1,
@@ -31,6 +39,9 @@ describe("backtest walk-forward formatting", () => {
             oos_sharpe: null,
             is_return: 0.02,
             oos_return: 0.01,
+            oos_trades: 3,
+            oos_coverage: 1,
+            ruined: false,
           },
         ],
       },
@@ -39,6 +50,8 @@ describe("backtest walk-forward formatting", () => {
     const output = lines.join("\n")
     expect(output).toContain("Deflated Sharpe prob:  N/A")
     expect(output).toContain("Prob. Sharpe ratio:    N/A")
-    expect(output).toContain("N/A\tN/A\t1.00%")
+    expect(output).toContain("IS→OOS Sharpe change:  -0.80")
+    expect(output).toContain("Multiple-test trials:  1")
+    expect(output).toContain("N/A\tN/A\t1.00%\t3\t100.00%\tno")
   })
 })

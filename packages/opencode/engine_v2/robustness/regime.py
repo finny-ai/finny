@@ -1,10 +1,8 @@
-"""Realized-volatility tercile regime breakdown.
+"""Realized-volatility regime breakdown.
 
-Each bar is classified into low/mid/high vol based on the tercile thresholds
-of rolling 30-bar realized vol *over the test window itself*. No bull/bear
-hand-waving — purely about volatility regime, where most strategies
-genuinely behave differently. Per-regime metrics surface where a strategy
-breaks.
+Each bar is classified with only prior data. The rolling realized volatility
+for bar i uses closes before i, and low/mid/high thresholds are expanding
+historical terciles from prior realized-vol observations.
 """
 
 from __future__ import annotations
@@ -40,18 +38,21 @@ def classify_bars(close: np.ndarray, lookback: int = 30) -> np.ndarray:
     log_ret = np.diff(np.log(np.clip(close, 1e-12, None)))
     realized = np.full(n, np.nan)
     cs = np.cumsum(log_ret ** 2)
-    for i in range(lookback, n):
-        window_sum = cs[i - 1] - (cs[i - lookback - 1] if i > lookback else 0.0)
+    for i in range(lookback + 1, n):
+        end = i - 1
+        start = end - lookback
+        window_sum = cs[end - 1] - (cs[start - 1] if start > 0 else 0.0)
         realized[i] = np.sqrt(window_sum / lookback)
-    valid = realized[~np.isnan(realized)]
-    if valid.size < 30:
-        return out
-    t1 = float(np.quantile(valid, 1.0 / 3.0))
-    t2 = float(np.quantile(valid, 2.0 / 3.0))
     for i in range(n):
         v = realized[i]
         if np.isnan(v):
             continue
+        prior = realized[:i]
+        prior = prior[~np.isnan(prior)]
+        if prior.size < 30:
+            continue
+        t1 = float(np.quantile(prior, 1.0 / 3.0))
+        t2 = float(np.quantile(prior, 2.0 / 3.0))
         if v <= t1:
             out[i] = 0
         elif v <= t2:
@@ -123,7 +124,10 @@ def breakdown(
     names = {0: "low_vol", 1: "mid_vol", 2: "high_vol"}
     total_n = int((bar_labels >= 0).sum())
     # Per-bar returns, aligned to bars 1..n-1 (bar 0 has no prior return).
-    all_ret = (equity[1:] - equity[:-1]) / np.clip(equity[:-1], 1e-12, None)
+    all_ret = np.full(max(equity.size - 1, 0), np.nan)
+    prev = equity[:-1]
+    valid = prev > 0
+    all_ret[valid] = (equity[1:][valid] - prev[valid]) / prev[valid]
     for label_id, name in names.items():
         mask = bar_labels == label_id
         n = int(mask.sum())
@@ -133,6 +137,7 @@ def breakdown(
             continue
         # Use returns from bars actually in this regime — no cross-regime leak.
         seg_ret = all_ret[mask[1:]]
+        seg_ret = seg_ret[np.isfinite(seg_ret)]
         total = float(np.prod(1.0 + seg_ret) - 1.0) if seg_ret.size else 0.0
         sharpe = RAT.sharpe(seg_ret, bars_per_year=bars_per_year)
         seg_eq = np.cumprod(1.0 + seg_ret) if seg_ret.size else np.ones(1)

@@ -19,6 +19,7 @@ describe("algorithm save config normalization", () => {
       incoming: JSON.stringify({
         symbol: "QQQ",
         interval: "1d",
+        required_history_bars: 50,
         equity_usd: 10000,
         fast_ma: 10,
         slow_ma: 30,
@@ -29,6 +30,7 @@ describe("algorithm save config normalization", () => {
     expect(JSON.parse(normalized!)).toEqual({
       symbol: "QQQ",
       interval: "1d",
+      required_history_bars: 50,
       equity_usd: 10000,
       params: {
         fast_ma: 10,
@@ -44,6 +46,7 @@ describe("algorithm save config normalization", () => {
         symbol: "SPY",
         asset_class: "equity",
         interval: "15min",
+        required_history_bars: 20,
         brokerage: "ibkr",
         params: { period: 20 },
       }),
@@ -59,6 +62,7 @@ describe("algorithm save config normalization", () => {
         symbol: "BTC.USD",
         asset_class: "crypto",
         interval: "15min",
+        required_history_bars: 20,
         params: { period: 20 },
       }),
     })
@@ -74,7 +78,7 @@ describe("algorithm save config normalization", () => {
       }),
     })
 
-    expect(missingRequiredNewSaveConfigFields(normalized)).toEqual(["asset_class", "interval", "params"])
+    expect(missingRequiredNewSaveConfigFields(normalized)).toEqual(["asset_class", "interval", "required_history_bars", "params"])
   })
 
   test("complete new-save execution config clears required-field blocker", () => {
@@ -83,6 +87,7 @@ describe("algorithm save config normalization", () => {
         symbol: "SPY",
         asset_class: "equity",
         interval: "15min",
+        required_history_bars: 20,
         params: { period: 20, risk_pct: 0.02 },
       }),
     })
@@ -96,6 +101,7 @@ describe("algorithm save config normalization", () => {
         symbol: "DELL, INTC, NVDA",
         asset_class: "equity",
         interval: "1d",
+        required_history_bars: 20,
         params: { period: 20 },
       }),
     })
@@ -110,6 +116,7 @@ describe("algorithm save config normalization", () => {
       previous: JSON.stringify({
         symbol: "SPY",
         interval: "1d",
+        required_history_bars: 50,
         equity_usd: 10000,
         asset_class: "equity",
         params: { old_param: 1 },
@@ -125,6 +132,7 @@ describe("algorithm save config normalization", () => {
     expect(JSON.parse(normalized!)).toEqual({
       symbol: "SPY",
       interval: "1d",
+      required_history_bars: 50,
       equity_usd: 10000,
       asset_class: "equity",
       params: {
@@ -144,7 +152,7 @@ describe("algorithm save config normalization", () => {
           name: "qqq-cross",
           code: "class Strategy:\n    pass\n",
           saveMode: "new",
-          config: JSON.stringify({ symbol: "QQQ", interval: "1d", equity_usd: 10000, fast_ma: 10 }),
+          config: JSON.stringify({ symbol: "QQQ", interval: "1d", required_history_bars: 50, equity_usd: 10000, fast_ma: 10 }),
         })
 
         const saved = await Algorithm.save({
@@ -157,6 +165,7 @@ describe("algorithm save config normalization", () => {
         expect(JSON.parse(saved.config!)).toEqual({
           symbol: "QQQ",
           interval: "1d",
+          required_history_bars: 50,
           equity_usd: 10000,
           params: { fast_ma: 20, slow_ma: 50 },
         })

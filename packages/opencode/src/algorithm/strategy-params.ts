@@ -9,6 +9,7 @@ export const StrategyParams = z.object({
   symbol: z.string().optional(),
   asset_class: z.enum(["equity", "crypto", "crypto_spot", "crypto_perp", "future", "fx", "option"]).optional(),
   interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"]).optional(),
+  required_history_bars: z.number().int().nonnegative().optional(),
   equity_usd: z.number().positive().optional(),
   brokerage: z.enum(["alpaca", "binance", "ibkr"]).optional(),
   execution: z
@@ -48,6 +49,7 @@ const EXECUTION_KEYS = new Set([
   "symbol",
   "asset_class",
   "interval",
+  "required_history_bars",
   "equity_usd",
   "brokerage",
   "execution",
@@ -179,6 +181,7 @@ export function missingRequiredNewSaveConfigFields(config: string | undefined | 
   if (typeof parsed.symbol !== "string" || parsed.symbol.trim() === "") missing.push("symbol")
   if (typeof parsed.asset_class !== "string" || parsed.asset_class.trim() === "") missing.push("asset_class")
   if (typeof parsed.interval !== "string" || parsed.interval.trim() === "") missing.push("interval")
+  if (!Number.isInteger(parsed.required_history_bars) || parsed.required_history_bars < 0) missing.push("required_history_bars")
   if (!isPlainObject(parsed.params) || Object.keys(parsed.params).length === 0) missing.push("params")
 
   return missing

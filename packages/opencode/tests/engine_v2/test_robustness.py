@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -14,6 +15,7 @@ from engine_v2.robustness.regime import classify_bars, breakdown
 from engine_v2.robustness.walkforward import (
     deflated_sharpe, probabilistic_sharpe, run_walk_forward,
 )
+from engine_v2.metrics import returns as M_returns
 
 
 def test_trade_shuffle_reproducible():
@@ -93,3 +95,84 @@ def test_walk_forward_decay_flag():
     assert wf.n_folds == 5
     assert wf.oos_decay < 0.5
     assert wf.flagged is True
+
+
+def test_walk_forward_preloads_history_but_scores_eval_window_only():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+    calls = []
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        calls.append((start, end, eval_start))
+        bars = max(0, end - eval_start - 1)
+        return {
+            "sharpe": 1.0,
+            "total_return": 0.1,
+            "returns": np.full(bars, 0.001) if bars else np.zeros(0),
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 100.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5, required_history_bars=25)
+    assert wf.stitched_oos_bars == sum(f.oos_bars for f in wf.folds)
+    assert wf.stitched_oos_coverage == 1.0
+    # Fold 1 train starts at 100 but receives 25 warm-up bars.
+    assert any(start == 75 and eval_start == 100 for start, _end, eval_start in calls)
+
+
+def test_walk_forward_grid_counts_combinations_not_folds_as_trials():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+    grid = [{"period": 10}, {"period": 20}, {"period": 30}]
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        period = (params or {}).get("period", 0)
+        sharpe = 2.0 if period == 20 else 0.5
+        bars = max(0, end - eval_start - 1)
+        return {
+            "sharpe": sharpe,
+            "total_return": sharpe / 10.0,
+            "returns": np.full(bars, 0.001 * sharpe) if bars else np.zeros(0),
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 100.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5, param_grid=grid)
+    assert wf.multiple_testing_trials == 3
+    assert all(f.selected_params == {"period": 20} for f in wf.folds)
+
+
+def test_walk_forward_negative_is_sharpe_reports_absolute_change():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        is_slice = end - eval_start > 50
+        sharpe = -0.5 if is_slice else 0.2
+        bars = max(0, end - eval_start - 1)
+        return {
+            "sharpe": sharpe,
+            "total_return": 0.01,
+            "returns": np.full(bars, 0.001) if bars else np.zeros(0),
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 100.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
+    assert wf.oos_decay == pytest.approx(-0.4)
+    assert wf.is_to_oos_sharpe_change > 0.0
+
+
+def test_regime_classification_does_not_use_future_quantiles():
+    low = np.linspace(100, 101, 120)
+    high = 101 + np.cumsum(np.tile([1.0, -1.0], 120))
+    labels = classify_bars(np.concatenate([low, high]), lookback=10)
+    # Early low-vol bars cannot be classified using future high-vol data.
+    assert np.all(labels[:40] == -1)
+    assert (labels[150:] == 2).sum() > 0
+
+
+def test_bar_returns_stop_when_equity_is_non_positive():
+    returns = M_returns.bar_returns(np.array([100.0, 0.0, 50.0, -10.0, 10.0]))
+    assert np.all(np.isfinite(returns))
+    assert returns.tolist() == [-1.0]

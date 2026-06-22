@@ -9,7 +9,8 @@ CHANGELOG:
   2.0.0  initial engine_v2 release.
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
   3.1.0  asset spec adds optional margin/commission metadata.
-  3.2.0  execution profile metadata, terminal NAV, and open trade rows.
+  3.2.0  execution profile metadata, terminal NAV, open trade rows, and
+         walk-forward stitched OOS, warm-up, and trial-count metadata.
 """
 
 from __future__ import annotations
@@ -214,6 +215,12 @@ class WalkForwardFold:
     oos_sharpe: float
     is_return: float
     oos_return: float
+    oos_trades: int = 0
+    oos_bars: int = 0
+    oos_coverage: float = 0.0
+    oos_max_drawdown: float = 0.0
+    ruined: bool = False
+    selected_params: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -222,10 +229,18 @@ class WalkForwardSummary:
     is_sharpe_mean: float
     oos_sharpe_mean: float
     oos_decay: float
+    is_to_oos_sharpe_change: float
     flag_threshold: float
     flagged: bool
     deflated_sharpe: float
     probabilistic_sharpe: float
+    stitched_oos_return: float
+    stitched_oos_sharpe: float
+    stitched_oos_trades: int
+    stitched_oos_bars: int
+    stitched_oos_coverage: float
+    ruined_folds: int
+    multiple_testing_trials: int
     folds: List[WalkForwardFold]
 
 
