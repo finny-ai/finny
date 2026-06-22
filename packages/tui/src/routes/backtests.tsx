@@ -38,6 +38,10 @@ const DURATION_LABELS: Record<string, string> = {
   "1y": "1Y",
 }
 
+function isCrucibleRun(entry: BacktestHistoryEntry): boolean {
+  return entry.results.runKind !== "legacy"
+}
+
 export function Backtests() {
   const { theme } = useTheme()
   const route = useRoute()
@@ -45,6 +49,8 @@ export function Backtests() {
   const dialog = useDialog()
 
   const runs = createMemo(() => history.list())
+  const crucibleRuns = createMemo(() => runs().filter(isCrucibleRun))
+  const legacyRuns = createMemo(() => runs().filter((entry) => !isCrucibleRun(entry)))
 
   const openRun = (entry: BacktestHistoryEntry) => {
     DialogBacktestResults.show(dialog, entry.algorithmName, entry.params, entry.results)
@@ -59,8 +65,8 @@ export function Backtests() {
       <RouteHeader
         icon={ROUTE_ICONS.backtests as unknown as string[]}
         title="Backtests"
-        subtitle="Historical performance analysis"
-        meta={`${runs().length} run${runs().length === 1 ? "" : "s"}`}
+        subtitle="Crucible 2.0 and legacy performance analysis"
+        meta={`${crucibleRuns().length} Crucible · ${legacyRuns().length} legacy`}
       />
 
       <box
@@ -134,7 +140,67 @@ export function Backtests() {
               {/* Rows */}
               <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: true }}>
                 <box flexDirection="column">
-                  <For each={runs()}>
+                  <Show when={crucibleRuns().length > 0}>
+                    <box paddingLeft={1} paddingTop={1}>
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>Crucible 2.0 runs</text>
+                    </box>
+                  </Show>
+                  <For each={crucibleRuns()}>
+                    {(entry) => {
+                      const returnColor = () =>
+                        entry.results.totalReturn >= 0 ? theme.success : theme.error
+                      return (
+                        <box
+                          flexDirection="row"
+                          paddingLeft={1}
+                          paddingRight={1}
+                          paddingTop={0}
+                          paddingBottom={0}
+                          onMouseUp={() => openRun(entry)}
+                        >
+                          <box width={24} flexShrink={0}>
+                            <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                              {entry.algorithmName}
+                            </text>
+                          </box>
+                          <box width={12} flexShrink={0}>
+                            <text fg={theme.textMuted}>
+                              {DURATION_LABELS[entry.params.duration] ?? entry.params.duration} · {entry.params.interval}
+                            </text>
+                          </box>
+                          <box width={14} flexShrink={0}>
+                            <text fg={returnColor()} attributes={TextAttributes.BOLD}>
+                              {formatPercent(entry.results.totalReturn)}
+                            </text>
+                          </box>
+                          <box width={14} flexShrink={0}>
+                            <text fg={theme.error}>
+                              {formatPercent(entry.results.maxDrawdown)}
+                            </text>
+                          </box>
+                          <box width={14} flexShrink={0}>
+                            <text fg={returnColor()}>
+                              {formatCurrency(entry.results.endingEquity)}
+                            </text>
+                          </box>
+                          <box width={10} flexShrink={0}>
+                            <text fg={theme.text}>
+                              {entry.results.totalTrades}
+                            </text>
+                          </box>
+                          <box flexGrow={1}>
+                            <text fg={theme.textMuted}>{formatRelative(entry.timestamp)}</text>
+                          </box>
+                        </box>
+                      )
+                    }}
+                  </For>
+                  <Show when={legacyRuns().length > 0}>
+                    <box paddingLeft={1} paddingTop={1}>
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>Legacy runs</text>
+                    </box>
+                  </Show>
+                  <For each={legacyRuns()}>
                     {(entry) => {
                       const returnColor = () =>
                         entry.results.totalReturn >= 0 ? theme.success : theme.error

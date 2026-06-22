@@ -122,6 +122,13 @@ export namespace BacktestRunner {
     artifactDir?: string
     /** Deployment gate state derived from validation and backtest diagnostics. */
     eligibilityStatus?: "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
+    productLabel?: string
+    runKind?: "crucible_2_0" | "legacy"
+    navSummary?: EngineV2.NavSummary | null
+    costAttribution?: EngineV2.CostAttributionSummary | null
+    profileIdentity?: EngineV2.ProfileIdentity | null
+    sensitivityOutcomes?: EngineV2.SensitivityOutcome[]
+    explanations?: EngineV2.ResultExplanations | null
     /**
      * Full engine_v2 result blob. Present when the run completed via the v2
      * engine (the default). Carries all the new metric blocks, trades, MC,
@@ -408,6 +415,13 @@ with open("_data_provider.txt", "w") as f:
       },
       engineVersion: v2.engine_version,
       schemaVersion: parseInt((v2.schema_version || "0").split(".")[0], 10),
+      productLabel: v2.product_label ?? "Crucible 2.0",
+      runKind: v2.run_kind ?? "crucible_2_0",
+      navSummary: v2.nav_summary ?? null,
+      costAttribution: v2.cost_attribution ?? null,
+      profileIdentity: v2.profile_identity ?? null,
+      sensitivityOutcomes: v2.sensitivity_outcomes ?? [],
+      explanations: v2.explanations ?? null,
       v2,
     }
   }
@@ -568,6 +582,8 @@ with open("_data_provider.txt", "w") as f:
       diagnostics,
       engineVersion: strings["engine_version"] || undefined,
       schemaVersion: schemaVersion != null ? Math.trunc(schemaVersion) : undefined,
+      productLabel: "Legacy backtest",
+      runKind: "legacy",
       v2,
     }
   }
@@ -1322,6 +1338,8 @@ if __name__ == "__main__":
     const eligibilityStatus = deriveEligibility(input.results)
     const run = {
       runId: input.runId,
+      productLabel: input.results.productLabel ?? "Crucible 2.0",
+      runKind: input.results.runKind ?? "crucible_2_0",
       algorithmId: input.algorithm.algorithmId,
       algorithmVersion: version,
       strategyHash: String(metadata.strategy_hash ?? sha256Text(input.algorithm.code)),
@@ -1703,6 +1721,8 @@ if __name__ == "__main__":
           eventType: "backtest.completed",
           algorithmId: algorithm.algorithmId,
           payload: {
+            productLabel: results.productLabel ?? "Crucible 2.0",
+            runKind: results.runKind ?? "crucible_2_0",
             duration,
             interval,
             capital,
@@ -1712,6 +1732,7 @@ if __name__ == "__main__":
             maxDrawdown: results.maxDrawdown,
             sharpeRatio: results.sharpeRatio,
             totalTrades: results.totalTrades,
+            eligibilityStatus: results.eligibilityStatus,
             diagnostics: {
               barsProcessed: results.diagnostics?.barsProcessed,
               liquidationCount: results.liquidationCount,

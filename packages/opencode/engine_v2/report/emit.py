@@ -276,6 +276,35 @@ def assemble(
             k: v for k, v in run_metadata["asset_spec"].items()
             if k in S.AssetSpecReport.__dataclass_fields__
         })
+    margin_used = float(broker.account.required_initial_margin(broker.book.positions))
+    free_margin = float(broker.account.free_margin(broker.book.positions))
+    mtm_nav = float(equity[-1]) if equity.size else float(starting_equity)
+    liquidation_nav = max(0.0, mtm_nav - max(0.0, margin_used - free_margin))
+    total_costs = float(ex_block.total_fees + ex_block.total_funding + ex_block.total_borrow)
+    profile_id = f"{schema_engine_version}:{seed}:{','.join(snap.symbols)}:{interval}"
+    sens: List[S.SensitivityOutcome] = []
+    if mc_block is not None:
+        sens.append(S.SensitivityOutcome(
+            name="Monte Carlo",
+            status="pass" if mc_block.sharpe_p5 >= 0 and mc_block.max_dd_p95 > -0.35 else "review",
+            value=mc_block.sharpe_p5,
+            explanation="Trade-path resampling checks whether the edge survives sequence risk.",
+        ))
+    if wf_block is not None:
+        sens.append(S.SensitivityOutcome(
+            name="Walk-forward",
+            status="review" if wf_block.flagged else "pass",
+            value=wf_block.oos_decay,
+            explanation="Out-of-sample folds compare live-like performance against in-sample fit.",
+        ))
+    if regimes_block is not None:
+        worst_regime = min((r.total_return for r in regimes_block), default=0.0)
+        sens.append(S.SensitivityOutcome(
+            name="Regime split",
+            status="pass" if worst_regime >= 0 else "review",
+            value=worst_regime,
+            explanation="Volatility-regime slices show whether one market state carries the result.",
+        ))
 
     return S.Results(
         schema_version=S.SCHEMA_VERSION,
@@ -304,11 +333,41 @@ def assemble(
         diagnostics={
             **broker.diagnostics(),
             "bar_diagnostics_count": len(diagnostics),
-            "margin_used": float(broker.account.required_initial_margin(broker.book.positions)),
-            "free_margin": float(broker.account.free_margin(broker.book.positions)),
+            "margin_used": margin_used,
+            "free_margin": free_margin,
         },
         run_metadata=run_metadata,
         asset_spec=asset_spec_block,
+        nav_summary=S.NavSummary(
+            mark_to_market_nav=mtm_nav,
+            liquidation_nav=liquidation_nav,
+            explanation="Mark-to-market NAV prices open positions at the last available mark; liquidation NAV also reserves margin stress for positions that could be forced closed.",
+        ),
+        cost_attribution=S.CostAttributionSummary(
+            total_costs=total_costs,
+            fees=float(ex_block.total_fees),
+            funding=float(ex_block.total_funding),
+            borrow=float(ex_block.total_borrow),
+            cost_as_pct_starting_equity=float(total_costs / starting_equity) if starting_equity else 0.0,
+            explanation="Costs include commissions/fees, funding, and borrow charges applied by the Crucible 2.0 execution model.",
+        ),
+        profile_identity=S.ProfileIdentity(
+            product_label="Crucible 2.0",
+            profile_id=profile_id,
+            strategy_hash=str(run_metadata.get("strategy_hash")) if run_metadata and run_metadata.get("strategy_hash") is not None else None,
+            config_hash=str(run_metadata.get("config_hash")) if run_metadata and run_metadata.get("config_hash") is not None else None,
+            data_hash=str(run_metadata.get("data_hash")) if run_metadata and run_metadata.get("data_hash") is not None else None,
+            explanation="Profile identity binds the strategy, config, data, engine, seed, symbols, and interval for immutable reruns.",
+        ),
+        sensitivity_outcomes=sens,
+        explanations=S.ResultExplanations(
+            product="Crucible 2.0 is the strict next-open engine path; legacy unsafe runs remain labeled separately.",
+            mark_to_market_nav="Mark-to-market NAV is cash plus unrealized P&L at the latest bar mark.",
+            liquidation_nav="Liquidation NAV is the stress NAV after reserving margin pressure for forced-close risk.",
+            cost_attribution="Cost attribution separates fees, funding, and borrow from trading P&L.",
+            profile_identity="Profile identity shows the immutable run fingerprint used for comparison and reruns.",
+            sensitivity_outcomes="Sensitivity outcomes summarize Monte Carlo, walk-forward, and regime checks when requested.",
+        ),
     )
 
 
