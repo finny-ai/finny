@@ -441,6 +441,7 @@ describe("tool.task", () => {
                   rows: 2,
                   run_id: "reuse-existing",
                   coverage: "complete",
+                  usable_for_parent: "yes",
                 },
                 null,
                 2,

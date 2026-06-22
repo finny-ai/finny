@@ -800,13 +800,22 @@ export async function validateExistingDataExtractorEvidence(input: {
   workspaceSlug: string | null
   context?: WorkspaceRequestContext
 }): Promise<ExistingDataExtractorEvidenceResult> {
-  if (!input.workspaceSlug) {
-    return { found: true, result: blocked(["no workspace slug bound"]) }
-  }
+  if (!input.workspaceSlug) return { found: false }
 
   const workspaceSlug = input.workspaceSlug
   const dataRoot = path.join(algoDir(workspaceSlug), "data")
-  const digest = digestFieldsFromContext(input.context, workspaceSlug)
+  const baseDigest = digestFieldsFromContext(input.context, workspaceSlug)
+  // Require the manifest's actual_* identity to satisfy the request's
+  // requested_* identity. Without this, a stale or mislabeled manifest (e.g.
+  // requested_symbol: SPY with actual_symbol: QQQ, or a requested 15m file
+  // containing 5m bars) would slip through because manifestDigestMismatches
+  // treats undefined digest values as wildcards.
+  const digest: ManifestDigest = {
+    ...baseDigest,
+    actual_symbol: baseDigest.requested_symbol,
+    actual_interval: baseDigest.requested_interval,
+    actual_asset_class: baseDigest.requested_asset_class,
+  }
   const matches = await findIdentityMatchingManifests(dataRoot, digest)
   if (matches.length === 0) return { found: false }
   if (matches.length > 1) {
