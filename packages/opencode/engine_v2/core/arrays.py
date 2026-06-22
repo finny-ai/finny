@@ -37,6 +37,14 @@ class BarArrays:
     def __len__(self) -> int:
         return int(self.ts.shape[0])
 
+    def ohlc_at(self, i: int) -> Tuple[float, float, float, float]:
+        return (
+            float(self.open[i]),
+            float(self.high[i]),
+            float(self.low[i]),
+            float(self.close[i]),
+        )
+
 
 def _atr(high: np.ndarray, low: np.ndarray, close: np.ndarray, period: int = 14) -> np.ndarray:
     if period <= 0:

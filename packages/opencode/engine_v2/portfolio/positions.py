@@ -221,7 +221,7 @@ class PositionBook:
             qty=pos.peak_abs_qty,
             entry_price=pos.entry_price,
             exit_price=exit_price,
-            pnl=pos.realized_accum - total_fees,
+            pnl=pos.realized_accum - total_fees - pos.funding_accum - pos.borrow_accum,
             fees=total_fees,
             funding=pos.funding_accum,
             borrow=pos.borrow_accum,

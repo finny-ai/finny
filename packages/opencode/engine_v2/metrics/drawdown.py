@@ -23,7 +23,10 @@ def max_drawdown(equity: np.ndarray) -> float:
     if equity.size == 0:
         return 0.0
     peak = np.maximum.accumulate(equity)
-    return float((equity / np.clip(peak, 1e-12, None) - 1.0).min())
+    dd = equity / np.clip(peak, 1e-12, None) - 1.0
+    # Insolvency: equity at or below zero is a total loss from peak.
+    dd = np.where(equity <= 0.0, -1.0, dd)
+    return float(dd.min())
 
 
 def _all_periods(equity: np.ndarray) -> List[DrawdownPeriod]:
