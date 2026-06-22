@@ -530,6 +530,64 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("overrides stale workspace algorithm name from explicit existing algorithm prompt", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "p500-1hr-trade-1h-strategy.22.6.00.39.0f9d37af"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt:
+                "Extract SPY 1h equity data from 2025-12-22 to 2026-06-21. requested_algorithm_name=p500-1hr-trade-1h-strategy",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          yield* def.execute(
+            {
+              description: "SPY robustness data",
+              prompt:
+                "Data request context: Build is improving EXISTING algorithm `spy-1h-momentum-breakout` v2 for SPY ETF, asset_class equity, interval 1h, full window 2025-12-22 to 2026-06-21.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain(`- workspace_slug: ${slug}`)
+          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
+          expect(text).not.toContain("- requested_algorithm_name: p500-1hr-trade-1h-strategy")
+          const persisted = yield* Effect.promise(() =>
+            fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
+          )
+          expect(persisted.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("reuses workspace request context when resuming data_extractor tasks", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {

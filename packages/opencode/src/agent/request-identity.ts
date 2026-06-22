@@ -144,8 +144,20 @@ function normalizeAssetClass(input?: string): AssetClass | undefined {
 // ── Prompt fact parsing ─────────────────────────────────────────────────────
 
 const INTERVAL_RE = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i
-const REQUESTED_ALGORITHM_NAME_RE =
-  /\b(?:requested_algorithm_name|algorithm\s+name|strategy\s+name)\s*[:=]\s*[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?|\b(?:name\s+it|named|called)\s+[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i
+const REQUESTED_ALGORITHM_NAME_RES = [
+  /\b(?:requested_algorithm_name|algorithm\s+name|strategy\s+name)\s*[:=]\s*[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i,
+  /\b(?:name\s+it|named|called)\s+[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i,
+  /\b(?:existing|current|active|saved)?\s*(?:algorithm|algo|strategy)\s+([`"'])([a-z0-9][a-z0-9._-]{2,})\1/i,
+]
+
+function requestedAlgorithmName(prompt: string): string | undefined {
+  for (const re of REQUESTED_ALGORITHM_NAME_RES) {
+    const match = re.exec(prompt)
+    const name = match?.[2] ?? match?.[1]
+    if (name) return name.replace(/[.,;:!?]+$/g, "")
+  }
+  return undefined
+}
 
 /**
  * Extract the immutable request facts from a free-form user prompt. Only facts
@@ -183,9 +195,8 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   const im = INTERVAL_RE.exec(prompt)
   if (im) facts.requested_interval = normalizeInterval(im[0])
 
-  const nm = REQUESTED_ALGORITHM_NAME_RE.exec(prompt)
-  const name = nm?.[1] ?? nm?.[2]
-  if (name) facts.requested_algorithm_name = name.replace(/[.,;:!?]+$/g, "")
+  const name = requestedAlgorithmName(prompt)
+  if (name) facts.requested_algorithm_name = name
 
   if (!facts.requested_asset_class) {
     const am = /\b(crypto|cryptocurrency|equity|equities|stock|stocks|etf)\b/i.exec(prompt)

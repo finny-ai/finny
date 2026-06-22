@@ -60,6 +60,23 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_algorithm_name).toBe("spy-5m-product-demo-20260614-v2")
     expect(parseRequestFacts("spy-5m-momentum").requested_algorithm_name).toBeUndefined()
   })
+
+  test("extracts explicit existing algorithm names from follow-up task prompts", () => {
+    const facts = parseRequestFacts(
+      "Data request context: Build is improving EXISTING algorithm `spy-1h-momentum-breakout` v2 for SPY ETF, interval 1h.",
+    )
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_interval).toBe("1h")
+    expect(facts.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
+    expect(parseRequestFacts('Build is improving algorithm "spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name).toBe(
+      "spy-1h-momentum-breakout",
+    )
+    expect(parseRequestFacts("Build is improving strategy 'spy-1h-momentum-breakout' for SPY 1h.").requested_algorithm_name).toBe(
+      "spy-1h-momentum-breakout",
+    )
+    expect(parseRequestFacts('Build is improving algorithm `spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name).toBeUndefined()
+    expect(parseRequestFacts("Strategy family momentum breakout for SPY 1h.").requested_algorithm_name).toBeUndefined()
+  })
 })
 
 describe("verifyIdentity", () => {
