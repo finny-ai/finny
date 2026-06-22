@@ -226,6 +226,10 @@ export const issue = internalMutation({
       plan_type: args.plan_type,
       status: "active" as const,
       time_updated: now,
+      // Clear any stale active window so a renewal/resume reactivates the
+      // license; check() denies rows whose active_from/active_until are stale.
+      active_from: undefined,
+      active_until: undefined,
       ...(args.max_devices_per_key !== undefined ? { max_devices_per_key: args.max_devices_per_key } : {}),
       ...(args.source !== undefined ? { source: args.source } : {}),
       ...(args.source_id !== undefined ? { source_id: args.source_id } : {}),
@@ -240,7 +244,13 @@ export const issue = internalMutation({
         .first()
 
       if (existingBySource) {
-        await ctx.db.patch(existingBySource._id, activePatch)
+        // Apply the requested identity so a rotated/reissued key takes effect;
+        // check() looks the license up by (org_id, license_key_hash).
+        await ctx.db.patch(existingBySource._id, {
+          ...activePatch,
+          org_id: args.org_id,
+          license_key_hash: licenseKeyHash,
+        })
         return { ok: true, license_id: existingBySource._id, deduped: true }
       }
     }
