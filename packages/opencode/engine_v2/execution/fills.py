@@ -117,15 +117,13 @@ def _effective_fill_cfg(fill_cfg: FillConfig, asset_class: str) -> FillConfig:
 
 
 def _trailing_stop_sell(order: Order, o: float, h: float, low: float, *, conservative: bool) -> Tuple[bool, float]:
-    sp = float(order.stop_price)  # type: ignore[arg-type]
+    current_stop = float(order.stop_price)  # type: ignore[arg-type]
+    if conservative and low <= current_stop:
+        return True, min(o, current_stop) if o <= current_stop else current_stop
     if conservative:
-        if low <= sp:
-            return True, min(o, sp) if o <= sp else sp
-        order.high_water = max(order.high_water, h)
-        order.stop_price = order.high_water - float(order.trail_amount or 0.0)
+        _refresh_sell_trail(order, h)
         return False, 0.0
-    order.high_water = max(order.high_water, h)
-    order.stop_price = order.high_water - float(order.trail_amount or 0.0)
+    _refresh_sell_trail(order, h)
     triggered = low <= float(order.stop_price)
     if not triggered:
         return False, 0.0
@@ -134,24 +132,30 @@ def _trailing_stop_sell(order: Order, o: float, h: float, low: float, *, conserv
 
 
 def _trailing_stop_buy(order: Order, o: float, h: float, low: float, *, conservative: bool) -> Tuple[bool, float]:
-    sp = float(order.stop_price)  # type: ignore[arg-type]
+    current_stop = float(order.stop_price)  # type: ignore[arg-type]
+    if conservative and h >= current_stop:
+        return True, max(o, current_stop) if o >= current_stop else current_stop
     if conservative:
-        if h >= sp:
-            return True, max(o, sp) if o >= sp else sp
-        if order.high_water == 0.0:
-            order.high_water = low
-        order.high_water = min(order.high_water, low) if order.high_water > 0 else low
-        order.stop_price = order.high_water + float(order.trail_amount or 0.0)
+        _refresh_buy_trail(order, low)
         return False, 0.0
-    if order.high_water == 0.0:
-        order.high_water = low
-    order.high_water = min(order.high_water, low) if order.high_water > 0 else low
-    order.stop_price = order.high_water + float(order.trail_amount or 0.0)
+    _refresh_buy_trail(order, low)
     triggered = h >= float(order.stop_price)
     if not triggered:
         return False, 0.0
     tp = float(order.stop_price)
     return True, max(o, tp) if o >= tp else tp
+
+
+def _refresh_sell_trail(order: Order, high: float) -> None:
+    order.high_water = max(order.high_water, high)
+    order.stop_price = order.high_water - float(order.trail_amount or 0.0)
+
+
+def _refresh_buy_trail(order: Order, low: float) -> None:
+    if order.high_water == 0.0:
+        order.high_water = low
+    order.high_water = min(order.high_water, low) if order.high_water > 0 else low
+    order.stop_price = order.high_water + float(order.trail_amount or 0.0)
 
 
 def _trailing_stop_triggered(
@@ -340,7 +344,7 @@ def process_open_orders_for_bar(
             queue, ba, i, costs, fill_cfg, asset_specs,
             participation_budget=participation_budget, margin_check=margin_check,
         )
-    o = float(ba.open[i])
+    o = ba.ohlc_at(i)[0]
     ts_ns = int(ba.ts[i])
     forecast_v = volume_forecast(ba, i)
     prior_atr = _prior_atr(ba, i)
@@ -393,9 +397,7 @@ def process_intrabar_orders_for_bar(
     """Intrabar conditional fills after strategy decision (limit/stop/trailing)."""
     if i >= len(ba) or fill_cfg.mode == "v1_compat":
         return []
-    o = float(ba.open[i])
-    h = float(ba.high[i])
-    low = float(ba.low[i])
+    o, h, low, _ = ba.ohlc_at(i)
     slip_volume = volume_forecast(ba, i)
     slip_atr = _prior_atr(ba, i)
     ts_ns = int(ba.ts[i])
@@ -476,10 +478,7 @@ def process_orders_for_bar(
         )
         return open_fills + intrabar_fills
 
-    o = float(ba.open[i])
-    h = float(ba.high[i])
-    low = float(ba.low[i])
-    c = float(ba.close[i])
+    o, h, low, c = ba.ohlc_at(i)
     v = float(ba.volume[i])
     atr_v = float(ba.atr[i]) if ba.atr is not None else float("nan")
     ts_ns = int(ba.ts[i])
