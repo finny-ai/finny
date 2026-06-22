@@ -351,6 +351,29 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
     return reasons
 
 
+def _maybe_start_window_reason(
+    first: pd.Timestamp,
+    requested_start: str | None,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    if not requested_start:
+        return None
+    start = pd.to_datetime(requested_start, utc=True)
+    return _start_window_reason(first, start, step, asset_class)
+
+
+def _maybe_end_window_reason(
+    last: pd.Timestamp,
+    requested_end: str | None,
+    step: pd.Timedelta,
+    asset_class: str,
+) -> str | None:
+    if not requested_end:
+        return None
+    return _end_window_reason(last, requested_end, step, asset_class)
+
+
 def requested_window_reasons(
     df: pd.DataFrame,
     interval: str,
@@ -363,14 +386,10 @@ def requested_window_reasons(
         return ["empty input"]
     step = expected_step(interval)
     ts = pd.to_datetime(df["timestamp"], utc=True)
-    reasons: List[str] = []
-    if requested_start:
-        start = pd.to_datetime(requested_start, utc=True)
-        reason = _start_window_reason(ts.iloc[0], start, step, asset_class)
-        if reason:
-            reasons.append(reason)
-    if requested_end:
-        reason = _end_window_reason(ts.iloc[-1], requested_end, step, asset_class)
-        if reason:
-            reasons.append(reason)
-    return reasons
+    return [
+        reason for reason in (
+            _maybe_start_window_reason(ts.iloc[0], requested_start, step, asset_class),
+            _maybe_end_window_reason(ts.iloc[-1], requested_end, step, asset_class),
+        )
+        if reason
+    ]

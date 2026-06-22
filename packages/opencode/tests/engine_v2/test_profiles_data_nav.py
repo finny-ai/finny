@@ -72,9 +72,9 @@ def test_symbol_asset_class_mismatch_requires_complete_custom_spec():
     assert spec.assetClass == "equity"
 
 
-def test_exchange_calendar_coverage_flags_truncated_equity_window():
-    ts = pd.date_range("2024-01-02 14:30", periods=10, freq="15min", tz="UTC")
-    rows = pd.DataFrame({
+def _equity_intraday_rows(start: str, periods: int) -> pd.DataFrame:
+    ts = pd.date_range(start, periods=periods, freq="15min", tz="UTC")
+    return pd.DataFrame({
         "timestamp": ts,
         "open": np.full(len(ts), 100.0),
         "high": np.full(len(ts), 101.0),
@@ -82,9 +82,34 @@ def test_exchange_calendar_coverage_flags_truncated_equity_window():
         "close": np.full(len(ts), 100.0),
         "volume": np.full(len(ts), 1000.0),
     })
-    report = DQ.analyze(rows, "15min", "equity", provider="test")
-    assert report.coverage_pct < 1.0
-    assert any("coverage" in reason for reason in DQ.blocking_reasons(report, "equity"))
+
+
+def _coverage_blocking_reasons(periods: int) -> tuple[float, list[str]]:
+    report = DQ.analyze(_equity_intraday_rows("2024-01-02 14:30", periods), "15min", "equity", provider="test")
+    return report.coverage_pct, DQ.blocking_reasons(report, "equity")
+
+
+def _assert_coverage_expectation(periods: int, expect_truncated: bool) -> None:
+    coverage_pct, reasons = _coverage_blocking_reasons(periods)
+    has_coverage_block = any("coverage" in reason for reason in reasons)
+    assert (coverage_pct < 1.0) == expect_truncated
+    assert has_coverage_block == expect_truncated
+
+
+@pytest.mark.parametrize("periods,expect_truncated", [(10, True), (26, False)])
+def test_exchange_calendar_coverage_for_equity_session(periods: int, expect_truncated: bool):
+    _assert_coverage_expectation(periods, expect_truncated)
+
+
+def test_requested_window_allows_weekend_start_for_equity():
+    reasons = DQ.requested_window_reasons(
+        _equity_intraday_rows("2024-01-08 14:30", 10),
+        "15min",
+        "equity",
+        requested_start="2024-01-07",
+        requested_end=None,
+    )
+    assert reasons == []
 
 
 def test_terminal_liquidation_nav_cancels_pending_and_closes_positions():
@@ -104,64 +129,17 @@ def test_terminal_liquidation_nav_cancels_pending_and_closes_positions():
     assert terminal["nav"] < broker.get_equity()
 
 
-def test_exchange_calendar_coverage_flags_truncated_equity_window():
-    ts = pd.date_range("2024-01-02 14:30", periods=10, freq="15min", tz="UTC")
-    rows = pd.DataFrame({
-        "timestamp": ts,
-        "open": np.full(len(ts), 100.0),
-        "high": np.full(len(ts), 101.0),
-        "low": np.full(len(ts), 99.0),
-        "close": np.full(len(ts), 100.0),
-        "volume": np.full(len(ts), 1000.0),
-    })
-    report = DQ.analyze(rows, "15min", "equity", provider="test")
-    assert report.coverage_pct < 1.0
-    assert any("coverage" in reason for reason in DQ.blocking_reasons(report, "equity"))
-
-
-def test_exchange_calendar_coverage_accepts_full_single_session():
-    ts = pd.date_range("2024-01-02 14:30", periods=26, freq="15min", tz="UTC")
-    rows = pd.DataFrame({
-        "timestamp": ts,
-        "open": np.full(len(ts), 100.0),
-        "high": np.full(len(ts), 101.0),
-        "low": np.full(len(ts), 99.0),
-        "close": np.full(len(ts), 100.0),
-        "volume": np.full(len(ts), 1000.0),
-    })
-    report = DQ.analyze(rows, "15min", "equity", provider="test")
-    assert report.coverage_pct >= 0.95
-    assert not any("coverage" in reason for reason in DQ.blocking_reasons(report, "equity"))
-
-
-def test_requested_window_allows_weekend_start_for_equity():
-    ts = pd.date_range("2024-01-08 14:30", periods=10, freq="15min", tz="UTC")
-    rows = pd.DataFrame({
-        "timestamp": ts,
-        "open": np.full(len(ts), 100.0),
-        "high": np.full(len(ts), 101.0),
-        "low": np.full(len(ts), 99.0),
-        "close": np.full(len(ts), 100.0),
-        "volume": np.full(len(ts), 1000.0),
-    })
-    reasons = DQ.requested_window_reasons(
-        rows, "15min", "equity", requested_start="2024-01-07", requested_end=None,
-    )
-    assert reasons == []
+def _roll_bar_values(i: int) -> tuple[float, float]:
+    base = 100.0 + i + (20.0 if i >= 30 else 0.0) - (15.0 if i >= 60 else 0.0)
+    volume = 5000.0 if i in {30, 60} else 1000.0
+    return base, volume
 
 
 def _multi_roll_futures_rows() -> pd.DataFrame:
-    rows = []
     ts = pd.date_range("2024-01-01", periods=80, freq="D", tz="UTC")
+    rows = []
     for i, t in enumerate(ts):
-        base = 100.0 + i
-        volume = 1000.0
-        if i >= 30:
-            base += 20.0
-            volume = 5000.0 if i == 30 else volume
-        if i >= 60:
-            base -= 15.0
-            volume = 5000.0 if i == 60 else volume
+        base, volume = _roll_bar_values(i)
         rows.append({
             "timestamp": t,
             "open": base,

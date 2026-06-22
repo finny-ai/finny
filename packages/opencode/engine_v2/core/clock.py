@@ -46,22 +46,39 @@ def _daily_bars_per_year(day_span: float, trading_days: float) -> float:
     return trading_days / day_span
 
 
+def _calendar_session_minutes(calendar: str) -> float | None:
+    return {
+        "US_EQUITIES": 6.5 * 60.0,
+        "US_OPTIONS": 6.5 * 60.0,
+        "US_FUTURES": 23.0 * 60.0,
+    }.get(calendar.upper())
+
+
+def _interval_minutes(normalized: str) -> float | None:
+    if normalized.endswith("m"):
+        return float(int(normalized[:-1]))
+    if normalized.endswith("h"):
+        return float(int(normalized[:-1]) * 60)
+    return None
+
+
+def _interval_day_span(normalized: str) -> float:
+    return float(int(normalized[:-1])) if normalized.endswith("d") else 1.0
+
+
+def _session_calendar_bars_per_year(normalized: str, session_minutes: float) -> float:
+    minutes = _interval_minutes(normalized)
+    if minutes is not None:
+        return _intraday_bars_per_year(minutes, session_minutes, 252.0)
+    return _daily_bars_per_year(_interval_day_span(normalized), 252.0)
+
+
 def _calendar_bars_per_year_for_calendar(interval: str, calendar: str, bars_per_day: float) -> float:
-    cal = calendar.upper()
-    s = _normalize_interval(interval)
-    if cal in {"US_EQUITIES", "US_OPTIONS"}:
-        if s.endswith(("m", "h")):
-            minutes = int(s[:-1]) if s.endswith("m") else int(s[:-1]) * 60
-            return _intraday_bars_per_year(minutes, 6.5 * 60.0, 252.0)
-        days = int(s[:-1]) if s.endswith("d") else 1
-        return _daily_bars_per_year(days, 252.0)
-    if cal == "US_FUTURES":
-        if s.endswith(("m", "h")):
-            minutes = int(s[:-1]) if s.endswith("m") else int(s[:-1]) * 60
-            return _intraday_bars_per_year(minutes, 23.0 * 60.0, 252.0)
-        days = int(s[:-1]) if s.endswith("d") else 1
-        return _daily_bars_per_year(days, 252.0)
-    if cal == "FX_24_5":
+    session_minutes = _calendar_session_minutes(calendar)
+    normalized = _normalize_interval(interval)
+    if session_minutes is not None:
+        return _session_calendar_bars_per_year(normalized, session_minutes)
+    if calendar.upper() == "FX_24_5":
         return bars_per_day * 260.0
     return bars_per_day * 365.0
 
