@@ -175,6 +175,12 @@ export namespace EngineV2 {
     oos_sharpe: number | null
     is_return: number
     oos_return: number
+    oos_trades?: number
+    oos_bars?: number
+    oos_coverage?: number
+    oos_max_drawdown?: number
+    ruined?: boolean
+    selected_params?: Record<string, unknown> | null
   }
 
   export interface WalkForwardSummary {
@@ -182,10 +188,20 @@ export namespace EngineV2 {
     is_sharpe_mean: number
     oos_sharpe_mean: number
     oos_decay: number
+    is_to_oos_sharpe_change?: number
     flag_threshold: number
     flagged: boolean
     deflated_sharpe: number | null
     probabilistic_sharpe: number | null
+    stitched_oos_return?: number
+    stitched_oos_sharpe?: number
+    stitched_oos_trades?: number
+    stitched_oos_bars?: number
+    stitched_oos_coverage?: number
+    ruined_folds?: number
+    tested_models?: number
+    tested_parameter_combinations?: number
+    multiple_testing_trials?: number
     folds: WalkForwardFold[]
   }
 

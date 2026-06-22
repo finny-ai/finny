@@ -210,7 +210,7 @@ Every strategy file is created only by `finny_algorithm_save`; do not write file
 
 - `name`, full `code`, `saveMode`, `description`, `reasoning`
 - `config` with complete execution inputs for new algorithms: `symbol`,
-  `asset_class`, `interval`, and non-empty strategy knobs under `params`
+  `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`
 - If the user gave exact backtest dates, preserve `backtest: { "start": "YYYY-MM-DD", "end": "YYYY-MM-DD" }`; do not only store a relative duration.
 
 For new algorithms include `mission`, `prefs`, and `decisions`.

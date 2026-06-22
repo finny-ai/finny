@@ -91,7 +91,7 @@ export namespace Validate {
   // Config keys that are legitimately metadata (not expected to appear in strategy code).
   const CONFIG_META_KEYS = new Set([
     // Strategy-level metadata
-    "symbol", "interval", "risk", "starting_equity_usd",
+    "symbol", "interval", "required_history_bars", "risk", "starting_equity_usd",
     // Platform-level metadata (injected by runner / used by backtest harness, not by strategy code)
     "asset_class", "asset_type", "asset_spec", "assetClass", "venue", "currency",
     "calendar", "tickSize", "lotSize", "multiplier", "feeModel", "marginModel",

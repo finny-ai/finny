@@ -312,7 +312,7 @@ export const AlgorithmSaveTool = Tool.define(
               if (missingConfig.length > 0) {
                 configIssues.push(
                   `missing required config field(s): ${missingConfig.join(", ")} — include symbol, asset_class, ` +
-                    `interval, and non-empty strategy params under params in the save config; do not save first ` +
+                    `interval, required_history_bars, and non-empty strategy params under params in the save config; do not save first ` +
                     `and patch with finny_algorithm_set_params`,
                 )
               }

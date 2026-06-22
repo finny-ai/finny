@@ -26,7 +26,7 @@ const DESCRIPTION = [
   "  - backtest.duration  ('2w', '4w', '5d', '1m', '1y', etc.)",
   "  - strategy params under params",
   "",
-  "Do not change execution identity fields here: symbol, asset_class, interval, or brokerage.",
+  "Do not change execution identity fields here: symbol, asset_class, interval, required_history_bars, or brokerage.",
   "If one of those changes, save a new version with complete config and matching code/name instead.",
   "Call eagerly for allowed fields only — once per parameter as it surfaces. Pass only fields you have a value for.",
   "Use null to clear a field. The tool merges into the existing config, so prior values stick.",
@@ -35,7 +35,7 @@ const DESCRIPTION = [
   "If no algorithm exists yet, save one with complete config via finny_algorithm_save; do not save first and patch missing config here.",
 ].join("\n")
 
-const IDENTITY_KEYS = ["symbol", "asset_class", "interval", "brokerage"] as const
+const IDENTITY_KEYS = ["symbol", "asset_class", "interval", "required_history_bars", "brokerage"] as const
 
 export function blockedIdentityParamKeys(params: Partial<StrategyParams>): string[] {
   return IDENTITY_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(params, key))

@@ -13,8 +13,11 @@ import pandas as pd
 def bar_returns(equity: np.ndarray) -> np.ndarray:
     if equity.size < 2:
         return np.zeros(0)
-    prev = np.clip(equity[:-1], 1e-12, None)
-    return (equity[1:] - prev) / prev
+    prev = equity[:-1]
+    valid = np.minimum.accumulate(prev) > 0
+    if not np.any(valid):
+        return np.zeros(0)
+    return (equity[1:][valid] - prev[valid]) / prev[valid]
 
 
 def total_return(equity: np.ndarray) -> float:

@@ -43,6 +43,7 @@ export namespace BacktestRunner {
       monteCarloPaths?: number
       regimes?: boolean
       walkForwardFolds?: number
+      parameterGrid?: Record<string, Array<number | string | boolean>> | Array<Record<string, number | string | boolean>>
     }
     sessionID?: string
   }
@@ -1207,6 +1208,7 @@ if __name__ == "__main__":
     return JSON.stringify(
       {
         symbol,
+        required_history_bars: 30,
         risk: { starting_equity_usd: 10000 },
         _generated: "fallback — algorithm had no config",
       },
@@ -1441,6 +1443,16 @@ if __name__ == "__main__":
         throw e
       }
     }
+    if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {
+      const historyBars = (effectiveConfig as any).required_history_bars
+      if (!Number.isInteger(historyBars) || historyBars < 0) {
+        return {
+          ok: false,
+          error: "Walk-forward robustness requires config.required_history_bars as a non-negative integer.",
+          kind: "config_invalid",
+        }
+      }
+    }
     applyConfigOverrides(effectiveConfig, configOverrides)
     if (!effectiveConfig.symbol || typeof effectiveConfig.symbol !== "string" || effectiveConfig.symbol.trim() === "") {
       return {
@@ -1644,6 +1656,9 @@ if __name__ == "__main__":
         if (robustness.regimes ?? true) engineArgs.push("--regimes")
         if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {
           engineArgs.push("--wf-folds", String(robustness.walkForwardFolds))
+        }
+        if (robustness.parameterGrid) {
+          engineArgs.push("--param-grid-json", JSON.stringify(robustness.parameterGrid))
         }
 
         const engineResult = await Process.run(engineArgs, {

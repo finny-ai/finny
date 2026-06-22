@@ -41,6 +41,7 @@ from engine_v2.robustness.regime import classify_bars, classify_trend, breakdown
 from engine_v2.robustness.walkforward import run_walk_forward
 from engine_v2.metrics import ratios as M_ratios
 from engine_v2.metrics import returns as M_returns
+from engine_v2.metrics import drawdown as M_drawdown
 from engine_v2.runtime.broker import PortfolioBroker
 from engine_v2.runtime.loop import run_loop
 
@@ -510,6 +511,26 @@ def _run_shapec_strict_worker(
         worker.close()
 
 
+def _param_grid_from_json(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    if not raw:
+        return None
+    parsed = json.loads(raw)
+    if isinstance(parsed, list):
+        return [dict(item) for item in parsed if isinstance(item, dict)]
+    if not isinstance(parsed, dict):
+        raise SystemExit("--param-grid-json must be an object or array of objects")
+    combos: List[Dict[str, Any]] = [{}]
+    for key, values in parsed.items():
+        if not isinstance(values, list) or len(values) == 0:
+            raise SystemExit(f"param grid key {key!r} must map to a non-empty list")
+        next_combos: List[Dict[str, Any]] = []
+        for combo in combos:
+            for value in values:
+                next_combos.append({**combo, str(key): value})
+        combos = next_combos
+    return combos
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="engine_v2")
     ap.add_argument("--csv", required=True)
@@ -523,6 +544,8 @@ def main() -> None:
                     help="If >0, run Monte-Carlo trade-shuffle with N paths")
     ap.add_argument("--wf-folds", type=int, default=0,
                     help="If >0, run N rolling walk-forward folds")
+    ap.add_argument("--param-grid-json", default=None,
+                    help="JSON parameter grid for true fold-local walk-forward optimization")
     ap.add_argument("--data-quality-mode", choices=["strict", "repair_outliers"], default="strict")
     ap.add_argument("--regimes", action="store_true")
     ap.add_argument("--start-date", default=None)
@@ -534,6 +557,18 @@ def main() -> None:
 
     cfg = json.loads(Path(args.config).read_text())
     cfg.setdefault("risk", {})["starting_equity_usd"] = float(args.capital)
+    required_history_bars_raw = cfg.get("required_history_bars")
+    required_history_bars = 0
+    if required_history_bars_raw is not None:
+        try:
+            required_history_bars = int(required_history_bars_raw)
+        except (TypeError, ValueError):
+            raise SystemExit("required_history_bars must be a non-negative integer")
+        if required_history_bars < 0:
+            raise SystemExit("required_history_bars must be a non-negative integer")
+    if args.wf_folds and args.wf_folds >= 2 and required_history_bars_raw is None:
+        raise SystemExit("Walk-forward robustness requires config.required_history_bars")
+    param_grid = _param_grid_from_json(args.param_grid_json)
     symbol = cfg["symbol"]
     asset_spec = resolve_asset_spec(cfg)
     if asset_spec.assetClass == "option" and os.environ.get("FINNY_ALLOW_EXPERIMENTAL_OPTIONS") != "1":
@@ -695,7 +730,7 @@ def main() -> None:
 
     wf = None
     if args.wf_folds and args.wf_folds >= 2:
-        def fold_runner(start_idx: int, end_idx: int) -> Dict[str, Any]:
+        def fold_runner(start_idx: int, end_idx: int, eval_start_idx: int, fold_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
             if end_idx - start_idx < 2:
                 return {"sharpe": 0.0, "total_return": 0.0, "returns": np.zeros(0)}
             fold_df = df.iloc[start_idx:end_idx].reset_index(drop=True)
@@ -706,12 +741,15 @@ def main() -> None:
                 classify_bars(fold_ba.close, lookback=30),
                 classify_trend(fold_ba.close, lookback=50),
             )
-            fold_broker = _build_broker(fold_snap, cfg, args.interval, args.mode, asset_spec)
+            fold_cfg = json.loads(json.dumps(cfg))
+            if fold_params is not None:
+                fold_cfg["params"] = fold_params
+            fold_broker = _build_broker(fold_snap, fold_cfg, args.interval, args.mode, asset_spec)
             if args.mode == "v2":
-                fold_result = _run_shapec_strict_worker(fold_broker, fold_snap, strategy_path, symbol, params)
+                fold_result = _run_shapec_strict_worker(fold_broker, fold_snap, strategy_path, symbol, fold_cfg.get("params", None))
             else:
                 fold_strat, fold_shape = _run_strategy(
-                    fold_broker, fold_snap, strategy_path, Path(args.config), symbol, params
+                    fold_broker, fold_snap, strategy_path, Path(args.config), symbol, fold_cfg.get("params", None)
                 )
                 if fold_shape == "shapec":
                     def fold_cb():
@@ -721,17 +759,28 @@ def main() -> None:
                 else:
                     fold_result = run_loop(fold_broker, fold_snap, lambda: fold_strat.on_bar())
             fold_equity = fold_result.equity_curve
-            fold_returns = M_returns.bar_returns(fold_equity)
+            eval_offset = max(0, min(eval_start_idx - start_idx, fold_equity.size - 1))
+            eval_equity = fold_equity[eval_offset:]
+            fold_returns = M_returns.bar_returns(eval_equity)
+            eval_start_ns = int(ts_ns[eval_start_idx])
+            eval_trades = [t for t in fold_broker.book.trades if t.exit_ts_ns >= eval_start_ns]
             return {
                 "sharpe": M_ratios.sharpe(fold_returns, bars_per_year),
-                "total_return": M_returns.total_return(fold_equity),
+                "total_return": M_returns.total_return(eval_equity),
                 "returns": fold_returns,
+                "trades": len(eval_trades),
+                "bars": int(max(0, eval_equity.size - 1)),
+                "max_drawdown": M_drawdown.max_drawdown(eval_equity),
+                "min_equity": float(np.min(eval_equity)) if eval_equity.size else 0.0,
+                "ruined": bool(eval_equity.size and np.min(eval_equity) <= 0.0),
             }
         wf = run_walk_forward(
             fold_runner,
             n_bars=int(ba.ts.shape[0]),
             ts_ns=ba.ts,
             n_folds=int(args.wf_folds),
+            required_history_bars=required_history_bars,
+            param_grid=param_grid,
         )
 
     # Monte-Carlo

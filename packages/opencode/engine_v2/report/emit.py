@@ -249,10 +249,20 @@ def assemble(
             is_sharpe_mean=walk_forward.is_sharpe_mean,
             oos_sharpe_mean=walk_forward.oos_sharpe_mean,
             oos_decay=walk_forward.oos_decay,
+            is_to_oos_sharpe_change=walk_forward.is_to_oos_sharpe_change,
             flag_threshold=walk_forward.flag_threshold,
             flagged=walk_forward.flagged,
             deflated_sharpe=walk_forward.deflated_sharpe,
             probabilistic_sharpe=walk_forward.probabilistic_sharpe,
+            stitched_oos_return=walk_forward.stitched_oos_return,
+            stitched_oos_sharpe=walk_forward.stitched_oos_sharpe,
+            stitched_oos_trades=walk_forward.stitched_oos_trades,
+            stitched_oos_bars=walk_forward.stitched_oos_bars,
+            stitched_oos_coverage=walk_forward.stitched_oos_coverage,
+            ruined_folds=walk_forward.ruined_folds,
+            tested_models=walk_forward.tested_models,
+            tested_parameter_combinations=walk_forward.tested_parameter_combinations,
+            multiple_testing_trials=walk_forward.multiple_testing_trials,
             folds=[
                 S.WalkForwardFold(
                     fold=f.fold,
@@ -262,6 +272,9 @@ def assemble(
                     test_end=str(pd.Timestamp(f.test_end_ns, unit="ns", tz="UTC")),
                     is_sharpe=f.is_sharpe, oos_sharpe=f.oos_sharpe,
                     is_return=f.is_return, oos_return=f.oos_return,
+                    oos_trades=f.oos_trades, oos_bars=f.oos_bars,
+                    oos_coverage=f.oos_coverage, oos_max_drawdown=f.oos_max_drawdown,
+                    ruined=f.ruined, selected_params=f.selected_params,
                 )
                 for f in walk_forward.folds
             ],

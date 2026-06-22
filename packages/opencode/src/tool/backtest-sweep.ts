@@ -59,6 +59,15 @@ function fmtParams(p: Combo): string {
     .join(", ")
 }
 
+function nestedOosScore(metrics: BacktestRunner.Results): { sharpe: number; ret: number; trades: number } {
+  const wf = metrics.v2?.walk_forward
+  return {
+    sharpe: Number.isFinite(wf?.stitched_oos_sharpe) ? Number(wf?.stitched_oos_sharpe) : Number(wf?.oos_sharpe_mean ?? metrics.sharpeRatio),
+    ret: Number.isFinite(wf?.stitched_oos_return) ? Number(wf?.stitched_oos_return) : metrics.totalReturn,
+    trades: Number.isFinite(wf?.stitched_oos_trades) ? Number(wf?.stitched_oos_trades) : metrics.totalTrades,
+  }
+}
+
 export const BacktestSweepTool = Tool.define(
   "finny_backtest_sweep",
   Effect.succeed({
@@ -161,24 +170,28 @@ export const BacktestSweepTool = Tool.define(
           }
         }
 
-        const best = successes.reduce((a, b) =>
-          (b.metrics!.sharpeRatio > a.metrics!.sharpeRatio ? b : a),
-        )
-        const worst = successes.reduce((a, b) =>
-          (b.metrics!.sharpeRatio < a.metrics!.sharpeRatio ? b : a),
-        )
+        const best = successes.reduce((a, b) => {
+          const aa = nestedOosScore(a.metrics!)
+          const bb = nestedOosScore(b.metrics!)
+          return (bb.sharpe > aa.sharpe || (bb.sharpe === aa.sharpe && bb.ret > aa.ret) ? b : a)
+        })
+        const worst = successes.reduce((a, b) => {
+          const aa = nestedOosScore(a.metrics!)
+          const bb = nestedOosScore(b.metrics!)
+          return (bb.sharpe < aa.sharpe || (bb.sharpe === aa.sharpe && bb.ret < aa.ret) ? b : a)
+        })
 
-        const sharpes = successes.map((r) => r.metrics!.sharpeRatio)
-        const returns = successes.map((r) => r.metrics!.totalReturn)
+        const sharpes = successes.map((r) => nestedOosScore(r.metrics!).sharpe)
+        const returns = successes.map((r) => nestedOosScore(r.metrics!).ret)
         const sharpeRange = Math.max(...sharpes) - Math.min(...sharpes)
         const sharpeAbs = Math.max(...sharpes.map(Math.abs))
         const sharpeFragility = sharpeAbs > 0 ? sharpeRange / sharpeAbs : 0
 
         let verdict: "robust" | "fragile" | "broken"
         let verdictReason: string
-        if (best.metrics!.sharpeRatio <= 0) {
+        if (nestedOosScore(best.metrics!).sharpe <= 0) {
           verdict = "broken"
-          verdictReason = "Best Sharpe across the grid is non-positive — the strategy does not work in this regime."
+          verdictReason = "Best nested OOS Sharpe across the grid is non-positive — the strategy does not work in this regime."
         } else if (sharpeFragility > 0.5) {
           verdict = "fragile"
           verdictReason = `Sharpe range across the grid is ${(sharpeFragility * 100).toFixed(0)}% of the peak — the strategy's success depends heavily on specific parameter values (likely overfit).`
@@ -188,7 +201,7 @@ export const BacktestSweepTool = Tool.define(
         }
 
         const tableLines: string[] = []
-        const headers = ["params", "return%", "sharpe", "maxDD%", "trades", "winRate%", "PF"]
+        const headers = ["params", "nestedOOSReturn%", "nestedOOSSharpe", "nestedOOSTrades", "maxDD%", "winRate%", "PF"]
         tableLines.push(headers.join("\t"))
         for (const r of results) {
           if (!r.ok || !r.metrics) {
@@ -196,13 +209,14 @@ export const BacktestSweepTool = Tool.define(
             continue
           }
           const m = r.metrics
+          const oos = nestedOosScore(m)
           tableLines.push(
             [
               fmtParams(r.params),
-              (m.totalReturn * 100).toFixed(2),
-              m.sharpeRatio.toFixed(2),
+              (oos.ret * 100).toFixed(2),
+              oos.sharpe.toFixed(2),
+              String(oos.trades),
               (m.maxDrawdown * 100).toFixed(2),
-              String(m.totalTrades),
               (m.winRate * 100).toFixed(1),
               m.profitFactor == null ? "N/A" : m.profitFactor.toFixed(2),
             ].join("\t"),
@@ -217,8 +231,8 @@ export const BacktestSweepTool = Tool.define(
           ``,
           ...tableLines,
           ``,
-          `Best:  ${fmtParams(best.params)}  →  Sharpe ${best.metrics!.sharpeRatio.toFixed(2)}, return ${(best.metrics!.totalReturn * 100).toFixed(2)}%`,
-          `Worst: ${fmtParams(worst.params)}  →  Sharpe ${worst.metrics!.sharpeRatio.toFixed(2)}, return ${(worst.metrics!.totalReturn * 100).toFixed(2)}%`,
+          `Best:  ${fmtParams(best.params)}  →  nested OOS Sharpe ${nestedOosScore(best.metrics!).sharpe.toFixed(2)}, return ${(nestedOosScore(best.metrics!).ret * 100).toFixed(2)}%`,
+          `Worst: ${fmtParams(worst.params)}  →  nested OOS Sharpe ${nestedOosScore(worst.metrics!).sharpe.toFixed(2)}, return ${(nestedOosScore(worst.metrics!).ret * 100).toFixed(2)}%`,
           `Sharpe range: ${sharpeRange.toFixed(2)} (${(sharpeFragility * 100).toFixed(0)}% of peak)`,
           `Return range: ${(Math.max(...returns) * 100 - Math.min(...returns) * 100).toFixed(2)}pp`,
           ``,
