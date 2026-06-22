@@ -40,8 +40,8 @@ async function readHistory(): Promise<BacktestHistoryEntry[]> {
 
 export function formatBacktestHistoryEntries(entries: BacktestHistoryEntry[]): string {
   const groups = [
-    ["Crucible 2.0 runs", entries.filter((e) => e.results.runKind !== "legacy")],
-    ["Legacy runs", entries.filter((e) => e.results.runKind === "legacy")],
+    ["Crucible 2.0 runs", entries.filter((e) => e.results.runKind === "crucible_2_0")],
+    ["Legacy runs", entries.filter((e) => e.results.runKind !== "crucible_2_0")],
   ] as const
 
   return groups
@@ -51,7 +51,7 @@ export function formatBacktestHistoryEntries(entries: BacktestHistoryEntry[]): s
         const r = e.results
         return [
           `--- ${e.algorithmName} ---`,
-          `Run surface: ${r.productLabel ?? (r.runKind === "legacy" ? "Legacy backtest" : "Crucible 2.0")}`,
+          `Run surface: ${r.productLabel ?? (r.runKind === "crucible_2_0" ? "Crucible 2.0" : "Legacy backtest")}`,
           `Date: ${new Date(e.timestamp).toISOString().slice(0, 19)}`,
           `Params: duration=${e.params.duration} interval=${e.params.interval} capital=$${e.params.capital}`,
           e.symbol ? `Symbol: ${e.symbol}` : null,

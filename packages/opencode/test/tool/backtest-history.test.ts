@@ -37,4 +37,14 @@ describe("formatBacktestHistoryEntries", () => {
     expect(output).toContain("== Legacy runs ==")
     expect(output).toContain("Run surface: Legacy backtest")
   })
+
+  test("treats pre-migration entries without runKind as legacy", () => {
+    const output = formatBacktestHistoryEntries([
+      { ...base, results: results({}) as any },
+    ])
+
+    expect(output).toContain("== Legacy runs ==")
+    expect(output).not.toContain("== Crucible 2.0 runs ==")
+    expect(output).toContain("Run surface: Legacy backtest")
+  })
 })

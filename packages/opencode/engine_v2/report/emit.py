@@ -279,9 +279,17 @@ def assemble(
     margin_used = float(broker.account.required_initial_margin(broker.book.positions))
     free_margin = float(broker.account.free_margin(broker.book.positions))
     mtm_nav = float(equity[-1]) if equity.size else float(starting_equity)
-    liquidation_nav = max(0.0, mtm_nav - max(0.0, margin_used - free_margin))
+    start_ts = str(pd.Timestamp(int(ts_ns[0]), unit="ns", tz="UTC")) if equity.size else ""
+    end_ts = str(pd.Timestamp(int(ts_ns[-1]), unit="ns", tz="UTC")) if equity.size else ""
+    margin_stress_enabled = (
+        broker.account.max_leverage > 1.0 and broker.account.maintenance_margin_pct > 0.0
+    )
+    if margin_stress_enabled:
+        liquidation_nav = max(0.0, mtm_nav - max(0.0, margin_used - free_margin))
+    else:
+        liquidation_nav = mtm_nav
     total_costs = float(ex_block.total_fees + ex_block.total_funding + ex_block.total_borrow)
-    profile_id = f"{schema_engine_version}:{seed}:{','.join(snap.symbols)}:{interval}"
+    profile_id = f"{schema_engine_version}:{seed}:{','.join(snap.symbols)}:{interval}:{start_ts}:{end_ts}"
     sens: List[S.SensitivityOutcome] = []
     if mc_block is not None:
         sens.append(S.SensitivityOutcome(
@@ -314,8 +322,8 @@ def assemble(
         ending_equity=float(equity[-1]) if equity.size else float(starting_equity),
         bars_processed=int(equity.size),
         interval=interval,
-        start_ts=str(pd.Timestamp(int(ts_ns[0]), unit="ns", tz="UTC")) if equity.size else "",
-        end_ts=str(pd.Timestamp(int(ts_ns[-1]), unit="ns", tz="UTC")) if equity.size else "",
+        start_ts=start_ts,
+        end_ts=end_ts,
         symbols=list(snap.symbols),
         total_return=ret_block.total_return,
         max_drawdown=dd_block.max_drawdown,

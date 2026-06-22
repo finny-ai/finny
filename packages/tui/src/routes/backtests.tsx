@@ -39,7 +39,60 @@ const DURATION_LABELS: Record<string, string> = {
 }
 
 function isCrucibleRun(entry: BacktestHistoryEntry): boolean {
-  return entry.results.runKind !== "legacy"
+  return entry.results.runKind === "crucible_2_0"
+}
+
+function RunRow(props: {
+  entry: BacktestHistoryEntry
+  onOpen: (entry: BacktestHistoryEntry) => void
+}) {
+  const { theme } = useTheme()
+  const returnColor = () =>
+    props.entry.results.totalReturn >= 0 ? theme.success : theme.error
+  return (
+    <box
+      flexDirection="row"
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={0}
+      paddingBottom={0}
+      onMouseUp={() => props.onOpen(props.entry)}
+    >
+      <box width={24} flexShrink={0}>
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+          {props.entry.algorithmName}
+        </text>
+      </box>
+      <box width={12} flexShrink={0}>
+        <text fg={theme.textMuted}>
+          {DURATION_LABELS[props.entry.params.duration] ?? props.entry.params.duration} · {props.entry.params.interval}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={returnColor()} attributes={TextAttributes.BOLD}>
+          {formatPercent(props.entry.results.totalReturn)}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={theme.error}>
+          {formatPercent(props.entry.results.maxDrawdown)}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={returnColor()}>
+          {formatCurrency(props.entry.results.endingEquity)}
+        </text>
+      </box>
+      <box width={10} flexShrink={0}>
+        <text fg={theme.text}>
+          {props.entry.results.totalTrades}
+        </text>
+      </box>
+      <box flexGrow={1}>
+        <text fg={theme.textMuted}>{formatRelative(props.entry.timestamp)}</text>
+      </box>
+    </box>
+  )
 }
 
 export function Backtests() {
@@ -146,54 +199,7 @@ export function Backtests() {
                     </box>
                   </Show>
                   <For each={crucibleRuns()}>
-                    {(entry) => {
-                      const returnColor = () =>
-                        entry.results.totalReturn >= 0 ? theme.success : theme.error
-                      return (
-                        <box
-                          flexDirection="row"
-                          paddingLeft={1}
-                          paddingRight={1}
-                          paddingTop={0}
-                          paddingBottom={0}
-                          onMouseUp={() => openRun(entry)}
-                        >
-                          <box width={24} flexShrink={0}>
-                            <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                              {entry.algorithmName}
-                            </text>
-                          </box>
-                          <box width={12} flexShrink={0}>
-                            <text fg={theme.textMuted}>
-                              {DURATION_LABELS[entry.params.duration] ?? entry.params.duration} · {entry.params.interval}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()} attributes={TextAttributes.BOLD}>
-                              {formatPercent(entry.results.totalReturn)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={theme.error}>
-                              {formatPercent(entry.results.maxDrawdown)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()}>
-                              {formatCurrency(entry.results.endingEquity)}
-                            </text>
-                          </box>
-                          <box width={10} flexShrink={0}>
-                            <text fg={theme.text}>
-                              {entry.results.totalTrades}
-                            </text>
-                          </box>
-                          <box flexGrow={1}>
-                            <text fg={theme.textMuted}>{formatRelative(entry.timestamp)}</text>
-                          </box>
-                        </box>
-                      )
-                    }}
+                    {(entry) => <RunRow entry={entry} onOpen={openRun} />}
                   </For>
                   <Show when={legacyRuns().length > 0}>
                     <box paddingLeft={1} paddingTop={1}>
@@ -201,54 +207,7 @@ export function Backtests() {
                     </box>
                   </Show>
                   <For each={legacyRuns()}>
-                    {(entry) => {
-                      const returnColor = () =>
-                        entry.results.totalReturn >= 0 ? theme.success : theme.error
-                      return (
-                        <box
-                          flexDirection="row"
-                          paddingLeft={1}
-                          paddingRight={1}
-                          paddingTop={0}
-                          paddingBottom={0}
-                          onMouseUp={() => openRun(entry)}
-                        >
-                          <box width={24} flexShrink={0}>
-                            <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                              {entry.algorithmName}
-                            </text>
-                          </box>
-                          <box width={12} flexShrink={0}>
-                            <text fg={theme.textMuted}>
-                              {DURATION_LABELS[entry.params.duration] ?? entry.params.duration} · {entry.params.interval}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()} attributes={TextAttributes.BOLD}>
-                              {formatPercent(entry.results.totalReturn)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={theme.error}>
-                              {formatPercent(entry.results.maxDrawdown)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()}>
-                              {formatCurrency(entry.results.endingEquity)}
-                            </text>
-                          </box>
-                          <box width={10} flexShrink={0}>
-                            <text fg={theme.text}>
-                              {entry.results.totalTrades}
-                            </text>
-                          </box>
-                          <box flexGrow={1}>
-                            <text fg={theme.textMuted}>{formatRelative(entry.timestamp)}</text>
-                          </box>
-                        </box>
-                      )
-                    }}
+                    {(entry) => <RunRow entry={entry} onOpen={openRun} />}
                   </For>
                 </box>
               </scrollbox>
