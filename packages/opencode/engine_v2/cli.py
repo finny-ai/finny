@@ -17,6 +17,7 @@ import select
 import subprocess
 import sys
 import time
+from itertools import product
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,11 +28,12 @@ import engine_v2
 from engine_v2.assets import AssetSpec, resolve_asset_spec
 from engine_v2.compat.shapec_adapter import ShapeCBrokerAdapter
 from engine_v2.core.arrays import MarketSnapshot, from_dataframe
-from engine_v2.core.clock import interval_to_rule_and_bars_per_year
+from engine_v2.core.clock import calendar_bars_per_year, interval_to_rule_and_bars_per_year
 from engine_v2.core.rng import derive_seed
 from engine_v2.data import quality as DQ
 from engine_v2.execution.costs import CostConfig
 from engine_v2.execution.fills import FillConfig
+from engine_v2.execution.profiles import resolve_execution_profile
 from engine_v2.execution.slippage import SlippageConfig
 from engine_v2.execution.spread import SpreadConfig
 from engine_v2.portfolio.account import Account
@@ -41,6 +43,7 @@ from engine_v2.robustness.regime import classify_bars, classify_trend, breakdown
 from engine_v2.robustness.walkforward import run_walk_forward
 from engine_v2.metrics import ratios as M_ratios
 from engine_v2.metrics import returns as M_returns
+from engine_v2.metrics import drawdown as M_drawdown
 from engine_v2.runtime.broker import PortfolioBroker
 from engine_v2.runtime.loop import run_loop
 
@@ -127,50 +130,53 @@ def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, i
 
 def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, asset_spec: AssetSpec) -> PortfolioBroker:
     exec_cfg = cfg.get("execution", {})
+    profile_state = resolve_execution_profile(asset_spec.assetClass, exec_cfg)
+    effective_exec = profile_state["effective"]
     risk_cfg = cfg.get("risk", {})
     default_initial_margin = (
         float(asset_spec.initialMarginPct)
         if asset_spec.initialMarginPct is not None
-        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+        else float(effective_exec.get("initial_margin_pct", 1.0) or 1.0)
     )
-    max_leverage = float(exec_cfg.get("max_leverage", 1.0))
-    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
+    max_leverage = float(effective_exec.get("max_leverage", 1.0))
+    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in effective_exec:
         max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     account = Account.new(
         starting_cash=float(risk_cfg.get("starting_equity_usd", 10000.0)),
         max_leverage=max_leverage,
         maintenance_margin_pct=float(
-            exec_cfg.get(
+            effective_exec.get(
                 "maintenance_margin_pct",
                 asset_spec.maintenanceMarginPct if asset_spec.maintenanceMarginPct is not None else 0.0,
             )
         ),
     )
     costs = CostConfig(
-        maker_fee_bps=float(exec_cfg.get("maker_fee_bps", 2.0)),
-        taker_fee_bps=float(exec_cfg.get("taker_fee_bps", 7.0)),
+        maker_fee_bps=float(effective_exec.get("maker_fee_bps", 2.0)),
+        taker_fee_bps=float(effective_exec.get("taker_fee_bps", 7.0)),
         commission_per_contract=float(
-            exec_cfg.get(
+            effective_exec.get(
                 "commission_per_contract",
                 asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
             )
         ),
-        funding_rate_bps_per_interval=float(exec_cfg.get("funding_rate_bps", 0.0)),
-        funding_interval_hours=float(exec_cfg.get("funding_interval_hours", 8.0)),
-        short_borrow_rate_annual=float(exec_cfg.get("short_borrow_rate_annual", 0.0)),
+        funding_rate_bps_per_interval=float(effective_exec.get("funding_rate_bps", 0.0)),
+        funding_interval_hours=float(effective_exec.get("funding_interval_hours", 8.0)),
+        short_borrow_rate_annual=float(effective_exec.get("short_borrow_rate_annual", 0.0)),
+        option_per_contract_fee=float(effective_exec.get("option_per_contract_fee", 0.65)),
     )
     fill_cfg = FillConfig(
         mode=mode,
-        participation_pct=float(exec_cfg.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
+        participation_pct=float(effective_exec.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
         slippage=SlippageConfig(
-            base_bps=float(exec_cfg.get("slippage_bps", 1.0)),
-            k_atr=float(exec_cfg.get("k_atr", 0.5 if mode == "v2" else 0.0)),
-            k_vol=float(exec_cfg.get("k_vol", 5.0 if mode == "v2" else 0.0)),
+            base_bps=float(effective_exec.get("slippage_bps", 1.0)),
+            k_atr=float(effective_exec.get("k_atr", 0.0)),
+            k_vol=float(effective_exec.get("k_vol", 5.0 if mode == "v2" else 0.0)),
         ),
         spread=SpreadConfig(
-            enabled=bool(exec_cfg.get("spread_enabled", asset_spec.productionEligible)),
-            k=float(exec_cfg.get("spread_k", 0.5)),
-            lookback_bars=int(exec_cfg.get("spread_lookback", 30)),
+            enabled=bool(effective_exec.get("spread_enabled", asset_spec.productionEligible)),
+            k=float(effective_exec.get("spread_k", 0.5)),
+            lookback_bars=int(effective_exec.get("spread_lookback", 30)),
         ),
     )
     return PortfolioBroker(snap, account, costs, fill_cfg, interval=interval, asset_specs={asset_spec.symbol: asset_spec})
@@ -178,42 +184,52 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, ass
 
 def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, Any]:
     exec_cfg = cfg.get("execution", {})
+    profile_state = resolve_execution_profile(asset_spec.assetClass, exec_cfg)
+    effective_exec = profile_state["effective"]
     default_initial_margin = (
         float(asset_spec.initialMarginPct)
         if asset_spec.initialMarginPct is not None
-        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+        else float(effective_exec.get("initial_margin_pct", 1.0) or 1.0)
     )
     default_maintenance_margin = (
         float(asset_spec.maintenanceMarginPct)
         if asset_spec.maintenanceMarginPct is not None
-        else float(exec_cfg.get("maintenance_margin_pct", 0.0))
+        else float(effective_exec.get("maintenance_margin_pct", 0.0))
     )
-    max_leverage = float(exec_cfg.get("max_leverage", 1.0))
-    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
+    max_leverage = float(effective_exec.get("max_leverage", 1.0))
+    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in effective_exec:
         max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     return {
+        "profile_id": profile_state["profile"]["id"],
+        "profile_version": profile_state["profile"]["version"],
+        "profile_defaults": profile_state["profile_defaults"],
+        "effective_values": profile_state["effective"],
+        "overrides": profile_state["overrides"],
+        "scenarios": profile_state["scenarios"],
         "fill_model": "engine_v2.next_open" if mode == "v2" else "engine_v2.v1_compat",
-        "participation_pct": float(exec_cfg.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
-        "maker_fee_bps": float(exec_cfg.get("maker_fee_bps", 2.0)),
-        "taker_fee_bps": float(exec_cfg.get("taker_fee_bps", 7.0)),
+        "participation_pct": float(effective_exec.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
+        "maker_fee_bps": float(effective_exec.get("maker_fee_bps", 2.0)),
+        "taker_fee_bps": float(effective_exec.get("taker_fee_bps", 7.0)),
         "commission_per_contract": float(
-            exec_cfg.get(
+            effective_exec.get(
                 "commission_per_contract",
                 asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
             )
         ),
-        "slippage_bps": float(exec_cfg.get("slippage_bps", 1.0)),
-        "k_atr": float(exec_cfg.get("k_atr", 0.5 if mode == "v2" else 0.0)),
-        "k_vol": float(exec_cfg.get("k_vol", 5.0 if mode == "v2" else 0.0)),
-        "spread_enabled": bool(exec_cfg.get("spread_enabled", asset_spec.productionEligible)),
-        "spread_k": float(exec_cfg.get("spread_k", 0.5)),
-        "spread_lookback": int(exec_cfg.get("spread_lookback", 30)),
+        "slippage_bps": float(effective_exec.get("slippage_bps", 1.0)),
+        "k_atr": float(effective_exec.get("k_atr", 0.0)),
+        "k_vol": float(effective_exec.get("k_vol", 5.0 if mode == "v2" else 0.0)),
+        "spread_enabled": bool(effective_exec.get("spread_enabled", asset_spec.productionEligible)),
+        "spread_k": float(effective_exec.get("spread_k", 0.5)),
+        "spread_lookback": int(effective_exec.get("spread_lookback", 30)),
         "max_leverage": max_leverage,
-        "initial_margin_pct": float(exec_cfg.get("initial_margin_pct", default_initial_margin)),
-        "maintenance_margin_pct": float(exec_cfg.get("maintenance_margin_pct", default_maintenance_margin)),
-        "funding_enabled": float(exec_cfg.get("funding_rate_bps", 0.0)) != 0.0,
-        "funding_rate_bps": float(exec_cfg.get("funding_rate_bps", 0.0)),
-        "funding_interval_hours": float(exec_cfg.get("funding_interval_hours", 8.0)),
+        "initial_margin_pct": float(effective_exec.get("initial_margin_pct", default_initial_margin)),
+        "maintenance_margin_pct": float(effective_exec.get("maintenance_margin_pct", default_maintenance_margin)),
+        "funding_enabled": float(effective_exec.get("funding_rate_bps", 0.0)) != 0.0,
+        "funding_rate_bps": float(effective_exec.get("funding_rate_bps", 0.0)),
+        "funding_interval_hours": float(effective_exec.get("funding_interval_hours", 8.0)),
+        "short_borrow_rate_annual": float(effective_exec.get("short_borrow_rate_annual", 0.0)),
+        "option_per_contract_fee": float(effective_exec.get("option_per_contract_fee", 0.65)),
         "liquidation_enabled": max_leverage > 1.0 and default_maintenance_margin > 0.0,
         "asset_class": asset_spec.assetClass,
         "multiplier": asset_spec.multiplier,
@@ -510,6 +526,133 @@ def _run_shapec_strict_worker(
         worker.close()
 
 
+def _param_grid_values(key: str, values: Any) -> List[Any]:
+    if not isinstance(values, list) or len(values) == 0:
+        raise SystemExit(f"param grid key {key!r} must map to a non-empty list")
+    return values
+
+
+def _param_grid_axes(parsed: Dict[str, Any]) -> Tuple[List[str], List[List[Any]]]:
+    keys: List[str] = []
+    value_lists: List[List[Any]] = []
+    for key, values in parsed.items():
+        key_name = str(key)
+        keys.append(key_name)
+        value_lists.append(_param_grid_values(key_name, values))
+    return keys, value_lists
+
+
+def _expand_param_grid(parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    keys, value_lists = _param_grid_axes(parsed)
+    if not keys:
+        return [{}]
+    return [dict(zip(keys, combo)) for combo in product(*value_lists)]
+
+
+def _param_grid_from_json(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    if not raw:
+        return None
+    parsed = json.loads(raw)
+    if isinstance(parsed, list):
+        for item in parsed:
+            if not isinstance(item, dict):
+                raise SystemExit(
+                    f"--param-grid-json array contains a non-object element: {item!r}"
+                )
+        return [dict(item) for item in parsed]
+    if not isinstance(parsed, dict):
+        raise SystemExit("--param-grid-json must be an object or array of objects")
+    return _expand_param_grid(parsed)
+
+
+def _parse_required_history_bars(cfg: Dict[str, Any], wf_folds: int) -> int:
+    required_history_bars_raw = cfg.get("required_history_bars")
+    if required_history_bars_raw is None:
+        if wf_folds >= 2:
+            raise SystemExit("Walk-forward robustness requires config.required_history_bars")
+        return 0
+    try:
+        required_history_bars = int(required_history_bars_raw)
+    except (TypeError, ValueError):
+        raise SystemExit("required_history_bars must be a non-negative integer")
+    if required_history_bars < 0:
+        raise SystemExit("required_history_bars must be a non-negative integer")
+    return required_history_bars
+
+
+def _merge_fold_params(cfg: Dict[str, Any], fold_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    fold_cfg = json.loads(json.dumps(cfg))
+    if fold_params is None:
+        return fold_cfg
+    base_params = dict(cfg.get("params") or {})
+    base_params.update(fold_params)
+    fold_cfg["params"] = base_params
+    return fold_cfg
+
+
+def _run_walk_forward_fold(
+    *,
+    df: pd.DataFrame,
+    cfg: Dict[str, Any],
+    ts_ns: np.ndarray,
+    start_idx: int,
+    end_idx: int,
+    eval_start_idx: int,
+    fold_params: Optional[Dict[str, Any]],
+    symbol: str,
+    strategy_path: Path,
+    config_path: Path,
+    interval: str,
+    mode: str,
+    asset_spec: AssetSpec,
+    bars_per_year: float,
+) -> Dict[str, Any]:
+    if end_idx - start_idx < 2:
+        return {"sharpe": 0.0, "total_return": 0.0, "returns": np.zeros(0)}
+    fold_df = df.iloc[start_idx:end_idx].reset_index(drop=True)
+    fold_ba = from_dataframe(fold_df, symbol=symbol, atr_period=14)
+    fold_snap = MarketSnapshot({symbol: fold_ba})
+    fold_snap.attach_regime_labels(
+        symbol,
+        classify_bars(fold_ba.close, lookback=30),
+        classify_trend(fold_ba.close, lookback=50),
+    )
+    fold_cfg = _merge_fold_params(cfg, fold_params)
+    fold_params_resolved = fold_cfg.get("params", None)
+    fold_broker = _build_broker(fold_snap, fold_cfg, interval, mode, asset_spec)
+    if mode == "v2":
+        fold_result = _run_shapec_strict_worker(
+            fold_broker, fold_snap, strategy_path, symbol, fold_params_resolved,
+        )
+    else:
+        fold_strat, fold_shape = _run_strategy(
+            fold_broker, fold_snap, strategy_path, config_path, symbol, fold_params_resolved,
+        )
+        if fold_shape == "shapec":
+            def fold_cb():
+                fold_strat.on_bar(symbol, fold_snap.decision_safe_bar(symbol))
+                return {}
+            fold_result = run_loop(fold_broker, fold_snap, fold_cb)
+        else:
+            fold_result = run_loop(fold_broker, fold_snap, lambda: fold_strat.on_bar())
+    fold_equity = fold_result.equity_curve
+    eval_offset = max(0, min(eval_start_idx - start_idx, fold_equity.size - 1))
+    eval_equity = fold_equity[eval_offset:]
+    fold_returns = M_returns.bar_returns(eval_equity)
+    eval_start_ns = int(ts_ns[eval_start_idx])
+    eval_trades = [t for t in fold_broker.book.trades if t.exit_ts_ns >= eval_start_ns]
+    return {
+        "sharpe": M_ratios.sharpe(fold_returns, bars_per_year),
+        "total_return": M_returns.total_return(eval_equity),
+        "returns": fold_returns,
+        "trades": len(eval_trades),
+        "bars": int(max(0, eval_equity.size - 1)),
+        "max_drawdown": M_drawdown.max_drawdown(eval_equity),
+        "min_equity": float(np.min(eval_equity)) if eval_equity.size else 0.0,
+        "ruined": bool(eval_equity.size and np.min(eval_equity) <= 0.0),
+    }
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="engine_v2")
     ap.add_argument("--csv", required=True)
@@ -523,6 +666,8 @@ def main() -> None:
                     help="If >0, run Monte-Carlo trade-shuffle with N paths")
     ap.add_argument("--wf-folds", type=int, default=0,
                     help="If >0, run N rolling walk-forward folds")
+    ap.add_argument("--param-grid-json", default=None,
+                    help="JSON parameter grid for true fold-local walk-forward optimization")
     ap.add_argument("--data-quality-mode", choices=["strict", "repair_outliers"], default="strict")
     ap.add_argument("--regimes", action="store_true")
     ap.add_argument("--start-date", default=None)
@@ -534,6 +679,8 @@ def main() -> None:
 
     cfg = json.loads(Path(args.config).read_text())
     cfg.setdefault("risk", {})["starting_equity_usd"] = float(args.capital)
+    required_history_bars = _parse_required_history_bars(cfg, int(args.wf_folds or 0))
+    param_grid = _param_grid_from_json(args.param_grid_json)
     symbol = cfg["symbol"]
     asset_spec = resolve_asset_spec(cfg)
     if asset_spec.assetClass == "option" and os.environ.get("FINNY_ALLOW_EXPERIMENTAL_OPTIONS") != "1":
@@ -611,8 +758,24 @@ def main() -> None:
         raise SystemExit(f"Failed to resample CSV at interval {args.interval!r}: {e}") from e
     if df.empty:
         raise SystemExit("No bars after resampling")
+    window_reasons = DQ.requested_window_reasons(
+        df, args.interval, asset_spec.assetClass, args.start_date, args.end_date,
+    )
+    if args.data_quality_mode == "strict" and window_reasons:
+        truncated_report = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+        raise SystemExit(_quality_failure(
+            "Data quality failed requested window coverage",
+            window_reasons,
+            truncated_report,
+            provider=provider,
+            symbol=str(symbol),
+            interval=str(args.interval),
+            raw_rows=raw_rows,
+            post_rows=int(len(df)),
+        ))
 
-    _, bars_per_year = interval_to_rule_and_bars_per_year(args.interval)
+    _, _legacy_bars_per_year = interval_to_rule_and_bars_per_year(args.interval)
+    bars_per_year = calendar_bars_per_year(args.interval, asset_spec.calendar)
 
     # Data quality is a hard gate for strict engine runs.
     dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
@@ -695,43 +858,34 @@ def main() -> None:
 
     wf = None
     if args.wf_folds and args.wf_folds >= 2:
-        def fold_runner(start_idx: int, end_idx: int) -> Dict[str, Any]:
-            if end_idx - start_idx < 2:
-                return {"sharpe": 0.0, "total_return": 0.0, "returns": np.zeros(0)}
-            fold_df = df.iloc[start_idx:end_idx].reset_index(drop=True)
-            fold_ba = from_dataframe(fold_df, symbol=symbol, atr_period=14)
-            fold_snap = MarketSnapshot({symbol: fold_ba})
-            fold_snap.attach_regime_labels(
-                symbol,
-                classify_bars(fold_ba.close, lookback=30),
-                classify_trend(fold_ba.close, lookback=50),
+        config_path = Path(args.config)
+
+        def fold_runner(start_idx: int, end_idx: int, eval_start_idx: int, fold_params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+            return _run_walk_forward_fold(
+                df=df,
+                cfg=cfg,
+                ts_ns=ba.ts,
+                start_idx=start_idx,
+                end_idx=end_idx,
+                eval_start_idx=eval_start_idx,
+                fold_params=fold_params,
+                symbol=symbol,
+                strategy_path=strategy_path,
+                config_path=config_path,
+                interval=args.interval,
+                mode=args.mode,
+                asset_spec=asset_spec,
+                bars_per_year=bars_per_year,
             )
-            fold_broker = _build_broker(fold_snap, cfg, args.interval, args.mode, asset_spec)
-            if args.mode == "v2":
-                fold_result = _run_shapec_strict_worker(fold_broker, fold_snap, strategy_path, symbol, params)
-            else:
-                fold_strat, fold_shape = _run_strategy(
-                    fold_broker, fold_snap, strategy_path, Path(args.config), symbol, params
-                )
-                if fold_shape == "shapec":
-                    def fold_cb():
-                        fold_strat.on_bar(symbol, fold_snap.decision_safe_bar(symbol))
-                        return {}
-                    fold_result = run_loop(fold_broker, fold_snap, fold_cb)
-                else:
-                    fold_result = run_loop(fold_broker, fold_snap, lambda: fold_strat.on_bar())
-            fold_equity = fold_result.equity_curve
-            fold_returns = M_returns.bar_returns(fold_equity)
-            return {
-                "sharpe": M_ratios.sharpe(fold_returns, bars_per_year),
-                "total_return": M_returns.total_return(fold_equity),
-                "returns": fold_returns,
-            }
+
         wf = run_walk_forward(
             fold_runner,
             n_bars=int(ba.ts.shape[0]),
             ts_ns=ba.ts,
             n_folds=int(args.wf_folds),
+            required_history_bars=required_history_bars,
+            param_grid=param_grid,
+            bars_per_year=bars_per_year,
         )
 
     # Monte-Carlo
@@ -762,6 +916,9 @@ def main() -> None:
             "engine_mode": args.mode,
             "worker_protocol": "jsonl_intents_v1" if args.mode == "v2" else "legacy_unsafe",
             "asset_spec": asset_spec.to_dict(),
+            "mark_to_market_nav": float(equity[-1]) if equity.size else float(args.capital),
+            "liquidation_nav": broker.terminal_liquidation_nav(),
+            "nav_basis": "liquidation_adjusted",
             "data_provider": provider,
             "fetch_symbol": str(symbol),
             "fetch_interval": str(args.interval),

@@ -11,7 +11,7 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **saveMode** (required): Either `"new"` or `"version"`. There is no default — you must choose every time. See **Choosing saveMode** below.
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
-- **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, and non-empty strategy knobs under `params`. The validator cross-references every config key against the strategy code, so do not declare keys you do not use.
+- **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.
 - **backtestCode**: The backtest.py source code
 - **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
 - **mission**: (new algorithms only) WHO: hypothesis, scope, exit conditions. Written to `mission.md`. Must be valid `schema_version: 3` with all Core 8 questionnaire records. Any user preferences (e.g. capital, sizing, data sources/depth, custom thresholds) must be stored in a `## User Preferences` section at the bottom of the markdown body.
@@ -70,7 +70,7 @@ On the **first save** (`saveMode: "new"`, v01), the tool scaffolds `data/` subdi
 - On success: a new row is inserted. With `saveMode: "new"` the algorithm starts at version 1 with status "draft". With `saveMode: "version"` the version is incremented and the lineage's status is preserved.
 - Old versions are NOT deleted — every save adds to the history. Users can list versions with `finny_algorithm_versions` and export a specific version with `finny_algorithm_export`.
 - If validation fails, the save is rejected and you receive a structured list of errors. The attempt does NOT count towards the algorithm's version — version only advances on successful saves.
-- If a new algorithm is missing required execution config, the save is blocked. Do not save first and patch missing `symbol`, `asset_class`, `interval`, or `params` with `finny_algorithm_set_params`.
+- If a new algorithm is missing required execution config, the save is blocked. Do not save first and patch missing `symbol`, `asset_class`, `interval`, `required_history_bars`, or `params` with `finny_algorithm_set_params`.
 
 ## Retry Protocol (MANDATORY)
 

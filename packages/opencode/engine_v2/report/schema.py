@@ -10,7 +10,9 @@ CHANGELOG:
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
   3.1.0  asset spec adds optional margin/commission metadata.
   3.2.0  Crucible 2.0 rollout fields for NAV, costs, profile identity,
-         sensitivity outcomes, and explanatory result copy.
+         sensitivity outcomes, and explanatory result copy; execution profile
+         metadata, terminal NAV, open trade rows, and walk-forward stitched
+         OOS, warm-up, and trial-count metadata.
 """
 
 from __future__ import annotations
@@ -43,6 +45,23 @@ class TradeRow:
     entry_tag: str
     exit_tag: str
     liquidation: bool = False
+
+
+@dataclass
+class OpenTradeRow:
+    symbol: str
+    side: str
+    qty: float
+    entry_ts: str
+    entry_price: float
+    mark_price: float
+    multiplier: float
+    unrealized_pnl: float
+    fees_accrued: float
+    funding_accrued: float
+    borrow_accrued: float
+    hold_bars: int
+    entry_tag: str
 
 
 @dataclass
@@ -198,6 +217,12 @@ class WalkForwardFold:
     oos_sharpe: float
     is_return: float
     oos_return: float
+    oos_trades: int = 0
+    oos_bars: int = 0
+    oos_coverage: float = 0.0
+    oos_max_drawdown: float = 0.0
+    ruined: bool = False
+    selected_params: Optional[Dict[str, Any]] = None
 
 
 @dataclass
@@ -206,10 +231,18 @@ class WalkForwardSummary:
     is_sharpe_mean: float
     oos_sharpe_mean: float
     oos_decay: float
+    is_to_oos_sharpe_change: float
     flag_threshold: float
     flagged: bool
     deflated_sharpe: float
     probabilistic_sharpe: float
+    stitched_oos_return: float
+    stitched_oos_sharpe: float
+    stitched_oos_trades: int
+    stitched_oos_bars: int
+    stitched_oos_coverage: float
+    ruined_folds: int
+    multiple_testing_trials: int
     folds: List[WalkForwardFold]
 
 
@@ -361,6 +394,7 @@ class Results:
     stability: StabilityMetrics
 
     trades: List[TradeRow]
+    open_trades: List[OpenTradeRow]
     per_symbol: List[PerSymbolAttribution]
     data_quality: DataQualityReport
 

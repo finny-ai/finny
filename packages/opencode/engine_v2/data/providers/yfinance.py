@@ -39,7 +39,7 @@ class YFinanceProvider:
         yf_interval = _INTERVAL_MAP.get(interval, interval)
         yf_symbol = _normalize_yf(symbol)
         try:
-            df = yf.Ticker(yf_symbol).history(start=start, end=end, interval=yf_interval)
+            df = yf.Ticker(yf_symbol).history(start=start, end=end, interval=yf_interval, auto_adjust=True)
         except Exception as e:
             msg = str(e).lower()
             if "404" in msg or "delisted" in msg or "not found" in msg:

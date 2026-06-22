@@ -201,6 +201,27 @@ def assemble(
             mae=t.mae, mfe=t.mfe, hold_bars=t.hold_bars,
             entry_tag=t.entry_tag, exit_tag=t.exit_tag, liquidation=t.liquidation,
         ))
+    open_trade_rows: List[S.OpenTradeRow] = []
+    for sym, pos in broker.book.positions.items():
+        if pos.qty == 0:
+            continue
+        mark = float(broker.account.last_prices.get(sym, pos.avg_price))
+        side = pos.side_at_open or ("long" if pos.qty > 0 else "short")
+        open_trade_rows.append(S.OpenTradeRow(
+            symbol=sym,
+            side=side,
+            qty=abs(float(pos.qty)),
+            entry_ts=str(pd.Timestamp(int(pos.entry_ts_ns), unit="ns", tz="UTC")),
+            entry_price=float(pos.entry_price),
+            mark_price=mark,
+            multiplier=float(pos.multiplier or 1.0),
+            unrealized_pnl=float(pos.unrealized_pnl(mark)),
+            fees_accrued=float(pos.fees_accum),
+            funding_accrued=float(pos.funding_accum),
+            borrow_accrued=float(pos.borrow_accum),
+            hold_bars=int(pos.bars_held),
+            entry_tag=pos.entry_tag,
+        ))
 
     # Per-symbol attribution
     last_prices = {s: float(snap.arrays[s].close[-1]) for s in snap.symbols}
@@ -249,10 +270,18 @@ def assemble(
             is_sharpe_mean=walk_forward.is_sharpe_mean,
             oos_sharpe_mean=walk_forward.oos_sharpe_mean,
             oos_decay=walk_forward.oos_decay,
+            is_to_oos_sharpe_change=walk_forward.is_to_oos_sharpe_change,
             flag_threshold=walk_forward.flag_threshold,
             flagged=walk_forward.flagged,
             deflated_sharpe=walk_forward.deflated_sharpe,
             probabilistic_sharpe=walk_forward.probabilistic_sharpe,
+            stitched_oos_return=walk_forward.stitched_oos_return,
+            stitched_oos_sharpe=walk_forward.stitched_oos_sharpe,
+            stitched_oos_trades=walk_forward.stitched_oos_trades,
+            stitched_oos_bars=walk_forward.stitched_oos_bars,
+            stitched_oos_coverage=walk_forward.stitched_oos_coverage,
+            ruined_folds=walk_forward.ruined_folds,
+            multiple_testing_trials=walk_forward.multiple_testing_trials,
             folds=[
                 S.WalkForwardFold(
                     fold=f.fold,
@@ -262,6 +291,9 @@ def assemble(
                     test_end=str(pd.Timestamp(f.test_end_ns, unit="ns", tz="UTC")),
                     is_sharpe=f.is_sharpe, oos_sharpe=f.oos_sharpe,
                     is_return=f.is_return, oos_return=f.oos_return,
+                    oos_trades=f.oos_trades, oos_bars=f.oos_bars,
+                    oos_coverage=f.oos_coverage, oos_max_drawdown=f.oos_max_drawdown,
+                    ruined=f.ruined, selected_params=f.selected_params,
                 )
                 for f in walk_forward.folds
             ],
@@ -334,7 +366,7 @@ def assemble(
         profit_factor=trade_block.profit_factor,
         returns=ret_block, risk=risk_block, ratios=ratios_block,
         drawdown=dd_block, trade=trade_block, exposure=ex_block, stability=stab_block,
-        trades=trades_rows, per_symbol=attrib_rows, data_quality=data_quality,
+        trades=trades_rows, open_trades=open_trade_rows, per_symbol=attrib_rows, data_quality=data_quality,
         benchmark=bench_block, monte_carlo=mc_block,
         walk_forward=wf_block, regimes=regimes_block,
         execution_config=execution_config,

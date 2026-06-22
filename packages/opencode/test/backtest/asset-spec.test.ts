@@ -31,7 +31,7 @@ describe("AssetSpec registry", () => {
   })
 
   test("represents options but marks them ineligible", () => {
-    const spec = resolveAssetSpec({ symbol: "AAPL240621C00100000", asset_class: "option" }, "AAPL240621C00100000")
+    const spec = resolveAssetSpec({ symbol: "AAPL/20240621/100C", asset_class: "option" }, "AAPL/20240621/100C")
     expect(spec.assetClass).toBe("option")
     expect(spec.productionEligible).toBe(false)
     expect(spec.blockingReason).toContain("Options require")
@@ -46,5 +46,24 @@ describe("AssetSpec registry", () => {
       execution: { funding_rate_bps: 1, maintenance_margin_pct: 0.05 },
     }, "BTC-USD")
     expect(eligible.productionEligible).toBe(true)
+  })
+
+  test("rejects inconsistent symbol and asset class unless custom spec is complete", () => {
+    expect(() => resolveAssetSpec({ symbol: "BTC-USD", asset_class: "equity" }, "BTC-USD")).toThrow("inconsistent")
+    const spec = resolveAssetSpec({
+      symbol: "BTC-USD",
+      asset_class: "equity",
+      asset_spec: {
+        tickSize: 0.01,
+        lotSize: 1,
+        multiplier: 1,
+        calendar: "US_EQUITIES",
+        currency: "USD",
+        feeModel: "custom",
+        marginModel: "custom",
+        dataProvider: "custom",
+      },
+    }, "BTC-USD")
+    expect(spec.assetClass).toBe("equity")
   })
 })

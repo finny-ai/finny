@@ -63,7 +63,8 @@ def trade_shuffle(
         eq = _equity_from_pnls(trade_pnls[perm], starting_equity)
         finals[p] = eq[-1]
         dds[p] = DD.max_drawdown(eq)
-        rets = np.diff(eq) / np.clip(eq[:-1], 1e-12, None)
+        prev = eq[:-1]
+        rets = (eq[1:][prev > 0] - prev[prev > 0]) / prev[prev > 0]
         sharpes[p] = RAT.sharpe(rets, bars_per_year=bars_per_year)
     return MCResult(
         n_paths=n_paths, method="trade_shuffle",

@@ -8,9 +8,10 @@ describe("finny_algorithm_set_params identity guard", () => {
         symbol: "BTC/USD",
         asset_class: "crypto",
         interval: "1d",
+        required_history_bars: 50,
         brokerage: "binance",
       }),
-    ).toEqual(["symbol", "asset_class", "interval", "brokerage"])
+    ).toEqual(["symbol", "asset_class", "interval", "required_history_bars", "brokerage"])
   })
 
   test("allows non-identity runtime inputs and strategy params", () => {

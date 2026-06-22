@@ -37,10 +37,18 @@ type WfMeta = {
     is_sharpe_mean: number
     oos_sharpe_mean: number
     oos_decay: number
+    is_to_oos_sharpe_change?: number
     flag_threshold: number
     flagged: boolean
     deflated_sharpe: number | null
     probabilistic_sharpe: number | null
+    stitched_oos_return?: number
+    stitched_oos_sharpe?: number
+    stitched_oos_trades?: number
+    stitched_oos_bars?: number
+    stitched_oos_coverage?: number
+    ruined_folds?: number
+    multiple_testing_trials?: number
     folds: Array<{
       fold: number
       train_start: string
@@ -51,6 +59,9 @@ type WfMeta = {
       oos_sharpe: number | null
       is_return: number
       oos_return: number
+      oos_trades?: number
+      oos_coverage?: number
+      ruined?: boolean
     }>
   }
   engineVersion?: string
@@ -73,17 +84,24 @@ export function formatWalkForwardLines(input: {
   return [
     `Algorithm: ${input.algorithmName} (v${input.version})`,
     `Total window: ${input.duration} (${input.start} → ${input.end})`,
-    `Rolling folds: ${walkForward.n_folds}`,
+    `Rolling out-of-sample folds: ${walkForward.n_folds}`,
     ``,
     `IS Sharpe mean:        ${fmtNum(walkForward.is_sharpe_mean)}`,
     `OOS Sharpe mean:       ${fmtNum(walkForward.oos_sharpe_mean)}`,
+    `IS→OOS Sharpe change:  ${fmtNum(walkForward.is_to_oos_sharpe_change ?? (walkForward.oos_sharpe_mean - walkForward.is_sharpe_mean))}`,
     `OOS decay ratio:       ${fmtNum(walkForward.oos_decay)}`,
+    `Stitched OOS return:   ${fmtNum((walkForward.stitched_oos_return ?? 0) * 100)}%`,
+    `Stitched OOS Sharpe:   ${fmtNum(walkForward.stitched_oos_sharpe ?? walkForward.oos_sharpe_mean)}`,
+    `Stitched OOS trades:   ${walkForward.stitched_oos_trades ?? "N/A"}`,
+    `OOS coverage:          ${fmtNum((walkForward.stitched_oos_coverage ?? 0) * 100)}%`,
+    `Ruined folds:          ${walkForward.ruined_folds ?? 0}`,
+    `Multiple-test trials:  ${walkForward.multiple_testing_trials ?? 1}`,
     `Deflated Sharpe prob:  ${fmtNum(walkForward.deflated_sharpe, 3)}`,
     `Prob. Sharpe ratio:    ${fmtNum(walkForward.probabilistic_sharpe, 3)}`,
     ``,
-    `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return`,
+    `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return\tOOS Trades\tCoverage\tRuined`,
     ...walkForward.folds.map(f =>
-      `${f.fold}\t${f.train_start.slice(0, 10)}→${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}→${f.test_end.slice(0, 10)}\t${fmtNum(f.is_sharpe)}\t${fmtNum(f.oos_sharpe)}\t${(f.oos_return * 100).toFixed(2)}%`,
+      `${f.fold}\t${f.train_start.slice(0, 10)}→${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}→${f.test_end.slice(0, 10)}\t${fmtNum(f.is_sharpe)}\t${fmtNum(f.oos_sharpe)}\t${(f.oos_return * 100).toFixed(2)}%\t${f.oos_trades ?? "N/A"}\t${fmtNum((f.oos_coverage ?? 0) * 100)}%\t${f.ruined ? "yes" : "no"}`,
     ),
     ``,
     `Verdict: ${input.verdict.toUpperCase()} — ${input.verdictReason}`,
@@ -172,9 +190,9 @@ export const BacktestWalkforwardTool = Tool.define(
 
         let verdict: "robust" | "degraded" | "failed"
         let verdictReason: string
-        if (walkForward.flagged || walkForward.oos_sharpe_mean <= 0) {
+        if (walkForward.flagged || (walkForward.stitched_oos_sharpe ?? walkForward.oos_sharpe_mean) <= 0 || (walkForward.stitched_oos_return ?? 0) <= 0) {
           verdict = "failed"
-          verdictReason = "Walk-forward OOS Sharpe decayed below the robustness threshold or became non-positive."
+          verdictReason = "Rolling OOS Sharpe decayed below the robustness threshold or stitched OOS performance became non-positive."
         } else if (walkForward.oos_decay < 0.7) {
           verdict = "degraded"
           verdictReason = `OOS Sharpe retained ${(walkForward.oos_decay * 100).toFixed(0)}% of in-sample performance — meaningful decay.`
