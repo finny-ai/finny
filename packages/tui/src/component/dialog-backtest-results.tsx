@@ -1,5 +1,5 @@
 import { TextAttributes } from "@opentui/core"
-import { onMount } from "solid-js"
+import { onMount, Show } from "solid-js"
 import { useDialog, type DialogContext } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import type { BacktestRunner } from "@/backtest/runner"
@@ -42,6 +42,7 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
   const r = () => props.results
   const durationLabel = () => DURATION_LABELS[props.params.duration] ?? props.params.duration
   const capitalLabel = () => formatCurrency(parseFloat(props.params.capital))
+  const productLabel = () => r().productLabel ?? (r().runKind === "legacy" ? "Legacy backtest" : "Crucible 2.0")
 
   const returnColor = () => (r().totalReturn >= 0 ? theme.success : theme.error)
   const drawdownColor = () => theme.error
@@ -52,7 +53,7 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
         <text attributes={TextAttributes.BOLD} fg={theme.text}>
-          Backtest Results — {props.algorithmName}
+          {productLabel()} Results — {props.algorithmName}
         </text>
         <text fg={theme.textMuted} onMouseUp={() => dialog.clear()}>
           esc
@@ -84,6 +85,16 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
           <text fg={theme.text}>Ending Equity</text>
           <text fg={returnColor()} attributes={TextAttributes.BOLD}>{formatCurrency(r().endingEquity)}</text>
         </box>
+        <Show when={r().navSummary}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Mark-to-market NAV</text>
+            <text fg={returnColor()}>{formatCurrency(r().navSummary!.mark_to_market_nav)}</text>
+          </box>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Liquidation NAV</text>
+            <text fg={returnColor()}>{formatCurrency(r().navSummary!.liquidation_nav)}</text>
+          </box>
+        </Show>
       </box>
 
       <box gap={0} paddingTop={1}>
@@ -99,7 +110,28 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
           <text fg={theme.text}>Profit Factor</text>
           <text fg={theme.text}>{formatNumber(r().profitFactor)}</text>
         </box>
+        <Show when={r().costAttribution}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Costs</text>
+            <text fg={theme.text}>{formatCurrency(r().costAttribution!.total_costs)}</text>
+          </box>
+        </Show>
+        <Show when={r().eligibilityStatus}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Eligibility</text>
+            <text fg={theme.text}>{r().eligibilityStatus}</text>
+          </box>
+        </Show>
       </box>
+
+      <Show when={r().explanations}>
+        <box gap={0} paddingTop={1}>
+          <text fg={theme.textMuted}>{r().explanations!.mark_to_market_nav}</text>
+          <text fg={theme.textMuted}>{r().explanations!.liquidation_nav}</text>
+          <text fg={theme.textMuted}>{r().explanations!.cost_attribution}</text>
+          <text fg={theme.textMuted}>{r().explanations!.profile_identity}</text>
+        </box>
+      </Show>
 
       <text fg={theme.textMuted} paddingTop={1}>press esc to close</text>
     </box>

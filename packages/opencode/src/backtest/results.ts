@@ -314,6 +314,46 @@ export namespace EngineV2 {
     contribution_pct: number
   }
 
+  export interface NavSummary {
+    mark_to_market_nav: number
+    liquidation_nav: number
+    explanation: string
+  }
+
+  export interface CostAttributionSummary {
+    total_costs: number
+    fees: number
+    funding: number
+    borrow: number
+    cost_as_pct_starting_equity: number
+    explanation: string
+  }
+
+  export interface ProfileIdentity {
+    product_label: string
+    profile_id: string
+    strategy_hash?: string | null
+    config_hash?: string | null
+    data_hash?: string | null
+    explanation: string
+  }
+
+  export interface SensitivityOutcome {
+    name: string
+    status: string
+    value: number | null
+    explanation: string
+  }
+
+  export interface ResultExplanations {
+    product: string
+    mark_to_market_nav: string
+    liquidation_nav: string
+    cost_attribution: string
+    profile_identity: string
+    sensitivity_outcomes: string
+  }
+
   export interface Results {
     schema_version: string
     engine_version: string
@@ -356,5 +396,12 @@ export namespace EngineV2 {
     diagnostics?: Record<string, unknown> | null
     run_metadata?: Record<string, unknown> | null
     asset_spec?: AssetSpecReport | null
+    product_label?: string
+    run_kind?: "crucible_2_0" | "legacy"
+    nav_summary?: NavSummary | null
+    cost_attribution?: CostAttributionSummary | null
+    profile_identity?: ProfileIdentity | null
+    sensitivity_outcomes?: SensitivityOutcome[]
+    explanations?: ResultExplanations | null
   }
 }

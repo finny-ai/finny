@@ -159,6 +159,40 @@ describe("parseResults", () => {
         trades: [],
         per_symbol: [],
         data_quality: {},
+        product_label: "Crucible 2.0",
+        run_kind: "crucible_2_0",
+        nav_summary: {
+          mark_to_market_nav: 9500,
+          liquidation_nav: 9400,
+          explanation: "nav",
+        },
+        cost_attribution: {
+          total_costs: 12,
+          fees: 10,
+          funding: 2,
+          borrow: 0,
+          cost_as_pct_starting_equity: 0.0012,
+          explanation: "costs",
+        },
+        profile_identity: {
+          product_label: "Crucible 2.0",
+          profile_id: "engine:test",
+          strategy_hash: "abc",
+          config_hash: "def",
+          data_hash: "ghi",
+          explanation: "profile",
+        },
+        sensitivity_outcomes: [
+          { name: "Monte Carlo", status: "pass", value: 0.4, explanation: "mc" },
+        ],
+        explanations: {
+          product: "product",
+          mark_to_market_nav: "mtm",
+          liquidation_nav: "liq",
+          cost_attribution: "cost",
+          profile_identity: "profile",
+          sensitivity_outcomes: "sens",
+        },
         benchmark: null,
         monte_carlo: null,
         walk_forward: null,
@@ -170,6 +204,13 @@ describe("parseResults", () => {
       expect(r).not.toBeNull()
       expect(r!.maxDrawdown).toBeCloseTo(0.1234)
       expect(r!.timeInMarket).toBeCloseTo(0.625)
+      expect(r!.productLabel).toBe("Crucible 2.0")
+      expect(r!.runKind).toBe("crucible_2_0")
+      expect(r!.navSummary?.mark_to_market_nav).toBe(9500)
+      expect(r!.costAttribution?.total_costs).toBe(12)
+      expect(r!.profileIdentity?.profile_id).toBe("engine:test")
+      expect(r!.sensitivityOutcomes?.[0]?.name).toBe("Monte Carlo")
+      expect(r!.explanations?.liquidation_nav).toBe("liq")
     } finally {
       await fs.rm(tmp, { recursive: true, force: true })
     }

@@ -33,6 +33,7 @@ function fmtNum(value: number | null | undefined, decimals = 2): string {
 
 export function formatBacktestPlainMetrics(results: BacktestRunner.Results): string {
   return [
+    results.productLabel ?? (results.runKind === "legacy" ? "Legacy backtest" : "Crucible 2.0"),
     `return ${fmtSignedPct(results.totalReturn)}`,
     `Sharpe ${fmtNum(results.sharpeRatio)}`,
     `max DD ${fmtPct(results.maxDrawdown)}`,
@@ -80,6 +81,7 @@ export function BacktestResultsView(props: {
   const r = () => props.results
   const durationLabel = () => DURATION_LABELS[props.params.duration] ?? props.params.duration
   const capitalLabel = () => fmtUsd(parseFloat(props.params.capital))
+  const productLabel = () => r().productLabel ?? (r().runKind === "legacy" ? "Legacy backtest" : "Crucible 2.0")
   const returnColor = () => (r().totalReturn >= 0 ? theme.success : theme.error)
   const sharpeColor = () =>
     r().sharpeRatio >= 1 ? theme.success : r().sharpeRatio < 0 ? theme.error : theme.text
@@ -93,6 +95,26 @@ export function BacktestResultsView(props: {
     { label: "Volatility", value: fmtPct(r().annualizedVolatility) },
     { label: "Ending Equity", value: fmtUsd(r().endingEquity), color: returnColor(), bold: true },
   ]
+
+  const crucibleRows = (): RowData[] => {
+    const rows: RowData[] = []
+    const nav = r().navSummary
+    if (nav) {
+      rows.push(
+        { label: "MTM NAV", value: fmtUsd(nav.mark_to_market_nav), color: returnColor() },
+        { label: "Liquidation NAV", value: fmtUsd(nav.liquidation_nav), color: returnColor() },
+      )
+    }
+    const cost = r().costAttribution
+    if (cost) {
+      rows.push(
+        { label: "Total Costs", value: fmtUsd(cost.total_costs) },
+        { label: "Cost / Start", value: fmtPct(cost.cost_as_pct_starting_equity) },
+      )
+    }
+    if (r().eligibilityStatus) rows.push({ label: "Eligibility", value: r().eligibilityStatus! })
+    return rows
+  }
 
   const tradeRows = (): RowData[] => [
     { label: "Total Trades", value: fmtNum(r().totalTrades, 0) },
@@ -149,7 +171,7 @@ export function BacktestResultsView(props: {
         {props.algorithmName}
       </text>
       <text fg={theme.textMuted}>
-        {durationLabel()} · {props.params.interval} · {capitalLabel()}
+        {productLabel()} · {durationLabel()} · {props.params.interval} · {capitalLabel()}
       </text>
 
       <box flexDirection="column" paddingTop={1}>
@@ -157,6 +179,12 @@ export function BacktestResultsView(props: {
         <HeaderRow text="PERFORMANCE" />
         <text fg={theme.textMuted}>{MID}</text>
         <For each={coreRows()}>{(row) => <TableRow {...row} />}</For>
+        <Show when={crucibleRows().length > 0}>
+          <text fg={theme.textMuted}>{MID}</text>
+          <HeaderRow text="CRUCIBLE 2.0" />
+          <text fg={theme.textMuted}>{MID}</text>
+          <For each={crucibleRows()}>{(row) => <TableRow {...row} />}</For>
+        </Show>
         <text fg={theme.textMuted}>{MID}</text>
         <HeaderRow text="TRADES" />
         <text fg={theme.textMuted}>{MID}</text>
@@ -178,6 +206,14 @@ export function BacktestResultsView(props: {
 
         <text fg={theme.textMuted}>{BOT}</text>
       </box>
+
+      <Show when={r().explanations}>
+        <box paddingTop={1} paddingLeft={1} flexDirection="column">
+          <text fg={theme.textMuted}>{r().explanations!.mark_to_market_nav}</text>
+          <text fg={theme.textMuted}>{r().explanations!.liquidation_nav}</text>
+          <text fg={theme.textMuted}>{r().explanations!.cost_attribution}</text>
+        </box>
+      </Show>
 
       {/* Diagnostic likely-cause below table */}
       <Show when={hasDiagnostics()}>

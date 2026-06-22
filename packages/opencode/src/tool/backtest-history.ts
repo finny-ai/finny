@@ -19,6 +19,9 @@ interface BacktestHistoryEntry {
     totalTrades: number
     winRate: number
     profitFactor: number | null
+    productLabel?: string
+    runKind?: "crucible_2_0" | "legacy"
+    eligibilityStatus?: string
   }
   symbol?: string
   timestamp: number
@@ -33,6 +36,41 @@ async function readHistory(): Promise<BacktestHistoryEntry[]> {
   } catch {
     return []
   }
+}
+
+export function formatBacktestHistoryEntries(entries: BacktestHistoryEntry[]): string {
+  const groups = [
+    ["Crucible 2.0 runs", entries.filter((e) => e.results.runKind === "crucible_2_0")],
+    ["Legacy runs", entries.filter((e) => e.results.runKind !== "crucible_2_0")],
+  ] as const
+
+  return groups
+    .filter(([, group]) => group.length > 0)
+    .map(([title, group]) => {
+      const formatted = group.map((e) => {
+        const r = e.results
+        return [
+          `--- ${e.algorithmName} ---`,
+          `Run surface: ${r.productLabel ?? (r.runKind === "crucible_2_0" ? "Crucible 2.0" : "Legacy backtest")}`,
+          `Date: ${new Date(e.timestamp).toISOString().slice(0, 19)}`,
+          `Params: duration=${e.params.duration} interval=${e.params.interval} capital=$${e.params.capital}`,
+          e.symbol ? `Symbol: ${e.symbol}` : null,
+          r.eligibilityStatus ? `Eligibility: ${r.eligibilityStatus}` : null,
+          `Total Return: ${(r.totalReturn * 100).toFixed(2)}%`,
+          `Max Drawdown: ${(r.maxDrawdown * 100).toFixed(2)}%`,
+          `Sharpe Ratio: ${r.sharpeRatio.toFixed(2)}`,
+          `Ending Equity: $${r.endingEquity.toFixed(2)}`,
+          `Total Trades: ${r.totalTrades}`,
+          `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
+          `Profit Factor: ${r.profitFactor == null ? "N/A" : r.profitFactor.toFixed(2)}`,
+          ``,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      })
+      return [`== ${title} ==`, ...formatted].join("\n")
+    })
+    .join("\n")
 }
 
 const parameters = z.object({
@@ -84,29 +122,9 @@ export const BacktestHistoryTool = Tool.define(
           }
         }
 
-        const formatted = entries.map((e) => {
-          const r = e.results
-          return [
-            `--- ${e.algorithmName} ---`,
-            `Date: ${new Date(e.timestamp).toISOString().slice(0, 19)}`,
-            `Params: duration=${e.params.duration} interval=${e.params.interval} capital=$${e.params.capital}`,
-            e.symbol ? `Symbol: ${e.symbol}` : null,
-            `Total Return: ${(r.totalReturn * 100).toFixed(2)}%`,
-            `Max Drawdown: ${(r.maxDrawdown * 100).toFixed(2)}%`,
-            `Sharpe Ratio: ${r.sharpeRatio.toFixed(2)}`,
-            `Ending Equity: $${r.endingEquity.toFixed(2)}`,
-            `Total Trades: ${r.totalTrades}`,
-            `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
-            `Profit Factor: ${r.profitFactor == null ? "N/A" : r.profitFactor.toFixed(2)}`,
-            ``,
-          ]
-            .filter(Boolean)
-            .join("\n")
-        })
-
         return {
           title: `${entries.length} backtest result${entries.length === 1 ? "" : "s"}`,
-          output: formatted.join("\n"),
+          output: formatBacktestHistoryEntries(entries),
           metadata: { count: entries.length },
         }
       }),

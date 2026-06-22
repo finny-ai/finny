@@ -6,6 +6,7 @@ import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
 import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
+import { CRUCIBLE_2_0_PRODUCT_LABEL, representativeRerunForAlgorithm } from "../backtest/crucible-reruns"
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
@@ -459,12 +460,14 @@ export const BacktestRunTool = Tool.define(
         }
 
         const r = result.results
+        const representativeRerun = representativeRerunForAlgorithm(algo.name)
         const quality = evaluateBacktestQuality(r)
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
+          `Run surface: ${r.productLabel ?? (r.runKind === "legacy" ? "Legacy backtest" : CRUCIBLE_2_0_PRODUCT_LABEL)}`,
           `Duration: ${params.duration}` +
             (effectiveStartDate && effectiveEndDate ? ` (${effectiveStartDate} → ${effectiveEndDate})` : "") +
             ` | Interval: ${params.interval} | Capital: $${params.capital}`,
@@ -482,6 +485,22 @@ export const BacktestRunTool = Tool.define(
           `│  Profit Factor       │  ${fmt(r.profitFactor).padStart(24)} │`,
           `│  Ann. Volatility     │  ${fmtPct(r.annualizedVolatility).padStart(24)} │`,
         ]
+
+        if (r.navSummary || r.costAttribution) {
+          lines.push(`├──────────────────────┼───────────────────────────┤`)
+          if (r.navSummary) {
+            lines.push(
+              `│  MTM NAV             │  ${("$" + fmt(r.navSummary.mark_to_market_nav)).padStart(24)} │`,
+              `│  Liquidation NAV     │  ${("$" + fmt(r.navSummary.liquidation_nav)).padStart(24)} │`,
+            )
+          }
+          if (r.costAttribution) {
+            lines.push(
+              `│  Total Costs         │  ${("$" + fmt(r.costAttribution.total_costs)).padStart(24)} │`,
+              `│  Costs / Start       │  ${fmtPct(r.costAttribution.cost_as_pct_starting_equity).padStart(24)} │`,
+            )
+          }
+        }
 
         if (r.sortino !== undefined && r.totalTrades > 0) {
           lines.push(
@@ -540,7 +559,31 @@ export const BacktestRunTool = Tool.define(
         if (r.v2?.data_quality?.repair_applied) {
           lines.push(`REPAIRED DATA BACKTEST — research-only until rerun on strict clean data.`)
         }
+        if (r.eligibilityStatus && r.eligibilityStatus !== "paper_eligible" && r.eligibilityStatus !== "live_eligible") {
+          lines.push(`Paper/live remains disabled until a Crucible 2.0 rerun reaches paper_eligible or live_eligible.`)
+        }
+        if (representativeRerun) {
+          lines.push(`Representative rerun: ${representativeRerun.name} (${representativeRerun.gate}); attached to immutable v${algo.version}, no saved version replacement.`)
+        }
         lines.push(`────────────────────────────────────────────────────`)
+
+        if (r.explanations || r.profileIdentity || (r.sensitivityOutcomes?.length ?? 0) > 0) {
+          lines.push(``, `── CRUCIBLE 2.0 EXPLANATIONS ─────────────────────`)
+          if (r.explanations) {
+            lines.push(
+              `Mark-to-market NAV: ${r.explanations.mark_to_market_nav}`,
+              `Liquidation NAV: ${r.explanations.liquidation_nav}`,
+              `Cost attribution: ${r.explanations.cost_attribution}`,
+              `Profile identity: ${r.explanations.profile_identity}`,
+              `Sensitivity outcomes: ${r.explanations.sensitivity_outcomes}`,
+            )
+          }
+          if (r.profileIdentity) lines.push(`Profile ID: ${r.profileIdentity.profile_id}`)
+          for (const outcome of r.sensitivityOutcomes ?? []) {
+            lines.push(`Sensitivity: ${outcome.name}=${outcome.status}` + (outcome.value == null ? "" : ` (${fmt(outcome.value, 3)})`))
+          }
+          lines.push(`────────────────────────────────────────────────────`)
+        }
 
         if (r.totalTrades === 0 && r.diagnostics) {
           const d = r.diagnostics

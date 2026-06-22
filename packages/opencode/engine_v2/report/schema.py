@@ -9,8 +9,10 @@ CHANGELOG:
   2.0.0  initial engine_v2 release.
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
   3.1.0  asset spec adds optional margin/commission metadata.
-  3.2.0  execution profile metadata, terminal NAV, open trade rows, and
-         walk-forward stitched OOS, warm-up, and trial-count metadata.
+  3.2.0  Crucible 2.0 rollout fields for NAV, costs, profile identity,
+         sensitivity outcomes, and explanatory result copy; execution profile
+         metadata, terminal NAV, open trade rows, and walk-forward stitched
+         OOS, warm-up, and trial-count metadata.
 """
 
 from __future__ import annotations
@@ -316,6 +318,51 @@ class AssetSpecReport:
 
 
 @dataclass
+class NavSummary:
+    mark_to_market_nav: float
+    liquidation_nav: float
+    explanation: str
+
+
+@dataclass
+class CostAttributionSummary:
+    total_costs: float
+    fees: float
+    funding: float
+    borrow: float
+    cost_as_pct_starting_equity: float
+    explanation: str
+
+
+@dataclass
+class ProfileIdentity:
+    product_label: str
+    profile_id: str
+    strategy_hash: Optional[str]
+    config_hash: Optional[str]
+    data_hash: Optional[str]
+    explanation: str
+
+
+@dataclass
+class SensitivityOutcome:
+    name: str
+    status: str
+    value: Optional[float]
+    explanation: str
+
+
+@dataclass
+class ResultExplanations:
+    product: str
+    mark_to_market_nav: str
+    liquidation_nav: str
+    cost_attribution: str
+    profile_identity: str
+    sensitivity_outcomes: str
+
+
+@dataclass
 class Results:
     schema_version: str
     engine_version: str
@@ -359,6 +406,13 @@ class Results:
     diagnostics: Optional[Dict[str, Any]] = None
     run_metadata: Optional[Dict[str, Any]] = None
     asset_spec: Optional[AssetSpecReport] = None
+    product_label: str = "Crucible 2.0"
+    run_kind: str = "crucible_2_0"
+    nav_summary: Optional[NavSummary] = None
+    cost_attribution: Optional[CostAttributionSummary] = None
+    profile_identity: Optional[ProfileIdentity] = None
+    sensitivity_outcomes: List[SensitivityOutcome] = field(default_factory=list)
+    explanations: Optional[ResultExplanations] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)

@@ -38,6 +38,63 @@ const DURATION_LABELS: Record<string, string> = {
   "1y": "1Y",
 }
 
+function isCrucibleRun(entry: BacktestHistoryEntry): boolean {
+  return entry.results.runKind === "crucible_2_0"
+}
+
+function RunRow(props: {
+  entry: BacktestHistoryEntry
+  onOpen: (entry: BacktestHistoryEntry) => void
+}) {
+  const { theme } = useTheme()
+  const returnColor = () =>
+    props.entry.results.totalReturn >= 0 ? theme.success : theme.error
+  return (
+    <box
+      flexDirection="row"
+      paddingLeft={1}
+      paddingRight={1}
+      paddingTop={0}
+      paddingBottom={0}
+      onMouseUp={() => props.onOpen(props.entry)}
+    >
+      <box width={24} flexShrink={0}>
+        <text fg={theme.text} attributes={TextAttributes.BOLD}>
+          {props.entry.algorithmName}
+        </text>
+      </box>
+      <box width={12} flexShrink={0}>
+        <text fg={theme.textMuted}>
+          {DURATION_LABELS[props.entry.params.duration] ?? props.entry.params.duration} · {props.entry.params.interval}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={returnColor()} attributes={TextAttributes.BOLD}>
+          {formatPercent(props.entry.results.totalReturn)}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={theme.error}>
+          {formatPercent(props.entry.results.maxDrawdown)}
+        </text>
+      </box>
+      <box width={14} flexShrink={0}>
+        <text fg={returnColor()}>
+          {formatCurrency(props.entry.results.endingEquity)}
+        </text>
+      </box>
+      <box width={10} flexShrink={0}>
+        <text fg={theme.text}>
+          {props.entry.results.totalTrades}
+        </text>
+      </box>
+      <box flexGrow={1}>
+        <text fg={theme.textMuted}>{formatRelative(props.entry.timestamp)}</text>
+      </box>
+    </box>
+  )
+}
+
 export function Backtests() {
   const { theme } = useTheme()
   const route = useRoute()
@@ -45,6 +102,8 @@ export function Backtests() {
   const dialog = useDialog()
 
   const runs = createMemo(() => history.list())
+  const crucibleRuns = createMemo(() => runs().filter(isCrucibleRun))
+  const legacyRuns = createMemo(() => runs().filter((entry) => !isCrucibleRun(entry)))
 
   const openRun = (entry: BacktestHistoryEntry) => {
     DialogBacktestResults.show(dialog, entry.algorithmName, entry.params, entry.results)
@@ -59,8 +118,8 @@ export function Backtests() {
       <RouteHeader
         icon={ROUTE_ICONS.backtests as unknown as string[]}
         title="Backtests"
-        subtitle="Historical performance analysis"
-        meta={`${runs().length} run${runs().length === 1 ? "" : "s"}`}
+        subtitle="Crucible 2.0 and legacy performance analysis"
+        meta={`${crucibleRuns().length} Crucible · ${legacyRuns().length} legacy`}
       />
 
       <box
@@ -134,55 +193,21 @@ export function Backtests() {
               {/* Rows */}
               <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: true }}>
                 <box flexDirection="column">
-                  <For each={runs()}>
-                    {(entry) => {
-                      const returnColor = () =>
-                        entry.results.totalReturn >= 0 ? theme.success : theme.error
-                      return (
-                        <box
-                          flexDirection="row"
-                          paddingLeft={1}
-                          paddingRight={1}
-                          paddingTop={0}
-                          paddingBottom={0}
-                          onMouseUp={() => openRun(entry)}
-                        >
-                          <box width={24} flexShrink={0}>
-                            <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                              {entry.algorithmName}
-                            </text>
-                          </box>
-                          <box width={12} flexShrink={0}>
-                            <text fg={theme.textMuted}>
-                              {DURATION_LABELS[entry.params.duration] ?? entry.params.duration} · {entry.params.interval}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()} attributes={TextAttributes.BOLD}>
-                              {formatPercent(entry.results.totalReturn)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={theme.error}>
-                              {formatPercent(entry.results.maxDrawdown)}
-                            </text>
-                          </box>
-                          <box width={14} flexShrink={0}>
-                            <text fg={returnColor()}>
-                              {formatCurrency(entry.results.endingEquity)}
-                            </text>
-                          </box>
-                          <box width={10} flexShrink={0}>
-                            <text fg={theme.text}>
-                              {entry.results.totalTrades}
-                            </text>
-                          </box>
-                          <box flexGrow={1}>
-                            <text fg={theme.textMuted}>{formatRelative(entry.timestamp)}</text>
-                          </box>
-                        </box>
-                      )
-                    }}
+                  <Show when={crucibleRuns().length > 0}>
+                    <box paddingLeft={1} paddingTop={1}>
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>Crucible 2.0 runs</text>
+                    </box>
+                  </Show>
+                  <For each={crucibleRuns()}>
+                    {(entry) => <RunRow entry={entry} onOpen={openRun} />}
+                  </For>
+                  <Show when={legacyRuns().length > 0}>
+                    <box paddingLeft={1} paddingTop={1}>
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>Legacy runs</text>
+                    </box>
+                  </Show>
+                  <For each={legacyRuns()}>
+                    {(entry) => <RunRow entry={entry} onOpen={openRun} />}
                   </For>
                 </box>
               </scrollbox>

@@ -20,11 +20,28 @@ describe("backtest result plain metrics", () => {
     } as BacktestRunner.Results)
 
     expect(output).toContain("return +7.89%")
+    expect(output).toContain("Crucible 2.0")
     expect(output).toContain("Sharpe 0.86")
     expect(output).toContain("max DD 10.70%")
     expect(output).toContain("trades 4")
     expect(output).toContain("win rate 50.00%")
     expect(output).toContain("profit factor N/A")
+  })
+
+  test("keeps legacy runs labeled separately", () => {
+    const output = formatBacktestPlainMetrics({
+      totalReturn: 0.01,
+      maxDrawdown: 0.02,
+      annualizedVolatility: 0.1,
+      sharpeRatio: 0.5,
+      endingEquity: 10100,
+      totalTrades: 1,
+      winRate: 1,
+      profitFactor: null,
+      runKind: "legacy",
+    } as BacktestRunner.Results)
+
+    expect(output).toContain("Legacy backtest")
   })
 })
 
