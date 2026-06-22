@@ -202,3 +202,87 @@ export const check = internalMutation({
     return result
   },
 })
+
+export const issue = internalMutation({
+  args: {
+    org_id: v.string(),
+    license_key_hash: v.string(),
+    plan_type: v.union(v.literal("enterprise"), v.literal("per_head")),
+    max_devices_per_key: v.optional(v.number()),
+    tier: v.optional(v.string()),
+    email: v.optional(v.string()),
+    source: v.optional(v.string()),
+    source_id: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now()
+
+    if (!validOrg(args.org_id) || !validHash(args.license_key_hash)) {
+      return { ok: false, error_code: "invalid_license" }
+    }
+
+    if (args.source_id) {
+      const existingBySource = await ctx.db
+        .query("licenses")
+        .withIndex("by_source_id", (q) => q.eq("source_id", args.source_id))
+        .first()
+
+      if (existingBySource) {
+        return { ok: true, license_id: existingBySource._id, deduped: true }
+      }
+    }
+
+    const existingByHash = await ctx.db
+      .query("licenses")
+      .withIndex("by_org_license_key_hash", (q) =>
+        q.eq("org_id", args.org_id).eq("license_key_hash", args.license_key_hash),
+      )
+      .unique()
+
+    if (existingByHash) {
+      return { ok: true, license_id: existingByHash._id, deduped: true }
+    }
+
+    const licenseId = await ctx.db.insert("licenses", {
+      org_id: args.org_id,
+      license_key_hash: args.license_key_hash.toLowerCase(),
+      plan_type: args.plan_type,
+      status: "active",
+      max_devices_per_key: args.max_devices_per_key,
+      source: args.source,
+      source_id: args.source_id,
+      tier: args.tier,
+      email: args.email,
+      devices: [],
+      time_created: now,
+      time_updated: now,
+    })
+
+    return { ok: true, license_id: licenseId, deduped: false }
+  },
+})
+
+export const revoke = internalMutation({
+  args: {
+    source_id: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const sourceId = args.source_id.trim()
+    if (!sourceId) return { ok: false, error_code: "invalid_source_id" }
+
+    const license = await ctx.db
+      .query("licenses")
+      .withIndex("by_source_id", (q) => q.eq("source_id", sourceId))
+      .first()
+
+    if (!license) return { ok: true, revoked: false, missing: true }
+    if (license.status === "revoked") return { ok: true, revoked: false, deduped: true }
+
+    await ctx.db.patch(license._id, {
+      status: "revoked",
+      time_updated: Date.now(),
+    })
+
+    return { ok: true, revoked: true }
+  },
+})

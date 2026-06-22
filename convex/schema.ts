@@ -178,6 +178,10 @@ export default defineSchema({
     active_from: v.optional(v.number()),
     active_until: v.optional(v.number()),
     max_devices_per_key: v.optional(v.number()),
+    source: v.optional(v.string()),
+    source_id: v.optional(v.string()),
+    tier: v.optional(v.string()),
+    email: v.optional(v.string()),
     devices: v.optional(
       v.array(
         v.object({
@@ -194,6 +198,7 @@ export default defineSchema({
     .index("by_license_key_hash", ["license_key_hash"])
     .index("by_org_license_key_hash", ["org_id", "license_key_hash"])
     .index("by_org_id", ["org_id"])
+    .index("by_source_id", ["source_id"])
     .index("by_status", ["status"]),
 
   licenseChecks: defineTable({

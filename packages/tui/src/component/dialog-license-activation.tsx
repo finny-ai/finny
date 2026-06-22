@@ -109,7 +109,7 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
           ref={(val: TextareaRenderable) => {
             textarea = val
           }}
-          placeholder="finny_..."
+          placeholder="finny-..."
           placeholderColor={theme.textMuted}
           textColor={busy() ? theme.textMuted : theme.text}
           focusedTextColor={busy() ? theme.textMuted : theme.text}
