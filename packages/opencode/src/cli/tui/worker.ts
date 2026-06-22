@@ -1,3 +1,4 @@
+import "@/instrumentation"
 import { Server } from "@/server/server"
 import { InstanceRuntime } from "@/project/instance-runtime"
 import { Log } from "@/util/log"
