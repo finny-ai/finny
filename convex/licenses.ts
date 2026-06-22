@@ -216,9 +216,21 @@ export const issue = internalMutation({
   },
   handler: async (ctx, args) => {
     const now = Date.now()
+    const licenseKeyHash = args.license_key_hash.toLowerCase()
 
     if (!validOrg(args.org_id) || !validHash(args.license_key_hash)) {
       return { ok: false, error_code: "invalid_license" }
+    }
+
+    const activePatch = {
+      plan_type: args.plan_type,
+      status: "active" as const,
+      time_updated: now,
+      ...(args.max_devices_per_key !== undefined ? { max_devices_per_key: args.max_devices_per_key } : {}),
+      ...(args.source !== undefined ? { source: args.source } : {}),
+      ...(args.source_id !== undefined ? { source_id: args.source_id } : {}),
+      ...(args.tier !== undefined ? { tier: args.tier } : {}),
+      ...(args.email !== undefined ? { email: args.email } : {}),
     }
 
     if (args.source_id) {
@@ -228,6 +240,7 @@ export const issue = internalMutation({
         .first()
 
       if (existingBySource) {
+        await ctx.db.patch(existingBySource._id, activePatch)
         return { ok: true, license_id: existingBySource._id, deduped: true }
       }
     }
@@ -235,17 +248,18 @@ export const issue = internalMutation({
     const existingByHash = await ctx.db
       .query("licenses")
       .withIndex("by_org_license_key_hash", (q) =>
-        q.eq("org_id", args.org_id).eq("license_key_hash", args.license_key_hash),
+        q.eq("org_id", args.org_id).eq("license_key_hash", licenseKeyHash),
       )
       .unique()
 
     if (existingByHash) {
+      await ctx.db.patch(existingByHash._id, activePatch)
       return { ok: true, license_id: existingByHash._id, deduped: true }
     }
 
     const licenseId = await ctx.db.insert("licenses", {
       org_id: args.org_id,
-      license_key_hash: args.license_key_hash.toLowerCase(),
+      license_key_hash: licenseKeyHash,
       plan_type: args.plan_type,
       status: "active",
       max_devices_per_key: args.max_devices_per_key,

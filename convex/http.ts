@@ -40,7 +40,7 @@ function metadata(request: Request) {
   }
 }
 
-function json(input: unknown, status: 200 | 400 | 403) {
+function json(input: unknown, status: 200 | 400 | 403 | 500) {
   return new Response(JSON.stringify(input), {
     status,
     headers: { "content-type": "application/json" },
@@ -198,7 +198,7 @@ http.route({
       })
       return json(result, result?.ok ? 200 : 400)
     } catch {
-      return denied("verification_failed")
+      return json({ ok: false, error_code: "internal_error" }, 500)
     }
   }),
 })
@@ -228,7 +228,7 @@ http.route({
       })
       return json(result, result?.ok ? 200 : 400)
     } catch {
-      return denied("verification_failed")
+      return json({ ok: false, error_code: "internal_error" }, 500)
     }
   }),
 })
