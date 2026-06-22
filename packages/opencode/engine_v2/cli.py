@@ -529,7 +529,12 @@ def _param_grid_from_json(raw: Optional[str]) -> Optional[List[Dict[str, Any]]]:
         return None
     parsed = json.loads(raw)
     if isinstance(parsed, list):
-        return [dict(item) for item in parsed if isinstance(item, dict)]
+        for item in parsed:
+            if not isinstance(item, dict):
+                raise SystemExit(
+                    f"--param-grid-json array contains a non-object element: {item!r}"
+                )
+        return [dict(item) for item in parsed]
     if not isinstance(parsed, dict):
         raise SystemExit("--param-grid-json must be an object or array of objects")
     return _expand_param_grid(parsed)
