@@ -141,9 +141,21 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
 
 def resolve_asset_spec(cfg: Dict[str, Any]) -> AssetSpec:
     symbol = str(cfg.get("symbol", "")).upper()
-    asset_class = normalize_asset_class(cfg.get("asset_class") or cfg.get("assetClass"), symbol)
+    raw_asset_class = cfg.get("asset_class") or cfg.get("assetClass")
+    inferred_asset_class = normalize_asset_class(None, symbol)
+    asset_class = normalize_asset_class(raw_asset_class, symbol)
     spec_cfg = dict(cfg.get("asset_spec") or cfg.get("assetSpec") or {})
     exec_cfg = cfg.get("execution", {}) or {}
+    has_complete_custom_spec = all(
+        spec_cfg.get(k) is not None
+        for k in ("tickSize", "lotSize", "multiplier", "calendar", "currency", "feeModel", "marginModel", "dataProvider")
+    )
+    compatible_override = {asset_class, inferred_asset_class} <= {"crypto_spot", "crypto_perp"}
+    if raw_asset_class and asset_class != inferred_asset_class and not compatible_override and not has_complete_custom_spec:
+        raise ValueError(
+            f"asset_class {asset_class!r} is inconsistent with symbol {symbol!r} "
+            f"(inferred {inferred_asset_class!r}). Supply a complete custom asset_spec to override inference."
+        )
 
     # Guard unknown futures roots: silently simulating an unsupported/typo'd
     # contract with ES specs would produce wrong margin/tick/multiplier (and

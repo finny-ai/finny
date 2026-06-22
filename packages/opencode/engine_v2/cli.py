@@ -27,11 +27,12 @@ import engine_v2
 from engine_v2.assets import AssetSpec, resolve_asset_spec
 from engine_v2.compat.shapec_adapter import ShapeCBrokerAdapter
 from engine_v2.core.arrays import MarketSnapshot, from_dataframe
-from engine_v2.core.clock import interval_to_rule_and_bars_per_year
+from engine_v2.core.clock import calendar_bars_per_year, interval_to_rule_and_bars_per_year
 from engine_v2.core.rng import derive_seed
 from engine_v2.data import quality as DQ
 from engine_v2.execution.costs import CostConfig
 from engine_v2.execution.fills import FillConfig
+from engine_v2.execution.profiles import resolve_execution_profile
 from engine_v2.execution.slippage import SlippageConfig
 from engine_v2.execution.spread import SpreadConfig
 from engine_v2.portfolio.account import Account
@@ -128,50 +129,53 @@ def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, i
 
 def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, asset_spec: AssetSpec) -> PortfolioBroker:
     exec_cfg = cfg.get("execution", {})
+    profile_state = resolve_execution_profile(asset_spec.assetClass, exec_cfg)
+    effective_exec = profile_state["effective"]
     risk_cfg = cfg.get("risk", {})
     default_initial_margin = (
         float(asset_spec.initialMarginPct)
         if asset_spec.initialMarginPct is not None
-        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+        else float(effective_exec.get("initial_margin_pct", 1.0) or 1.0)
     )
-    max_leverage = float(exec_cfg.get("max_leverage", 1.0))
-    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
+    max_leverage = float(effective_exec.get("max_leverage", 1.0))
+    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in effective_exec:
         max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     account = Account.new(
         starting_cash=float(risk_cfg.get("starting_equity_usd", 10000.0)),
         max_leverage=max_leverage,
         maintenance_margin_pct=float(
-            exec_cfg.get(
+            effective_exec.get(
                 "maintenance_margin_pct",
                 asset_spec.maintenanceMarginPct if asset_spec.maintenanceMarginPct is not None else 0.0,
             )
         ),
     )
     costs = CostConfig(
-        maker_fee_bps=float(exec_cfg.get("maker_fee_bps", 2.0)),
-        taker_fee_bps=float(exec_cfg.get("taker_fee_bps", 7.0)),
+        maker_fee_bps=float(effective_exec.get("maker_fee_bps", 2.0)),
+        taker_fee_bps=float(effective_exec.get("taker_fee_bps", 7.0)),
         commission_per_contract=float(
-            exec_cfg.get(
+            effective_exec.get(
                 "commission_per_contract",
                 asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
             )
         ),
-        funding_rate_bps_per_interval=float(exec_cfg.get("funding_rate_bps", 0.0)),
-        funding_interval_hours=float(exec_cfg.get("funding_interval_hours", 8.0)),
-        short_borrow_rate_annual=float(exec_cfg.get("short_borrow_rate_annual", 0.0)),
+        funding_rate_bps_per_interval=float(effective_exec.get("funding_rate_bps", 0.0)),
+        funding_interval_hours=float(effective_exec.get("funding_interval_hours", 8.0)),
+        short_borrow_rate_annual=float(effective_exec.get("short_borrow_rate_annual", 0.0)),
+        option_per_contract_fee=float(effective_exec.get("option_per_contract_fee", 0.65)),
     )
     fill_cfg = FillConfig(
         mode=mode,
-        participation_pct=float(exec_cfg.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
+        participation_pct=float(effective_exec.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
         slippage=SlippageConfig(
-            base_bps=float(exec_cfg.get("slippage_bps", 1.0)),
-            k_atr=float(exec_cfg.get("k_atr", 0.5 if mode == "v2" else 0.0)),
-            k_vol=float(exec_cfg.get("k_vol", 5.0 if mode == "v2" else 0.0)),
+            base_bps=float(effective_exec.get("slippage_bps", 1.0)),
+            k_atr=float(effective_exec.get("k_atr", 0.0)),
+            k_vol=float(effective_exec.get("k_vol", 5.0 if mode == "v2" else 0.0)),
         ),
         spread=SpreadConfig(
-            enabled=bool(exec_cfg.get("spread_enabled", asset_spec.productionEligible)),
-            k=float(exec_cfg.get("spread_k", 0.5)),
-            lookback_bars=int(exec_cfg.get("spread_lookback", 30)),
+            enabled=bool(effective_exec.get("spread_enabled", asset_spec.productionEligible)),
+            k=float(effective_exec.get("spread_k", 0.5)),
+            lookback_bars=int(effective_exec.get("spread_lookback", 30)),
         ),
     )
     return PortfolioBroker(snap, account, costs, fill_cfg, interval=interval, asset_specs={asset_spec.symbol: asset_spec})
@@ -179,42 +183,52 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, ass
 
 def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, Any]:
     exec_cfg = cfg.get("execution", {})
+    profile_state = resolve_execution_profile(asset_spec.assetClass, exec_cfg)
+    effective_exec = profile_state["effective"]
     default_initial_margin = (
         float(asset_spec.initialMarginPct)
         if asset_spec.initialMarginPct is not None
-        else float(exec_cfg.get("initial_margin_pct", 1.0) or 1.0)
+        else float(effective_exec.get("initial_margin_pct", 1.0) or 1.0)
     )
     default_maintenance_margin = (
         float(asset_spec.maintenanceMarginPct)
         if asset_spec.maintenanceMarginPct is not None
-        else float(exec_cfg.get("maintenance_margin_pct", 0.0))
+        else float(effective_exec.get("maintenance_margin_pct", 0.0))
     )
-    max_leverage = float(exec_cfg.get("max_leverage", 1.0))
-    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in exec_cfg:
+    max_leverage = float(effective_exec.get("max_leverage", 1.0))
+    if asset_spec.assetClass in {"crypto_perp", "future"} and "max_leverage" not in effective_exec:
         max_leverage = 1.0 / default_initial_margin if default_initial_margin > 0 else 1.0
     return {
+        "profile_id": profile_state["profile"]["id"],
+        "profile_version": profile_state["profile"]["version"],
+        "profile_defaults": profile_state["profile_defaults"],
+        "effective_values": profile_state["effective"],
+        "overrides": profile_state["overrides"],
+        "scenarios": profile_state["scenarios"],
         "fill_model": "engine_v2.next_open" if mode == "v2" else "engine_v2.v1_compat",
-        "participation_pct": float(exec_cfg.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
-        "maker_fee_bps": float(exec_cfg.get("maker_fee_bps", 2.0)),
-        "taker_fee_bps": float(exec_cfg.get("taker_fee_bps", 7.0)),
+        "participation_pct": float(effective_exec.get("participation_pct", 0.10 if mode == "v2" else 1.0)),
+        "maker_fee_bps": float(effective_exec.get("maker_fee_bps", 2.0)),
+        "taker_fee_bps": float(effective_exec.get("taker_fee_bps", 7.0)),
         "commission_per_contract": float(
-            exec_cfg.get(
+            effective_exec.get(
                 "commission_per_contract",
                 asset_spec.commissionPerContract if asset_spec.commissionPerContract is not None else 0.0,
             )
         ),
-        "slippage_bps": float(exec_cfg.get("slippage_bps", 1.0)),
-        "k_atr": float(exec_cfg.get("k_atr", 0.5 if mode == "v2" else 0.0)),
-        "k_vol": float(exec_cfg.get("k_vol", 5.0 if mode == "v2" else 0.0)),
-        "spread_enabled": bool(exec_cfg.get("spread_enabled", asset_spec.productionEligible)),
-        "spread_k": float(exec_cfg.get("spread_k", 0.5)),
-        "spread_lookback": int(exec_cfg.get("spread_lookback", 30)),
+        "slippage_bps": float(effective_exec.get("slippage_bps", 1.0)),
+        "k_atr": float(effective_exec.get("k_atr", 0.0)),
+        "k_vol": float(effective_exec.get("k_vol", 5.0 if mode == "v2" else 0.0)),
+        "spread_enabled": bool(effective_exec.get("spread_enabled", asset_spec.productionEligible)),
+        "spread_k": float(effective_exec.get("spread_k", 0.5)),
+        "spread_lookback": int(effective_exec.get("spread_lookback", 30)),
         "max_leverage": max_leverage,
-        "initial_margin_pct": float(exec_cfg.get("initial_margin_pct", default_initial_margin)),
-        "maintenance_margin_pct": float(exec_cfg.get("maintenance_margin_pct", default_maintenance_margin)),
-        "funding_enabled": float(exec_cfg.get("funding_rate_bps", 0.0)) != 0.0,
-        "funding_rate_bps": float(exec_cfg.get("funding_rate_bps", 0.0)),
-        "funding_interval_hours": float(exec_cfg.get("funding_interval_hours", 8.0)),
+        "initial_margin_pct": float(effective_exec.get("initial_margin_pct", default_initial_margin)),
+        "maintenance_margin_pct": float(effective_exec.get("maintenance_margin_pct", default_maintenance_margin)),
+        "funding_enabled": float(effective_exec.get("funding_rate_bps", 0.0)) != 0.0,
+        "funding_rate_bps": float(effective_exec.get("funding_rate_bps", 0.0)),
+        "funding_interval_hours": float(effective_exec.get("funding_interval_hours", 8.0)),
+        "short_borrow_rate_annual": float(effective_exec.get("short_borrow_rate_annual", 0.0)),
+        "option_per_contract_fee": float(effective_exec.get("option_per_contract_fee", 0.65)),
         "liquidation_enabled": max_leverage > 1.0 and default_maintenance_margin > 0.0,
         "asset_class": asset_spec.assetClass,
         "multiplier": asset_spec.multiplier,
@@ -733,8 +747,24 @@ def main() -> None:
         raise SystemExit(f"Failed to resample CSV at interval {args.interval!r}: {e}") from e
     if df.empty:
         raise SystemExit("No bars after resampling")
+    window_reasons = DQ.requested_window_reasons(
+        df, args.interval, asset_spec.assetClass, args.start_date, args.end_date,
+    )
+    if args.data_quality_mode == "strict" and window_reasons:
+        truncated_report = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+        raise SystemExit(_quality_failure(
+            "Data quality failed requested window coverage",
+            window_reasons,
+            truncated_report,
+            provider=provider,
+            symbol=str(symbol),
+            interval=str(args.interval),
+            raw_rows=raw_rows,
+            post_rows=int(len(df)),
+        ))
 
-    _, bars_per_year = interval_to_rule_and_bars_per_year(args.interval)
+    _, _legacy_bars_per_year = interval_to_rule_and_bars_per_year(args.interval)
+    bars_per_year = calendar_bars_per_year(args.interval, asset_spec.calendar)
 
     # Data quality is a hard gate for strict engine runs.
     dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
@@ -875,6 +905,9 @@ def main() -> None:
             "engine_mode": args.mode,
             "worker_protocol": "jsonl_intents_v1" if args.mode == "v2" else "legacy_unsafe",
             "asset_spec": asset_spec.to_dict(),
+            "mark_to_market_nav": float(equity[-1]) if equity.size else float(args.capital),
+            "liquidation_nav": broker.terminal_liquidation_nav(),
+            "nav_basis": "liquidation_adjusted",
             "data_provider": provider,
             "fetch_symbol": str(symbol),
             "fetch_interval": str(args.interval),

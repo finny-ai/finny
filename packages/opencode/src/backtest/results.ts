@@ -33,6 +33,22 @@ export namespace EngineV2 {
     liquidation: boolean
   }
 
+  export interface OpenTradeRow {
+    symbol: string
+    side: "long" | "short"
+    qty: number
+    entry_ts: string
+    entry_price: number
+    mark_price: number
+    multiplier: number
+    unrealized_pnl: number
+    fees_accrued: number
+    funding_accrued: number
+    borrow_accrued: number
+    hold_bars: number
+    entry_tag: string
+  }
+
   export interface DrawdownEntry {
     start_ts: string
     trough_ts: string
@@ -236,6 +252,12 @@ export namespace EngineV2 {
   }
 
   export interface ExecutionConfig {
+    profile_id?: string
+    profile_version?: string
+    profile_defaults?: Record<string, unknown>
+    effective_values?: Record<string, unknown>
+    overrides?: Record<string, unknown>
+    scenarios?: Record<string, Record<string, unknown>>
     fill_model: string
     participation_pct: number
     maker_fee_bps: number
@@ -322,6 +344,7 @@ export namespace EngineV2 {
     stability: StabilityMetrics
 
     trades: TradeRow[]
+    open_trades?: OpenTradeRow[]
     per_symbol: PerSymbolAttribution[]
     data_quality: DataQualityReport
 

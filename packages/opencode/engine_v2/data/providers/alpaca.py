@@ -108,7 +108,7 @@ class AlpacaProvider:
                     url = f"{_DATA_BASE}/v1beta1/options/bars"
                 else:
                     url = f"{_DATA_BASE}/v2/stocks/bars"
-                    params["adjustment"] = "raw"
+                    params["adjustment"] = "all"
                     params["feed"] = feed
                 if page_token:
                     params["page_token"] = page_token

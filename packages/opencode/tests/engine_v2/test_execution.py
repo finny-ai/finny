@@ -40,6 +40,19 @@ def _setup(bars: BarArrays, mode: str = "v2", participation: float = 1.0):
     return PortfolioBroker(snap, acct, costs, fcfg, interval="1m"), snap
 
 
+def _custom_future_spec():
+    return {
+        "multiplier": 50,
+        "tickSize": 0.25,
+        "lotSize": 1,
+        "calendar": "US_FUTURES",
+        "currency": "USD",
+        "feeModel": "engine_v2.execution.costs",
+        "marginModel": "engine_v2.portfolio.account",
+        "dataProvider": "custom",
+    }
+
+
 def test_market_order_fills_at_next_bar_open_v2():
     ba = _bars((100, 101, 99, 100, 1000), (105, 106, 104, 105, 1000), (110, 111, 109, 110, 1000))
     broker, snap = _setup(ba, mode="v2")
@@ -283,7 +296,7 @@ def test_aggregate_queued_exposure_rejects_split_oversized_orders():
 def test_future_multiplier_affects_pnl_and_rejects_notional_intent():
     ba = _bars((100, 101, 99, 100, 1_000_000), (100, 101, 99, 100, 1_000_000), (110, 111, 109, 110, 1_000_000))
     snap = MarketSnapshot({"X": ba})
-    spec = resolve_asset_spec({"symbol": "X", "asset_class": "future", "asset_spec": {"multiplier": 50, "tickSize": 0.25, "lotSize": 1}})
+    spec = resolve_asset_spec({"symbol": "X", "asset_class": "future", "asset_spec": _custom_future_spec()})
     acct = Account.new(starting_cash=100_000.0, max_leverage=10.0, maintenance_margin_pct=0.0)
     costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0)
     fcfg = FillConfig(mode="v2", participation_pct=1.0,
@@ -304,7 +317,7 @@ def test_future_multiplier_affects_pnl_and_rejects_notional_intent():
 def test_future_commission_per_contract_applies_to_fills():
     ba = _bars((100, 101, 99, 100, 1_000_000), (100, 101, 99, 100, 1_000_000))
     snap = MarketSnapshot({"X": ba})
-    spec = resolve_asset_spec({"symbol": "X", "asset_class": "future", "asset_spec": {"multiplier": 50, "tickSize": 0.25, "lotSize": 1}})
+    spec = resolve_asset_spec({"symbol": "X", "asset_class": "future", "asset_spec": _custom_future_spec()})
     acct = Account.new(starting_cash=100_000.0, max_leverage=10.0, maintenance_margin_pct=0.0)
     costs = CostConfig(maker_fee_bps=0.0, taker_fee_bps=0.0, commission_per_contract=2.25)
     fcfg = FillConfig(mode="v2", participation_pct=1.0,

@@ -38,6 +38,7 @@ from ..execution.fills import (
 from ..portfolio.account import Account
 from ..portfolio.liquidation import liquidation_price
 from ..portfolio.positions import Position, PositionBook
+from ..execution.spread import half_spread
 
 
 class PortfolioBroker:
@@ -64,11 +65,9 @@ class PortfolioBroker:
         self.sell_attempts = 0
         self.interval = interval
         _, self.bars_per_year = interval_to_rule_and_bars_per_year(interval)
-        # Funding cadence in bars
-        bars_per_hour = self.bars_per_year / (365.0 * 24.0)
-        self.funding_period_bars = max(1, int(round(costs.funding_interval_hours * bars_per_hour))) \
-            if costs.funding_rate_bps_per_interval != 0 else 0
         self.bar_counter = 0
+        self._last_cost_ts_ns: Optional[int] = None
+        self._funding_elapsed_hours = 0.0
         self.halted = False
         self.dust_adjustments: List[Dict[str, object]] = []
         self._participation_budgets: Dict[str, ParticipationBudget] = {}
@@ -175,6 +174,57 @@ class PortfolioBroker:
             "pending_orders_at_end": len(self.orders),
             "halted": self.halted,
             "dust_adjustments": len(self.dust_adjustments),
+        }
+
+    def terminal_liquidation_nav(self) -> Dict[str, object]:
+        """Non-mutating liquidation-adjusted NAV at the current terminal mark.
+
+        Pending orders are treated as canceled, then every open position is
+        hypothetically closed with adverse terminal spread, slippage, and venue
+        commission/contract fee. Funding and borrow accrued through elapsed bars
+        are already reflected in account cash by the runtime.
+        """
+        nav = float(self.account.cash)
+        closes: List[Dict[str, object]] = []
+        for sym, pos in self.book.positions.items():
+            if pos.qty == 0:
+                continue
+            spec = self.asset_specs.get(sym)
+            ba = self.market.arrays[sym]
+            px = float(self.account.last_prices.get(sym, ba.close[-1]))
+            side = "sell" if pos.qty > 0 else "buy"
+            qty = abs(float(pos.qty))
+            slip = px * (float(self.fill_cfg.slippage.base_bps) / 10_000.0)
+            close_win = ba.close[max(0, len(ba.close) - self.fill_cfg.spread.lookback_bars):]
+            spr = half_spread(close_win, self.fill_cfg.spread, px)
+            terminal_px = px - slip - spr if side == "sell" else px + slip + spr
+            if spec is not None:
+                terminal_px = spec.round_price(terminal_px)
+            mult = self._multiplier(sym)
+            realized = qty * (terminal_px - pos.avg_price) * (1 if pos.qty > 0 else -1) * mult
+            fee = commission(
+                abs(qty * terminal_px * mult),
+                is_maker=False,
+                cfg=self.costs,
+                qty=qty,
+                asset_class=spec.assetClass if spec is not None else "",
+            )
+            nav += realized - fee
+            closes.append({
+                "symbol": sym,
+                "side": side,
+                "qty": qty,
+                "mark_price": px,
+                "terminal_price": terminal_px,
+                "realized_pnl": realized,
+                "fee": fee,
+                "funding_accrued": float(pos.funding_accum),
+                "borrow_accrued": float(pos.borrow_accum),
+            })
+        return {
+            "nav": nav,
+            "canceled_pending_orders": len(self.orders),
+            "hypothetical_closes": closes,
         }
 
     # ---------- Runtime-facing API ----------
@@ -614,14 +664,27 @@ class PortfolioBroker:
         )
 
     def _apply_periodic_costs(self, i: int) -> None:
+        ts_ns = int(next(iter(self.market.arrays.values())).ts[i])
+        if self._last_cost_ts_ns is None:
+            self._last_cost_ts_ns = ts_ns
+            return
+        elapsed_years = max(0.0, (ts_ns - self._last_cost_ts_ns) / (365.25 * 86_400_000_000_000.0))
+        elapsed_hours = elapsed_years * 365.25 * 24.0
+        self._last_cost_ts_ns = ts_ns
         # Funding for perp-style positions
-        if self.funding_period_bars > 0 and (self.bar_counter + 1) % self.funding_period_bars == 0:
+        funding_intervals = 0
+        if self.costs.funding_rate_bps_per_interval != 0 and self.costs.funding_interval_hours > 0:
+            self._funding_elapsed_hours += elapsed_hours
+            funding_intervals = int(self._funding_elapsed_hours // self.costs.funding_interval_hours)
+            if funding_intervals > 0:
+                self._funding_elapsed_hours -= funding_intervals * self.costs.funding_interval_hours
+        if funding_intervals > 0:
             for sym, pos in self.book.positions.items():
                 if pos.qty == 0:
                     continue
                 px = float(self.market.arrays[sym].close[i])
                 notional = abs(pos.qty) * px * self._multiplier(sym)
-                charge = funding_charge(notional, self.costs)
+                charge = funding_charge(notional, self.costs) * funding_intervals
                 amount = charge if pos.qty > 0 else -charge
                 pos.funding_accum += amount
                 self.account.apply_funding(amount)
@@ -631,7 +694,7 @@ class PortfolioBroker:
                 continue
             px = float(self.market.arrays[sym].close[i])
             notional = abs(pos.qty) * px * self._multiplier(sym)
-            charge = borrow_charge_per_bar(notional, self.costs, self.bars_per_year)
+            charge = notional * self.costs.short_borrow_rate_annual * elapsed_years
             if charge > 0:
                 pos.borrow_accum += charge
                 self.account.apply_funding(charge)

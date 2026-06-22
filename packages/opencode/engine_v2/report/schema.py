@@ -9,7 +9,8 @@ CHANGELOG:
   2.0.0  initial engine_v2 release.
   3.0.0  trade rows require multiplier; omega/profit_factor may be null.
   3.1.0  asset spec adds optional margin/commission metadata.
-  3.2.0  walk-forward adds stitched OOS, warm-up, and trial-count metadata.
+  3.2.0  execution profile metadata, terminal NAV, open trade rows, and
+         walk-forward stitched OOS, warm-up, and trial-count metadata.
 """
 
 from __future__ import annotations
@@ -42,6 +43,23 @@ class TradeRow:
     entry_tag: str
     exit_tag: str
     liquidation: bool = False
+
+
+@dataclass
+class OpenTradeRow:
+    symbol: str
+    side: str
+    qty: float
+    entry_ts: str
+    entry_price: float
+    mark_price: float
+    multiplier: float
+    unrealized_pnl: float
+    fees_accrued: float
+    funding_accrued: float
+    borrow_accrued: float
+    hold_bars: int
+    entry_tag: str
 
 
 @dataclass
@@ -329,6 +347,7 @@ class Results:
     stability: StabilityMetrics
 
     trades: List[TradeRow]
+    open_trades: List[OpenTradeRow]
     per_symbol: List[PerSymbolAttribution]
     data_quality: DataQualityReport
 
