@@ -6,7 +6,18 @@ import { Global } from "@/global"
 import { Filesystem } from "@/util/filesystem"
 
 const CACHE_FILE = "license-cache.json"
+const TERMS_FILE = "terms-acceptance.json"
 const GRACE_MS = 24 * 60 * 60 * 1000
+
+// Bump when the Terms / License Agreement materially change so users are
+// re-prompted to accept the new version.
+const TERMS_VERSION = "2026-06-22"
+const TERMS_URL = "https://finnyai.tech/legal/eula"
+
+type TermsAcceptance = {
+  version: string
+  accepted_at: string
+}
 const DEFAULT_CHECK_URL = "https://api.finnyai.tech/v1/license/check"
 const DEFAULT_ORG_ID = "consumer"
 
@@ -45,6 +56,10 @@ let cacheDirOverride: string | undefined
 
 function cachePath() {
   return path.join(cacheDirOverride ?? Global.Path.data, CACHE_FILE)
+}
+
+function termsPath() {
+  return path.join(cacheDirOverride ?? Global.Path.data, TERMS_FILE)
 }
 
 function sha256(value: string) {
@@ -131,6 +146,31 @@ export namespace License {
 
   export function isRestrictedTool(id: string) {
     return RESTRICTED_TOOL_IDS.has(id)
+  }
+
+  export const termsVersion = TERMS_VERSION
+  export const termsUrl = TERMS_URL
+
+  /** True if the user has already accepted the current Terms / License version. */
+  export async function hasAcceptedTerms(): Promise<boolean> {
+    try {
+      const record = await Filesystem.readJson<TermsAcceptance>(termsPath())
+      return record?.version === TERMS_VERSION
+    } catch {
+      return false
+    }
+  }
+
+  /** Persist that the user accepted the current Terms / License version. */
+  export async function recordTermsAcceptance(): Promise<void> {
+    await Filesystem.writeJson(
+      termsPath(),
+      {
+        version: TERMS_VERSION,
+        accepted_at: new Date(nowImpl()).toISOString(),
+      } satisfies TermsAcceptance,
+      0o600,
+    )
   }
 
   export function hashLicenseKey(rawKey: string) {
