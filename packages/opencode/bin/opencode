@@ -48,8 +48,16 @@ const envPath = process.env.FINNY_BIN_PATH ?? process.env.OPENCODE_BIN_PATH
 const scriptPath = fs.realpathSync(__filename)
 const scriptDir = path.dirname(scriptPath)
 
-//
-const cached = path.join(scriptDir, ".opencode")
+// Derive the platform-package base from this wrapper's own name so the launcher
+// resolves the published scoped packages (e.g. @finny-ai/finny-internal-darwin-arm64),
+// not the legacy unscoped "opencode-*" names.
+const wrapperName = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(scriptDir, "..", "package.json"), "utf8")).name
+  } catch {
+    return "opencode"
+  }
+})()
 
 const platformMap = {
   darwin: "darwin",
@@ -70,8 +78,12 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-" + platform + "-" + arch
+const base = wrapperName + "-" + platform + "-" + arch
 const binary = platform === "windows" ? "opencode.exe" : "opencode"
+
+// Fast path: the binary postinstall.mjs copies next to this launcher. Keep this
+// filename in sync with postinstall.mjs's targetBinary.
+const cached = path.join(scriptDir, platform === "windows" ? ".opencode.exe" : ".opencode")
 
 function supportsAvx2() {
   if (arch !== "x64") return false

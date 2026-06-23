@@ -174,8 +174,14 @@ jobs:
 
   publish:
     needs: [build, sign-macos, sign-windows]
-    # Run even if a signing job was skipped (secrets absent); only fail on real errors.
-    if: ${{ always() && needs.build.result == 'success' }}
+    # Run when a signing job was skipped (secrets absent), but NOT when a
+    # configured signing job actually failed — a real signing failure must stop
+    # the release rather than silently publishing unsigned artifacts.
+    if: >-
+      ${{ always()
+          && needs.build.result == 'success'
+          && (needs.sign-macos.result == 'success' || needs.sign-macos.result == 'skipped')
+          && (needs.sign-windows.result == 'success' || needs.sign-windows.result == 'skipped') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

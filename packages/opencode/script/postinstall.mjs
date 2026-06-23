@@ -29,7 +29,9 @@ const arch = archMap[os.arch()] ?? os.arch()
 // package's own name so it stays correct across renames/scopes.
 const base = `${packageJson.name}-${platform}-${arch}`
 const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
-const targetBinary = path.join(__dirname, "bin", "opencode.exe")
+// Cache the platform binary next to the launcher. The filename must match the
+// launcher's `cached` path in bin/opencode so `finny` actually executes it.
+const targetBinary = path.join(__dirname, "bin", platform === "windows" ? ".opencode.exe" : ".opencode")
 
 function supportsAvx2() {
   if (arch !== "x64") return false

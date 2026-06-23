@@ -17,7 +17,10 @@ const generated = await import("./generate.ts")
 import { Script } from "@opencode-ai/script"
 import pkg from "../package.json"
 
-const finnyVersion = pkg.version
+// Honor the release version passed by CI (OPENCODE_VERSION). build.ts otherwise
+// bakes package.json's 0.0.0 into the binary, so `--version`, upgrade checks,
+// and the license app_version would all report 0.0.0 on a real release.
+const finnyVersion = process.env.OPENCODE_VERSION?.trim() || pkg.version
 
 // Published npm identity, decoupled from the internal workspace package name
 // (`finny-internal-prop`, referenced by packages/web as a workspace dep). The
