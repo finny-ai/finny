@@ -19,33 +19,34 @@ type TermsAcceptance = {
   accepted_at: string
 }
 const DEFAULT_CHECK_URL = "https://api.finnyai.tech/v1/license/check"
-const DEFAULT_ORG_ID = "consumer"
+const DEFAULT_CLIENT_ID = "finny-pro"
 
 type Cache = {
-  org_id: string
+  schema_version?: 1 | 2
+  org_id?: string
+  org_name?: string
   license_key_hash: string
   machine_id_hash: string
   last_ok_at: string
-  plan_type?: "enterprise" | "per_head"
   next_check_after?: string
-  devices_used?: number
-  device_limit?: number
 }
 
 type CheckOk = {
   ok: true
-  plan_type?: "enterprise" | "per_head"
-  next_check_after?: string
-  devices_used?: number
-  device_limit?: number
+  orgId?: string
+  orgName?: string
+  deviceLimitReached?: boolean
+  message?: string
+  nextCheckAfter?: string
 }
 
 type CheckDenied = {
   ok: false
-  error_code?: string
+  orgId?: string
+  orgName?: string
+  deviceLimitReached?: boolean
   message?: string
-  devices_used?: number
-  device_limit?: number
+  nextCheckAfter?: string
 }
 
 type CheckResult = CheckOk | CheckDenied
@@ -75,8 +76,8 @@ function checkUrl() {
   return process.env.FINNY_LICENSE_CHECK_URL?.trim() || DEFAULT_CHECK_URL
 }
 
-function orgId() {
-  return process.env.FINNY_LICENSE_ORG_ID?.trim() || DEFAULT_ORG_ID
+function clientId() {
+  return process.env.FINNY_LICENSE_CLIENT?.trim() || DEFAULT_CLIENT_ID
 }
 
 function isFresh(cache: Cache, now = nowImpl()) {
@@ -87,30 +88,24 @@ function isFresh(cache: Cache, now = nowImpl()) {
 async function readCache(): Promise<Cache | null> {
   try {
     const cache = await Filesystem.readJson<Cache>(cachePath())
-    if (!cache.org_id || !cache.license_key_hash || !cache.machine_id_hash || !cache.last_ok_at) return null
+    if (!cache.license_key_hash || !cache.machine_id_hash || !cache.last_ok_at) return null
     return cache
   } catch {
     return null
   }
 }
 
-async function writeCache(input: {
-  orgID: string
-  licenseKeyHash: string
-  machineIdHash: string
-  result?: CheckOk
-}) {
+async function writeCache(input: { licenseKeyHash: string; machineIdHash: string; result?: CheckOk }) {
   await Filesystem.writeJson(
     cachePath(),
     {
-      org_id: input.orgID,
+      schema_version: 2,
+      org_id: input.result?.orgId,
+      org_name: input.result?.orgName,
       license_key_hash: input.licenseKeyHash,
       machine_id_hash: input.machineIdHash,
       last_ok_at: new Date(nowImpl()).toISOString(),
-      plan_type: input.result?.plan_type,
-      next_check_after: input.result?.next_check_after,
-      devices_used: input.result?.devices_used,
-      device_limit: input.result?.device_limit,
+      next_check_after: input.result?.nextCheckAfter,
     } satisfies Cache,
     0o600,
   )
@@ -186,35 +181,32 @@ export namespace License {
     if (isBypassEnabled()) return true
     const cache = await readCache()
     if (!cache || !isFresh(cache)) return false
-    return cache.org_id === orgId() && cache.machine_id_hash === (await machineIdHash())
+    return cache.machine_id_hash === (await machineIdHash())
   }
 
   export async function currentStatus() {
     const cache = await readCache()
     const machineHash = await machineIdHash()
     return {
-      active: isBypassEnabled() || (!!cache && cache.org_id === orgId() && cache.machine_id_hash === machineHash && isFresh(cache)),
-      org_id: cache?.org_id ?? orgId(),
-      plan_type: cache?.plan_type,
+      active: isBypassEnabled() || (!!cache && cache.machine_id_hash === machineHash && isFresh(cache)),
+      org_id: cache?.org_id,
+      org_name: cache?.org_name,
       license_key_hash: cache?.license_key_hash,
       machine_id_hash: machineHash,
       cached_machine_id_hash: cache?.machine_id_hash,
       last_ok_at: cache?.last_ok_at,
       next_check_after: cache?.next_check_after,
-      devices_used: cache?.devices_used,
-      device_limit: cache?.device_limit,
     }
   }
 
   export async function activate(rawKey: string): Promise<void> {
     const key = rawKey.trim()
     if (!key) throw new AccessDeniedError()
-    const org = orgId()
     const licenseKeyHash = hashLicenseKey(key)
     const machineHash = await machineIdHash()
-    const result = await checkRemote(org, licenseKeyHash, machineHash)
+    const result = await checkRemote(licenseKeyHash, machineHash)
     if (!result.ok) throw new AccessDeniedError(result.message)
-    await writeCache({ orgID: org, licenseKeyHash, machineIdHash: machineHash, result })
+    await writeCache({ licenseKeyHash, machineIdHash: machineHash, result })
   }
 
   export async function ensureActive(): Promise<void> {
@@ -223,7 +215,7 @@ export namespace License {
     const cache = await readCache()
     const currentMachineHash = await machineIdHash()
     const envKey = process.env.FINNY_LICENSE_KEY?.trim()
-    if (cache && cache.org_id === orgId() && isFresh(cache) && cache.machine_id_hash === currentMachineHash) {
+    if (cache && isFresh(cache) && cache.machine_id_hash === currentMachineHash) {
       if (!envKey || cache.license_key_hash === hashLicenseKey(envKey)) return
     }
 
@@ -234,10 +226,9 @@ export namespace License {
 
     if (!cache) throw new AccessDeniedError()
 
-    const result = await checkRemote(orgId(), cache.license_key_hash, currentMachineHash)
+    const result = await checkRemote(cache.license_key_hash, currentMachineHash)
     if (!result.ok) throw new AccessDeniedError(result.message)
     await writeCache({
-      orgID: orgId(),
       licenseKeyHash: cache.license_key_hash,
       machineIdHash: currentMachineHash,
       result,
@@ -254,7 +245,7 @@ export namespace License {
     return undefined
   }
 
-  async function checkRemote(orgID: string, licenseKeyHash: string, machineIdHash: string): Promise<CheckResult> {
+  async function checkRemote(licenseKeyHash: string, machineIdHash: string): Promise<CheckResult> {
     const url = checkUrl()
     if (!url) throw new VerificationError("License check URL is not configured.")
 
@@ -264,10 +255,10 @@ export namespace License {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          org_id: orgID,
-          license_key_hash: licenseKeyHash,
-          machine_id_hash: machineIdHash,
-          app_version: InstallationVersion,
+          licenseKeyHash,
+          machineIdHash,
+          appVersion: InstallationVersion,
+          client: clientId(),
           timestamp: new Date(nowImpl()).toISOString(),
         }),
       })

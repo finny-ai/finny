@@ -16,20 +16,8 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | null>(null)
   const [frame, setFrame] = createSignal(0)
-  // "loading" until we know if terms were already accepted; "terms" shows the
-  // one-time acceptance gate; "key" shows the license-key entry.
-  const [phase, setPhase] = createSignal<"loading" | "terms" | "key">("loading")
   let textarea: TextareaRenderable
   const pulse = ["◇", "◈", "◆", "◈"]
-
-  const acceptTerms = async () => {
-    await License.recordTermsAcceptance()
-    setPhase("key")
-    setTimeout(() => {
-      if (!textarea || textarea.isDestroyed) return
-      textarea.focus()
-    }, 1)
-  }
 
   const activate = async () => {
     if (busy()) return
@@ -67,8 +55,7 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
       return
     }
     if (evt.name === "return") {
-      if (phase() === "terms") void acceptTerms()
-      else if (phase() === "key") void activate()
+      void activate()
       evt.preventDefault?.()
       evt.stopPropagation?.()
     }
@@ -78,14 +65,10 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
     dialog.setSize("medium")
     const timer = setInterval(() => setFrame((current) => (current + 1) % pulse.length), 240)
     onCleanup(() => clearInterval(timer))
-    void License.hasAcceptedTerms().then((accepted) => {
-      setPhase(accepted ? "key" : "terms")
-      if (accepted)
-        setTimeout(() => {
-          if (!textarea || textarea.isDestroyed) return
-          textarea.focus()
-        }, 1)
-    })
+    setTimeout(() => {
+      if (!textarea || textarea.isDestroyed) return
+      textarea.focus()
+    }, 1)
   })
 
   createEffect(() => {
@@ -113,56 +96,37 @@ export function DialogLicenseActivation(props: { onResult?: (result: DialogLicen
         <text fg={theme.textMuted}>required</text>
       </box>
 
-      <Show when={phase() === "terms"}>
-        <text fg={theme.textMuted}>
-          Before activating, you must accept the Finny Terms & License Agreement.
-        </text>
-        <text fg={theme.textMuted}>
-          You agree not to reverse-engineer, decompile, redistribute, or share the software or your license key.
-        </text>
-        <text fg={theme.textMuted}>Read the full terms: {License.termsUrl}</text>
-        <box paddingBottom={1} gap={1} flexDirection="row">
+      <text fg={theme.textMuted}>Paste your Finny license key for this device.</text>
+      <text fg={theme.textMuted}>Only license and machine hashes are checked. Trading data stays local.</text>
+
+      <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
+        <textarea
+          height={2}
+          keyBindings={busy() ? [] : [{ name: "return", action: "submit" }]}
+          onSubmit={() => void activate()}
+          ref={(val: TextareaRenderable) => {
+            textarea = val
+          }}
+          placeholder="finny_..."
+          placeholderColor={theme.textMuted}
+          textColor={busy() ? theme.textMuted : theme.text}
+          focusedTextColor={busy() ? theme.textMuted : theme.text}
+          cursorColor={busy() ? theme.backgroundElement : theme.text}
+        />
+      </box>
+      <Show when={error()}>
+        <text fg={theme.error}>{error()}</text>
+      </Show>
+      <Show when={busy()}>
+        <Spinner color={theme.textMuted}>Verifying license...</Spinner>
+      </Show>
+      <box paddingBottom={1} gap={1} flexDirection="row">
+        <Show when={!busy()} fallback={<text fg={theme.textMuted}>verifying...</text>}>
           <text fg={theme.text}>
-            enter <span style={{ fg: theme.textMuted }}>accept &amp; continue</span>
+            enter <span style={{ fg: theme.textMuted }}>verify</span>
           </text>
-        </box>
-      </Show>
-
-      <Show when={phase() === "key"}>
-        <text fg={theme.textMuted}>
-          Paste the enterprise license key for this workstation.
-        </text>
-        <text fg={theme.textMuted}>Only license and machine hashes are checked. Trading data stays local.</text>
-
-        <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
-          <textarea
-            height={2}
-            keyBindings={busy() ? [] : [{ name: "return", action: "submit" }]}
-            onSubmit={() => void activate()}
-            ref={(val: TextareaRenderable) => {
-              textarea = val
-            }}
-            placeholder="finny-..."
-            placeholderColor={theme.textMuted}
-            textColor={busy() ? theme.textMuted : theme.text}
-            focusedTextColor={busy() ? theme.textMuted : theme.text}
-            cursorColor={busy() ? theme.backgroundElement : theme.text}
-          />
-        </box>
-        <Show when={error()}>
-          <text fg={theme.error}>{error()}</text>
         </Show>
-        <Show when={busy()}>
-          <Spinner color={theme.textMuted}>Verifying license...</Spinner>
-        </Show>
-        <box paddingBottom={1} gap={1} flexDirection="row">
-          <Show when={!busy()} fallback={<text fg={theme.textMuted}>verifying...</text>}>
-            <text fg={theme.text}>
-              enter <span style={{ fg: theme.textMuted }}>verify</span>
-            </text>
-          </Show>
-        </box>
-      </Show>
+      </box>
     </box>
   )
 }

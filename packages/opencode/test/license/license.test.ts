@@ -8,15 +8,18 @@ let tempDir: string
 let originalUrl: string | undefined
 let originalKey: string | undefined
 let originalBypass: string | undefined
+let originalClient: string | undefined
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-license-test-"))
   originalUrl = process.env.FINNY_LICENSE_CHECK_URL
   originalKey = process.env.FINNY_LICENSE_KEY
   originalBypass = process.env.FINNY_LICENSE_BYPASS
+  originalClient = process.env.FINNY_LICENSE_CLIENT
   process.env.FINNY_LICENSE_CHECK_URL = "https://license.test/check"
   delete process.env.FINNY_LICENSE_KEY
   delete process.env.FINNY_LICENSE_BYPASS
+  delete process.env.FINNY_LICENSE_CLIENT
   License._resetForTests()
   License._setCacheDirForTests(tempDir)
 })
@@ -28,6 +31,8 @@ afterEach(async () => {
   else process.env.FINNY_LICENSE_KEY = originalKey
   if (originalBypass === undefined) delete process.env.FINNY_LICENSE_BYPASS
   else process.env.FINNY_LICENSE_BYPASS = originalBypass
+  if (originalClient === undefined) delete process.env.FINNY_LICENSE_CLIENT
+  else process.env.FINNY_LICENSE_CLIENT = originalClient
   License._resetForTests()
   await fs.rm(tempDir, { recursive: true, force: true })
 })
@@ -38,27 +43,38 @@ describe("License", () => {
 
     License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       payload = JSON.parse(String(init?.body))
-      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          orgId: "org_dv_trading",
+          orgName: "DV Trading",
+          deviceLimitReached: false,
+          nextCheckAfter: "2026-06-02T12:00:00.000Z",
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      )
     }) as unknown as typeof fetch)
 
     await License.activate(" finny_valid_key ")
 
     expect(payload).toBeDefined()
     expect(Object.keys(payload!).sort()).toEqual([
-      "app_version",
-      "license_key_hash",
-      "machine_id_hash",
-      "org_id",
+      "appVersion",
+      "client",
+      "licenseKeyHash",
+      "machineIdHash",
       "timestamp",
     ])
-    expect(payload!.org_id).toBe("consumer")
-    expect(payload!.license_key_hash).toMatch(/^[a-f0-9]{64}$/)
-    expect(payload!.machine_id_hash).toMatch(/^[a-f0-9]{64}$/)
+    expect(payload!.client).toBe("finny-pro")
+    expect(payload!.licenseKeyHash).toMatch(/^[a-f0-9]{64}$/)
+    expect(payload!.machineIdHash).toMatch(/^[a-f0-9]{64}$/)
 
     for (const forbidden of [
+      "org_id",
+      "orgId",
       "prompt",
       "symbol",
       "strategy_code",
@@ -73,10 +89,16 @@ describe("License", () => {
     }
 
     const cache = JSON.parse(await fs.readFile(path.join(tempDir, "license-cache.json"), "utf8"))
-    expect(cache.org_id).toBe("consumer")
-    expect(cache.license_key_hash).toEqual(payload!.license_key_hash)
-    expect(cache.machine_id_hash).toEqual(payload!.machine_id_hash)
+    expect(cache.schema_version).toBe(2)
+    expect(cache.org_id).toBe("org_dv_trading")
+    expect(cache.org_name).toBe("DV Trading")
+    expect(cache.license_key_hash).toEqual(payload!.licenseKeyHash)
+    expect(cache.machine_id_hash).toEqual(payload!.machineIdHash)
     expect(cache.last_ok_at).toEqual(expect.any(String))
+    expect(cache.next_check_after).toBe("2026-06-02T12:00:00.000Z")
+    expect(cache.plan_type).toBeUndefined()
+    expect(cache.devices_used).toBeUndefined()
+    expect(cache.device_limit).toBeUndefined()
   })
 
   test("uses api.finnyai.tech license proxy by default", async () => {
@@ -85,7 +107,7 @@ describe("License", () => {
 
     License._setFetchForTests((async (input: Parameters<typeof fetch>[0]) => {
       url = input
-      return new Response(JSON.stringify({ ok: true, plan_type: "enterprise" }), {
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
@@ -94,6 +116,23 @@ describe("License", () => {
     await License.activate("finny_valid_key")
 
     expect(String(url)).toBe("https://api.finnyai.tech/v1/license/check")
+  })
+
+  test("allows license client id override for alternate package entrypoints", async () => {
+    process.env.FINNY_LICENSE_CLIENT = "finny-internal-prop"
+    let payload: Record<string, unknown> | undefined
+
+    License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      payload = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as unknown as typeof fetch)
+
+    await License.activate("finny_valid_key")
+
+    expect(payload?.client).toBe("finny-internal-prop")
   })
 
   test("empty or malformed 200 does not unlock license", async () => {
@@ -113,28 +152,28 @@ describe("License", () => {
   })
 
   test("server JSON denial message is surfaced to the activation error", async () => {
-    License._setFetchForTests((async () =>
-      new Response(
-        JSON.stringify({
-          ok: false,
-          error_code: "device_limit_reached",
-          message: "Access denied. Already configured on 2 devices.",
-          devices_used: 2,
-          device_limit: 2,
-        }),
-        { status: 403, headers: { "content-type": "application/json" } },
-      )) as unknown as typeof fetch)
+    License._setFetchForTests(
+      (async () =>
+        new Response(
+          JSON.stringify({
+            ok: false,
+            deviceLimitReached: true,
+            message: "This license is already active on the maximum number of devices.",
+          }),
+          { status: 403, headers: { "content-type": "application/json" } },
+        )) as unknown as typeof fetch,
+    )
 
     await expect(License.activate("finny_device_limit")).rejects.toThrow(
-      "Access denied. Already configured on 2 devices.",
+      "This license is already active on the maximum number of devices.",
     )
   })
 
-  test("second launch within 24 hours does not call Convex", async () => {
+  test("second launch within 24 hours does not call platform", async () => {
     let calls = 0
     License._setFetchForTests((async () => {
       calls++
-      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
@@ -150,14 +189,16 @@ describe("License", () => {
     expect(calls).toBe(1)
   })
 
-  test("stale cache calls Convex again and blocks on 403", async () => {
+  test("stale cache calls platform again and blocks on 403", async () => {
     const t0 = Date.parse("2026-06-01T12:00:00.000Z")
     License._setNowForTests(() => t0)
-    License._setFetchForTests((async () =>
-      new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })) as unknown as typeof fetch)
+    License._setFetchForTests(
+      (async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        })) as unknown as typeof fetch,
+    )
     await License.activate("finny_valid_key")
 
     let rechecked = false
@@ -177,7 +218,7 @@ describe("License", () => {
     License._setNowForTests(() => t0)
     License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       payloads.push(JSON.parse(String(init?.body)))
-      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
@@ -189,15 +230,15 @@ describe("License", () => {
     await License.ensureActive()
 
     expect(payloads).toHaveLength(2)
-    expect(payloads[1]!.license_key_hash).toBe(License.hashLicenseKey("new_key"))
-    expect(payloads[1]!.license_key_hash).not.toBe(payloads[0]!.license_key_hash)
+    expect(payloads[1]!.licenseKeyHash).toBe(License.hashLicenseKey("new_key"))
+    expect(payloads[1]!.licenseKeyHash).not.toBe(payloads[0]!.licenseKeyHash)
   })
 
   test("fresh cache avoids remote activation when FINNY_LICENSE_KEY matches", async () => {
     let calls = 0
     License._setFetchForTests((async () => {
       calls++
-      return new Response(JSON.stringify({ ok: true, plan_type: "per_head" }), {
+      return new Response(JSON.stringify({ ok: true }), {
         status: 200,
         headers: { "content-type": "application/json" },
       })
@@ -212,5 +253,32 @@ describe("License", () => {
 
     await License.ensureActive()
     expect(calls).toBe(1)
+  })
+
+  test("legacy org-scoped cache unlocks until it is rewritten by the next remote check", async () => {
+    const t0 = Date.parse("2026-06-01T12:00:00.000Z")
+    License._setNowForTests(() => t0)
+    const machineHash = await License.machineIdHash()
+    await fs.writeFile(
+      path.join(tempDir, "license-cache.json"),
+      JSON.stringify({
+        org_id: "old_org",
+        license_key_hash: License.hashLicenseKey("finny_valid_key"),
+        machine_id_hash: machineHash,
+        last_ok_at: new Date(t0).toISOString(),
+        plan_type: "per_head",
+        devices_used: 1,
+        device_limit: 2,
+      }),
+    )
+
+    License._setFetchForTests((async () => {
+      throw new Error("unexpected remote check")
+    }) as unknown as typeof fetch)
+
+    await License.ensureActive()
+    const status = await License.currentStatus()
+    expect(status.active).toBe(true)
+    expect(status.org_id).toBe("old_org")
   })
 })
