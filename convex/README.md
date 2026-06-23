@@ -92,7 +92,7 @@ directory. To learn more, launch the docs with `npx convex docs`.
 ## Legacy Finny License Checks
 
 The commercial license source of truth lives in `finny-platform`, not in this
-runtime repo. The local Finny client calls `https://api.finnyai.tech/v1/license/check`
+runtime repo. The local Finny client calls `https://finnyai.tech/api/v1/license/check`
 by default. `FINNY_LICENSE_CHECK_URL` can override this for development.
 
 The customer-facing install and activation flow is:
