@@ -26,7 +26,7 @@ const finnyVersion = process.env.OPENCODE_VERSION?.trim() || pkg.version
 // (`finny-internal-prop`, referenced by packages/web as a workspace dep). The
 // wrapper publishes as PUBLISH_NAME and platform packages as
 // `${PUBLISH_NAME}-<os>-<arch>[-baseline][-musl]`. Override via env if needed.
-const PUBLISH_NAME = process.env.FINNY_PUBLISH_NAME?.trim() || "@finny-ai/finny-internal"
+const PUBLISH_NAME = process.env.FINNY_PUBLISH_NAME?.trim() || "@finny-ai/finny-pro"
 // Filesystem-safe slug for a scoped package name (dist dirs cannot contain `/`).
 const toDistSlug = (name: string) => name.replace(/^@/, "").replace(/\//g, "-")
 

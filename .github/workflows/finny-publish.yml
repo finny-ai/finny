@@ -5,8 +5,8 @@ run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
 # Actions tab → finny-publish → Run workflow, providing a version.
 #
 # Publishes the compiled, signed CLI to npm as:
-#   wrapper:  @finny-ai/finny-internal
-#   platform: @finny-ai/finny-internal-<os>-<arch>[-baseline][-musl]
+#   wrapper:  @finny-ai/finny-pro
+#   platform: @finny-ai/finny-pro-<os>-<arch>[-baseline][-musl]
 # The wrapper ships only postinstall.mjs + bin/; the engine is NOT bundled
 # (see packages/opencode/script/build.ts strip plugin once Layer B lands).
 #
@@ -55,7 +55,7 @@ permissions:
 
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-  PUBLISH_SLUG_PREFIX: finny-ai-finny-internal
+  PUBLISH_SLUG_PREFIX: finny-ai-finny-pro
 
 jobs:
   # Secrets cannot be referenced in job-level `if:`. Convert presence to outputs
@@ -219,7 +219,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           DIST_TAG: ${{ inputs.dist_tag }}
           DRY_RUN: ${{ inputs.dry_run }}
-          PUBLISH_NAME: "@finny-ai/finny-internal"
+          PUBLISH_NAME: "@finny-ai/finny-pro"
         run: |
           set -euo pipefail
           # Build-only safety: with dry_run (the default), npm validates and packs
