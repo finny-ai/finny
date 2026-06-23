@@ -18,7 +18,7 @@ type TermsAcceptance = {
   version: string
   accepted_at: string
 }
-const DEFAULT_CHECK_URL = "https://finnyai.tech/api/v1/license/check"
+const DEFAULT_CHECK_URL = "https://api.finnyai.tech/v1/license/check"
 const DEFAULT_CLIENT_ID = "finny-pro"
 
 type Cache = {

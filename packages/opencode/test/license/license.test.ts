@@ -101,7 +101,7 @@ describe("License", () => {
     expect(cache.device_limit).toBeUndefined()
   })
 
-  test("uses finnyai.tech license proxy by default", async () => {
+  test("uses api.finnyai.tech license proxy by default", async () => {
     delete process.env.FINNY_LICENSE_CHECK_URL
     let url: string | URL | Request | undefined
 
@@ -115,7 +115,7 @@ describe("License", () => {
 
     await License.activate("finny_valid_key")
 
-    expect(String(url)).toBe("https://finnyai.tech/api/v1/license/check")
+    expect(String(url)).toBe("https://api.finnyai.tech/v1/license/check")
   })
 
   test("allows license client id override for alternate package entrypoints", async () => {
