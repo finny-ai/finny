@@ -43,15 +43,29 @@ export function SettingsPanelPro() {
   const [status, setStatus] = createSignal<LicenseStatus | null>(null)
   const [licenseInput, setLicenseInput] = createSignal("")
   const [busy, setBusy] = createSignal(false)
+  const [termsAccepted, setTermsAccepted] = createSignal(false)
 
   const refresh = async () => {
     setStatus(await License.currentStatus())
   }
 
-  onMount(refresh)
+  onMount(() => {
+    void refresh()
+    void License.hasAcceptedTerms().then(setTermsAccepted)
+  })
+
+  const acceptTerms = async () => {
+    await License.recordTermsAcceptance()
+    setTermsAccepted(true)
+    toast.show({ message: "Terms & License accepted", variant: "info", duration: 2500 })
+  }
 
   const activate = async () => {
     if (busy()) return
+    if (!termsAccepted()) {
+      toast.show({ message: "Accept the Terms & License Agreement first", variant: "warning", duration: 3000 })
+      return
+    }
     const key = licenseInput().trim()
     if (!key) {
       toast.show({ message: `Please enter ${enterprise ? "an" : "a"} ${licenseName}`, variant: "warning", duration: 3000 })
@@ -145,6 +159,15 @@ export function SettingsPanelPro() {
             </text>
             <box maxWidth={64}>
               <InputBox onInput={setLicenseInput} />
+            </box>
+
+            <box flexDirection="row" gap={1} paddingTop={1} onMouseUp={() => void acceptTerms()}>
+              <text fg={termsAccepted() ? theme.success : theme.error}>{termsAccepted() ? "✓" : "○"}</text>
+              <text fg={theme.textMuted}>
+                {termsAccepted()
+                  ? "Terms & License accepted"
+                  : `I agree to the Terms & License (no reverse-engineering) — ${License.termsUrl}`}
+              </text>
             </box>
 
             <box flexDirection="row" paddingTop={1}>
