@@ -1,0 +1,249 @@
+name: finny-publish
+run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
+
+# Manual, approved releases only (no auto-publish on push). Trigger from the
+# Actions tab → finny-publish → Run workflow, providing a version.
+#
+# Publishes the compiled, signed CLI to npm as:
+#   wrapper:  @finny-ai/finny-internal
+#   platform: @finny-ai/finny-internal-<os>-<arch>[-baseline][-musl]
+# The wrapper ships only postinstall.mjs + bin/; the engine is NOT bundled
+# (see packages/opencode/script/build.ts strip plugin once Layer B lands).
+#
+# Required repo secrets:
+#   NPM_TOKEN                              npm automation token with publish rights to @finny-ai
+#   macOS signing (Developer ID Application):
+#     APPLE_CERTIFICATE                    base64 of the .p12 cert
+#     APPLE_CERTIFICATE_PASSWORD           .p12 password
+#     APPLE_SIGNING_IDENTITY               e.g. "Developer ID Application: Finny (TEAMID)"
+#     APPLE_API_KEY                        base64 of the App Store Connect .p8 key (for notarytool)
+#     APPLE_API_KEY_ID                     key id
+#     APPLE_API_ISSUER                     issuer id
+#   Windows signing (Azure Trusted Signing):
+#     AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#     AZURE_TRUSTED_SIGNING_ACCOUNT_NAME, AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE
+#     AZURE_TRUSTED_SIGNING_ENDPOINT
+#
+# Signing jobs are skipped automatically when their secrets are absent, so the
+# pipeline can be brought up incrementally (publish unsigned first, add signing
+# later).
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 1.2.27). Leave empty for snapshot build."
+        required: false
+        type: string
+      dist_tag:
+        description: "npm dist-tag (latest or next)."
+        required: false
+        default: "latest"
+        type: string
+
+concurrency:
+  group: finny-publish-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+  PUBLISH_SLUG_PREFIX: finny-ai-finny-internal
+
+jobs:
+  # Secrets cannot be referenced in job-level `if:`. Convert presence to outputs
+  # (the comparison result is a boolean, the secret value is never exposed).
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      has_apple: ${{ steps.check.outputs.has_apple }}
+      has_azure: ${{ steps.check.outputs.has_azure }}
+    steps:
+      - id: check
+        run: |
+          echo "has_apple=${{ secrets.APPLE_CERTIFICATE != '' }}" >> "$GITHUB_OUTPUT"
+          echo "has_azure=${{ secrets.AZURE_CLIENT_ID != '' }}" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun
+      - name: Set version
+        id: version
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            TIMESTAMP=$(date -u +%Y%m%d%H%M)
+            echo "version=0.0.0-dev-${TIMESTAMP}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install cross-platform native deps
+        run: bun install --os="*" --cpu="*"
+      - name: Build CLI (all platforms, engine stripped)
+        run: ./packages/opencode/script/build.ts --skip-install
+        env:
+          OPENCODE_VERSION: ${{ steps.version.outputs.version }}
+          OPENCODE_CHANNEL: latest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finny-cli
+          path: packages/opencode/dist
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+
+  sign-macos:
+    needs: [build, preflight]
+    runs-on: macos-latest
+    if: ${{ needs.preflight.outputs.has_apple == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: finny-cli
+          path: packages/opencode/dist
+      - name: Import signing certificate
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      - name: Codesign + notarize macOS binaries
+        env:
+          SIGN_ID: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          echo "$APPLE_API_KEY" | base64 -d > "$RUNNER_TEMP/api-key.p8"
+          for dir in packages/opencode/dist/${PUBLISH_SLUG_PREFIX}-darwin-*; do
+            bin="$dir/bin/opencode"
+            [ -f "$bin" ] || continue
+            echo "Signing $bin"
+            codesign --force --options runtime --timestamp --sign "$SIGN_ID" "$bin"
+            ditto -c -k "$bin" "$RUNNER_TEMP/notarize.zip"
+            xcrun notarytool submit "$RUNNER_TEMP/notarize.zip" \
+              --key "$RUNNER_TEMP/api-key.p8" \
+              --key-id "$APPLE_API_KEY_ID" \
+              --issuer "$APPLE_API_ISSUER" --wait
+            codesign --verify --strict --verbose=2 "$bin"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finny-cli-signed-macos
+          path: packages/opencode/dist/${{ env.PUBLISH_SLUG_PREFIX }}-darwin-*
+
+  sign-windows:
+    needs: [build, preflight]
+    runs-on: windows-latest
+    if: ${{ needs.preflight.outputs.has_azure == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: finny-cli
+          path: packages/opencode/dist
+      - name: Azure login
+        uses: azure/login@v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/artifact-signing-action@v1.2.0
+        with:
+          endpoint: ${{ secrets.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_CERTIFICATE_PROFILE }}
+          files: |
+            ${{ github.workspace }}\packages\opencode\dist\${{ env.PUBLISH_SLUG_PREFIX }}-windows-arm64\bin\opencode.exe
+            ${{ github.workspace }}\packages\opencode\dist\${{ env.PUBLISH_SLUG_PREFIX }}-windows-x64\bin\opencode.exe
+            ${{ github.workspace }}\packages\opencode\dist\${{ env.PUBLISH_SLUG_PREFIX }}-windows-x64-baseline\bin\opencode.exe
+      - name: Verify signatures
+        shell: pwsh
+        run: |
+          Get-ChildItem "packages\opencode\dist\${{ env.PUBLISH_SLUG_PREFIX }}-windows-*\bin\opencode.exe" | ForEach-Object {
+            $sig = Get-AuthenticodeSignature $_.FullName
+            if ($sig.Status -ne "Valid") { throw "Invalid signature for $($_.FullName): $($sig.Status)" }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: finny-cli-signed-windows
+          path: packages/opencode/dist/${{ env.PUBLISH_SLUG_PREFIX }}-windows-*
+
+  publish:
+    needs: [build, sign-macos, sign-windows]
+    # Run even if a signing job was skipped (secrets absent); only fail on real errors.
+    if: ${{ always() && needs.build.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+      - name: Download base build
+        uses: actions/download-artifact@v4
+        with:
+          name: finny-cli
+          path: packages/opencode/dist
+      - name: Overlay signed macOS binaries (if present)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: finny-cli-signed-macos
+          path: packages/opencode/dist
+      - name: Overlay signed Windows binaries (if present)
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: finny-cli-signed-windows
+          path: packages/opencode/dist
+      - name: Publish platform + wrapper packages
+        working-directory: packages/opencode
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.build.outputs.version }}
+          DIST_TAG: ${{ inputs.dist_tag }}
+          PUBLISH_NAME: "@finny-ai/finny-internal"
+        run: |
+          set -euo pipefail
+          # 1) Publish every platform package (each dist/<slug>/ has its own package.json)
+          for dir in dist/${PUBLISH_SLUG_PREFIX}-*/; do
+            [ -d "$dir" ] || continue
+            echo "Publishing $dir"
+            ( cd "$dir" && npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null 2>&1 || true
+              chmod -R 755 bin
+              npm publish --access public --tag "$DIST_TAG" )
+          done
+          # 2) Assemble + publish the wrapper with optionalDependencies → platform packages
+          WRAP="dist/wrapper"
+          mkdir -p "$WRAP/bin"
+          cp ./bin/opencode "$WRAP/bin/opencode"
+          cp ./script/postinstall.mjs "$WRAP/postinstall.mjs"
+          DEPS=$(node -e "
+            const fs=require('fs');
+            const deps={};
+            for (const d of fs.readdirSync('./dist')) {
+              const p='./dist/'+d+'/package.json';
+              if (d.startsWith('${PUBLISH_SLUG_PREFIX}-') && fs.existsSync(p)) {
+                const j=JSON.parse(fs.readFileSync(p,'utf8')); deps[j.name]=j.version;
+              }
+            }
+            console.log(JSON.stringify(deps));
+          ")
+          node -e "
+            const fs=require('fs');
+            const out={
+              name: process.env.PUBLISH_NAME,
+              version: process.env.VERSION,
+              bin: { finny: './bin/opencode' },
+              scripts: { postinstall: 'node ./postinstall.mjs' },
+              optionalDependencies: JSON.parse('${DEPS}'),
+              license: 'UNLICENSED',
+            };
+            fs.writeFileSync('${WRAP}/package.json', JSON.stringify(out,null,2));
+          "
+          ( cd "$WRAP" && npm publish --access public --tag "$DIST_TAG" )

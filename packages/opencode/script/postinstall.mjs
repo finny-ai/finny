@@ -24,7 +24,10 @@ const archMap = {
 
 const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
-const base = `finny-${platform}-${arch}`
+// Platform packages are published as `${wrapperName}-<platform>-<arch>[...]`,
+// e.g. @finny-ai/finny-internal-darwin-arm64. Derive the base from this
+// package's own name so it stays correct across renames/scopes.
+const base = `${packageJson.name}-${platform}-${arch}`
 const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
 const targetBinary = path.join(__dirname, "bin", "opencode.exe")
 

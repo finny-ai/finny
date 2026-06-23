@@ -19,6 +19,14 @@ import pkg from "../package.json"
 
 const finnyVersion = pkg.version
 
+// Published npm identity, decoupled from the internal workspace package name
+// (`finny-internal-prop`, referenced by packages/web as a workspace dep). The
+// wrapper publishes as PUBLISH_NAME and platform packages as
+// `${PUBLISH_NAME}-<os>-<arch>[-baseline][-musl]`. Override via env if needed.
+const PUBLISH_NAME = process.env.FINNY_PUBLISH_NAME?.trim() || "@finny-ai/finny-internal"
+// Filesystem-safe slug for a scoped package name (dist dirs cannot contain `/`).
+const toDistSlug = (name: string) => name.replace(/^@/, "").replace(/\//g, "-")
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -145,8 +153,7 @@ if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @ff-labs/fff-bun@${pkg.dependencies["@ff-labs/fff-bun"]}`
 }
 for (const item of targets) {
-  const name = [
-    pkg.name,
+  const suffix = [
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -155,7 +162,13 @@ for (const item of targets) {
   ]
     .filter(Boolean)
     .join("-")
-  console.log(`building ${name}`)
+  // Published scoped package name, e.g. @finny-ai/finny-internal-darwin-arm64
+  const pkgName = `${PUBLISH_NAME}-${suffix}`
+  // Bun compile target, e.g. bun-darwin-arm64[-baseline][-musl]
+  const bunTarget = `bun-${suffix}`
+  // Dist directory slug (no scope slash), e.g. finny-ai-finny-internal-darwin-arm64
+  const name = toDistSlug(pkgName)
+  console.log(`building ${pkgName}`)
   await $`mkdir -p dist/${name}/bin`
 
   const localPath = path.resolve(dir, "node_modules/@opentui/core/parser.worker.js")
@@ -181,7 +194,7 @@ for (const item of targets) {
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
+      target: bunTarget as any,
       outfile: `dist/${name}/bin/opencode`,
       execArgv: [`--user-agent=finny/${finnyVersion}`, "--use-system-ca", "--"],
       windows: {},
@@ -217,7 +230,7 @@ for (const item of targets) {
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
-        name,
+        name: pkgName,
         version: finnyVersion,
         preferUnplugged: true,
         os: [item.os],
