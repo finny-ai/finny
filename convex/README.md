@@ -89,37 +89,36 @@ Use the Convex CLI to push your functions to a deployment. See everything
 the Convex CLI can do by running `npx convex -h` in your project root
 directory. To learn more, launch the docs with `npx convex docs`.
 
-## Finny License Checks
+## Legacy Finny License Checks
 
-The local Finny client calls `https://api.finnyai.tech/v1/license/check` by
-default. `FINNY_LICENSE_CHECK_URL` can override this for development.
+The commercial license source of truth lives in `finny-platform`, not in this
+runtime repo. The local Finny client calls `https://api.finnyai.tech/v1/license/check`
+by default. `FINNY_LICENSE_CHECK_URL` can override this for development.
 
-The public `api.finnyai.tech` endpoint forwards to Convex `POST /license/check`
-with `x-finny-license-secret`. Convex must have
-`FINNY_LICENSE_PROXY_SECRET` set to the same value. Direct Convex calls without
-that header return `403 Forbidden`.
+The customer-facing install and activation flow is:
+
+```bash
+npm i -g finny-pro
+finny-pro --license-key finny_...
+```
+
+The future platform endpoint resolves organization, plan, seat, and device
+policy server-side from the license key. Do not add new commercial licensing
+tables or source-of-truth behavior to this repo.
 
 The client-facing route returns `200 OK` or `403 Forbidden` with user-safe JSON.
 
 Client payload is limited to:
 
-- `org_id`
-- `license_key_hash`
-- `machine_id_hash`
-- `app_version`
+- `licenseKeyHash`
+- `machineIdHash`
+- `appVersion`
+- `client`
 - `timestamp`
 
 Do not add requested feature, plan, seat count, prompt text, strategy code,
 symbols, market data, backtest metrics, P&L, or extra fields to this request.
-Plan and device policy resolution stays server-side through the `licenses`
-table. The hardcoded local `org_id` only selects the intended org namespace; it
-is not sufficient for access without a matching license key hash.
-
-The `licenses` table stores only license state and plan policy. The
-`licenseChecks` table stores each validation attempt plus the machine hash.
-Per-head plans enforce `max_devices_per_key`, defaulting to 2, by counting
-distinct machines with prior allowed checks for the same org/license pair.
-Enterprise plans have no device limit.
+Plan and device policy resolution stays server-side in `finny-platform`.
 
 For local development only, `FINNY_LICENSE_BYPASS=1` skips the client gate.
 Pilot/customer builds should not set it.

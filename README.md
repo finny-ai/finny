@@ -8,10 +8,9 @@
 
                                       Claude Code for Financial Markets
 ```
-<a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/badge/npm-v0.6.7-3381C3?style=flat-square" /></a>
+<a href="https://www.npmjs.com/package/finny-pro"><img alt="npm" src="https://img.shields.io/badge/npm-finny--pro-3381C3?style=flat-square" /></a>
 
 <img width="1546" height="1046" alt="Screenshot 2026-04-14 at 4 55 14 PM" src="https://github.com/user-attachments/assets/be2784d6-ced1-4259-96de-69518f22b444" />
-
 
 Build, backtest, and iterate on trading algorithms using natural language. Built on the [OpenCode](https://github.com/anomalyco/opencode) AI agent harness.
 
@@ -20,8 +19,8 @@ Build, backtest, and iterate on trading algorithms using natural language. Built
 ### Quick Start
 
 ```bash
-npm i -g finny
-finny
+npm i -g finny-pro
+finny-pro --license-key finny_...
 ```
 
 > **Try it:** _"Build me a momentum-based ETH trading strategy with RSI signals"_

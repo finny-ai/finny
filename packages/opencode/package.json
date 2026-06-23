@@ -20,7 +20,8 @@
     "convex": "npx convex"
   },
   "bin": {
-    "finny": "./bin/opencode"
+    "finny": "./bin/opencode",
+    "finny-pro": "./bin/opencode"
   },
   "exports": {
     "./*": "./src/*.ts"

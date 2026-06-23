@@ -1,18 +1,12 @@
 import { createSignal, onMount, Show } from "solid-js"
 import { TextAttributes, MouseEvent } from "@opentui/core"
-import { finnyEnterpriseEnabled, finnyProductName } from "@/cloud-mode"
+import { finnyProductName } from "@/cloud-mode"
 import { useTheme } from "../context/theme"
 import { useToast } from "../ui/toast"
 import { Card } from "./card"
 import { License } from "@/license"
 
 type LicenseStatus = Awaited<ReturnType<typeof License.currentStatus>>
-
-function planLabel(status: LicenseStatus | null) {
-  if (!status?.plan_type) return "Enterprise"
-  if (status.plan_type === "enterprise") return "Enterprise"
-  return "Enterprise Per-Head"
-}
 
 function formatDate(value?: string) {
   if (!value) return "Not checked"
@@ -26,19 +20,10 @@ function shortHash(value?: string) {
   return `${value.slice(0, 8)}...${value.slice(-6)}`
 }
 
-function deviceUsage(status: LicenseStatus | null) {
-  if (status?.plan_type === "enterprise") return "Unlimited"
-  if (!status?.device_limit) return "Available after next verification"
-  return `${status.devices_used ?? 0} / ${status.device_limit}`
-}
-
 export function SettingsPanelPro() {
   const { theme } = useTheme()
   const toast = useToast()
-  const enterprise = finnyEnterpriseEnabled()
   const productName = finnyProductName()
-  const licenseTitle = enterprise ? "Enterprise license key" : "Finny license key"
-  const licenseName = enterprise ? "enterprise license key" : "Finny license key"
 
   const [status, setStatus] = createSignal<LicenseStatus | null>(null)
   const [licenseInput, setLicenseInput] = createSignal("")
@@ -68,7 +53,7 @@ export function SettingsPanelPro() {
     }
     const key = licenseInput().trim()
     if (!key) {
-      toast.show({ message: `Please enter ${enterprise ? "an" : "a"} ${licenseName}`, variant: "warning", duration: 3000 })
+      toast.show({ message: "Please enter a Finny license key", variant: "warning", duration: 3000 })
       return
     }
     setBusy(true)
@@ -124,26 +109,26 @@ export function SettingsPanelPro() {
             <box flexDirection="row" gap={1}>
               <text fg={status()?.active ? theme.success : theme.textMuted}>{status()?.active ? "✓" : "○"}</text>
               <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                {enterprise ? planLabel(status()) : productName}
+                Finny license
               </text>
             </box>
-            <text fg={theme.textMuted}>Local install license</text>
+            <text fg={theme.textMuted}>Local CLI/runtime activation</text>
             <text fg={theme.textMuted}>Daily server verification</text>
-            <text fg={theme.textMuted}>No prompts, strategy code, market data, backtest results, or P&L leave this machine.</text>
+            <text fg={theme.textMuted}>
+              No prompts, strategy code, market data, backtest results, or P&L leave this machine.
+            </text>
           </box>
         </Card>
       </box>
 
       <box flexGrow={1} minHeight={0}>
-        <Card title={` ${enterprise ? `Finny ${planLabel(status())}` : productName} `}>
+        <Card title={` ${productName} license `}>
           <box flexDirection="column" gap={1} flexGrow={1} minHeight={0}>
             <text fg={status()?.active ? theme.success : theme.error} attributes={TextAttributes.BOLD}>
               {status()?.active ? "License is active" : "License verification required"}
             </text>
 
-            <Row label="Organization" value={status()?.org_id ?? "consumer"} />
-            <Row label="Plan" value={planLabel(status())} accent={status()?.active} />
-            <Row label="Device usage" value={deviceUsage(status())} />
+            <Row label="Organization" value={status()?.org_name ?? status()?.org_id ?? "Unavailable"} />
             <Row label="Machine hash" value={shortHash(status()?.machine_id_hash)} />
             <Row label="License hash" value={shortHash(status()?.license_key_hash)} />
             <Row label="Last verified" value={formatDate(status()?.last_ok_at)} />
@@ -151,11 +136,11 @@ export function SettingsPanelPro() {
 
             <box paddingTop={2}>
               <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                {licenseTitle}
+                Finny license key
               </text>
             </box>
             <text fg={theme.textMuted}>
-              Enter a new {licenseName} only if Finny asks you to rotate this installation.
+              Enter a new Finny license key only if Finny asks you to rotate this installation.
             </text>
             <box maxWidth={64}>
               <InputBox onInput={setLicenseInput} />
