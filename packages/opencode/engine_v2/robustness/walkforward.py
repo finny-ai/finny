@@ -183,16 +183,22 @@ def _fold_from_oos_result(
 
 def _stitched_dsr_psr(
     stitched: np.ndarray,
-    stitched_sharpe: float,
     trials: int,
 ) -> Tuple[float, float]:
     if stitched.size <= 2:
         return 0.0, 0.0
     from ..metrics import risk as RR
     sk = RR.skewness(stitched)
-    kt = RR.kurtosis(stitched)
-    ds = deflated_sharpe(stitched_sharpe, stitched.size, sk, kt, trials=trials)
-    ps = probabilistic_sharpe(stitched_sharpe, stitched.size, sk, kt, sr_benchmark=0.0)
+    # PSR/DSR (Bailey & López de Prado) require inputs at the SAME frequency as
+    # the t observations: a per-observation Sharpe (NOT annualized) used with
+    # t = number of bars, and the RAW (Pearson) kurtosis (3.0 for a Gaussian).
+    # RR.kurtosis returns EXCESS kurtosis, so add 3.0. Feeding the annualized
+    # Sharpe or excess kurtosis here silently inflates both scores.
+    raw_kurt = RR.kurtosis(stitched) + 3.0
+    sd = float(stitched.std(ddof=0))
+    per_bar_sharpe = float(stitched.mean() / sd) if sd > 1e-12 else 0.0
+    ds = deflated_sharpe(per_bar_sharpe, stitched.size, sk, raw_kurt, trials=trials)
+    ps = probabilistic_sharpe(per_bar_sharpe, stitched.size, sk, raw_kurt, sr_benchmark=0.0)
     return ds, ps
 
 
@@ -280,7 +286,7 @@ def run_walk_forward(
     from ..metrics import ratios as RAT
     stitched_sharpe = RAT.sharpe(stitched, bars_per_year=bars_per_year) if stitched.size else 0.0
     trials = max(1, len(tested_params))
-    ds, ps = _stitched_dsr_psr(stitched, stitched_sharpe, trials)
+    ds, ps = _stitched_dsr_psr(stitched, trials)
     stitched_oos_bars = sum(fold.oos_bars for fold in folds)
 
     return WalkForwardResult(

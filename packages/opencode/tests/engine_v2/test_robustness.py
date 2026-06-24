@@ -163,6 +163,39 @@ def test_walk_forward_negative_is_sharpe_reports_absolute_change():
     assert wf.is_to_oos_sharpe_change > 0.0
 
 
+def test_walk_forward_dsr_psr_invariant_to_annualization():
+    """DSR/PSR must depend only on the per-bar OOS return distribution, not on
+    the annualization factor. Regression for two bugs in the stitched path:
+    (1) the annualized Sharpe was fed where a per-observation Sharpe is required,
+    coupling the scores to bars_per_year and saturating them to ~1.0 intraday;
+    (2) excess kurtosis was passed where the Bailey/LdP formula expects raw
+    (Pearson) kurtosis. Both silently inflated PSR/DSR."""
+    ts = np.arange(1000, dtype=np.int64) * 86_400_000_000_000
+
+    def make_runner():
+        def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+            bars = max(0, end - eval_start - 1)
+            if bars <= 0:
+                return {"sharpe": 0.0, "total_return": 0.0, "returns": np.zeros(0),
+                        "bars": 0, "trades": 0, "min_equity": 100.0}
+            # Tiny positive per-bar edge (~0.02 Sharpe) with symmetric noise.
+            noise = 0.01 * np.where(np.arange(bars) % 2 == 0, 1.0, -1.0)
+            rets = 0.0002 + noise
+            return {"sharpe": 0.5, "total_return": float(np.prod(1.0 + rets) - 1.0),
+                    "returns": rets, "bars": bars, "trades": bars, "min_equity": 100.0}
+        return runner
+
+    wf_daily = run_walk_forward(make_runner(), n_bars=1000, ts_ns=ts, n_folds=5,
+                                bars_per_year=252.0)
+    wf_intraday = run_walk_forward(make_runner(), n_bars=1000, ts_ns=ts, n_folds=5,
+                                   bars_per_year=35040.0)
+
+    assert wf_daily.probabilistic_sharpe == pytest.approx(wf_intraday.probabilistic_sharpe)
+    assert wf_daily.deflated_sharpe == pytest.approx(wf_intraday.deflated_sharpe)
+    # A near-zero per-bar edge must NOT saturate PSR (the pre-fix bug pushed it ~1.0).
+    assert 0.0 < wf_daily.probabilistic_sharpe < 0.95
+
+
 def test_regime_classification_does_not_use_future_quantiles():
     low = np.linspace(100, 101, 120)
     high = 101 + np.cumsum(np.tile([1.0, -1.0], 120))
