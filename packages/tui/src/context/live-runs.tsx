@@ -79,12 +79,29 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
       setStore("runs", await api<Run[]>("/live"))
     }
 
+    // Workspace routing keys runs by the directory header verbatim, while the
+    // SDK interceptor rewrites GET traffic into a decoded `directory` query
+    // param. Compare encoding-insensitively so an event keyed under an encoded
+    // `%2F...` directory still matches our raw `dirKey` (and vice versa) instead
+    // of silently dropping every `live.runs` update.
+    function sameDir(a: string | undefined): boolean {
+      if (a === dirKey) return true
+      const decode = (v: string) => {
+        try {
+          return decodeURIComponent(v)
+        } catch {
+          return v
+        }
+      }
+      return a !== undefined && decode(a) === decode(dirKey)
+    }
+
     // The daemon publishes one `live.runs` event per directory carrying that
     // directory's full run list — mirror it straight into the store.
     function handleEvent(event: GlobalEvent) {
       const payload = (event as { payload?: { type?: string; properties?: { runs?: Run[] } } }).payload
       if (!payload || payload.type !== "live.runs") return
-      if ((event as { directory?: string }).directory !== dirKey) return
+      if (!sameDir((event as { directory?: string }).directory)) return
       setStore("runs", payload.properties?.runs ?? [])
     }
 

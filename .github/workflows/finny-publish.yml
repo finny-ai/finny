@@ -258,7 +258,7 @@ jobs:
             const out={
               name: process.env.PUBLISH_NAME,
               version: process.env.VERSION,
-              bin: { 'finny-pro': './bin/opencode' },
+              bin: { 'finny': './bin/opencode', 'finny-pro': './bin/opencode' },
               scripts: { postinstall: 'node ./postinstall.mjs' },
               optionalDependencies: JSON.parse('${DEPS}'),
               license: 'UNLICENSED',
