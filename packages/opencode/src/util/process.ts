@@ -17,6 +17,13 @@ export interface Options {
   abort?: AbortSignal
   kill?: NodeJS.Signals | number
   timeout?: number
+  /**
+   * Detach the child into its own process group and `unref()` it so the parent
+   * can exit without waiting on (or killing) the child. Used to launch the
+   * long-lived daemon. Callers that detach should redirect stdio to a file or
+   * "ignore" — keeping a pipe open to a detached child defeats the purpose.
+   */
+  detached?: boolean
 }
 
 export interface RunOptions extends Omit<Options, "stdout" | "stderr"> {
@@ -65,8 +72,13 @@ export function spawn(cmd: string[], opts: Options = {}): Child {
     shell: opts.shell,
     env: opts.env === null ? {} : opts.env ? { ...process.env, ...opts.env } : undefined,
     stdio: [opts.stdin ?? "ignore", opts.stdout ?? "ignore", opts.stderr ?? "ignore"],
+    detached: opts.detached ?? false,
     windowsHide: process.platform === "win32",
   })
+
+  // A detached child should not keep the parent's event loop alive. The parent
+  // is free to exit; the child survives in its own process group.
+  if (opts.detached) proc.unref()
 
   let closed = false
   let timer: ReturnType<typeof setTimeout> | undefined

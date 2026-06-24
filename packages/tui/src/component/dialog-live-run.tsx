@@ -1,9 +1,9 @@
-import { createEffect, createSignal, For, onCleanup, Show } from "solid-js"
+import { For, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "../ui/dialog"
-import { useLiveRuns } from "../context/live-runs"
-import { LiveRunner } from "@/live/runner"
+import { useLiveRuns, type Run } from "../context/live-runs"
+import { ModeBadge } from "./mode-badge"
 
 function formatCurrency(value?: number): string {
   if (value === undefined || value === null || !isFinite(value)) return "—"
@@ -21,22 +21,18 @@ export interface DialogLiveRunProps {
 export function DialogLiveRun(props: DialogLiveRunProps) {
   const { theme } = useTheme()
   const dialog = useDialog()
-  const liveRuns = useLiveRuns()
+  const live = useLiveRuns()
 
-  const [run, setRun] = createSignal<LiveRunner.Run | undefined>(liveRuns.get(props.runId))
-
-  createEffect(() => {
-    const unsub = LiveRunner.subscribe(props.runId, (r) => setRun({ ...r }))
-    onCleanup(unsub)
-  })
+  // Reactive against the daemon-backed store; updates arrive over the SSE stream.
+  const run = () => live.get(props.runId)
 
   const handleStop = async () => {
-    await liveRuns.stop(props.runId)
+    await live.stop(props.runId)
   }
 
   const close = () => dialog.clear()
 
-  const statusColor = (status?: LiveRunner.RunStatus) => {
+  const statusColor = (status?: Run["status"]) => {
     switch (status) {
       case "running":
         return theme.success
@@ -75,6 +71,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
             <text fg={statusColor(r().status)} attributes={TextAttributes.BOLD}>
               {r().status.toUpperCase()}
             </text>
+            <ModeBadge mode={r().mode} />
             <text fg={theme.textMuted}>
               {r().symbol} · {r().interval}
             </text>
@@ -121,7 +118,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
             paddingRight={1}
             paddingTop={1}
             paddingBottom={1}
-            height={12}
+            height={18}
           >
             <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: true }}>
               <box flexDirection="column">
@@ -186,6 +183,6 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
 }
 
 DialogLiveRun.show = (dialog: DialogContext, runId: string) => {
-  dialog.setSize("large")
+  dialog.setSize("xlarge")
   dialog.replace(() => <DialogLiveRun runId={runId} />)
 }

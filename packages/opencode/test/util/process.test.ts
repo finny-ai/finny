@@ -110,6 +110,30 @@ describe("util.process", () => {
     expect(await proc.exited).toBe(0)
   })
 
+  test("detached spawn runs in its own process group and survives", async () => {
+    if (process.platform === "win32") return
+
+    // A detached child becomes the leader of a new process group, so it is
+    // addressable via the negative PID and is not torn down with the parent's
+    // group. Spawn a sleeper, confirm it is alive, then reap the whole group.
+    const proc = Process.spawn(node("setTimeout(() => {}, 10000)"), {
+      detached: true,
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+
+    expect(proc.pid).toBeGreaterThan(0)
+    const pid = proc.pid!
+
+    // Alive (signal 0 probes existence without delivering a signal).
+    expect(() => process.kill(pid, 0)).not.toThrow()
+
+    // Killing the negative PID targets the whole group — only possible because
+    // the child was spawned detached as its own group leader.
+    process.kill(-pid, "SIGKILL")
+    expect(await proc.exited).not.toBe(0)
+  }, 3000)
+
   test("rejects missing commands without leaking unhandled errors", async () => {
     await using tmp = await tmpdir()
     const cmd = path.join(tmp.path, "missing" + (process.platform === "win32" ? ".cmd" : ""))
