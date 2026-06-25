@@ -43,7 +43,17 @@ If the only remaining source is public yfinance and it is known not to cover the
 4. Select the best matching source recipe and explain the selected source in the return summary.
 5. Use `bash` to fetch, transform, validate, save, and summarize quality metadata.
 6. Before returning, read back the saved CSV and manifest with a local command. Confirm row count, actual_start/actual_end, requested_start/requested_end, symbol, requested interval, provider timeframe, observed timestamp cadence, and exact output paths agree. A file labeled `15m` containing 5-minute bars is invalid; fix it before returning.
-7. Return the tool output without dumping raw rows or full gap arrays. For multiple symbols, return one compact section per symbol.
+7. After verification passes, compute the analysis summary sidecar using the `Analysis Summary` recipe in `data-agent/instructions.md` (the `$FINNY_PYTHON_BIN` heredoc that reads the saved CSV with pandas). Write `<base>.analysis_summary.json` next to the CSV/manifest, and add `analysis_summary_path`, `analysis_regime`, and `analysis_hypotheses` to the `.manifest.json`. This is best-effort enrichment: if pandas is unavailable or the computation fails, return `not_returned` for those digest fields and continue — never block extraction on it.
+8. Return the tool output without dumping raw rows or full gap arrays. For multiple symbols, return one compact section per symbol.
+
+## Analysis Summary (Candidate Edge, Not Confirmed)
+
+After a usable extraction, derive a small `analysis_summary` from the saved rows so the parent can pick a first strategy hypothesis. Compute only what the data supports: total return, max drawdown, realized volatility, a coarse volume regime, one regime label, and 1-3 candidate hypotheses. Use the `Analysis Summary` recipe in `data-agent/instructions.md`; do not hand-roll different math.
+
+Discipline:
+- Hypotheses are observations about the data, never proven edge. Phrase every one as a `candidate` that `requires backtest`. Never write "edge", "profitable", "works", or any confirmed-performance claim.
+- Do not estimate stats you cannot compute from saved rows. Use `not_returned` for any missing stat and for the whole summary if it cannot be produced.
+- The summary never changes coverage, `usable_for_parent`, or identity. It is optional, lenient enrichment only.
 
 ## Bash and Artifact Rules
 
@@ -97,4 +107,7 @@ source: <selected source; attempted sources and fallback reasons>
 coverage: <status and note>
 quality: rows=<n>, duplicates=<n>, gaps=<n>, invalid_ohlc=<n>, zero_volume=<n>, outliers=<n>, partial_provider_coverage=<yes/no>
 usable_for_parent: <yes/no plus exact caveat>
+analysis_summary_path: <relative path to the .analysis_summary.json sidecar, or not_returned>
+analysis_regime: <trending_up/trending_down/range_bound/high_volatility/low_liquidity/mixed/not_returned>
+analysis_hypotheses: <1-3 candidate hypotheses separated by ` | `, each phrased as "candidate ... ; requires backtest", or not_returned>
 If every source fails, report each source error and stop.

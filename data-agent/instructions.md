@@ -193,6 +193,11 @@ Include identity fields that match the digest:
 }
 ```
 
+The manifest may also carry optional, lenient enrichment fields written by the
+`Analysis Summary` step (`analysis_summary_path`, `analysis_regime`,
+`analysis_hypotheses`). These are candidate analysis only; they never affect identity,
+coverage, or reuse, and may be absent.
+
 Use `actual_start`/`actual_end` from the first and last saved row after timezone
 normalization and deduplication. Use `requested_start`/`requested_end` for the
 requested window. If a source truncates history, set `coverage` to `"partial"`
@@ -275,6 +280,155 @@ PY
 ```
 
 Return the verification summary to the parent. Do not dump raw rows or full gap arrays; report counts and at most three sample timestamps/gaps.
+
+## Analysis Summary
+
+After a usable extraction passes verification, write one more sidecar next to the CSV and
+manifest: `<base>.analysis_summary.json`. This is **candidate edge analysis, not confirmed
+edge** — it gives the parent a starting hypothesis, and every claim must be backtested before
+it is trusted. It never changes coverage, `usable_for_parent`, or identity.
+
+Compute only what the saved rows support: total return, max drawdown, realized (annualized)
+volatility, a coarse volume regime, one regime label, and 1-3 candidate hypotheses. Use the
+recipe below as-is; do not invent different math. If `pandas` is unavailable or the
+computation raises, skip the sidecar, report `not_returned` for the analysis digest fields,
+and continue — never block extraction on this step.
+
+Schema written to `<base>.analysis_summary.json`:
+
+```json
+{
+  "schema_version": 1,
+  "source_csv": "stock/SPY_1h_2026-01-01_2026-03-31.csv",
+  "source_manifest": "stock/SPY_1h_2026-01-01_2026-03-31.manifest.json",
+  "analysis_regime": "trending_up",
+  "analysis_hypotheses": [
+    "Candidate trend continuation after shallow pullbacks; requires backtest."
+  ],
+  "stats": {
+    "total_return_pct": 4.2,
+    "max_drawdown_pct": -1.8,
+    "realized_volatility": 0.21,
+    "volume_regime": "normal"
+  },
+  "created_at": "2026-06-25T00:00:00Z"
+}
+```
+
+Use `not_returned` for any stat that cannot be computed. `analysis_regime` is one of
+`trending_up`, `trending_down`, `range_bound`, `high_volatility`, `low_liquidity`, `mixed`.
+Hypotheses are phrased as `Candidate ... ; requires backtest` — never "edge", "profitable",
+or "works".
+
+Recipe (substitute the literal CSV/manifest paths for this request):
+
+```bash
+"$FINNY_PYTHON_BIN" <<'PY'
+import json, datetime
+import numpy as np, pandas as pd
+
+CSV = "stock/SPY_1h_2026-01-01_2026-03-31.csv"
+MANIFEST = "stock/SPY_1h_2026-01-01_2026-03-31.manifest.json"
+INTERVAL = "1h"
+OUT = CSV.rsplit(".csv", 1)[0] + ".analysis_summary.json"
+
+df = pd.read_csv(CSV)
+c = pd.to_numeric(df["close"], errors="coerce").to_numpy()
+v = pd.to_numeric(df["volume"], errors="coerce").to_numpy()
+c = c[np.isfinite(c)]
+
+NR = "not_returned"
+total_return_pct = max_dd_pct = realized_vol = NR
+volume_regime = NR
+
+if c.size >= 2 and c[0] > 0:
+    total_return_pct = round(float(c[-1] / c[0] - 1) * 100, 4)
+    peak = np.maximum.accumulate(c)
+    dd = (c - peak) / np.where(peak > 0, peak, 1)
+    max_dd_pct = round(float(dd.min()) * 100, 4)
+    logret = np.diff(np.log(np.clip(c, 1e-12, None)))
+    ann = {"1m":525600,"5m":105120,"15m":35040,"30m":17520,"1h":8760,"4h":2190,"1d":365}.get(INTERVAL, 365)
+    if logret.size > 1:
+        realized_vol = round(float(np.std(logret, ddof=1) * np.sqrt(ann)), 4)
+
+vfin = v[np.isfinite(v)]
+# No volume column (e.g. some forex/crypto feeds) means unknown, not 100% zero —
+# default to 0.0 so the low-liquidity guard does not override the trend analysis.
+zero_share = float(np.mean(vfin <= 0)) if vfin.size else 0.0
+if vfin.size >= 10:
+    tail = vfin[-max(1, vfin.size // 5):]
+    ratio = float(np.mean(tail) / np.mean(vfin)) if np.mean(vfin) > 0 else 1.0
+    volume_regime = "elevated" if ratio >= 1.25 else "thin" if ratio <= 0.75 else "normal"
+
+# Coarse regime: trend via log-price linear fit (R^2 + slope), vol band, liquidity guard.
+regime = "mixed"
+if c.size >= 5:
+    x = np.arange(c.size, dtype=float)
+    y = np.log(np.clip(c, 1e-12, None))
+    coeffs = np.polyfit(x, y, 1)
+    slope = float(coeffs[0])
+    fit = np.polyval(coeffs, x)
+    ss_res = float(np.sum((y - fit) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
+    ret = (total_return_pct / 100) if total_return_pct != NR else 0.0
+    rv = realized_vol if realized_vol != NR else 0.0
+    if zero_share >= 0.2:
+        regime = "low_liquidity"
+    elif rv and rv > 0.6:
+        regime = "high_volatility"
+    elif r2 >= 0.3 and slope > 0:
+        regime = "trending_up"
+    elif r2 >= 0.3 and slope < 0:
+        regime = "trending_down"
+    elif r2 < 0.1 and abs(ret) < 0.05:
+        regime = "range_bound"
+
+HYP = {
+    "trending_up": ["Candidate trend continuation after shallow pullbacks; requires backtest.",
+                    "Candidate breakouts above prior swing highs; requires backtest."],
+    "trending_down": ["Candidate short rallies into resistance; requires backtest.",
+                      "Candidate breakdown continuation below prior swing lows; requires backtest."],
+    "range_bound": ["Candidate mean reversion from range extremes; requires backtest.",
+                    "Candidate fades of failed breakouts; requires backtest."],
+    "high_volatility": ["Candidate volatility-breakout entries with wider stops; requires backtest.",
+                        "Candidate reduced position size during high-vol regime; requires backtest."],
+    "low_liquidity": ["Candidate liquidity-aware entries avoiding thin sessions; requires backtest."],
+    "mixed": ["Candidate regime-filtered entries before committing to a direction; requires backtest."],
+}
+hypotheses = HYP[regime][:3]
+
+summary = {
+    "schema_version": 1,
+    "source_csv": CSV,
+    "source_manifest": MANIFEST,
+    "analysis_regime": regime,
+    "analysis_hypotheses": hypotheses,
+    "stats": {
+        "total_return_pct": total_return_pct,
+        "max_drawdown_pct": max_dd_pct,
+        "realized_volatility": realized_vol,
+        "volume_regime": volume_regime,
+    },
+    "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+with open(OUT, "w") as f:
+    json.dump(summary, f, indent=2)
+
+# Mirror the headline fields + pointer into the manifest so the parent sees them.
+try:
+    with open(MANIFEST) as f:
+        man = json.load(f)
+    man["analysis_summary_path"] = OUT
+    man["analysis_regime"] = regime
+    man["analysis_hypotheses"] = hypotheses
+    with open(MANIFEST, "w") as f:
+        json.dump(man, f, indent=2)
+except Exception as e:
+    print(f"analysis summary written, manifest not updated: {e}")
+
+print(f"analysis_summary_path={OUT} analysis_regime={regime}")
+PY
+```
 
 ## yfinance
 

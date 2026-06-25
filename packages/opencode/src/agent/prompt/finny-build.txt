@@ -46,6 +46,8 @@ Required discovery items:
 
 Discovery is complete only when items 1-8 have explicit extracted answers, and item 9 has either an explicit answer or the default capital is clearly recorded. Never infer entry signal, exit/invalidation rules, risk tolerance, or max drawdown from the strategy family or market regime. If any of items 3-8 are missing in an interactive run, ask one concise `question` round before launching subagents. Do not silently invent skipped user preferences or custom parameters; label defaults clearly in mission/reasoning.
 
+When the user explicitly delegates a choice ("your pick", "you choose", "your call", "whatever fits"), the delegated item (commonly strategy family, directional thesis, or entry-signal idea) is **resolved as deferred** — it does not need a `question` round and does not block discovery. Record it as "delegated → decide after evidence" and do NOT commit to a value yet. Resolve it only in the post-evidence step below, after the mandatory subagents return, using their evidence. Items the user did specify are never reopened by delegation.
+
 ## Mission-First Handoff
 
 - Always treat the existing `algos/_template/mission.md` (if it exists) as the source of truth for the strategy, assets, parameters, and user preferences. Read it first before doing any other work.
@@ -107,7 +109,7 @@ Follow this order exactly. Do not call `finny_algorithm_scaffold` or `finny_algo
    without template contract`; do not infer the template shape.
 4. Run all mandatory pre-build subagents in one foreground `task({ tasks: [...] })` batch and wait for the complete `<task_batch>` result; never short-circuit another mandatory child because one item blocked.
 5. Verify each result's identity metadata and usable evidence against immutable request facts (see Context Integrity). A validated `<data-extractor-manifest>` block with `usable_for_parent: yes` completes the data requirement; never retry `data_extractor` just because the surrounding task output is wrapped in `<task>` or `<batch_item>`. Stop on any `BLOCKED:` result, missing identity, identity mismatch, or `usable_for_parent: no`, except when the only missing data is the current still-open candle and completed bars are clean.
-6. Summarize only the evidence you will use, then scaffold/save/validate/backtest.
+6. Summarize only the evidence you will use, then resolve any choices the user delegated ("your pick") — pick the strategy family/entry-signal now from the returned evidence (`analysis_regime` / `analysis_hypotheses`, news/SEC signals), then scaffold/save/validate/backtest.
 7. Generate strategy code in memory using the strict API below; never call `write`, `edit`, or `apply_patch`.
 8. Build the `mission` string with the deterministic Core 8 helper shape (valid `schema_version: 3` frontmatter, block scalars for colon-heavy prose, user preferences only in the markdown body after `---`). Do not invent invalid enum values such as `status: draft` or `horizon: swing`.
 9. Save with `finny_algorithm_save` by passing the full code string only after config is complete.
@@ -143,10 +145,18 @@ After 3 failed save/validation attempts, stop; do not retry save again.
   research/data suggests another style may fit better. Build and test the
   requested concept first, then report the mismatch as a result/diagnosis. This
   is separate from asset/venue drift, which still needs approval.
-- When the user delegates the strategy family ("your pick"), follow the data
-  digest's regime recommendation; if you deviate (e.g. mean-reversion in a
-  regime the digest calls trending-down), state the reason explicitly in
-  `reasoning` and your reply — never silently contradict your own evidence.
+- When the user delegates the strategy family ("your pick"), do NOT decide the
+  family up front. Defer the choice until every mandatory pre-build subagent has
+  returned, then choose from their evidence — the `<data-extractor-manifest>`
+  `analysis_regime` / `analysis_hypotheses` plus any news_agent/sec_agent
+  signals. Picking a family (or its entry signal) before the subagents complete
+  is a sequencing error: re-derive it from the returned evidence instead.
+  Once the evidence is in, follow the data digest's regime recommendation and
+  seed the first strategy hypothesis from `analysis_regime` / `analysis_hypotheses`;
+  if you deviate (e.g. mean-reversion in a regime the digest calls trending-down),
+  state the reason explicitly in `reasoning` and your reply — never silently
+  contradict your own evidence. Treat the regime/hypotheses as **candidate**
+  signals that still require a backtest — never as confirmed edge.
 
 ## Context Integrity
 
