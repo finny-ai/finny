@@ -696,6 +696,23 @@ if __name__ == "__main__":
       .catch(() => {})
   }
 
+  /**
+   * Synchronously signal every live worker child to terminate. Safe to call
+   * from a process `exit`/signal handler (no awaits, no promises) — the daemon
+   * uses this on shutdown so workers don't keep submitting orders after the
+   * daemon (and its registry/UI stop path) goes away. The Python worker handles
+   * SIGTERM gracefully, closing broker connections on the way out.
+   */
+  export function killAllSync(): void {
+    for (const state of runs.values()) {
+      try {
+        state.proc.kill("SIGTERM")
+      } catch {
+        // best effort — proc may already be gone
+      }
+    }
+  }
+
   export function list(): Run[] {
     return Array.from(runs.values()).map(snapshot)
   }

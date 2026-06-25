@@ -30,10 +30,23 @@ export const ServeCommand = effectCmd({
 
     if (args.daemon) {
       const { Daemon } = yield* Effect.promise(() => import("../daemon"))
+      // Imported eagerly here so the exit/signal handlers below can terminate
+      // workers synchronously without a (disallowed) async import at exit time.
+      const { LiveRunner } = yield* Effect.promise(() => import("@/live/runner"))
       yield* Effect.promise(() => Daemon.writeInfo(Daemon.infoForServer(server)))
-      // Remove the discovery file when this daemon goes away so a stale entry
-      // doesn't point the TUI at a dead process.
-      const cleanup = () => Daemon.clearInfoSync()
+      // On shutdown, stop the live worker children before exiting — Node does
+      // not tear down spawned children, so an orphaned worker would keep
+      // submitting orders with no registry entry or UI stop path. Then remove
+      // the discovery file so a stale entry doesn't point the TUI at a dead
+      // process.
+      const cleanup = () => {
+        try {
+          LiveRunner.killAllSync()
+        } catch {
+          // best effort — never block discovery-file cleanup or exit
+        }
+        Daemon.clearInfoSync()
+      }
       process.once("exit", cleanup)
       process.once("SIGINT", () => {
         cleanup()
