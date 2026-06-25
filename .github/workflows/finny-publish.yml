@@ -5,8 +5,8 @@ run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
 # Actions tab → finny-publish → Run workflow, providing a version.
 #
 # Publishes the compiled, signed CLI to npm as:
-#   wrapper:  @finny-ai/finny-internal
-#   platform: @finny-ai/finny-internal-<os>-<arch>[-baseline][-musl]
+#   wrapper:  @finny-ai/finny-pro
+#   platform: @finny-ai/finny-pro-<os>-<arch>[-baseline][-musl]
 # The wrapper ships only postinstall.mjs + bin/; the engine is NOT bundled
 # (see packages/opencode/script/build.ts strip plugin once Layer B lands).
 #
@@ -40,6 +40,11 @@ on:
         required: false
         default: "latest"
         type: string
+      dry_run:
+        description: "Build + validate only (npm publish --dry-run). Uncheck to actually upload."
+        required: false
+        default: true
+        type: boolean
 
 concurrency:
   group: finny-publish-${{ github.ref }}
@@ -50,7 +55,7 @@ permissions:
 
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-  PUBLISH_SLUG_PREFIX: finny-ai-finny-internal
+  PUBLISH_SLUG_PREFIX: finny-ai-finny-pro
 
 jobs:
   # Secrets cannot be referenced in job-level `if:`. Convert presence to outputs
@@ -213,16 +218,24 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           VERSION: ${{ needs.build.outputs.version }}
           DIST_TAG: ${{ inputs.dist_tag }}
-          PUBLISH_NAME: "@finny-ai/finny-internal"
+          DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_NAME: "@finny-ai/finny-pro"
         run: |
           set -euo pipefail
+          # Build-only safety: with dry_run (the default), npm validates and packs
+          # but uploads nothing. A real upload requires explicitly setting dry_run=false.
+          PUBLISH_FLAGS="--access public --tag $DIST_TAG"
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::DRY RUN — building and validating only, nothing will be uploaded."
+            PUBLISH_FLAGS="$PUBLISH_FLAGS --dry-run"
+          fi
           # 1) Publish every platform package (each dist/<slug>/ has its own package.json)
           for dir in dist/${PUBLISH_SLUG_PREFIX}-*/; do
             [ -d "$dir" ] || continue
             echo "Publishing $dir"
             ( cd "$dir" && npm version "$VERSION" --no-git-tag-version --allow-same-version >/dev/null 2>&1 || true
               chmod -R 755 bin
-              npm publish --access public --tag "$DIST_TAG" )
+              npm publish $PUBLISH_FLAGS )
           done
           # 2) Assemble + publish the wrapper with optionalDependencies → platform packages
           WRAP="dist/wrapper"
@@ -245,11 +258,11 @@ jobs:
             const out={
               name: process.env.PUBLISH_NAME,
               version: process.env.VERSION,
-              bin: { finny: './bin/opencode' },
+              bin: { 'finny': './bin/opencode', 'finny-pro': './bin/opencode' },
               scripts: { postinstall: 'node ./postinstall.mjs' },
               optionalDependencies: JSON.parse('${DEPS}'),
               license: 'UNLICENSED',
             };
             fs.writeFileSync('${WRAP}/package.json', JSON.stringify(out,null,2));
           "
-          ( cd "$WRAP" && npm publish --access public --tag "$DIST_TAG" )
+          ( cd "$WRAP" && npm publish $PUBLISH_FLAGS )

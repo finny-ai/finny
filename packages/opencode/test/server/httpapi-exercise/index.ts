@@ -431,6 +431,26 @@ const scenarios: Scenario[] = [
     .mutating()
     .at((ctx) => ({ path: route("/mcp/{name}/disconnect", { name: "httpapi-missing" }), headers: ctx.headers() }))
     .json(404, object, "status"),
+  // Live/paper trading runs are owned by the daemon and need a broker + Python
+  // worker to start for real, so these scenarios exercise the route surface via
+  // the empty-list and not-found/invalid-payload paths only.
+  http.protected.get("/live", "live.list").json(200, array),
+  http.protected
+    .get("/live/{id}", "live.get")
+    .at((ctx) => ({ path: route("/live/{id}", { id: "live_httpapi_missing" }), headers: ctx.headers() }))
+    .status(404),
+  http.protected
+    .post("/live/start", "live.start.invalid")
+    .at((ctx) => ({ path: "/live/start", headers: ctx.headers(), body: {} }))
+    .status(400),
+  http.protected
+    .post("/live/{id}/stop", "live.stop")
+    .at((ctx) => ({ path: route("/live/{id}/stop", { id: "live_httpapi_missing" }), headers: ctx.headers() }))
+    .status(404),
+  http.protected
+    .delete("/live/{id}", "live.remove")
+    .at((ctx) => ({ path: route("/live/{id}", { id: "live_httpapi_missing" }), headers: ctx.headers() }))
+    .status(404),
   http.protected.get("/pty/shells", "pty.shells").json(200, array),
   http.protected.get("/pty", "pty.list").json(200, array),
   http.protected

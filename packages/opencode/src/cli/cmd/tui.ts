@@ -183,6 +183,20 @@ export const TuiThreadCommand = cmd({
         client.call("checkUpgrade", { directory: cwd }).catch(() => {})
       }, 1000).unref?.()
 
+      // Ensure the live-trading daemon is up so runs survive this TUI closing.
+      // Best-effort: if it can't start, the TUI still runs — live trading is
+      // simply unavailable this session.
+      let daemonUrl: string | undefined
+      let daemonHeaders: Record<string, string> | undefined
+      try {
+        const { Daemon } = await import("../daemon")
+        const conn = await Daemon.ensure()
+        daemonUrl = conn.url
+        daemonHeaders = conn.headers
+      } catch (error) {
+        UI.error(`Live-trading daemon unavailable: ${errorMessage(error)}`)
+      }
+
       try {
         const { Effect } = await import("effect")
         const { run } = await import("../tui/layer")
@@ -190,6 +204,8 @@ export const TuiThreadCommand = cmd({
         await Effect.runPromise(
           run({
             url: transport.url,
+            daemonUrl,
+            daemonHeaders,
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)

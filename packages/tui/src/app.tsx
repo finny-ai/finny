@@ -153,6 +153,9 @@ export type TuiInput = {
   headers?: RequestInit["headers"]
   events?: EventSource
   pluginHost: TuiPluginHost
+  /** Long-lived daemon hosting live runs. Absent → live trading is unavailable this session. */
+  daemonUrl?: string
+  daemonHeaders?: RequestInit["headers"]
 }
 
 function errorMessage(error: unknown) {
@@ -310,8 +313,13 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                 <ThemeProvider mode={mode}>
                                                   <LocalProvider>
                                                     <PromptStashProvider>
-                                                      <DialogProvider>
-                                                        <FrecencyProvider>
+                                                      <LiveRunsProvider
+                                                        url={input.daemonUrl}
+                                                        headers={input.daemonHeaders}
+                                                        directory={input.directory}
+                                                      >
+                                                        <DialogProvider>
+                                                          <FrecencyProvider>
                                                           <PromptHistoryProvider>
                                                             <PromptRefProvider>
                                                               <EditorContextProvider>
@@ -323,7 +331,8 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                             </PromptRefProvider>
                                                           </PromptHistoryProvider>
                                                         </FrecencyProvider>
-                                                      </DialogProvider>
+                                                        </DialogProvider>
+                                                      </LiveRunsProvider>
                                                     </PromptStashProvider>
                                                   </LocalProvider>
                                                 </ThemeProvider>
@@ -1134,9 +1143,8 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       <Show when={ready()}>
         <AlgorithmsProvider>
           <BacktestHistoryProvider>
-            <LiveRunsProvider>
-              <box flexGrow={1} minHeight={0} flexDirection="column">
-                <Shell>
+            <box flexGrow={1} minHeight={0} flexDirection="column">
+              <Shell>
                   <Switch>
                     <Match when={route.data.type === "home"}>
                       <Home />
@@ -1168,7 +1176,6 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                   {plugin()}
                 </Shell>
               </box>
-            </LiveRunsProvider>
           </BacktestHistoryProvider>
         </AlgorithmsProvider>
         <box flexShrink={0}>

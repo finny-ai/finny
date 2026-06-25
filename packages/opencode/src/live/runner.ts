@@ -8,7 +8,7 @@ import type { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
-import { BrokerRegistry, type BrokerKind } from "./brokers"
+import { BrokerRegistry, type BrokerKind, type BrokerMode } from "./brokers"
 import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
 import { requireBrokerTier } from "@/plan/brokers"
@@ -60,6 +60,9 @@ export namespace LiveRunner {
     brokerKind: BrokerKind
     accountProviderID: string
     accountLabel?: string
+    mode?: BrokerMode
+    /** Project directory this run belongs to (for multi-project isolation in the daemon). */
+    directory?: string
     status: RunStatus
     startedAt: number
     stoppedAt?: number
@@ -78,6 +81,31 @@ export namespace LiveRunner {
     interval: string
     accountProviderID: string
     brokerKind?: BrokerKind
+    /** Project directory the run is scoped to. Set by the HTTP handler. */
+    directory?: string
+  }
+
+  export type EligibilityStatus = "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
+
+  export class StartRejectedError extends Error {
+    constructor(message: string) {
+      super(message)
+      this.name = "LiveRunnerStartRejectedError"
+    }
+  }
+
+  export function canStartForMode(eligibility: string | null, mode: BrokerMode): boolean {
+    if (mode === "live") return eligibility === "paper_eligible" || eligibility === "live_eligible"
+    return (
+      eligibility === "backtested" ||
+      eligibility === "robustness_passed" ||
+      eligibility === "paper_eligible" ||
+      eligibility === "live_eligible"
+    )
+  }
+
+  export function canRemoveStatus(status: RunStatus): boolean {
+    return status === "stopped" || status === "error"
   }
 
   type RunState = Run & {
@@ -103,6 +131,10 @@ export namespace LiveRunner {
         log.warn("run listener threw", { error: e })
       }
     }
+    notifyAll()
+  }
+
+  function notifyAll() {
     const all = Array.from(runs.values()).map(snapshot)
     for (const fn of globalListeners) {
       try {
@@ -130,6 +162,34 @@ def _default_ibkr_client_id(run_id: str) -> int:
     if not run_id or run_id == "unknown":
         return 1
     return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
+
+
+class _OrderLoggingBroker:
+    """Transparent proxy around the real broker that emits an order event for
+    every buy/sell the strategy places (including rejections), so fills surface
+    in the run log and over SSE. Every other call passes straight through."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        # Only reached for attributes not defined on this proxy (equity, cash,
+        # position, fetch_bar, market_is_open, set_price, ...).
+        return getattr(self._inner, name)
+
+    def buy(self, symbol, qty=None, notional=None):
+        return self._record(self._inner.buy(symbol, qty=qty, notional=notional))
+
+    def sell(self, symbol, qty=None, notional=None):
+        return self._record(self._inner.sell(symbol, qty=qty, notional=notional))
+
+    def _record(self, rec):
+        try:
+            if rec is not None and hasattr(rec, "to_dict"):
+                emit({"type": "order", **rec.to_dict()})
+        except Exception as e:
+            log_err("order emit failed: {}".format(e))
+        return rec
 
 
 def make_broker(kind: str, run_id: str):
@@ -203,6 +263,9 @@ def main():
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
+
+    # Wrap so every strategy buy/sell is logged as an order event.
+    broker = _OrderLoggingBroker(broker)
 
     try:
         cash_start = broker.cash()
@@ -323,7 +386,7 @@ if __name__ == "__main__":
     await License.ensureActive()
 
     if (params.algorithm.backtestCode && params.algorithm.backtestCode.trim().length > 0) {
-      throw new Error("Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.")
+      throw new StartRejectedError("Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.")
     }
     const validation = await Validate.run(params.algorithm.code, {
       config: {
@@ -331,20 +394,15 @@ if __name__ == "__main__":
       },
     })
     if (!validation.valid) {
-      throw new Error(`Strategy validation failed before live start.\n${Validate.format(validation)}`)
+      throw new StartRejectedError(`Strategy validation failed before live start.\n${Validate.format(validation)}`)
     }
-    const eligibility = await latestEligibility(params.algorithm)
-    if (eligibility !== "paper_eligible" && eligibility !== "live_eligible") {
-      throw new Error(`Live trading is blocked until the latest immutable backtest run is paper/live eligible. Current eligibility: ${eligibility ?? "none"}.`)
-    }
-
     // Prevent duplicate: only one active run per algorithm.
     for (const existing of runs.values()) {
       if (
         existing.algorithmId === params.algorithm.algorithmId &&
         (existing.status === "running" || existing.status === "starting")
       ) {
-        throw new Error(`"${params.algorithm.name}" is already running. Stop it before starting a new run.`)
+        throw new StartRejectedError(`"${params.algorithm.name}" is already running. Stop it before starting a new run.`)
       }
     }
 
@@ -361,18 +419,34 @@ if __name__ == "__main__":
     // Fast pre-check: credentials must be present before we promise a run.
     const creds = await BrokerRegistry.readCredentials(params.accountProviderID)
     if (!creds) {
-      throw new Error(
+      throw new StartRejectedError(
         `${spec.displayName} credentials not found. Open Settings → Paper Trading and connect your ${spec.displayName} account first.`,
       )
     }
     const disabledReason = liveTradingDisabledReason(spec, creds)
-    if (disabledReason) throw new Error(disabledReason)
+    if (disabledReason) throw new StartRejectedError(disabledReason)
 
     const id = crypto.randomUUID()
 
-    // Resolve account label for display.
+    // Resolve account label and mode (paper/testnet/live) for display.
     const accounts = await BrokerRegistry.listAccounts(brokerKind)
-    const accountLabel = accounts.find((a) => a.providerID === params.accountProviderID)?.label
+    const account = accounts.find((a) => a.providerID === params.accountProviderID)
+    const accountLabel = account?.label
+    const accountMode = account?.mode ?? creds.mode ?? spec.mode
+
+    // Backtest-eligibility gate. Robustness is required only when real money is
+    // at stake. Paper/testnet runs are virtual-money validation and only need a
+    // completed immutable backtest artifact.
+    const eligibility = await latestEligibility(params.algorithm)
+    const isLiveMoney = accountMode === "live"
+    if (!canStartForMode(eligibility, accountMode)) {
+      const need = isLiveMoney
+        ? "paper/live eligible (run walk-forward robustness)"
+        : "backtested or better (run a completed backtest first)"
+      throw new StartRejectedError(
+        `${isLiveMoney ? "Live" : "Paper"} trading is blocked until the latest immutable backtest run is ${need}. Current eligibility: ${eligibility ?? "none"}.`,
+      )
+    }
 
     // Create an initial "starting" run state IMMEDIATELY so the caller can open
     // the live-run dialog right away. The slow setup (venv, pip, spawn) happens
@@ -386,6 +460,8 @@ if __name__ == "__main__":
       brokerKind,
       accountProviderID: params.accountProviderID,
       accountLabel,
+      mode: accountMode,
+      directory: params.directory,
       status: "starting",
       startedAt: Date.now(),
       positions: {},
@@ -620,6 +696,23 @@ if __name__ == "__main__":
       .catch(() => {})
   }
 
+  /**
+   * Synchronously signal every live worker child to terminate. Safe to call
+   * from a process `exit`/signal handler (no awaits, no promises) — the daemon
+   * uses this on shutdown so workers don't keep submitting orders after the
+   * daemon (and its registry/UI stop path) goes away. The Python worker handles
+   * SIGTERM gracefully, closing broker connections on the way out.
+   */
+  export function killAllSync(): void {
+    for (const state of runs.values()) {
+      try {
+        state.proc.kill("SIGTERM")
+      } catch {
+        // best effort — proc may already be gone
+      }
+    }
+  }
+
   export function list(): Run[] {
     return Array.from(runs.values()).map(snapshot)
   }
@@ -647,8 +740,12 @@ if __name__ == "__main__":
     }
   }
 
-  export function remove(id: string) {
-    runs.delete(id)
+  export function remove(id: string): boolean {
+    const state = runs.get(id)
+    if (!state || !canRemoveStatus(state.status)) return false
+    const removed = runs.delete(id)
+    if (removed) notifyAll()
+    return removed
   }
 
   async function latestEligibility(algorithm: Algorithm.Info): Promise<string | null> {

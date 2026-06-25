@@ -77,6 +77,23 @@ export class ProviderNotFoundError extends Schema.TaggedErrorClass<ProviderNotFo
   { httpApiStatus: 404 },
 ) {}
 
+export class LiveRunNotFoundError extends Schema.TaggedErrorClass<LiveRunNotFoundError>()(
+  "LiveRunNotFoundError",
+  {
+    runID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
+
+export class LiveRunStartError extends Schema.TaggedErrorClass<LiveRunStartError>()(
+  "LiveRunStartError",
+  {
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
+
 export class ModelNotFoundError extends Schema.TaggedErrorClass<ModelNotFoundError>()(
   "ModelNotFoundError",
   {

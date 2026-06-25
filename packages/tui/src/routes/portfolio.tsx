@@ -8,6 +8,7 @@ import { Card } from "../component/card"
 import { RouteHeader, ROUTE_ICONS } from "../component/route-header"
 import { DialogLiveRun } from "../component/dialog-live-run"
 import { DialogAddAccount } from "../component/dialog-add-account"
+import { ModeBadge } from "../component/mode-badge"
 import { maskKey } from "@/live/alpaca-accounts"
 import { BrokerRegistry, type BrokerAccount, type BrokerKind } from "@/live/brokers"
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
@@ -121,6 +122,12 @@ export function Portfolio() {
                       const k = (run as any).brokerKind as BrokerKind | undefined
                       return k ? BrokerRegistry.getSpec(k).displayName : "Alpaca paper"
                     }
+                    // Prefer the mode recorded on the run; fall back to the
+                    // matching connected account for runs started before the
+                    // field existed.
+                    const runMode = () =>
+                      run.mode ??
+                      accounts().find((a) => a.providerID === run.accountProviderID)?.mode
                     return (
                       <box
                         flexDirection="row"
@@ -137,6 +144,7 @@ export function Portfolio() {
                             {run.algorithmName}
                           </text>
                         </box>
+                        <ModeBadge mode={runMode()} />
                         <box width={14} flexShrink={0}>
                           <text fg={theme.textMuted}>
                             {run.symbol} · {run.interval}
@@ -232,6 +240,7 @@ export function Portfolio() {
                           {account.label}
                         </text>
                       </box>
+                      <ModeBadge mode={account.mode} />
                       <text fg={theme.textMuted}>
                         Key: {maskKey(account.keyId)}
                       </text>
