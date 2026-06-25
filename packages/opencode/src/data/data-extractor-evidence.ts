@@ -388,10 +388,16 @@ function valuesMatch(a?: string, b?: string, kind?: "symbol" | "interval" | "ass
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
+// Optional enrichment digest lines (issue #81). Stripped before the estimated-metric
+// scan so an `analysis_*: not_returned` sentinel can't disable the fabricated-metric
+// guard for the rest of the response.
+const ANALYSIS_DIGEST_LINE = /^[ \t]*analysis_(?:summary_path|regime|hypotheses)\s*[:=].*$/gim
+
 function hasEstimatedMetrics(text: string): string | undefined {
-  if (/\bnot_returned\b/i.test(text)) return undefined
+  const scanned = text.replace(ANALYSIS_DIGEST_LINE, "")
+  if (/\bnot_returned\b/i.test(scanned)) return undefined
   for (const re of ESTIMATED_METRIC_PATTERNS) {
-    if (re.test(text)) return `estimated metric language matched ${re.source}`
+    if (re.test(scanned)) return `estimated metric language matched ${re.source}`
   }
   return undefined
 }
@@ -637,9 +643,14 @@ function canonicalArtifacts(manifestFile: string, manifest: DataExtractorManifes
   return paths.filter((value, index) => paths.indexOf(value) === index)
 }
 
-function normalizeHypotheses(value: string[] | string | undefined): string | undefined {
-  if (value === undefined) return undefined
-  const parts = (Array.isArray(value) ? value : [value]).map((part) => part.trim()).filter(Boolean)
+function normalizeHypotheses(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  // Lenient: a malformed manifest (null/object/number entries from a hand-written
+  // or failed summary update) must never throw or gate validation — drop non-strings.
+  const parts = (Array.isArray(value) ? value : [value])
+    .filter((part): part is string => typeof part === "string")
+    .map((part) => part.trim())
+    .filter(Boolean)
   return parts.length > 0 ? parts.join(" | ") : undefined
 }
 
