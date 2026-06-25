@@ -352,7 +352,9 @@ if c.size >= 2 and c[0] > 0:
         realized_vol = round(float(np.std(logret, ddof=1) * np.sqrt(ann)), 4)
 
 vfin = v[np.isfinite(v)]
-zero_share = float(np.mean(vfin <= 0)) if vfin.size else 1.0
+# No volume column (e.g. some forex/crypto feeds) means unknown, not 100% zero —
+# default to 0.0 so the low-liquidity guard does not override the trend analysis.
+zero_share = float(np.mean(vfin <= 0)) if vfin.size else 0.0
 if vfin.size >= 10:
     tail = vfin[-max(1, vfin.size // 5):]
     ratio = float(np.mean(tail) / np.mean(vfin)) if np.mean(vfin) > 0 else 1.0
@@ -363,8 +365,9 @@ regime = "mixed"
 if c.size >= 5:
     x = np.arange(c.size, dtype=float)
     y = np.log(np.clip(c, 1e-12, None))
-    slope = float(np.polyfit(x, y, 1)[0])
-    fit = np.polyval(np.polyfit(x, y, 1), x)
+    coeffs = np.polyfit(x, y, 1)
+    slope = float(coeffs[0])
+    fit = np.polyval(coeffs, x)
     ss_res = float(np.sum((y - fit) ** 2)); ss_tot = float(np.sum((y - y.mean()) ** 2))
     r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
     ret = (total_return_pct / 100) if total_return_pct != NR else 0.0
@@ -406,7 +409,7 @@ summary = {
         "realized_volatility": realized_vol,
         "volume_regime": volume_regime,
     },
-    "created_at": datetime.datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+    "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
 }
 with open(OUT, "w") as f:
     json.dump(summary, f, indent=2)
