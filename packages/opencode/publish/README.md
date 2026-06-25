@@ -33,8 +33,8 @@ compiled binary. By installing or using it you agree to the
 - **share or transfer your license key.**
 
 Violations terminate your license and may be pursued under copyright, trade-secret,
-and contract law. See the bundled [`LICENSE`](./LICENSE) file and the full
-[EULA](https://finnyai.tech/legal/eula).
+and contract law. The full `LICENSE` file is bundled with this package, and the
+complete terms are at the [End User License Agreement](https://finnyai.tech/legal/eula).
 
 Not financial advice. Trading involves risk; simulated results do not guarantee
 future performance.
