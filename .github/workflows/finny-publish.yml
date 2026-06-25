@@ -242,6 +242,8 @@ jobs:
           mkdir -p "$WRAP/bin"
           cp ./bin/opencode "$WRAP/bin/opencode"
           cp ./script/postinstall.mjs "$WRAP/postinstall.mjs"
+          cp ./publish/LICENSE "$WRAP/LICENSE"
+          cp ./publish/README.md "$WRAP/README.md"
           DEPS=$(node -e "
             const fs=require('fs');
             const deps={};
@@ -261,7 +263,7 @@ jobs:
               bin: { 'finny': './bin/opencode', 'finny-pro': './bin/opencode' },
               scripts: { postinstall: 'node ./postinstall.mjs' },
               optionalDependencies: JSON.parse('${DEPS}'),
-              license: 'UNLICENSED',
+              license: 'SEE LICENSE IN LICENSE',
             };
             fs.writeFileSync('${WRAP}/package.json', JSON.stringify(out,null,2));
           "
