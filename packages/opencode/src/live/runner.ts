@@ -164,6 +164,34 @@ def _default_ibkr_client_id(run_id: str) -> int:
     return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
 
 
+class _OrderLoggingBroker:
+    """Transparent proxy around the real broker that emits an order event for
+    every buy/sell the strategy places (including rejections), so fills surface
+    in the run log and over SSE. Every other call passes straight through."""
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        # Only reached for attributes not defined on this proxy (equity, cash,
+        # position, fetch_bar, market_is_open, set_price, ...).
+        return getattr(self._inner, name)
+
+    def buy(self, symbol, qty=None, notional=None):
+        return self._record(self._inner.buy(symbol, qty=qty, notional=notional))
+
+    def sell(self, symbol, qty=None, notional=None):
+        return self._record(self._inner.sell(symbol, qty=qty, notional=notional))
+
+    def _record(self, rec):
+        try:
+            if rec is not None and hasattr(rec, "to_dict"):
+                emit({"type": "order", **rec.to_dict()})
+        except Exception as e:
+            log_err("order emit failed: {}".format(e))
+        return rec
+
+
 def make_broker(kind: str, run_id: str):
     if kind == "alpaca":
         from finny_broker import AlpacaBroker
@@ -235,6 +263,9 @@ def main():
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
+
+    # Wrap so every strategy buy/sell is logged as an order event.
+    broker = _OrderLoggingBroker(broker)
 
     try:
         cash_start = broker.cash()
