@@ -737,6 +737,176 @@ describe("validateDataExtractorTaskText", () => {
     const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
     expect(result.ok).toBe(true)
   })
+
+  test("preserves optional analysis_summary fields in the manifest block", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-analysis-"))
+    const slug = "spy-analysis.21.6.23.32.aa11bb22"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_1d_2025-06-21_2026-06-21.csv"
+    const manifestRel = "stock/SPY_1d_2025-06-21_2026-06-21.manifest.json"
+    const summaryRel = "stock/SPY_1d_2025-06-21_2026-06-21.analysis_summary.json"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-06-23T04:00:00Z,600,610,590,605,1000000\n2026-06-18T04:00:00Z,740,750,730,746.75,1200000\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["SPY"],
+        interval: "1d",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: "spy-analysis",
+        requested_start: "2025-06-21",
+        requested_end: "2026-06-21",
+        actual_start: "2025-06-23",
+        actual_end: "2026-06-18",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "20260621T233200Z-spy",
+        coverage: "trading_day_complete",
+        usable_for_parent: "yes",
+        analysis_summary_path: summaryRel,
+        analysis_regime: "trending_up",
+        analysis_hypotheses: [
+          "Candidate trend continuation after shallow pullbacks; requires backtest.",
+          "Candidate breakouts above prior swing highs; requires backtest.",
+        ],
+      }),
+    )
+
+    const digest = [
+      "requested_algorithm_name: spy-analysis",
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2025-06-21",
+      "requested_end: 2026-06-21",
+      "actual_start: 2025-06-23",
+      "actual_end: 2026-06-18",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: 20260621T233200Z-spy",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    const block = result.text.split("<data-extractor-manifest>")[1]
+    expect(block).toContain("analysis_regime: trending_up")
+    expect(block).toContain(
+      "analysis_hypotheses: Candidate trend continuation after shallow pullbacks; requires backtest. | Candidate breakouts above prior swing highs; requires backtest.",
+    )
+    expect(block).toContain(`analysis_summary_path: ${summaryRel}`)
+  })
+
+  test("manifest without analysis fields still validates and omits them from the block", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-no-analysis-"))
+    const slug = "spy-plain.21.6.23.32.cc33dd44"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_1d_2025-06-21_2026-06-21.csv"
+    const manifestRel = "stock/SPY_1d_2025-06-21_2026-06-21.manifest.json"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-06-23T04:00:00Z,600,610,590,605,1000000\n2026-06-18T04:00:00Z,740,750,730,746.75,1200000\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["SPY"],
+        interval: "1d",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: "spy-plain",
+        requested_start: "2025-06-21",
+        requested_end: "2026-06-21",
+        actual_start: "2025-06-23",
+        actual_end: "2026-06-18",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "20260621T233200Z-spy",
+        coverage: "trading_day_complete",
+        usable_for_parent: "yes",
+      }),
+    )
+
+    const digest = [
+      "requested_algorithm_name: spy-plain",
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2025-06-21",
+      "requested_end: 2026-06-21",
+      "actual_start: 2025-06-23",
+      "actual_end: 2026-06-18",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: 20260621T233200Z-spy",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    const block = result.text.split("<data-extractor-manifest>")[1]
+    expect(block).not.toContain("analysis_regime")
+    expect(block).not.toContain("analysis_hypotheses")
+    expect(block).not.toContain("analysis_summary_path")
+  })
+})
+
+describe("data_extractor analysis summary contract", () => {
+  const promptPath = path.join(import.meta.dir, "../../src/agent/prompt/finny-data-extractor.txt")
+  const cookbookPath = path.join(import.meta.dir, "../../../../data-agent/instructions.md")
+
+  test("prompt declares the optional analysis digest fields", async () => {
+    const prompt = await fs.readFile(promptPath, "utf8")
+    expect(prompt).toContain("analysis_summary_path:")
+    expect(prompt).toContain("analysis_regime:")
+    expect(prompt).toContain("analysis_hypotheses:")
+  })
+
+  test("prompt and cookbook require candidate / requires-backtest wording, not confirmed edge", async () => {
+    const prompt = await fs.readFile(promptPath, "utf8")
+    const cookbook = await fs.readFile(cookbookPath, "utf8")
+    expect(prompt.toLowerCase()).toContain("candidate")
+    expect(prompt.toLowerCase()).toContain("requires backtest")
+    expect(cookbook).toContain("requires backtest")
+    const hypotheses = Array.from(cookbook.matchAll(/"(Candidate [^"]*?requires backtest\.)"/g), (m) => m[1])
+    expect(hypotheses.length).toBeGreaterThan(0)
+    for (const h of hypotheses) expect(h.toLowerCase().startsWith("candidate ")).toBe(true)
+  })
+
+  test("cookbook recipe never asserts confirmed edge in generated hypotheses", async () => {
+    const cookbook = await fs.readFile(cookbookPath, "utf8")
+    const hypotheses = Array.from(cookbook.matchAll(/"(Candidate [^"]*?)"/g), (m) => m[1].toLowerCase())
+    for (const h of hypotheses) {
+      expect(h).not.toContain("profitable")
+      expect(h).not.toMatch(/\bedge\b/)
+      expect(h).not.toContain("works")
+    }
+  })
 })
 
 describe("phoenix trace grader", () => {

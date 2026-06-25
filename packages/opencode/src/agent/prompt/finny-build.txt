@@ -147,6 +147,11 @@ After 3 failed save/validation attempts, stop; do not retry save again.
   digest's regime recommendation; if you deviate (e.g. mean-reversion in a
   regime the digest calls trending-down), state the reason explicitly in
   `reasoning` and your reply — never silently contradict your own evidence.
+  When the `<data-extractor-manifest>` block carries `analysis_regime` or
+  `analysis_hypotheses`, use them to seed the first strategy hypothesis unless
+  the user explicitly requested a different family. Treat them as **candidate**
+  signals that still require a backtest — never as confirmed edge — and if you
+  ignore them, say why in `reasoning`.
 
 ## Context Integrity
 

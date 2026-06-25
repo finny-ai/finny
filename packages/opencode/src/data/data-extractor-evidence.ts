@@ -73,6 +73,11 @@ export interface DataExtractorManifest {
   coverage?: string
   coverage_note?: string
   usable_for_parent?: string
+  // Optional, lenient enrichment (issue #81). Never gates identity or reuse:
+  // candidate edge analysis the data agent derives from the saved rows.
+  analysis_summary_path?: string
+  analysis_regime?: string
+  analysis_hypotheses?: string[] | string
 }
 
 export interface ValidateDataExtractorInput {
@@ -632,6 +637,12 @@ function canonicalArtifacts(manifestFile: string, manifest: DataExtractorManifes
   return paths.filter((value, index) => paths.indexOf(value) === index)
 }
 
+function normalizeHypotheses(value: string[] | string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  const parts = (Array.isArray(value) ? value : [value]).map((part) => part.trim()).filter(Boolean)
+  return parts.length > 0 ? parts.join(" | ") : undefined
+}
+
 function renderManifestBlock(
   manifest: DataExtractorManifest,
   digest: Record<string, string | undefined>,
@@ -655,6 +666,10 @@ function renderManifestBlock(
     ["coverage", manifest.coverage],
     ["rows", manifest.rows],
     ["usable_for_parent", digest.usable_for_parent],
+    // Lenient enrichment (issue #81): preserved, never validated as identity.
+    ["analysis_regime", manifest.analysis_regime],
+    ["analysis_hypotheses", normalizeHypotheses(manifest.analysis_hypotheses)],
+    ["analysis_summary_path", manifest.analysis_summary_path],
   ]
   return [
     "<data-extractor-manifest>",
