@@ -158,6 +158,10 @@ export const ARCHIVE_DIR = ".archive"
 export const STRATEGY_FILE = "strategy.py"
 export const BACKTEST_FILE = "backtest.json"
 export const REASONING_FILE = "reasoning.md"
+export const PROGRESS_FILE = "progress.md"
+
+/** Hidden per-algo scratch dir for compaction-handoff artifacts (subagent summaries). */
+export const FINNY_DIR = ".finny"
 
 export const DATA_DIR = "data"
 export const DATA_STOCK_DIR = "data/stock"
