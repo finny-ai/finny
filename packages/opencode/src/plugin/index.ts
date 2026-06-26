@@ -19,6 +19,7 @@ import { CloudflareAIGatewayAuthPlugin, CloudflareWorkersAuthPlugin } from "./cl
 import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
+import { FinnyMemoryPlugin } from "./finny-memory"
 import { Effect, Layer, Context } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -76,6 +77,10 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     AzureAuthPlugin,
     DigitalOceanAuthPlugin,
     XaiAuthPlugin,
+    // Finny: mission/memory + compaction handoff (subagent summaries, TODO
+    // nudge, progress timeline). Dropped from the registry during an upstream
+    // merge (commit 055622642); restored here.
+    FinnyMemoryPlugin,
   ]
 }
 

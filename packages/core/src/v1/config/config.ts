@@ -161,6 +161,14 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      ratio: Schema.optional(Schema.Number).annotate({
+        description:
+          "Trigger compaction when context usage reaches this fraction of the model context window (0–1, default 0.6). Set to 1 (or any value >= 1) to disable early compaction and only compact near the hard limit. Applies per-model automatically via the model's reported context window.",
+      }),
+      ratio_overrides: Schema.optional(Schema.Record(Schema.String, Schema.Number)).annotate({
+        description:
+          'Per-model overrides for `ratio`, keyed by "<providerID>/<modelID>" (e.g. "anthropic/claude-opus-4-8"). Takes precedence over `ratio` for the matching model.',
+      }),
     }),
   ),
   experimental: Schema.optional(

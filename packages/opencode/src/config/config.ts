@@ -581,6 +581,9 @@ export const layer = Layer.effect(
         if (Flag.OPENCODE_DISABLE_PRUNE) {
           result.compaction = { ...result.compaction, prune: false }
         }
+        if (Flag.OPENCODE_COMPACT_RATIO !== undefined) {
+          result.compaction = { ...result.compaction, ratio: Flag.OPENCODE_COMPACT_RATIO }
+        }
 
         return {
           config: result,

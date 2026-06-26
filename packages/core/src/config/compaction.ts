@@ -12,4 +12,9 @@ export class Info extends Schema.Class<Info>("ConfigV2.Compaction")({
   prune: Schema.Boolean.pipe(Schema.optional),
   keep: Keep.pipe(Schema.optional),
   buffer: NonNegativeInt.pipe(Schema.optional),
+  // Trigger compaction when context usage reaches this fraction of the model
+  // context window (0–1, default 0.6). >= 1 disables early compaction.
+  ratio: Schema.Number.pipe(Schema.optional),
+  // Per-model overrides for `ratio`, keyed by "<providerID>/<modelID>".
+  ratio_overrides: Schema.Record(Schema.String, Schema.Number).pipe(Schema.optional),
 }) {}

@@ -26,6 +26,16 @@ export const Flag = {
   OPENCODE_DISABLE_TERMINAL_TITLE: truthy("OPENCODE_DISABLE_TERMINAL_TITLE"),
   OPENCODE_SHOW_TTFD: truthy("OPENCODE_SHOW_TTFD"),
   OPENCODE_DISABLE_AUTOCOMPACT: truthy("OPENCODE_DISABLE_AUTOCOMPACT"),
+  // Override the early-compaction ratio (fraction of the model context window
+  // at which auto-compaction triggers). Parsed as a float; undefined when unset
+  // or not a finite number. Read at access time (getter) so env vars set after
+  // module load — e.g. in the headless/server path or tests — are honored.
+  get OPENCODE_COMPACT_RATIO(): number | undefined {
+    const raw = process.env["OPENCODE_COMPACT_RATIO"]
+    if (raw === undefined || raw === "") return undefined
+    const value = Number(raw)
+    return Number.isFinite(value) ? value : undefined
+  },
   OPENCODE_DISABLE_MODELS_FETCH: truthy("OPENCODE_DISABLE_MODELS_FETCH"),
   OPENCODE_DISABLE_MOUSE: truthy("OPENCODE_DISABLE_MOUSE"),
   OPENCODE_FAKE_VCS: process.env["OPENCODE_FAKE_VCS"],

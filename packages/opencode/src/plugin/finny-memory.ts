@@ -7,11 +7,92 @@ import {
   clearSessionWorkspace,
   discoverAlgos,
   getActiveAlgo,
+  getSessionWorkspace,
+  renderProgressTimeline,
   setActiveAlgo,
+  subagentKind,
+  writeProgress,
+  writeSubagentSummary,
 } from "@finny-ai/core/algo"
 import { Log } from "../util/log"
 
 const log = Log.create({ service: "plugin.finny-memory" })
+
+/** Subagent kinds whose return we treat as "context gathered" for the TODO nudge. */
+const TODO_NUDGE_KINDS = new Set(["data", "news"])
+
+const SUBAGENT_SUMMARY_MAX_CHARS = 4_000
+
+/**
+ * One-time instruction appended to a subagent's task result once both the data
+ * and news context have come back, prompting the agent to record an initial
+ * TODO. Deterministic trigger; the model authors the actual TODO content.
+ */
+const TODO_NUDGE_TEXT = [
+  ``,
+  `---`,
+  `[finny] You now have both data and news context. Before continuing, call \`todowrite\` to record your`,
+  `initial plan as a TODO (e.g. review data + news → draft strategy v1 → backtest → iterate). Keep it`,
+  `updated as you progress so the plan survives context compaction.`,
+].join("\n")
+
+/**
+ * Resolve the algo for a session STRICTLY from its per-session binding. We
+ * deliberately do not fall back to the machine-global active algo: an unbound
+ * session must never read or write another session's workspace artifacts.
+ */
+async function resolveSessionAlgo(sessionID: string): Promise<string | null> {
+  return await getSessionWorkspace(sessionID).catch(() => null)
+}
+
+/** First user message, rendered as an "Asked: …" step, or null. */
+function firstUserAsk(messages: any[]): string | null {
+  for (const msg of messages) {
+    if (msg?.info?.role !== "user") continue
+    const text = (msg.parts ?? [])
+      .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text as string)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (text) return `Asked: "${text.length > 80 ? text.slice(0, 79) + "…" : text}"`
+  }
+  return null
+}
+
+/** Render a single completed tool part as a timeline step, or null if uninteresting. */
+function progressStepForTool(part: any): string | null {
+  if (part?.type !== "tool" || part?.state?.status !== "completed") return null
+  const input = part.state?.input ?? {}
+  const version = input.version ?? part.state?.metadata?.version
+  switch (part.tool) {
+    case "task": {
+      const sub = typeof input.subagent_type === "string" ? input.subagent_type : "subagent"
+      return `Launched ${sub} subagent`
+    }
+    case "finny_algorithm_save":
+      return version ? `Saved strategy ${version}` : "Saved strategy"
+    case "finny_backtest_run":
+      return version ? `Backtested ${version}` : "Ran backtest"
+    default:
+      return null
+  }
+}
+
+/** Walk session messages and render a short "what's been done so far" timeline. */
+function extractProgressSteps(messages: any[]): string[] {
+  const steps: string[] = []
+  const ask = firstUserAsk(messages)
+  if (ask) steps.push(ask)
+  for (const msg of messages) {
+    for (const part of msg?.parts ?? []) {
+      const step = progressStepForTool(part)
+      if (step) steps.push(step)
+    }
+  }
+  // Collapse consecutive duplicates (e.g. repeated backtests of the same version).
+  return steps.filter((step, i) => step !== steps[i - 1])
+}
 
 const COMMAND_NAME = "algo"
 
@@ -87,6 +168,23 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
   // user runs `/algo use <other>` (or `/algo clear`) mid-compaction.
   // Re-reading getActiveAlgo() on the post-event would race.
   const compactionTargets = new Map<string, { algo: string; current: string }>()
+  // Per-session set of subagent kinds ("data"/"news") whose context has come
+  // back, and the set of sessions already nudged to write their initial TODO.
+  const subagentContext = new Map<string, Set<string>>()
+  const todoNudged = new Set<string>()
+
+  // Best-effort read of a session's TODO list via the SDK. Returns [] on any error.
+  async function readSessionTodos(id: string): Promise<{ content: string; status: string }[]> {
+    try {
+      const res = await client.session.todo({ path: { id } as any })
+      const todos = ((res as any)?.data ?? []) as any[]
+      return todos
+        .filter((t) => t && typeof t.content === "string")
+        .map((t) => ({ content: t.content as string, status: typeof t.status === "string" ? t.status : "pending" }))
+    } catch {
+      return []
+    }
+  }
 
   return {
     /**
@@ -122,6 +220,54 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
     },
 
     /**
+     * After a data/news subagent returns, (1) persist its summary under the
+     * algo's `.finny/` dir so it survives compaction, and (2) once BOTH data
+     * and news context have come back, append a one-time nudge to the result
+     * telling the agent to record its initial TODO. The nudge is appended to
+     * the tool output the model sees next, so the model authors the TODO.
+     */
+    "tool.execute.after": async (event, output) => {
+      if (event.tool !== "task") return
+      const subType = typeof event.args?.subagent_type === "string" ? event.args.subagent_type : undefined
+      if (!subType) return
+      const kind = subagentKind(subType)
+      if (!kind) return
+
+      // Require an explicit session binding. Without one we cannot safely
+      // attribute artifacts to a workspace, so skip entirely — including the
+      // nudge tracking — to avoid recording a session as nudged before its
+      // summaries are ever persisted.
+      const algo = await resolveSessionAlgo(event.sessionID)
+      if (!algo) return
+
+      if (typeof output.output === "string" && output.output.trim()) {
+        try {
+          await writeSubagentSummary(algo, kind, output.output)
+        } catch (err) {
+          log.warn("failed to persist subagent summary", {
+            algo,
+            kind,
+            err: err instanceof Error ? err.message : String(err),
+          })
+        }
+      }
+
+      // Track which context kinds have returned; nudge once both are present.
+      if (TODO_NUDGE_KINDS.has(kind)) {
+        const seen = subagentContext.get(event.sessionID) ?? new Set<string>()
+        seen.add(kind)
+        subagentContext.set(event.sessionID, seen)
+        const haveBoth = [...TODO_NUDGE_KINDS].every((k) => seen.has(k))
+        // Only mark the session nudged when we actually deliver the text, so a
+        // non-string output never permanently suppresses the nudge.
+        if (haveBoth && !todoNudged.has(event.sessionID) && typeof output.output === "string") {
+          todoNudged.add(event.sessionID)
+          output.output = output.output + "\n" + TODO_NUDGE_TEXT
+        }
+      }
+    },
+
+    /**
      * Before /compact: append mission + CURRENT + reasoning to the
      * compaction context. We deliberately do NOT override `output.prompt`
      * — opencode's compaction code uses `prompt ?? [defaultPrompt, ...context]`,
@@ -131,22 +277,42 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
      * local user/environment identifiers to the model.
      */
     "experimental.session.compacting": async (event, output) => {
-      const active = await getActiveAlgo()
+      const active = await resolveSessionAlgo(event.sessionID)
       if (!active) return
       try {
         const ctx = await buildCompactionContext(active)
-        compactionTargets.set(event.sessionID, { algo: active, current: ctx.current })
-        output.context.push(
-          `# Active Finny algo: ${ctx.algo}`,
-          `Current version: ${ctx.current}`,
-          ``,
-          `## mission.md`,
-          ctx.mission.trim(),
-          ``,
-          ...(ctx.reasoning
-            ? [`## ${ctx.current}/reasoning.md`, ctx.reasoning.trim(), ``]
-            : [`(no reasoning.md for ${ctx.current} yet)`, ``]),
-        )
+        const version = ctx.current ?? "(no version saved yet)"
+        compactionTargets.set(event.sessionID, { algo: active, current: version })
+        output.context.push(`# Active Finny algo: ${ctx.algo}`, `Current version: ${version}`, ``)
+        if (ctx.mission.trim()) {
+          output.context.push(`## mission.md`, ctx.mission.trim(), ``)
+        }
+        if (ctx.current) {
+          output.context.push(
+            ...(ctx.reasoning
+              ? [`## ${ctx.current}/reasoning.md`, ctx.reasoning.trim(), ``]
+              : [`(no reasoning.md for ${ctx.current} yet)`, ``]),
+          )
+        }
+        // Re-hand the data/news subagent context gathered earlier this session
+        // so the post-compaction agent doesn't lose it.
+        for (const summary of ctx.subagentSummaries) {
+          const body = summary.body.trim()
+          if (!body) continue
+          const truncated =
+            body.length > SUBAGENT_SUMMARY_MAX_CHARS ? body.slice(0, SUBAGENT_SUMMARY_MAX_CHARS) + "\n…(truncated)" : body
+          output.context.push(`## ${summary.kind} subagent summary`, truncated, ``)
+        }
+        // Re-inject the current TODO list so the regenerated summary's Next
+        // Steps reflect outstanding work. Best-effort: fall back silently.
+        const todos = await readSessionTodos(event.sessionID)
+        if (todos.length) {
+          output.context.push(
+            `## current TODO`,
+            ...todos.map((t) => `- [${t.status === "completed" ? "x" : " "}] ${t.content}`),
+            ``,
+          )
+        }
       } catch (err) {
         log.warn("failed to build compaction context, falling back to default", {
           algo: active,
@@ -166,6 +332,11 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
       if (evt.event.type !== "session.compacted") return
       const sessionID = (evt.event as any).properties?.sessionID
       if (typeof sessionID !== "string") return
+      // Compaction is a natural session boundary: always reset the per-session
+      // TODO-nudge state so a fresh stretch of work can be re-nudged, even when
+      // there is no algo target to write memory for.
+      subagentContext.delete(sessionID)
+      todoNudged.delete(sessionID)
       // Use the snapshot captured at compacting time, not whatever
       // getActiveAlgo() returns NOW — the user may have switched algos.
       const target = compactionTargets.get(sessionID)
@@ -196,6 +367,33 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
           body: summary,
         })
         log.info("appended compaction summary to memory.md", { file, algo: target.algo })
+
+        // Build + persist a small "what's been done so far" timeline, and
+        // surface it as a toast so the user sees progress at a glance.
+        try {
+          const steps = extractProgressSteps(messages)
+          await writeProgress(
+            target.algo,
+            renderProgressTimeline({ algo: target.algo, version: target.current, steps }),
+          )
+          if (steps.length) {
+            const shown = steps.slice(-8)
+            await client.tui
+              .showToast({
+                body: {
+                  title: `Compacted · ${target.algo}`,
+                  message: shown.map((s) => `• ${s}`).join("\n"),
+                  variant: "info",
+                },
+              })
+              .catch(() => {})
+          }
+        } catch (err) {
+          log.warn("failed to write progress timeline", {
+            algo: target.algo,
+            err: err instanceof Error ? err.message : String(err),
+          })
+        }
       } catch (err) {
         log.warn("failed to append compaction summary to memory.md", {
           algo: target.algo,
