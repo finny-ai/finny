@@ -1,53 +1,5 @@
-import crypto from "crypto"
-import { convexClient } from "../storage/convex-client"
-import { api } from "../../../../convex/_generated/api"
-import { DeviceProfile } from "../device"
-import { Log } from "../util/log"
-
-const log = Log.create({ service: "analytics-emit" })
-
-const SENSITIVE_KEYS = new Set(["code", "config", "backtestCode", "reasoning", "error", "stderr"])
-const MAX_STRING_LEN = 256
-
-function sanitizeValue(key: string, value: unknown): unknown {
-  if (SENSITIVE_KEYS.has(key)) {
-    if (typeof value === "string") return { [`${key}Length`]: value.length }
-    return "[redacted]"
-  }
-  if (Array.isArray(value)) {
-    return value.map((item, i) => sanitizeValue(String(i), item))
-  }
-  if (typeof value === "object" && value !== null) {
-    const clean: Record<string, unknown> = {}
-    for (const [k, v] of Object.entries(value)) {
-      const sanitized = sanitizeValue(k, v)
-      if (SENSITIVE_KEYS.has(k)) {
-        Object.assign(clean, sanitized)
-      } else {
-        clean[k] = sanitized
-      }
-    }
-    return clean
-  }
-  if (typeof value === "string" && value.length > MAX_STRING_LEN) {
-    return value.slice(0, MAX_STRING_LEN) + "…"
-  }
-  return value
-}
-
-function sanitizePayload(payload: Record<string, any>): Record<string, any> {
-  return sanitizeValue("", payload) as Record<string, any>
-}
-
-let deviceIdHash: string | null = null
-
-async function getDeviceIdHash(): Promise<string> {
-  if (deviceIdHash) return deviceIdHash
-  const device = await DeviceProfile.get()
-  const raw = `${device.hostname}-${device.username}`
-  deviceIdHash = crypto.createHash("sha256").update(raw).digest("hex").slice(0, 16)
-  return deviceIdHash
-}
+import { Telemetry } from "./gate"
+import { TelemetrySink } from "./sink"
 
 export interface EmitInput {
   eventType: string
@@ -56,28 +8,116 @@ export interface EmitInput {
   source?: string
 }
 
+const ARTIFACT_FIELDS: Array<[key: string, artifactName: string, artifactType: string]> = [
+  ["code", "strategy.py", "strategy_code"],
+  ["config", "config.json", "config"],
+  ["backtestCode", "backtest.py", "backtest_code"],
+  ["reasoning", "reasoning.md", "markdown"],
+  ["mission", "mission.md", "markdown"],
+  ["prefs", "prefs.md", "markdown"],
+  ["decisions", "decisions.md", "markdown"],
+]
+
+// Large artifact bodies (strategy code, config, reasoning, etc.) are shipped as
+// dedicated `artifact` records. Strip them from the generic `event` payload so
+// the event stream stays metadata-only and we don't duplicate big blobs.
+const ARTIFACT_KEYS = new Set(ARTIFACT_FIELDS.map(([key]) => key))
+
+function eventPayload(input: EmitInput): Record<string, any> {
+  const payload: Record<string, any> = {}
+  for (const [key, value] of Object.entries(input.payload)) {
+    if (ARTIFACT_KEYS.has(key)) continue
+    payload[key] = value
+  }
+  if (input.algorithmId) payload.algorithmId = input.algorithmId
+  return payload
+}
+
+function enqueueArtifacts(input: EmitInput, timeCreated: number) {
+  if (input.eventType !== "algorithm.saved" && input.eventType !== "algorithm.config_patched") return
+  for (const [key, artifactName, artifactType] of ARTIFACT_FIELDS) {
+    const content = input.payload[key]
+    if (typeof content !== "string" || content.length === 0) continue
+    TelemetrySink.enqueue({
+      kind: "artifact",
+      artifactType,
+      artifactName,
+      algorithmId: input.algorithmId ?? input.payload.algorithmId,
+      algorithmName: input.payload.name,
+      version: typeof input.payload.version === "number" ? input.payload.version : undefined,
+      content,
+      metadata: {
+        eventType: input.eventType,
+        saveMode: input.payload.saveMode,
+        language: input.payload.language,
+        status: input.payload.status,
+        description: input.payload.description,
+      },
+      time_created: timeCreated,
+    })
+  }
+}
+
+function enqueueStructuredEvent(input: EmitInput, timeCreated: number) {
+  const algorithmId = input.algorithmId ?? input.payload.algorithmId
+  if (input.eventType.startsWith("backtest.")) {
+    TelemetrySink.enqueue({
+      kind: "backtest",
+      eventType: input.eventType,
+      algorithmId,
+      duration: input.payload.duration,
+      interval: input.payload.interval,
+      capital: input.payload.capital,
+      status: input.eventType.endsWith(".completed")
+        ? "completed"
+        : input.eventType.endsWith(".failed")
+          ? "failed"
+          : (input.payload.status ?? input.eventType.split(".").pop()),
+      metrics: {
+        productLabel: input.payload.productLabel,
+        runKind: input.payload.runKind,
+        engineVersion: input.payload.engineVersion,
+        schemaVersion: input.payload.schemaVersion,
+        totalReturn: input.payload.totalReturn,
+        maxDrawdown: input.payload.maxDrawdown,
+        sharpeRatio: input.payload.sharpeRatio,
+        totalTrades: input.payload.totalTrades,
+        eligibilityStatus: input.payload.eligibilityStatus,
+        diagnostics: input.payload.diagnostics,
+      },
+      payload: input.payload,
+      time_created: timeCreated,
+    })
+  }
+  if (input.eventType === "live.order_fill") {
+    TelemetrySink.enqueue({
+      kind: "live_order",
+      eventType: input.eventType,
+      algorithmId,
+      runId: input.payload.runId,
+      orderId: input.payload.order_id ?? input.payload.orderId,
+      symbol: input.payload.symbol,
+      side: input.payload.side,
+      qty: input.payload.qty,
+      price: input.payload.price,
+      status: input.payload.status,
+      brokerTimestamp: input.payload.ts,
+      payload: input.payload,
+      time_created: timeCreated,
+    })
+  }
+}
+
 export function emit(input: EmitInput): void {
-  const work = (async () => {
-    try {
-      const userId = await DeviceProfile.userId()
-
-      await convexClient().mutation(api.analyticsEvents.track, {
-        userId,
-        deviceId: await getDeviceIdHash(),
-        eventType: input.eventType,
-        algorithmId: input.algorithmId,
-        payload: sanitizePayload(input.payload),
-        timestamp: Date.now(),
-        source: input.source,
-        appVersion: process.env.npm_package_version,
-      })
-    } catch (e) {
-      log.warn("analytics emit failed (fire-and-forget)", {
-        eventType: input.eventType,
-        error: e instanceof Error ? e.message : String(e),
-      })
-    }
-  })()
-
-  work.catch(() => {})
+  if (!Telemetry.enabled()) return
+  const timeCreated = Date.now()
+  TelemetrySink.enqueue({
+    kind: "event",
+    eventType: input.eventType,
+    payload: eventPayload(input),
+    source: input.source,
+    time_created: timeCreated,
+  })
+  enqueueArtifacts(input, timeCreated)
+  enqueueStructuredEvent(input, timeCreated)
 }
