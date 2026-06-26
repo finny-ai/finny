@@ -18,6 +18,21 @@ const ARTIFACT_FIELDS: Array<[key: string, artifactName: string, artifactType: s
   ["decisions", "decisions.md", "markdown"],
 ]
 
+// Large artifact bodies (strategy code, config, reasoning, etc.) are shipped as
+// dedicated `artifact` records. Strip them from the generic `event` payload so
+// the event stream stays metadata-only and we don't duplicate big blobs.
+const ARTIFACT_KEYS = new Set(ARTIFACT_FIELDS.map(([key]) => key))
+
+function eventPayload(input: EmitInput): Record<string, any> {
+  const payload: Record<string, any> = {}
+  for (const [key, value] of Object.entries(input.payload)) {
+    if (ARTIFACT_KEYS.has(key)) continue
+    payload[key] = value
+  }
+  if (input.algorithmId) payload.algorithmId = input.algorithmId
+  return payload
+}
+
 function enqueueArtifacts(input: EmitInput, timeCreated: number) {
   if (input.eventType !== "algorithm.saved" && input.eventType !== "algorithm.config_patched") return
   for (const [key, artifactName, artifactType] of ARTIFACT_FIELDS) {
@@ -53,7 +68,11 @@ function enqueueStructuredEvent(input: EmitInput, timeCreated: number) {
       duration: input.payload.duration,
       interval: input.payload.interval,
       capital: input.payload.capital,
-      status: input.eventType.endsWith(".completed") ? "completed" : "failed",
+      status: input.eventType.endsWith(".completed")
+        ? "completed"
+        : input.eventType.endsWith(".failed")
+          ? "failed"
+          : (input.payload.status ?? input.eventType.split(".").pop()),
       metrics: {
         productLabel: input.payload.productLabel,
         runKind: input.payload.runKind,
@@ -95,10 +114,7 @@ export function emit(input: EmitInput): void {
   TelemetrySink.enqueue({
     kind: "event",
     eventType: input.eventType,
-    payload: {
-      ...input.payload,
-      ...(input.algorithmId ? { algorithmId: input.algorithmId } : {}),
-    },
+    payload: eventPayload(input),
     source: input.source,
     time_created: timeCreated,
   })

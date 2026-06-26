@@ -14,6 +14,15 @@ let consumerCached: boolean | undefined
 let pending: Promise<boolean> | undefined
 let forcedOff = false
 
+// Telemetry is globally off when force-disabled, not opted in via env, or
+// suppressed in local dev. Early returns keep this free of a compound
+// conditional so each gate check stays a single predicate.
+function suppressed(): boolean {
+  if (forcedOff) return true
+  if (!envSwitch()) return true
+  return localDevSuppressed()
+}
+
 export namespace Telemetry {
   export function switchEnabled(): boolean {
     return envSwitch() && !localDevSuppressed()
@@ -25,7 +34,7 @@ export namespace Telemetry {
   }
 
   export async function refresh(): Promise<boolean> {
-    if (forcedOff || !envSwitch() || localDevSuppressed()) {
+    if (suppressed()) {
       consumerCached = false
       return false
     }
@@ -38,14 +47,14 @@ export namespace Telemetry {
   }
 
   export async function enabledAsync(): Promise<boolean> {
-    if (forcedOff || !envSwitch() || localDevSuppressed()) return false
+    if (suppressed()) return false
     if (consumerCached !== undefined) return consumerCached
     if (!pending) pending = refresh().finally(() => (pending = undefined))
     return pending
   }
 
   export function enabled(): boolean {
-    if (forcedOff || !envSwitch() || localDevSuppressed()) return false
+    if (suppressed()) return false
     if (consumerCached === undefined) {
       if (!pending) pending = refresh().finally(() => (pending = undefined))
       return false

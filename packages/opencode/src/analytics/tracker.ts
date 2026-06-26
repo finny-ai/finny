@@ -46,7 +46,13 @@ export namespace Analytics {
   }
 }
 
+// Drain only ONCE from `beforeExit`. A telemetry request that resolves after
+// the drain timeout would otherwise keep the event loop alive, re-fire
+// `beforeExit`, and re-arm the drain — stalling shutdown on a slow/hung server.
+let drainScheduled = false
 process.on("beforeExit", async () => {
+  if (drainScheduled) return
+  drainScheduled = true
   await Analytics.drain(1500).catch(() => {})
 })
 
