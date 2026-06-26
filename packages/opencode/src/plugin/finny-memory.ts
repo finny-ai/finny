@@ -36,52 +36,58 @@ const TODO_NUDGE_TEXT = [
   `updated as you progress so the plan survives context compaction.`,
 ].join("\n")
 
-/** Resolve the algo for a session: prefer the session binding, fall back to the global active algo. */
+/**
+ * Resolve the algo for a session STRICTLY from its per-session binding. We
+ * deliberately do not fall back to the machine-global active algo: an unbound
+ * session must never read or write another session's workspace artifacts.
+ */
 async function resolveSessionAlgo(sessionID: string): Promise<string | null> {
-  const bound = await getSessionWorkspace(sessionID).catch(() => null)
-  if (bound) return bound
-  return await getActiveAlgo().catch(() => null)
+  return await getSessionWorkspace(sessionID).catch(() => null)
+}
+
+/** First user message, rendered as an "Asked: …" step, or null. */
+function firstUserAsk(messages: any[]): string | null {
+  for (const msg of messages) {
+    if (msg?.info?.role !== "user") continue
+    const text = (msg.parts ?? [])
+      .filter((p: any) => p?.type === "text" && typeof p.text === "string")
+      .map((p: any) => p.text as string)
+      .join(" ")
+      .replace(/\s+/g, " ")
+      .trim()
+    if (text) return `Asked: "${text.length > 80 ? text.slice(0, 79) + "…" : text}"`
+  }
+  return null
+}
+
+/** Render a single completed tool part as a timeline step, or null if uninteresting. */
+function progressStepForTool(part: any): string | null {
+  if (part?.type !== "tool" || part?.state?.status !== "completed") return null
+  const input = part.state?.input ?? {}
+  const version = input.version ?? part.state?.metadata?.version
+  switch (part.tool) {
+    case "task": {
+      const sub = typeof input.subagent_type === "string" ? input.subagent_type : "subagent"
+      return `Launched ${sub} subagent`
+    }
+    case "finny_algorithm_save":
+      return version ? `Saved strategy ${version}` : "Saved strategy"
+    case "finny_backtest_run":
+      return version ? `Backtested ${version}` : "Ran backtest"
+    default:
+      return null
+  }
 }
 
 /** Walk session messages and render a short "what's been done so far" timeline. */
 function extractProgressSteps(messages: any[]): string[] {
   const steps: string[] = []
-  let askedFirst = false
+  const ask = firstUserAsk(messages)
+  if (ask) steps.push(ask)
   for (const msg of messages) {
-    const info = msg?.info
-    const parts = msg?.parts ?? []
-    if (!askedFirst && info?.role === "user") {
-      const text = parts
-        .filter((p: any) => p?.type === "text" && typeof p.text === "string")
-        .map((p: any) => p.text as string)
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim()
-      if (text) {
-        steps.push(`Asked: "${text.length > 80 ? text.slice(0, 79) + "…" : text}"`)
-        askedFirst = true
-      }
-    }
-    for (const part of parts) {
-      if (part?.type !== "tool" || part?.state?.status !== "completed") continue
-      const input = part.state?.input ?? {}
-      switch (part.tool) {
-        case "task": {
-          const sub = typeof input.subagent_type === "string" ? input.subagent_type : "subagent"
-          steps.push(`Launched ${sub} subagent`)
-          break
-        }
-        case "finny_algorithm_save": {
-          const version = input.version ?? part.state?.metadata?.version
-          steps.push(version ? `Saved strategy ${version}` : "Saved strategy")
-          break
-        }
-        case "finny_backtest_run": {
-          const version = input.version ?? part.state?.metadata?.version
-          steps.push(version ? `Backtested ${version}` : "Ran backtest")
-          break
-        }
-      }
+    for (const part of msg?.parts ?? []) {
+      const step = progressStepForTool(part)
+      if (step) steps.push(step)
     }
   }
   // Collapse consecutive duplicates (e.g. repeated backtests of the same version).
@@ -227,8 +233,14 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
       const kind = subagentKind(subType)
       if (!kind) return
 
+      // Require an explicit session binding. Without one we cannot safely
+      // attribute artifacts to a workspace, so skip entirely — including the
+      // nudge tracking — to avoid recording a session as nudged before its
+      // summaries are ever persisted.
       const algo = await resolveSessionAlgo(event.sessionID)
-      if (algo && typeof output.output === "string" && output.output.trim()) {
+      if (!algo) return
+
+      if (typeof output.output === "string" && output.output.trim()) {
         try {
           await writeSubagentSummary(algo, kind, output.output)
         } catch (err) {
@@ -246,9 +258,11 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
         seen.add(kind)
         subagentContext.set(event.sessionID, seen)
         const haveBoth = [...TODO_NUDGE_KINDS].every((k) => seen.has(k))
-        if (haveBoth && !todoNudged.has(event.sessionID)) {
+        // Only mark the session nudged when we actually deliver the text, so a
+        // non-string output never permanently suppresses the nudge.
+        if (haveBoth && !todoNudged.has(event.sessionID) && typeof output.output === "string") {
           todoNudged.add(event.sessionID)
-          if (typeof output.output === "string") output.output = output.output + "\n" + TODO_NUDGE_TEXT
+          output.output = output.output + "\n" + TODO_NUDGE_TEXT
         }
       }
     },
@@ -318,6 +332,11 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
       if (evt.event.type !== "session.compacted") return
       const sessionID = (evt.event as any).properties?.sessionID
       if (typeof sessionID !== "string") return
+      // Compaction is a natural session boundary: always reset the per-session
+      // TODO-nudge state so a fresh stretch of work can be re-nudged, even when
+      // there is no algo target to write memory for.
+      subagentContext.delete(sessionID)
+      todoNudged.delete(sessionID)
       // Use the snapshot captured at compacting time, not whatever
       // getActiveAlgo() returns NOW — the user may have switched algos.
       const target = compactionTargets.get(sessionID)
@@ -380,11 +399,6 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
           algo: target.algo,
           err: err instanceof Error ? err.message : String(err),
         })
-      } finally {
-        // Compaction is a natural session boundary; clear the per-session
-        // TODO-nudge state so a fresh stretch of work can be re-nudged.
-        subagentContext.delete(sessionID)
-        todoNudged.delete(sessionID)
       }
     },
   }
