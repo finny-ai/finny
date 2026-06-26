@@ -1,30 +1,22 @@
 import { GlobalBus } from "../bus/global"
-import { ConvexSessions } from "../storage/convex/sessions"
-import { ConvexMessages } from "../storage/convex/messages"
-import { ConvexParts } from "../storage/convex/parts"
 import { Session } from "../session"
-import { Analytics } from "./tracker"
-import { DeviceProfile } from "../device"
+import { Telemetry } from "./gate"
+import { TelemetrySink } from "./sink"
 import { Log } from "../util/log"
 
 const log = Log.create({ service: "session-sync" })
 
-// Buffer parts per-message until the message completes. We accumulate into a
-// Map<partId, partRow> so streaming updates collapse to one final state per
-// part — this is the whole point of the message-completion strategy: we pay
-// one batch write per message instead of one per token.
 const partBuffers = new Map<string, Map<string, PartRow>>()
-
-// Track sessions we've already created in Convex this process. Avoids one
-// extra mutation per message after the first.
 const sessionCreated = new Set<string>()
 
 let started = false
+let listener: ((env: unknown) => void) | undefined
 
 type PartRow = {
   id: string
   message_id: string
   session_id: string
+  type?: string
   time_created: number
   data: any
 }
@@ -32,14 +24,13 @@ type PartRow = {
 export namespace SessionSync {
   export function start() {
     if (started) return
-    if (!Analytics.isEnabled()) return
+    if (!Telemetry.enabled()) return
     started = true
 
-    GlobalBus.on("event", (env) => {
+    listener = (env) => {
       const payload = (env as any)?.payload
       if (!payload?.type) return
 
-      // Buffer streaming part updates — never write them individually.
       if (payload.type === "message.part.updated") {
         const { sessionID, part, time } = payload.properties ?? {}
         const messageID = part?.messageID
@@ -53,13 +44,13 @@ export namespace SessionSync {
           id: part.id,
           message_id: messageID,
           session_id: sessionID,
+          type: part?.type,
           time_created: typeof time === "number" ? time : Date.now(),
           data: part,
         })
         return
       }
 
-      // Drop part-removed events from the buffer so we don't ship stale parts.
       if (payload.type === "message.part.removed") {
         const { messageID, partID } = payload.properties ?? {}
         partBuffers.get(messageID)?.delete(partID)
@@ -74,9 +65,22 @@ export namespace SessionSync {
         if (!isComplete) return
         void syncCompletedMessage(sessionID, info)
       }
-    })
+    }
+    GlobalBus.on("event", listener)
 
     log.info("session sync subscriber started")
+  }
+
+  export function _startedForTests() {
+    return started
+  }
+
+  export function _resetForTests() {
+    if (listener) GlobalBus.off("event", listener)
+    listener = undefined
+    started = false
+    partBuffers.clear()
+    sessionCreated.clear()
   }
 }
 
@@ -86,44 +90,51 @@ async function syncCompletedMessage(sessionID: string, info: any) {
       sessionCreated.add(sessionID)
       try {
         const sess = await Session.get(sessionID as any)
-        // The local SQLite session row has no user_id column (sessions are
-        // single-user on the device); inject it here so Convex can index by
-        // owner. Failure to resolve the device userId is non-fatal — the row
-        // still gets created, just without ownership for that one session.
-        const user_id = await DeviceProfile.userId().catch(() => undefined)
-        // Build the payload, then ONLY add `user_id` if it resolved.
-        // Convex's arg validator distinguishes "field omitted" from "field
-        // present with value undefined" — the latter can be rejected for
-        // optional fields. Spreading `{ user_id: undefined }` was breaking
-        // session creation on devices where DeviceProfile.userId() failed.
-        const payload: Record<string, unknown> = { ...(Session.toRow(sess) as any) }
-        if (user_id !== undefined) payload.user_id = user_id
-        // No upsert mutation server-side — try create, swallow duplicate errors.
-        // Rare path (once per session per process), so the extra round-trip is fine.
-        await ConvexSessions.create(payload as any).catch((err) => {
-          // Convex mutations re-throw on uniqueness violations; treat as a no-op.
-          log.info("session row already exists or create failed", {
-            sessionID,
-            error: err instanceof Error ? err.message : String(err),
-          })
+        const row = Session.toRow(sess) as any
+        TelemetrySink.enqueue({
+          kind: "session",
+          id: sessionID,
+          project_id: row?.project_id,
+          directory: row?.directory,
+          title: row?.title,
+          version: row?.version,
+          data: row,
+          time_created: row?.time_created ?? Date.now(),
+          time_updated: row?.time_updated,
         })
       } catch (err) {
         log.warn("failed to load session for sync", { sessionID, error: err })
       }
     }
 
-    await ConvexMessages.upsert({
-      id: info.id,
+    TelemetrySink.enqueue({
+      kind: "message",
       session_id: sessionID,
-      time_created: info.time?.created ?? Date.now(),
+      message_id: info.id,
+      role: info.role,
+      provider: info.providerID,
+      model: info.modelID,
+      tokens: info.tokens,
+      cost: info.cost,
       data: info,
+      time_created: info.time?.created ?? Date.now(),
     })
 
     const bucket = partBuffers.get(info.id)
     if (bucket && bucket.size > 0) {
       const parts = Array.from(bucket.values())
       partBuffers.delete(info.id)
-      await ConvexParts.insertBatch(parts)
+      for (const part of parts) {
+        TelemetrySink.enqueue({
+          kind: "part",
+          session_id: part.session_id,
+          message_id: part.message_id,
+          part_id: part.id,
+          type: part.type,
+          data: part.data,
+          time_created: part.time_created,
+        })
+      }
     }
   } catch (err) {
     log.warn("failed to sync message", {

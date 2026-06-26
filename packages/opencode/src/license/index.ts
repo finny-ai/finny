@@ -21,10 +21,13 @@ type TermsAcceptance = {
 const DEFAULT_CHECK_URL = "https://api.finnyai.tech/v1/license/check"
 const DEFAULT_CLIENT_ID = "finny-pro"
 
+type PlanType = "per_head" | "enterprise"
+
 type Cache = {
   schema_version?: 1 | 2
   org_id?: string
   org_name?: string
+  plan_type?: PlanType
   license_key_hash: string
   machine_id_hash: string
   last_ok_at: string
@@ -35,6 +38,8 @@ type CheckOk = {
   ok: true
   orgId?: string
   orgName?: string
+  plan_type?: PlanType
+  planType?: PlanType
   deviceLimitReached?: boolean
   message?: string
   nextCheckAfter?: string
@@ -65,6 +70,11 @@ function termsPath() {
 
 function sha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex")
+}
+
+function extractPlanType(result?: CheckOk): PlanType | undefined {
+  const value = result?.plan_type ?? result?.planType
+  return value === "per_head" || value === "enterprise" ? value : undefined
 }
 
 function isBypassEnabled() {
@@ -102,6 +112,7 @@ async function writeCache(input: { licenseKeyHash: string; machineIdHash: string
       schema_version: 2,
       org_id: input.result?.orgId,
       org_name: input.result?.orgName,
+      plan_type: extractPlanType(input.result),
       license_key_hash: input.licenseKeyHash,
       machine_id_hash: input.machineIdHash,
       last_ok_at: new Date(nowImpl()).toISOString(),
@@ -191,12 +202,24 @@ export namespace License {
       active: isBypassEnabled() || (!!cache && cache.machine_id_hash === machineHash && isFresh(cache)),
       org_id: cache?.org_id,
       org_name: cache?.org_name,
+      plan_type: cache?.plan_type,
       license_key_hash: cache?.license_key_hash,
       machine_id_hash: machineHash,
       cached_machine_id_hash: cache?.machine_id_hash,
       last_ok_at: cache?.last_ok_at,
       next_check_after: cache?.next_check_after,
     }
+  }
+
+  export async function plan(): Promise<PlanType | undefined> {
+    const cache = await readCache()
+    if (!cache || !isFresh(cache)) return undefined
+    if (cache.machine_id_hash !== (await machineIdHash())) return undefined
+    return cache.plan_type
+  }
+
+  export async function isConsumer(): Promise<boolean> {
+    return (await plan()) === "per_head"
   }
 
   export async function activate(rawKey: string): Promise<void> {
