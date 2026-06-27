@@ -156,20 +156,16 @@ function scheduleFlush() {
   if (typeof flushTimer.unref === "function") flushTimer.unref()
 }
 
-// Resolve identity + secret, then hand the batch to a tracked, fire-and-forget
-// POST. We deliberately do NOT await the network here: identity() is local, so
+// Resolve identity, then hand the batch to a tracked, fire-and-forget POST.
+// We deliberately do NOT await the network here: identity() is local, so
 // callers (and drain()) only block on cheap work, while the request itself is
 // tracked in `inFlight` so drain()'s timeout can bound a slow/hung server.
+// Auth is enforced server-side (active per_head license + device); the optional
+// FINNY_TELEMETRY_SECRET header is for internal/debug callers only.
 async function doFlush(): Promise<void> {
   if (flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = undefined
-  }
-  const sec = secret()
-  if (!sec) {
-    log.warn("FINNY_TELEMETRY_SECRET unset - dropping telemetry batch", { dropped: buffer.length })
-    buffer.length = 0
-    return
   }
   const id = await identity()
   if (id.plan_type !== "per_head" || !id.licenseKeyHash) {
@@ -185,10 +181,10 @@ async function doFlush(): Promise<void> {
     return
   }
   if (buffer.length === 0) return
-  sendBatch(buffer.splice(0, buffer.length), id, sec)
+  sendBatch(buffer.splice(0, buffer.length), id)
 }
 
-function sendBatch(batch: SinkEvent[], id: Identity, sec: string): void {
+function sendBatch(batch: SinkEvent[], id: Identity): void {
   const body = JSON.stringify({
     licenseKeyHash: id.licenseKeyHash,
     machineIdHash: id.machineIdHash,
@@ -197,18 +193,18 @@ function sendBatch(batch: SinkEvent[], id: Identity, sec: string): void {
     appVersion: InstallationVersion,
     batch,
   })
-  const post: Promise<void> = postBatch(body, sec, batch.length).finally(() => inFlight.delete(post))
+  const post: Promise<void> = postBatch(body, batch.length).finally(() => inFlight.delete(post))
   inFlight.add(post)
 }
 
-async function postBatch(body: string, sec: string, count: number): Promise<void> {
+async function postBatch(body: string, count: number): Promise<void> {
+  const sec = secret()
+  const headers: Record<string, string> = { "content-type": "application/json" }
+  if (sec) headers["x-finny-telemetry-secret"] = sec
   try {
     const res = await fetchImpl(url(), {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-finny-telemetry-secret": sec,
-      },
+      headers,
       body,
     })
     if (!res.ok) {
