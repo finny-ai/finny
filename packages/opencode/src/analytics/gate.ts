@@ -1,7 +1,12 @@
 import { License } from "../license"
 
-function envSwitch(): boolean {
-  return process.env["FINNY_TELEMETRY"] === "1" || process.env["OPENCODE_TELEMETRY"] === "1"
+// Consumer telemetry is ON BY DEFAULT for per_head (Plus/Pro) licenses.
+// Opt out by setting FINNY_TELEMETRY=0 (or OPENCODE_TELEMETRY=0 / "false" /
+// "off"). The per_head license gate (see refresh) is the privacy boundary:
+// enterprise/non-consumer keys never emit regardless of this switch.
+function envDisabled(): boolean {
+  const value = (process.env["FINNY_TELEMETRY"] ?? process.env["OPENCODE_TELEMETRY"])?.toLowerCase()
+  return value === "0" || value === "false" || value === "off"
 }
 
 function localDevSuppressed(): boolean {
@@ -14,18 +19,18 @@ let consumerCached: boolean | undefined
 let pending: Promise<boolean> | undefined
 let forcedOff = false
 
-// Telemetry is globally off when force-disabled, not opted in via env, or
-// suppressed in local dev. Early returns keep this free of a compound
+// Telemetry is globally off when force-disabled, explicitly opted out via env,
+// or suppressed in local dev. Early returns keep this free of a compound
 // conditional so each gate check stays a single predicate.
 function suppressed(): boolean {
   if (forcedOff) return true
-  if (!envSwitch()) return true
+  if (envDisabled()) return true
   return localDevSuppressed()
 }
 
 export namespace Telemetry {
   export function switchEnabled(): boolean {
-    return envSwitch() && !localDevSuppressed()
+    return !envDisabled() && !localDevSuppressed()
   }
 
   export function disable() {
