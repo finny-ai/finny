@@ -151,6 +151,21 @@ export namespace LiveRunner {
     if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500)
   }
 
+  // Recurring "Market closed, sleeping 5m" lines are pure noise for telemetry.
+  const IGNORED_LIVE_LOG = /market\s+(is\s+)?closed/i
+
+  // Stream a subprocess log line to telemetry (telemetryLiveOrders), tagged with
+  // the run's broker + mode. Drops the market-closed noise. Local state.logs is
+  // updated separately via pushLog for the in-TUI view.
+  function emitLiveLog(state: RunState, level: LogEntry["level"], message: string) {
+    if (!message || IGNORED_LIVE_LOG.test(message)) return
+    emit({
+      eventType: "live.log",
+      algorithmId: state.algorithmId,
+      payload: { runId: state.id, level, message, brokerage: state.brokerKind, mode: state.mode },
+    })
+  }
+
   const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback, zlib
 from pathlib import Path
 
@@ -603,6 +618,7 @@ if __name__ == "__main__":
     } catch {
       // Not JSON — treat as a plain log line.
       pushLog(state, "info", line)
+      emitLiveLog(state, "info", line)
       notify(state)
       return
     }
@@ -616,7 +632,15 @@ if __name__ == "__main__":
         emit({
           eventType: "live.started",
           algorithmId: state.algorithmId,
-          payload: { runId: state.id, symbol: msg.symbol, interval: msg.interval, cash: msg.cash },
+          payload: {
+            runId: state.id,
+            symbol: msg.symbol,
+            interval: msg.interval,
+            cash: msg.cash,
+            equity: msg.equity,
+            brokerage: state.brokerKind,
+            mode: state.mode,
+          },
         })
         break
       }
@@ -654,12 +678,17 @@ if __name__ == "__main__":
         break
       }
       case "log": {
-        pushLog(state, (msg.level as LogEntry["level"]) ?? "info", msg.message ?? "")
+        const level = (msg.level as LogEntry["level"]) ?? "info"
+        const message = msg.message ?? ""
+        pushLog(state, level, message)
+        emitLiveLog(state, level, message)
         break
       }
       case "error": {
         state.error = msg.message
-        pushLog(state, "error", msg.message ?? "unknown error")
+        const message = msg.message ?? "unknown error"
+        pushLog(state, "error", message)
+        emitLiveLog(state, "error", message)
         break
       }
       case "stop": {
@@ -673,6 +702,7 @@ if __name__ == "__main__":
       }
       default: {
         pushLog(state, "info", line)
+        emitLiveLog(state, "info", line)
       }
     }
     notify(state)

@@ -96,6 +96,13 @@ export type SinkEvent =
       price?: number
       status?: string
       brokerTimestamp?: string
+      // Live-run lifecycle fields (started / equity_snapshot / log / stopped).
+      brokerage?: string
+      mode?: string
+      equity?: number
+      cash?: number
+      logLevel?: string
+      logMessage?: string
       payload?: any
       time_created: number
     }
@@ -111,6 +118,7 @@ function secret() {
 let fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)
 
 const buffer: SinkEvent[] = []
+let warnedIdentityDrop = false
 let flushTimer: ReturnType<typeof setTimeout> | undefined
 let flushInProgress: Promise<void> | undefined
 const inFlight = new Set<Promise<unknown>>()
@@ -165,6 +173,14 @@ async function doFlush(): Promise<void> {
   }
   const id = await identity()
   if (id.plan_type !== "per_head" || !id.licenseKeyHash) {
+    if (!warnedIdentityDrop) {
+      warnedIdentityDrop = true
+      log.warn("telemetry batch dropped - not an active per_head consumer license", {
+        plan_type: id.plan_type,
+        hasLicenseKeyHash: !!id.licenseKeyHash,
+        dropped: buffer.length,
+      })
+    }
     buffer.length = 0
     return
   }
@@ -255,5 +271,6 @@ export namespace TelemetrySink {
     flushInProgress = undefined
     inFlight.clear()
     identityPromise = undefined
+    warnedIdentityDrop = false
   }
 }

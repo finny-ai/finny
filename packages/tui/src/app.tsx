@@ -148,6 +148,9 @@ export type TuiInput = {
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
+  /** Invoked once the license gate clears, so telemetry init runs AFTER a key is
+   * activated rather than before (avoids caching a stale "not a consumer" gate). */
+  onLicenseReady?: () => void | Promise<void>
   directory?: string
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
@@ -325,6 +328,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                               <EditorContextProvider>
                                                                 <App
                                                                   onSnapshot={input.onSnapshot}
+                                                                  onLicenseReady={input.onLicenseReady}
                                                                   pluginHost={input.pluginHost}
                                                                 />
                                                               </EditorContextProvider>
@@ -369,7 +373,11 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
   })
 })
 
-function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPluginHost }) {
+function App(props: {
+  onSnapshot?: () => Promise<string[]>
+  onLicenseReady?: () => void | Promise<void>
+  pluginHost: TuiPluginHost
+}) {
   const startup = useTuiStartup()
   const tuiConfig = useTuiConfig()
   const route = useRoute()
@@ -440,6 +448,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     // prompt when there is genuinely no valid license for this workstation.
     try {
       await License.ensureActive()
+      await props.onLicenseReady?.()
       setLicenseGatePassed(true)
       return
     } catch {
@@ -454,6 +463,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       }
       dialog.clear()
     }
+    await props.onLicenseReady?.()
     setLicenseGatePassed(true)
   }
   createEffect(

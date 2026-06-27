@@ -12,6 +12,8 @@ import { Heap } from "@/cli/heap"
 import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
+import { Analytics } from "@/analytics/tracker"
+import { TelemetryLifecycle } from "@/analytics/lifecycle"
 
 Heap.start()
 
@@ -21,6 +23,13 @@ const logReady = Log.init({ print: false, dev: true })
 GlobalBus.on("event", (event) => {
   Rpc.emit("global.event", event)
 })
+
+// The default (local) TUI talks to this worker via the "fetch" RPC, which uses
+// Server.Default() and NEVER calls Server.listen() - the only place chat
+// telemetry (SessionSync) is normally started. Start it here so interactive TUI
+// sessions emit telemetry. Idempotent with the listen() path used by external/
+// headless mode (SessionSync.start no-ops once started).
+void TelemetryLifecycle.refreshAndStart().catch(() => {})
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
@@ -67,7 +76,18 @@ export const rpc = {
       }),
     )
   },
+  // Re-run telemetry init after the main process clears the license gate. The
+  // bootstrap call above runs before the gate, so a key activated in the startup
+  // dialog would otherwise leave chat telemetry off until restart. Idempotent.
+  async refreshTelemetry() {
+    await TelemetryLifecycle.refreshAndStart()
+  },
   async shutdown() {
+    // Flush buffered telemetry before tearing down. The TUI quits by calling
+    // this RPC and then worker.terminate(), which kills the thread before
+    // `beforeExit`/signal drains can run - so without this, the 5s-debounced
+    // buffer is lost on every normal quit.
+    await Analytics.drain(1500).catch(() => {})
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)
   },

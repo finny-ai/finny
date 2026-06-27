@@ -13,6 +13,8 @@ import type { EventSource } from "@opencode-ai/tui/context/sdk"
 import { writeHeapSnapshot } from "v8"
 import { validateSession } from "../tui/validate-session"
 import { win32InstallCtrlCGuard } from "@opencode-ai/tui/terminal-win32"
+import { TelemetryLifecycle } from "@/analytics/lifecycle"
+import { TelemetrySink } from "@/analytics/sink"
 
 declare global {
   const OPENCODE_WORKER_PATH: string
@@ -139,6 +141,10 @@ export const TuiThreadCommand = cmd({
         stopped = true
         process.off("SIGUSR2", reload)
         await withTimeout(client.call("shutdown", undefined), 5000).catch(() => {})
+        // Flush THIS (main) process's telemetry buffer - backtest events emitted
+        // by BacktestRunner.run() run here, not in the worker. process.exit(0)
+        // below skips beforeExit handlers, so drain explicitly while awaited.
+        await TelemetrySink.drain(1500).catch(() => {})
         worker.terminate()
       }
 
@@ -206,6 +212,15 @@ export const TuiThreadCommand = cmd({
             url: transport.url,
             daemonUrl,
             daemonHeaders,
+            // Telemetry init is deferred until the license gate clears, so the
+            // gate (which may activate a key in the startup dialog) resolves
+            // BEFORE the gate is read - otherwise consumerCached caches false and
+            // backtest/chat emits no-op for the whole session. Covers both the
+            // main realm (backtest, in-process) and the worker realm (chat).
+            async onLicenseReady() {
+              await TelemetryLifecycle.refreshForEmit().catch(() => {})
+              await client.call("refreshTelemetry", undefined).catch(() => {})
+            },
             async onSnapshot() {
               const tui = writeHeapSnapshot("tui.heapsnapshot")
               const server = await client.call("snapshot", undefined)

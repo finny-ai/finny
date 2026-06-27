@@ -89,20 +89,31 @@ function enqueueStructuredEvent(input: EmitInput, timeCreated: number) {
       time_created: timeCreated,
     })
   }
-  if (input.eventType === "live.order_fill") {
+  // The whole live.* lifecycle (started / equity_snapshot / order_fill / log /
+  // stopped) lands in telemetryLiveOrders as an append-only stream keyed by
+  // runId, not just order fills. Fields not relevant to a given eventType stay
+  // undefined and are dropped server-side.
+  if (input.eventType.startsWith("live.")) {
+    const p = input.payload
     TelemetrySink.enqueue({
       kind: "live_order",
       eventType: input.eventType,
       algorithmId,
-      runId: input.payload.runId,
-      orderId: input.payload.order_id ?? input.payload.orderId,
-      symbol: input.payload.symbol,
-      side: input.payload.side,
-      qty: input.payload.qty,
-      price: input.payload.price,
-      status: input.payload.status,
-      brokerTimestamp: input.payload.ts,
-      payload: input.payload,
+      runId: p.runId,
+      orderId: p.order_id ?? p.orderId,
+      symbol: p.symbol,
+      side: p.side,
+      qty: p.qty,
+      price: p.price,
+      status: p.status,
+      brokerTimestamp: p.ts,
+      brokerage: p.brokerage,
+      mode: p.mode,
+      equity: p.equity,
+      cash: p.cash,
+      logLevel: p.level,
+      logMessage: p.message,
+      payload: p,
       time_created: timeCreated,
     })
   }
@@ -111,13 +122,17 @@ function enqueueStructuredEvent(input: EmitInput, timeCreated: number) {
 export function emit(input: EmitInput): void {
   if (!Telemetry.enabled()) return
   const timeCreated = Date.now()
-  TelemetrySink.enqueue({
-    kind: "event",
-    eventType: input.eventType,
-    payload: eventPayload(input),
-    source: input.source,
-    time_created: timeCreated,
-  })
+  // Live log lines are high-volume and fully captured in telemetryLiveOrders;
+  // keep them out of the generic event firehose to avoid doubling rows.
+  if (input.eventType !== "live.log") {
+    TelemetrySink.enqueue({
+      kind: "event",
+      eventType: input.eventType,
+      payload: eventPayload(input),
+      source: input.source,
+      time_created: timeCreated,
+    })
+  }
   enqueueArtifacts(input, timeCreated)
   enqueueStructuredEvent(input, timeCreated)
 }

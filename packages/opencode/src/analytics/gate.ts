@@ -38,6 +38,18 @@ export namespace Telemetry {
     consumerCached = false
   }
 
+  // Human-readable reason telemetry is on/off, for startup diagnostics. Call
+  // after refresh() so the consumer-license check is reflected.
+  export function statusReason(): string {
+    if (forcedOff) return "disabled via config (analytics: disabled)"
+    if (envDisabled()) return "opted out via FINNY_TELEMETRY/OPENCODE_TELEMETRY"
+    if (localDevSuppressed())
+      return "suppressed in local dev (npm_lifecycle_event=dev); set FINNY_TELEMETRY_ALLOW_DEV=1 to enable"
+    if (consumerCached === false) return "license is not an active per_head consumer license"
+    if (consumerCached === undefined) return "license status not resolved yet"
+    return "enabled"
+  }
+
   export async function refresh(): Promise<boolean> {
     if (suppressed()) {
       consumerCached = false
