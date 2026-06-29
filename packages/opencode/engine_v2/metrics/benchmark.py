@@ -18,6 +18,8 @@ def compute(
     n = min(strategy_returns.size, benchmark_returns.size)
     s = strategy_returns[-n:]
     b = benchmark_returns[-n:]
+    strategy_total = float(np.prod(1.0 + s) - 1.0)
+    benchmark_total = float(np.prod(1.0 + b) - 1.0)
 
     var_b = float(b.var(ddof=0))
     if var_b <= 0:
@@ -48,6 +50,8 @@ def compute(
     dn_capture = float(s[dn_mask].mean() / b[dn_mask].mean()) if dn_mask.any() and b[dn_mask].mean() != 0 else 0.0
 
     return {
+        "benchmark_total_return": benchmark_total,
+        "strategy_excess_return": strategy_total - benchmark_total,
         "alpha_annualized": alpha_annual,
         "beta": beta,
         "r_squared": r_squared,

@@ -32,15 +32,19 @@ function fmtNum(value: number | null | undefined, decimals = 2): string {
 }
 
 export function formatBacktestPlainMetrics(results: BacktestRunner.Results): string {
-  return [
+  const parts = [
     results.productLabel ?? (results.runKind === "legacy" ? "Legacy backtest" : "Crucible 2.0"),
     `return ${fmtSignedPct(results.totalReturn)}`,
     `Sharpe ${fmtNum(results.sharpeRatio)}`,
     `max DD ${fmtPct(results.maxDrawdown)}`,
     `trades ${results.totalTrades}`,
-    `win rate ${fmtPct(results.winRate)}`,
-    `profit factor ${fmtNum(results.profitFactor)}`,
-  ].join(", ")
+  ]
+  if (results.closedTrades !== undefined) parts.push(`closed ${results.closedTrades}`)
+  if (results.openTradeCount !== undefined) parts.push(`open ${results.openTradeCount}`)
+  if (results.realizedPnl !== undefined) parts.push(`realized ${fmtUsd(results.realizedPnl)}`)
+  if (results.unrealizedPnl !== undefined) parts.push(`unrealized ${fmtUsd(results.unrealizedPnl)}`)
+  parts.push(`win rate ${fmtPct(results.winRate)}`, `profit factor ${fmtNum(results.profitFactor)}`)
+  return parts.join(", ")
 }
 
 // Fixed-width columns: label = 22 chars, value = 16 chars
@@ -118,9 +122,29 @@ export function BacktestResultsView(props: {
 
   const tradeRows = (): RowData[] => [
     { label: "Total Trades", value: fmtNum(r().totalTrades, 0) },
+    ...(r().closedTrades !== undefined ? [{ label: "Closed Trades", value: fmtNum(r().closedTrades, 0) }] : []),
+    ...(r().openTradeCount !== undefined ? [{ label: "Open Trades", value: fmtNum(r().openTradeCount, 0) }] : []),
+    ...(r().realizedPnl !== undefined ? [{ label: "Realized PnL", value: fmtUsd(r().realizedPnl!) }] : []),
+    ...(r().unrealizedPnl !== undefined ? [{ label: "Unrealized PnL", value: fmtUsd(r().unrealizedPnl!) }] : []),
     { label: "Win Rate", value: fmtPct(r().winRate), color: winRateColor() },
     { label: "Profit Factor", value: fmtNum(r().profitFactor) },
   ]
+
+  const benchmarkRows = (): RowData[] => {
+    const benchmark = r().v2?.benchmark as any
+    if (!benchmark) return []
+    return [
+      { label: "Benchmark", value: String(benchmark.benchmark_symbol ?? "N/A") },
+      {
+        label: "Benchmark Return",
+        value: typeof benchmark.benchmark_total_return === "number" ? fmtSignedPct(benchmark.benchmark_total_return) : "N/A",
+      },
+      {
+        label: "Strategy Excess",
+        value: typeof benchmark.strategy_excess_return === "number" ? fmtSignedPct(benchmark.strategy_excess_return) : "N/A",
+      },
+    ]
+  }
 
   const extendedRows = (): RowData[] =>
     r().sortino !== undefined && r().totalTrades > 0
@@ -189,6 +213,13 @@ export function BacktestResultsView(props: {
         <HeaderRow text="TRADES" />
         <text fg={theme.textMuted}>{MID}</text>
         <For each={tradeRows()}>{(row) => <TableRow {...row} />}</For>
+
+        <Show when={benchmarkRows().length > 0}>
+          <text fg={theme.textMuted}>{MID}</text>
+          <HeaderRow text="BENCHMARK" />
+          <text fg={theme.textMuted}>{MID}</text>
+          <For each={benchmarkRows()}>{(row) => <TableRow {...row} />}</For>
+        </Show>
 
         <Show when={extendedRows().length > 0}>
           <text fg={theme.textMuted}>{MID}</text>

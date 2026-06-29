@@ -855,6 +855,20 @@ def main() -> None:
             result = run_loop(broker, snap, lambda: strat.on_bar())
     equity = result.equity_curve
     exposure_hist = result.gross_exposure
+    benchmark_returns = None
+    benchmark_symbol = None
+    benchmark_unavailable_reason = None
+    if len(snap.symbols) == 1:
+        closes = np.asarray(ba.close, dtype=np.float64)
+        if closes.size >= 2 and np.all(np.isfinite(closes)) and np.all(closes[:-1] > 0):
+            benchmark_returns = (closes[1:] - closes[:-1]) / closes[:-1]
+            benchmark_symbol = f"{symbol} buy-and-hold"
+            if benchmark_returns.size < 30:
+                benchmark_unavailable_reason = "benchmark metrics require at least 30 processed return bars"
+        else:
+            benchmark_unavailable_reason = "benchmark unavailable because processed close prices are invalid"
+    else:
+        benchmark_unavailable_reason = "benchmark unavailable for multi-symbol runs"
 
     wf = None
     if args.wf_folds and args.wf_folds >= 2:
@@ -906,6 +920,8 @@ def main() -> None:
         exposure_history=exposure_hist, starting_equity=args.capital,
         interval=args.interval, bars_per_year=bars_per_year, seed=int(seed),
         schema_engine_version=engine_v2.__version__,
+        benchmark_returns=benchmark_returns,
+        benchmark_symbol=benchmark_symbol,
         monte_carlo=mc, walk_forward=wf, regimes=regimes, data_quality=dq,
         execution_config=_execution_config(cfg, args.mode, asset_spec),
         run_metadata={
@@ -924,6 +940,15 @@ def main() -> None:
             "fetch_interval": str(args.interval),
             "raw_rows": raw_rows,
             "post_resample_rows": int(len(df)),
+            "actual_start_ts": str(df["timestamp"].iloc[0]),
+            "actual_end_ts": str(df["timestamp"].iloc[-1]),
+            "processed_start_ts": str(pd.Timestamp(int(ba.ts[0]), unit="ns", tz="UTC")),
+            "processed_end_ts": str(pd.Timestamp(int(ba.ts[-1]), unit="ns", tz="UTC")),
+            "requested_start_date": args.start_date,
+            "requested_end_date": args.end_date,
+            "data_quality_gap_count": int(dq.gap_count),
+            "data_quality_notes": list(dq.notes),
+            "benchmark_unavailable_reason": benchmark_unavailable_reason,
             "data_quality_blocking_reasons": blocking_quality,
         },
     )

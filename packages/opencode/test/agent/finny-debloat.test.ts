@@ -280,7 +280,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).not.toContain("discovery is complete; do not ask for thesis/regime wording")
     expect(PROMPT_BUILD).toContain("asset_class: equities")
     expect(PROMPT_BUILD).toContain("data provenance")
-    expect(PROMPT_BUILD).toContain("`BACKTESTED`, `BLOCKED: evidence`, or `FAILED validation`")
+    expect(PROMPT_BUILD).toContain("`BACKTESTED`, `INCONCLUSIVE`, `BLOCKED: evidence`, or `FAILED validation`")
     expect(PROMPT_BUILD).toContain("Blocked evidence reports must close with")
     expect(PROMPT_BUILD).toContain("Do not add a question")
     expect(PROMPT_BUILD).toContain("No performance metrics produced")
@@ -289,7 +289,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("Drift Control")
     expect(PROMPT_BUILD).toContain("`BLOCKED: requested crypto, proposed equity proxy requires approval`")
     expect(PROMPT_BUILD).toContain("Do not save a QQQ/SPY strategy under a BTC/crypto name")
-    expect(PROMPT_BUILD).toContain("Positive ROI, but NOT paper")
+    expect(PROMPT_BUILD).toContain("Positive MTM return, but")
     expect(PROMPT_BUILD).toContain("Save with `finny_algorithm_save`")
     expect(PROMPT_BUILD).toContain("Run `finny_backtest_run`")
 
@@ -331,8 +331,8 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("do not save comma-separated `symbol`")
     expect(PROMPT_BUILD).toContain("`finny_portfolio_backtest` or save")
     expect(PROMPT_BUILD).toContain("do not narrow to one ticker")
-    // Trade count is a caveat, not a hard cutoff.
-    expect(PROMPT_BUILD).toContain("Trade count is a caveat, not a hard cutoff")
+    // Low closed trade count is inconclusive, not a positive caveat.
+    expect(PROMPT_BUILD).toContain("Closed trade count below the dynamic minimum is an inconclusive result")
     // Per-request workspace: storage routing is automatic, never invented.
     expect(PROMPT_BUILD).toContain("per-request workspace is auto-provisioned")
     expect(PROMPT_BUILD).toContain("never invent one for storage routing")

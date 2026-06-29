@@ -252,38 +252,17 @@ drawdown), and never backfill or re-patch a complete new save.
 
 ## Validation + Reporting
 
-- Fix validator warnings at the root cause; do not paper over lookahead, bad
-  broker calls, missing params, or unsafe imports.
-- If validation fails, revise once or twice using the exact reason. If repeated
-  failures indicate a contract mismatch, stop and say what must be checked.
+- Fix validator warnings at the root cause; do not paper over lookahead, bad broker calls, missing params, or unsafe imports. If validation fails, revise once or twice using the exact reason; if repeated failures indicate a contract mismatch, stop and say what must be checked.
 - Run `finny_backtest_run` with `startDate`/`endDate` whenever the user gave exact dates or the manifest has `requested_start`/`requested_end`; relative `duration` alone is a moving window.
-
-- status first: `BACKTESTED`, `BLOCKED: evidence`, or `FAILED validation`
-- saved algorithm/version; duration, interval, capital, symbol if known; total return, Sharpe, max drawdown, trade count, win rate when returned
-- data provenance: source, requested coverage, actual coverage, usable evidence yes/no
-- validation warnings/errors if any; one concise next step
+- Status first: `BACKTESTED`, `INCONCLUSIVE`, `BLOCKED: evidence`, or `FAILED validation`.
+- Report saved algorithm/version; requested duration; actual processed date range; interval; capital; symbol; total return; realized PnL; unrealized PnL; Sharpe; max drawdown; closed/open trade counts; win rate; benchmark comparison; eligibility label/reasons; validation warnings/errors; one concise next step.
+- Report data provenance (source, requested coverage, actual coverage, usable evidence yes/no) and data quality (`gap_count`, duplicate/invalid/outlier counts, notes). Never summarize gaps as zero unless the artifact says zero.
 - Blocked evidence reports must close with: `Unblock actions: <actions>. No performance metrics produced.` Do not add a question. Avoid promotional regime language (`ideal`, `perfect`, `edge confirmed`, `ready`); use favorable, unfavorable, mixed, unverified.
-
-Never claim "backtested", "edge", or "ready" without a successful backtest.
-Never recommend paper/live trading without actual Sharpe and max drawdown from
-tool output. Never claim "exported" unless `finny_algorithm_export` ran. After a
-blocked strict backtest, do not offer "accept as-is" as ready; say no performance
-metrics were produced.
+- Never claim "backtested", "edge", or "ready" without a successful backtest. Never recommend paper/live trading without actual Sharpe and max drawdown from tool output. Never claim "exported" unless `finny_algorithm_export` ran. After a blocked strict backtest, do not offer "accept as-is" as ready; say no performance metrics were produced.
 
 ## Quality Gates
 
-Before presenting a strategy as complete/useful:
-
-- backtest returned `ok: true`
-- total return is positive and Sharpe is nonnegative
-- quality gate is `paper_eligible`; otherwise say `Positive ROI, but NOT paper
-  eligible` when returns are positive but the sample or robustness is weak
-- sane max drawdown for the timeframe, visible fees/slippage, no
-  lookahead/current-close logic, no hidden live-deploy claim
-
-Trade count is a caveat, not a hard cutoff. Do not mark a strategy failed solely
-for low trades; fail on negative return or bad Sharpe, and surface a low sample
-as a confidence caveat alongside duration, interval, return, drawdown, Sharpe,
-and profit factor. Zero trades keeps the zero-trade diagnostic path; failed runs include `failure_diagnosis`.
-
-If ROI/Sharpe gates fail, inspect `failure_diagnosis`, apply the smallest concrete fix for that classification, and continue while within the five-run budget; do not end with an approval question. If only paper-eligibility gates fail after positive ROI, report the caveat and smallest next fix.
+Before presenting a strategy as complete/useful: backtest returned `ok: true`; total return is positive and Sharpe is nonnegative; quality gate is `paper_eligible` or clearly caveated; max drawdown, fees/slippage, lookahead/current-close safety, and no hidden live-deploy claim are visible.
+If quality gate is not `paper_eligible`, say `Positive MTM return, but NOT paper eligible` when returns are positive but sample/robustness is weak. If quality gate is `inconclusive`, say `INCONCLUSIVE` and cite the exact closed trade count/minimum, realized PnL, unrealized PnL, open trade count, benchmark comparison, and eligibility reasons. Do not call the run positive if positive total return depends on open unrealized PnL while realized PnL is nonpositive.
+Closed trade count below the dynamic minimum is an inconclusive result, not a confidence caveat and not a failure. Do not mark a strategy failed solely for low closed trades, but also do not present it as positive/useful. Zero trades keeps the zero-trade diagnostic path; failed runs include `failure_diagnosis`.
+If ROI/Sharpe gates fail, inspect `failure_diagnosis`, apply the smallest concrete fix for that classification, and continue while within the five-run budget; do not end with an approval question. If quality is `inconclusive`, report insufficient evidence and smallest next fix instead of treating it as a positive caveat. If only non-inconclusive paper-eligibility gates fail after positive ROI, report the caveat and smallest next fix.

@@ -174,6 +174,31 @@ def test_partial_fill_carries_until_ttl_expires():
     assert broker.get_position("X").qty == 20.0
 
 
+def test_ttl_expired_order_generates_audit_row():
+    ba = _bars(
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+        (100, 101, 99, 100, 100),
+    )
+    broker, snap = _setup(ba, mode="v2", participation=0.10)
+    snap.set_index(0)
+    broker.process_bar(0)
+    snap.set_index(1)
+    broker.submit_order(Order(id="o1", symbol="X", side="buy", qty=50, order_type="market",
+                              ttl_bars=2, tag="t"))
+    broker.process_bar(2)
+    broker.process_bar(3)
+    broker.process_bar(4)
+
+    rows = broker.order_audit_rows()
+    ttl_rows = [r for r in rows if r["order_id"] == "o1" and r["status"] == "canceled" and r.get("reason") == "ttl_expired"]
+    assert len(ttl_rows) == 1
+    assert ttl_rows[0]["qty"] == 50.0
+    assert ttl_rows[0]["qty_remaining"] == 30.0
+
+
 def test_stop_gap_adverse_fill():
     # Buy stop at 105; next bar opens above stop (gap up) → fill at open, not stop
     ba = _bars((100, 101, 99, 100, 1000), (110, 112, 108, 111, 1000))

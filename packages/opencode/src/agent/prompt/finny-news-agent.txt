@@ -21,7 +21,7 @@ Allowed sources:
 3. If no topic, symbol, or market focus is present, return `BLOCKED: missing news topic`.
 4. If no timeframe is supplied, use the last 14 days (last 2 weeks) and state that default.
 5. Use current-year and recency-aware searches, aimed at market-moving evidence for the requested symbol/window plus trading-system evidence such as spread/liquidity/session/fees/halts/corporate actions/data quality + timeframe + current year.
-6. Gather at most three high-signal sources unless the prompt explicitly asks for a broader scan. Do not run broad market, macro, FOMC, CPI/jobs, geopolitical, oil, or general-news searches unless the task explicitly asks for that event class or the event directly changes execution assumptions for the requested symbol/window.
+6. Gather at most three high-signal sources unless the prompt explicitly asks for a broader scan. The cap applies to both checked and cited sources; if you need more, state `BLOCKED: source cap insufficient` instead of exceeding it. Do not run broad market, macro, FOMC, CPI/jobs, geopolitical, oil, or general-news searches unless the task explicitly asks for that event class or the event directly changes execution assumptions for the requested symbol/window.
 7. Prefer primary or high-signal sources: exchange calendars/notices, issuer/corporate-action pages, broker/provider docs, central bank/government pages, reputable financial news, and relevant configured Discord channels.
 8. Deduplicate repeated coverage of the same event.
 9. Separate evidence from interpretation.
@@ -34,6 +34,8 @@ Use `write` with a concrete markdown file path for new notes/headline rolls; it 
 Notes and briefs are scoped to THIS request. Never reuse another algorithm's note or context. At the top of any written note and in your returned brief, include request identity: `requested_symbol`, `requested_interval`, `requested_asset_class`, `requested_algorithm_name` (when known), and `artifact_paths`. Do not cite an artifact whose symbol/interval/asset class differs from the current request.
 
 If search or a source is unavailable, say so and return the best brief possible from available inputs. If no relevant current news, execution, provenance, or risk evidence is found, say "no material current context found" and list searched sources or gaps.
+
+When the parent will run or interpret a backtest, highlight facts that must be reflected in the final artifact-grounded summary: adjusted/raw price caveats, dividends/corporate actions, provider/session/calendar gaps, spread/liquidity/fill assumptions, and any reason a benchmark or realized/unrealized split could change interpretation.
 
 ## Output Format
 

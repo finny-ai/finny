@@ -95,6 +95,12 @@ export namespace BacktestRunner {
     sharpeRatio: number
     endingEquity: number
     totalTrades: number
+    closedTrades?: number
+    openTradeCount?: number
+    realizedPnl?: number
+    unrealizedPnl?: number
+    realizedReturn?: number
+    unrealizedReturn?: number
     winRate: number
     profitFactor: number | null
     sortino?: number
@@ -377,6 +383,12 @@ with open("_data_provider.txt", "w") as f:
   }
 
   function resultsFromV2(v2: EngineV2.Results): Results {
+    const realizedPnl = (v2.trades ?? []).reduce((sum, trade) => sum + (Number.isFinite(trade.pnl) ? trade.pnl : 0), 0)
+    const unrealizedPnl = (v2.open_trades ?? []).reduce(
+      (sum, trade) => sum + (Number.isFinite(trade.unrealized_pnl) ? trade.unrealized_pnl : 0),
+      0,
+    )
+    const startingEquity = Number.isFinite(v2.starting_equity) && v2.starting_equity > 0 ? v2.starting_equity : undefined
     return {
       totalReturn: v2.total_return,
       maxDrawdown: Math.abs(v2.max_drawdown),
@@ -384,6 +396,12 @@ with open("_data_provider.txt", "w") as f:
       sharpeRatio: v2.ann_sharpe,
       endingEquity: v2.ending_equity,
       totalTrades: v2.total_trades,
+      closedTrades: v2.total_trades,
+      openTradeCount: v2.open_trades?.length ?? 0,
+      realizedPnl,
+      unrealizedPnl,
+      realizedReturn: startingEquity ? realizedPnl / startingEquity : undefined,
+      unrealizedReturn: startingEquity ? unrealizedPnl / startingEquity : undefined,
       winRate: v2.win_rate,
       profitFactor: v2.profit_factor ?? null,
       sortino: v2.ratios?.sortino,
@@ -1305,11 +1323,9 @@ if __name__ == "__main__":
     }
   }
 
-  async function writeIfMissing(file: string, contents: string): Promise<void> {
-    try {
-      await fs.stat(file)
-    } catch {
-      await fs.writeFile(file, contents)
+  async function requireArtifactCopy(src: string, dst: string): Promise<void> {
+    if (!(await copyIfExists(src, dst))) {
+      throw new Error(`strict backtest artifact missing: ${path.basename(src)}`)
     }
   }
 
@@ -1370,9 +1386,9 @@ if __name__ == "__main__":
     await copyIfExists(path.join(input.tmpDir, "equity.csv"), path.join(base, "equity.csv"))
     await copyIfExists(path.join(input.tmpDir, "trades.csv"), path.join(base, "trades.csv"))
     await copyIfExists(path.join(input.tmpDir, "diagnostics.csv"), path.join(base, "diagnostics.csv"))
-    await writeIfMissing(path.join(base, "orders.csv"), "order_id,symbol,side,qty,reason\n")
-    await writeIfMissing(path.join(base, "fills.csv"), "order_id,symbol,side,qty,price,fee,bar_index,ts,tag\n")
-    await writeIfMissing(path.join(base, "rejections.csv"), "bar_index,symbol,side,qty,reason\n")
+    await requireArtifactCopy(path.join(input.tmpDir, "orders.csv"), path.join(base, "orders.csv"))
+    await requireArtifactCopy(path.join(input.tmpDir, "fills.csv"), path.join(base, "fills.csv"))
+    await requireArtifactCopy(path.join(input.tmpDir, "rejections.csv"), path.join(base, "rejections.csv"))
 
     input.results.runId = input.runId
     input.results.artifactDir = base
@@ -1671,6 +1687,12 @@ if __name__ == "__main__":
           "--data-quality-mode",
           dataQualityMode,
         ]
+        if (start) {
+          engineArgs.push("--start-date", start)
+        }
+        if (end) {
+          engineArgs.push("--end-date", end)
+        }
         if (robustness.regimes ?? true) engineArgs.push("--regimes")
         if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {
           engineArgs.push("--wf-folds", String(robustness.walkForwardFolds))

@@ -28,6 +28,28 @@ describe("backtest result plain metrics", () => {
     expect(output).toContain("profit factor N/A")
   })
 
+  test("includes realized and open-position context when available", () => {
+    const output = formatBacktestPlainMetrics({
+      totalReturn: 0.0029,
+      maxDrawdown: 0.0081,
+      annualizedVolatility: 0.05,
+      sharpeRatio: 0.58,
+      endingEquity: 10028.7,
+      totalTrades: 1,
+      closedTrades: 1,
+      openTradeCount: 1,
+      realizedPnl: -16.09,
+      unrealizedPnl: 44.85,
+      winRate: 0,
+      profitFactor: null,
+    } as BacktestRunner.Results)
+
+    expect(output).toContain("closed 1")
+    expect(output).toContain("open 1")
+    expect(output).toContain("realized $-16.09")
+    expect(output).toContain("unrealized $44.85")
+  })
+
   test("keeps legacy runs labeled separately", () => {
     const output = formatBacktestPlainMetrics({
       totalReturn: 0.01,

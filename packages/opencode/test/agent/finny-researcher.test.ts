@@ -92,6 +92,7 @@ describe("news_agent prompt contract", () => {
     expect(PROMPT_NEWS_AGENT).toContain("last 14 days")
     expect(PROMPT_NEWS_AGENT).toContain("current-year and recency-aware searches")
     expect(PROMPT_NEWS_AGENT).toContain("at most three high-signal sources")
+    expect(PROMPT_NEWS_AGENT).toContain("`BLOCKED: source cap insufficient`")
     expect(PROMPT_NEWS_AGENT).toContain("Prefer primary or high-signal sources")
   })
 

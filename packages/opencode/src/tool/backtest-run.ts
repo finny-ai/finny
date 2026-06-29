@@ -464,6 +464,8 @@ export const BacktestRunTool = Tool.define(
         const quality = evaluateBacktestQuality(r)
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
+        const fmtDollar = (v: number | null | undefined) => v == null ? "N/A" : `$${fmt(v)}`
+        const processedRange = r.v2?.start_ts && r.v2?.end_ts ? `${r.v2.start_ts} → ${r.v2.end_ts}` : undefined
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
@@ -471,6 +473,7 @@ export const BacktestRunTool = Tool.define(
           `Duration: ${params.duration}` +
             (effectiveStartDate && effectiveEndDate ? ` (${effectiveStartDate} → ${effectiveEndDate})` : "") +
             ` | Interval: ${params.interval} | Capital: $${params.capital}`,
+          processedRange ? `Processed range: ${processedRange} | Bars processed: ${r.diagnostics?.barsProcessed ?? r.v2?.bars_processed ?? "N/A"}` : null,
           params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
           ``,
           `┌──────────────────────────────────────────────────┐`,
@@ -481,10 +484,14 @@ export const BacktestRunTool = Tool.define(
           `│  Max Drawdown        │  ${fmtPct(r.maxDrawdown).padStart(24)} │`,
           `│  Sharpe Ratio        │  ${fmt(r.sharpeRatio).padStart(24)} │`,
           `│  Total Trades        │  ${String(r.totalTrades).padStart(24)} │`,
+          `│  Closed Trades       │  ${String(r.closedTrades ?? r.totalTrades).padStart(24)} │`,
+          `│  Open Trades         │  ${String(r.openTradeCount ?? r.v2?.open_trades?.length ?? 0).padStart(24)} │`,
+          `│  Realized PnL        │  ${fmtDollar(r.realizedPnl).padStart(24)} │`,
+          `│  Unrealized PnL      │  ${fmtDollar(r.unrealizedPnl).padStart(24)} │`,
           `│  Win Rate            │  ${fmtPct(r.winRate).padStart(24)} │`,
           `│  Profit Factor       │  ${fmt(r.profitFactor).padStart(24)} │`,
           `│  Ann. Volatility     │  ${fmtPct(r.annualizedVolatility).padStart(24)} │`,
-        ]
+        ].filter((line): line is string => line !== null)
 
         if (r.navSummary || r.costAttribution) {
           lines.push(`├──────────────────────┼───────────────────────────┤`)
@@ -539,22 +546,43 @@ export const BacktestRunTool = Tool.define(
 
         lines.push(`└──────────────────────┴───────────────────────────┘`)
 
+        if (r.v2?.benchmark) {
+          const b = r.v2.benchmark as any
+          lines.push(
+            ``,
+            `── BENCHMARK ─────────────────────────────────────`,
+            `Benchmark: buy-and-hold ${r.v2.benchmark.benchmark_symbol}`,
+            `Benchmark return: ${typeof b.benchmark_total_return === "number" ? fmtPct(b.benchmark_total_return) : "N/A"} | Strategy excess: ${typeof b.strategy_excess_return === "number" ? fmtPct(b.strategy_excess_return) : "N/A"}`,
+            `Alpha annualized: ${fmtPct(r.v2.benchmark.alpha_annualized)} | Information ratio: ${fmt(r.v2.benchmark.information_ratio)}`,
+          )
+        } else if (r.v2?.run_metadata && typeof (r.v2.run_metadata as any).benchmark_unavailable_reason === "string") {
+          lines.push(
+            ``,
+            `── BENCHMARK ─────────────────────────────────────`,
+            `Benchmark unavailable: ${(r.v2.run_metadata as any).benchmark_unavailable_reason}`,
+          )
+        }
+
         lines.push(
           ``,
           `── QUALITY GATE ───────────────────────────────────`,
           `Verdict: ${quality.label}`,
         )
         if (r.totalReturn > 0 && !quality.paperEligible) {
-          lines.push(`Positive ROI, but NOT paper eligible.`)
+          lines.push(quality.label === "inconclusive" ? `Positive MTM return, but result is inconclusive and NOT paper eligible.` : `Positive ROI, but NOT paper eligible.`)
         }
         if (quality.reasons.length > 0) {
           lines.push(`Reasons: ${quality.reasons.join("; ")}`)
         }
         if (r.totalTrades > 0 && r.totalTrades < quality.minTrades) {
           lines.push(
-            `Trade count is low for this window (${r.totalTrades} trades) — confidence is limited; ` +
-            `interpret Sharpe/win rate cautiously. This is a caveat, not an automatic failure.`,
+            `Closed trade count is below the minimum for this window (${r.totalTrades} < ${quality.minTrades}); do not treat Sharpe/win rate as statistically meaningful.`,
           )
+        }
+        if (r.v2?.data_quality) {
+          const dq = r.v2.data_quality
+          const notes = Array.isArray(dq.notes) && dq.notes.length ? ` Notes: ${dq.notes.slice(0, 3).join("; ")}` : ""
+          lines.push(`Data quality: gaps=${dq.gap_count}, duplicates=${dq.duplicate_ts_count}, invalid_ohlc=${dq.ohlc_violations}, outliers=${dq.outlier_bars}.${notes}`)
         }
         if (r.v2?.data_quality?.repair_applied) {
           lines.push(`REPAIRED DATA BACKTEST — research-only until rerun on strict clean data.`)

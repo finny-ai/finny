@@ -156,7 +156,8 @@ describe("parseResults", () => {
         trade: {},
         exposure: { time_in_market_pct: 0.625, liquidation_count: 0, max_gross_exposure: 2500 },
         stability: {},
-        trades: [],
+        trades: [{ pnl: -10 }],
+        open_trades: [{ unrealized_pnl: 30 }],
         per_symbol: [],
         data_quality: {},
         product_label: "Crucible 2.0",
@@ -206,6 +207,12 @@ describe("parseResults", () => {
       expect(r!.timeInMarket).toBeCloseTo(0.625)
       expect(r!.productLabel).toBe("Crucible 2.0")
       expect(r!.runKind).toBe("crucible_2_0")
+      expect(r!.closedTrades).toBe(2)
+      expect(r!.openTradeCount).toBe(1)
+      expect(r!.realizedPnl).toBe(-10)
+      expect(r!.unrealizedPnl).toBe(30)
+      expect(r!.realizedReturn).toBeCloseTo(-10 / 10000)
+      expect(r!.unrealizedReturn).toBeCloseTo(30 / 10000)
       expect(r!.navSummary?.mark_to_market_nav).toBe(9500)
       expect(r!.costAttribution?.total_costs).toBe(12)
       expect(r!.profileIdentity?.profile_id).toBe("engine:test")

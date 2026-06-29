@@ -18,6 +18,7 @@ import uuid
 from typing import Dict, List, Optional
 
 import numpy as np
+import pandas as pd
 
 from ..core.arrays import MarketSnapshot
 from ..assets import AssetSpec
@@ -60,6 +61,7 @@ class PortfolioBroker:
         self.book = PositionBook()
         self.orders: List = []   # Order queue
         self.fills_log: List[Fill] = []
+        self.order_log: List[Dict[str, object]] = []
         self.rejections: List[Dict[str, object]] = []
         self.buy_attempts = 0
         self.sell_attempts = 0
@@ -85,6 +87,7 @@ class PortfolioBroker:
         order.qty_remaining = float(order.qty)
         order.bars_alive = 0
         self.orders.append(order)
+        self._record_order_event("submitted", order=order)
         return order.id
 
     def submit_intent(
@@ -142,6 +145,9 @@ class PortfolioBroker:
         return self.submit_order(order)
 
     def cancel_order(self, order_id: str) -> None:
+        for order in self.orders:
+            if order.id == order_id:
+                self._record_order_event("canceled", order=order, reason="strategy_cancel")
         self.orders = [o for o in self.orders if o.id != order_id]
 
     def list_open_orders(self, symbol: Optional[str] = None) -> List:
@@ -175,6 +181,12 @@ class PortfolioBroker:
             "halted": self.halted,
             "dust_adjustments": len(self.dust_adjustments),
         }
+
+    def order_audit_rows(self) -> List[Dict[str, object]]:
+        rows = list(self.order_log)
+        for order in self.orders:
+            rows.append(self._order_event_row("pending", order=order))
+        return rows
 
     def terminal_liquidation_nav(self) -> Dict[str, object]:
         """Non-mutating liquidation-adjusted NAV at the current terminal mark.
@@ -246,6 +258,7 @@ class PortfolioBroker:
                 sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
                 participation_budget=self._participation_budgets[sym],
                 margin_check=self._margin_cap_at_fill,
+                on_expire=self._record_ttl_expired,
             )
             for f in fills:
                 self._apply_fill(f)
@@ -272,6 +285,7 @@ class PortfolioBroker:
                 sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
                 participation_budget=budget,
                 margin_check=self._margin_cap_at_fill,
+                on_expire=self._record_ttl_expired,
             )
             for f in fills:
                 self._apply_fill(f)
@@ -393,6 +407,8 @@ class PortfolioBroker:
     def _check_insolvency(self, i: int) -> None:
         if self.get_equity() <= 0.0:
             self.halted = True
+            for order in self.orders:
+                self._record_order_event("canceled", order=order, reason="insolvency_halt")
             self.orders.clear()
 
     def _settle_dust(self, symbol: str, i: int) -> None:
@@ -421,6 +437,9 @@ class PortfolioBroker:
             "bar_index": i, "symbol": symbol, "qty": qty, "price": px, "realized": realized,
         })
 
+    def _record_ttl_expired(self, order) -> None:
+        self._record_order_event("canceled", order=order, reason="ttl_expired")
+
     def _apply_fill(self, f: Fill) -> None:
         realized = self.book.apply_fill(
             symbol=f.symbol, side=f.side, qty=f.qty, price=f.price,
@@ -430,6 +449,7 @@ class PortfolioBroker:
         )
         self.account.apply_realized(realized)
         self.account.apply_fee(f.fee)
+        self._record_order_event("filled" if f.full else "partial", fill=f)
 
     def _reject(self, symbol: str, side: str, qty: Optional[float], reason: str) -> None:
         self.rejections.append({
@@ -439,6 +459,84 @@ class PortfolioBroker:
             "qty": None if qty is None else float(qty),
             "reason": reason,
         })
+        self._record_order_event("rejected", symbol=symbol, side=side, qty=qty, reason=reason)
+
+    def _current_ts_ns(self, symbol: Optional[str]) -> Optional[int]:
+        if not symbol or symbol not in self.market.arrays:
+            return None
+        ba = self.market.arrays[symbol]
+        if self.market.i < 0 or self.market.i >= len(ba.ts):
+            return None
+        return int(ba.ts[self.market.i])
+
+    def _order_event_row(
+        self,
+        status: str,
+        *,
+        order=None,
+        fill: Optional[Fill] = None,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        qty: Optional[float] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, object]:
+        if fill is not None:
+            ts_ns: Optional[int] = int(fill.ts_ns)
+            return {
+                "bar_index": int(fill.bar_index),
+                "ts": str(pd.Timestamp(ts_ns, unit="ns", tz="UTC")),
+                "ts_ns": ts_ns,
+                "order_id": fill.order_id,
+                "symbol": fill.symbol,
+                "side": fill.side,
+                "qty": float(fill.qty),
+                "qty_remaining": 0.0 if fill.full else None,
+                "order_type": "",
+                "status": status,
+                "price": float(fill.price),
+                "fee": float(fill.fee),
+                "tag": fill.tag,
+                "reason": reason or "",
+            }
+        if order is not None:
+            symbol = str(getattr(order, "symbol", symbol or ""))
+            ts_ns = self._current_ts_ns(symbol)
+            return {
+                "bar_index": int(self.market.i),
+                "ts": str(pd.Timestamp(ts_ns, unit="ns", tz="UTC")) if ts_ns is not None else "",
+                "ts_ns": ts_ns,
+                "order_id": str(getattr(order, "id", "")),
+                "symbol": symbol,
+                "side": str(getattr(order, "side", side or "")),
+                "qty": float(getattr(order, "qty", qty or 0.0)),
+                "qty_remaining": float(getattr(order, "qty_remaining", 0.0)),
+                "order_type": str(getattr(order, "order_type", "")),
+                "status": status,
+                "price": "",
+                "fee": "",
+                "tag": str(getattr(order, "tag", "")),
+                "reason": reason or "",
+            }
+        ts_ns = self._current_ts_ns(symbol)
+        return {
+            "bar_index": int(self.market.i),
+            "ts": str(pd.Timestamp(ts_ns, unit="ns", tz="UTC")) if ts_ns is not None else "",
+            "ts_ns": ts_ns,
+            "order_id": "",
+            "symbol": symbol or "",
+            "side": side or "",
+            "qty": None if qty is None else float(qty),
+            "qty_remaining": "",
+            "order_type": "",
+            "status": status,
+            "price": "",
+            "fee": "",
+            "tag": "",
+            "reason": reason or "",
+        }
+
+    def _record_order_event(self, status: str, **kwargs) -> None:
+        self.order_log.append(self._order_event_row(status, **kwargs))
 
     def _validate_order_for_queue(self, order) -> bool:
         symbol = str(getattr(order, "symbol", ""))

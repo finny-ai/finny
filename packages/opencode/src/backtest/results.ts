@@ -148,6 +148,8 @@ export namespace EngineV2 {
 
   export interface BenchmarkMetrics {
     benchmark_symbol: string
+    benchmark_total_return: number
+    strategy_excess_return: number
     alpha_annualized: number
     beta: number
     r_squared: number

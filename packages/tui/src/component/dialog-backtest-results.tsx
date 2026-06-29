@@ -27,6 +27,10 @@ function formatCurrency(value: number): string {
   return `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }
 
+function formatPercentOrNA(value: number | null | undefined): string {
+  return typeof value === "number" ? formatPercent(value) : "N/A"
+}
+
 function formatNumber(value: number | null | undefined, decimals = 2): string {
   return value == null ? "N/A" : value.toFixed(decimals)
 }
@@ -102,6 +106,30 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
           <text fg={theme.text}>Total Trades</text>
           <text fg={theme.text}>{formatNumber(r().totalTrades, 0)}</text>
         </box>
+        <Show when={r().closedTrades !== undefined}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Closed Trades</text>
+            <text fg={theme.text}>{formatNumber(r().closedTrades, 0)}</text>
+          </box>
+        </Show>
+        <Show when={r().openTradeCount !== undefined}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Open Trades</text>
+            <text fg={theme.text}>{formatNumber(r().openTradeCount, 0)}</text>
+          </box>
+        </Show>
+        <Show when={r().realizedPnl !== undefined}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Realized PnL</text>
+            <text fg={theme.text}>{formatCurrency(r().realizedPnl!)}</text>
+          </box>
+        </Show>
+        <Show when={r().unrealizedPnl !== undefined}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Unrealized PnL</text>
+            <text fg={theme.text}>{formatCurrency(r().unrealizedPnl!)}</text>
+          </box>
+        </Show>
         <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
           <text fg={theme.text}>Win Rate</text>
           <text fg={winRateColor()}>{formatPercent(r().winRate)}</text>
@@ -120,6 +148,16 @@ export function DialogBacktestResults(props: DialogBacktestResultsProps) {
           <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
             <text fg={theme.text}>Eligibility</text>
             <text fg={theme.text}>{r().eligibilityStatus}</text>
+          </box>
+        </Show>
+        <Show when={r().v2?.benchmark}>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Benchmark Return</text>
+            <text fg={theme.text}>{formatPercentOrNA((r().v2!.benchmark as any).benchmark_total_return)}</text>
+          </box>
+          <box flexDirection="row" justifyContent="space-between" paddingLeft={1} paddingRight={1}>
+            <text fg={theme.text}>Strategy Excess</text>
+            <text fg={theme.text}>{formatPercentOrNA((r().v2!.benchmark as any).strategy_excess_return)}</text>
           </box>
         </Show>
       </box>

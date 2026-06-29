@@ -28,19 +28,31 @@ function result(overrides: Partial<BacktestRunner.Results>): BacktestRunner.Resu
 }
 
 describe("evaluateBacktestQuality", () => {
-  test("rejects a 1-trade positive result as weak positive", () => {
+  test("classifies a 1-trade positive result as inconclusive", () => {
     const quality = evaluateBacktestQuality(result({ totalTrades: 1 }))
-    expect(quality.label).toBe("weak_positive")
+    expect(quality.label).toBe("inconclusive")
     expect(quality.paperEligible).toBe(false)
-    expect(quality.reasons.join("; ")).toContain("trade count low")
+    expect(quality.reasons.join("; ")).toContain("closed trade count below minimum")
   })
 
-  test("rejects a 4-trade QQQ-style positive result as weak positive", () => {
+  test("classifies open-PnL-only positive MTM results as inconclusive", () => {
+    const quality = evaluateBacktestQuality(result({
+      totalReturn: 0.003,
+      totalTrades: 12,
+      realizedPnl: -16,
+      unrealizedPnl: 45,
+    }))
+    expect(quality.label).toBe("inconclusive")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons.join("; ")).toContain("open unrealized PnL")
+  })
+
+  test("rejects a sufficiently sampled QQQ-style positive result as weak positive", () => {
     const quality = evaluateBacktestQuality(result({
       totalReturn: 0.0789,
       sharpeRatio: 0.86,
       maxDrawdown: 0.107,
-      totalTrades: 4,
+      totalTrades: 12,
       profitFactor: 1.4,
     }))
     expect(quality.label).toBe("weak_positive")

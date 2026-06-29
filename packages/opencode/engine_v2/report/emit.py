@@ -181,6 +181,11 @@ def assemble(
         bm = M_benchmark.compute(returns, benchmark_returns, bars_per_year)
         if bm is not None:
             bench_block = S.BenchmarkMetrics(benchmark_symbol=benchmark_symbol, **bm)
+        elif run_metadata is not None:
+            if not isinstance(run_metadata.get("benchmark_unavailable_reason"), str):
+                run_metadata["benchmark_unavailable_reason"] = (
+                    "benchmark metrics unavailable because the strategy/benchmark return series is too short or has insufficient variance"
+                )
 
     # Trades schema
     trades_rows: List[S.TradeRow] = []
@@ -430,20 +435,16 @@ def write_artifacts(
     trades_df = pd.DataFrame([asdict(t) for t in results.trades]) if results.trades else pd.DataFrame()
     trades_df.to_csv(out_dir / "trades.csv", index=False)
     fills_df = pd.DataFrame([asdict(f) for f in broker.fills_log]) if broker is not None and broker.fills_log else pd.DataFrame()
+    if broker is not None and (results.trades or results.open_trades) and fills_df.empty:
+        raise RuntimeError("execution artifact invariant failed: positions/trades exist but fills.csv would be empty")
     fills_df.to_csv(out_dir / "fills.csv", index=False)
     rejections = []
     if results.diagnostics and isinstance(results.diagnostics.get("rejections"), list):
         rejections = results.diagnostics.get("rejections") or []
     pd.DataFrame(rejections).to_csv(out_dir / "rejections.csv", index=False)
-    orders_rows = []
-    for f in fills_df.to_dict("records") if not fills_df.empty else []:
-        orders_rows.append({
-            "order_id": f.get("order_id"),
-            "symbol": f.get("symbol"),
-            "side": f.get("side"),
-            "qty": f.get("qty"),
-            "status": "filled" if f.get("full") else "partial",
-        })
+    orders_rows = broker.order_audit_rows() if broker is not None else []
+    if broker is not None and (results.trades or results.open_trades) and not orders_rows:
+        raise RuntimeError("execution artifact invariant failed: positions/trades exist but orders.csv would be empty")
     pd.DataFrame(orders_rows).to_csv(out_dir / "orders.csv", index=False)
     if diagnostics:
         pd.DataFrame(diagnostics).to_csv(out_dir / "diagnostics.csv", index=False)

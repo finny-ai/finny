@@ -1,6 +1,6 @@
 import type { BacktestRunner } from "./runner"
 
-export type BacktestQualityLabel = "failed" | "weak_positive" | "candidate" | "paper_eligible"
+export type BacktestQualityLabel = "failed" | "inconclusive" | "weak_positive" | "candidate" | "paper_eligible"
 
 export interface BacktestQuality {
   label: BacktestQualityLabel
@@ -11,6 +11,20 @@ export interface BacktestQuality {
 
 function finite(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function realizedPnl(results: BacktestRunner.Results): number | undefined {
+  if (typeof results.realizedPnl === "number" && Number.isFinite(results.realizedPnl)) return results.realizedPnl
+  const trades = results.v2?.trades ?? []
+  if (trades.length === 0) return undefined
+  return trades.reduce((sum, trade) => sum + finite(trade.pnl, 0), 0)
+}
+
+function unrealizedPnl(results: BacktestRunner.Results): number | undefined {
+  if (typeof results.unrealizedPnl === "number" && Number.isFinite(results.unrealizedPnl)) return results.unrealizedPnl
+  const openTrades = results.v2?.open_trades ?? []
+  if (openTrades.length === 0) return undefined
+  return openTrades.reduce((sum, trade) => sum + finite(trade.unrealized_pnl, 0), 0)
 }
 
 export function dynamicMinTrades(results: BacktestRunner.Results): number {
@@ -44,8 +58,18 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
     return { label: "failed", paperEligible: false, reasons, minTrades }
   }
 
-  if (results.totalTrades < minTrades)
-    reasons.push(`trade count low for this window (${results.totalTrades} trades) — confidence limited`)
+  if (results.totalTrades < minTrades) {
+    reasons.push(`closed trade count below minimum for this window (${results.totalTrades} < ${minTrades})`)
+  }
+  const realized = realizedPnl(results)
+  const unrealized = unrealizedPnl(results)
+  if (results.totalReturn > 0 && realized !== undefined && realized <= 0 && finite(unrealized, 0) > 0) {
+    reasons.push("positive total return depends on open unrealized PnL while realized PnL is nonpositive")
+  }
+  if (reasons.length > 0) {
+    return { label: "inconclusive", paperEligible: false, reasons, minTrades }
+  }
+
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
   if (liquidationAdjustedDrawdown > 0.15) reasons.push("liquidation-adjusted max drawdown > 15%")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")

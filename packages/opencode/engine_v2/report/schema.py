@@ -13,6 +13,8 @@ CHANGELOG:
          sensitivity outcomes, and explanatory result copy; execution profile
          metadata, terminal NAV, open trade rows, and walk-forward stitched
          OOS, warm-up, and trial-count metadata.
+  3.3.0  benchmark block adds same-window benchmark total return and strategy
+         excess return for artifact-grounded comparison.
 """
 
 from __future__ import annotations
@@ -20,7 +22,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "3.2.0"
+SCHEMA_VERSION = "3.3.0"
 
 
 @dataclass
@@ -171,6 +173,8 @@ class ExposureMetrics:
 @dataclass
 class BenchmarkMetrics:
     benchmark_symbol: str
+    benchmark_total_return: float
+    strategy_excess_return: float
     alpha_annualized: float
     beta: float
     r_squared: float

@@ -272,13 +272,20 @@ def _finalize_queue(queue: List[Order], drop_ids: List[str]) -> None:
         queue[:] = [o for o in queue if o.id not in drop_set]
 
 
-def _ttl_expired(order: Order, drop_ids: List[str]) -> bool:
+def _ttl_expired(
+    order: Order,
+    drop_ids: List[str],
+    *,
+    on_expire: Optional[Callable[[Order], None]] = None,
+) -> bool:
     if order.qty_remaining <= 0:
         drop_ids.append(order.id)
         return True
     order.bars_alive += 1
     if order.ttl_bars is not None and order.bars_alive > order.ttl_bars:
         drop_ids.append(order.id)
+        if on_expire is not None:
+            on_expire(order)
         return True
     return False
 
@@ -337,12 +344,15 @@ def process_open_orders_for_bar(
     asset_specs: Optional[Dict[str, AssetSpec]] = None,
     participation_budget: Optional[ParticipationBudget] = None,
     margin_check: Optional[Callable[[Order, float, float], float]] = None,
+    on_expire: Optional[Callable[[Order], None]] = None,
 ) -> List[Fill]:
     """Open-phase fills: market orders at bar open using prior-bar inputs only."""
     if i >= len(ba) or fill_cfg.mode == "v1_compat":
         return process_orders_for_bar(
             queue, ba, i, costs, fill_cfg, asset_specs,
-            participation_budget=participation_budget, margin_check=margin_check,
+            participation_budget=participation_budget,
+            margin_check=margin_check,
+            on_expire=on_expire,
         )
     o = ba.ohlc_at(i)[0]
     ts_ns = int(ba.ts[i])
@@ -361,7 +371,7 @@ def process_open_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol or order.order_type != "market":
             continue
-        if _ttl_expired(order, drop_ids):
+        if _ttl_expired(order, drop_ids, on_expire=on_expire):
             continue
 
         fill_qty = _finalize_participation_qty(order, budget, spec, margin_check, o)
@@ -393,6 +403,7 @@ def process_intrabar_orders_for_bar(
     asset_specs: Optional[Dict[str, AssetSpec]] = None,
     participation_budget: Optional[ParticipationBudget] = None,
     margin_check: Optional[Callable[[Order, float, float], float]] = None,
+    on_expire: Optional[Callable[[Order], None]] = None,
 ) -> List[Fill]:
     """Intrabar conditional fills after strategy decision (limit/stop/trailing)."""
     if i >= len(ba) or fill_cfg.mode == "v1_compat":
@@ -414,7 +425,7 @@ def process_intrabar_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol or order.order_type == "market":
             continue
-        if _ttl_expired(order, drop_ids):
+        if _ttl_expired(order, drop_ids, on_expire=on_expire):
             continue
 
         if order.order_type == "trailing_stop":
@@ -459,6 +470,7 @@ def process_orders_for_bar(
     asset_specs: Optional[Dict[str, AssetSpec]] = None,
     participation_budget: Optional[ParticipationBudget] = None,
     margin_check: Optional[Callable[[Order, float, float], float]] = None,
+    on_expire: Optional[Callable[[Order], None]] = None,
 ) -> List[Fill]:
     """Process all queued orders against bar `i` (v1_compat path or legacy callers)."""
     if i >= len(ba):
@@ -470,11 +482,15 @@ def process_orders_for_bar(
         )
         open_fills = process_open_orders_for_bar(
             queue, ba, i, costs, fill_cfg, asset_specs,
-            participation_budget=budget, margin_check=margin_check,
+            participation_budget=budget,
+            margin_check=margin_check,
+            on_expire=on_expire,
         )
         intrabar_fills = process_intrabar_orders_for_bar(
             queue, ba, i, costs, fill_cfg, asset_specs,
-            participation_budget=budget, margin_check=margin_check,
+            participation_budget=budget,
+            margin_check=margin_check,
+            on_expire=on_expire,
         )
         return open_fills + intrabar_fills
 
@@ -491,7 +507,7 @@ def process_orders_for_bar(
     for order in list(queue):
         if order.symbol != ba.symbol:
             continue
-        if _ttl_expired(order, drop_ids):
+        if _ttl_expired(order, drop_ids, on_expire=on_expire):
             continue
 
         fill_qty_max = order.qty_remaining
