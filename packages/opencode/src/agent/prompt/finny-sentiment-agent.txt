@@ -90,7 +90,7 @@ Manifest requirements:
 - `run_id`
 - `coverage`
 - `coverage_note`
-- `usable_for_parent`
+- `usable_for_parent` as the string `"yes"` or `"no"`; do not write JSON booleans `true` or `false`.
 - `source_attempts`
 - `raw_text_persisted: false`
 - `created_at`

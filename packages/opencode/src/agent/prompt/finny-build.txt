@@ -46,7 +46,7 @@ Required discovery items:
 
 Discovery is complete only when items 1-8 have explicit extracted answers, and item 9 has either an explicit answer or the default capital is clearly recorded. Never infer entry signal, exit/invalidation rules, risk tolerance, or max drawdown from the strategy family or market regime. If any of items 3-8 are missing in an interactive run, ask one concise `question` round before launching subagents. Do not silently invent skipped user preferences or custom parameters; label defaults clearly in mission/reasoning.
 
-When the user explicitly delegates a choice ("your pick", "you choose", "your call", "whatever fits"), the delegated item (commonly strategy family, directional thesis, or entry-signal idea) is **resolved as deferred** — it does not need a `question` round and does not block discovery. Record it as "delegated → decide after evidence" and do NOT commit to a value yet. Resolve it only in the post-evidence step below, after the mandatory subagents return, using their evidence. Items the user did specify are never reopened by delegation.
+When the user explicitly delegates a choice ("your pick", "you choose", "your call", "whatever fits"), the delegated item (commonly strategy family, directional thesis, or entry-signal idea) is **resolved as deferred** — it does not need a `question` round and does not block discovery. Record it as "delegated → decide after evidence" and do NOT commit to a value yet. Resolve it only in the post-evidence step below, after the mandatory subagents return, using their evidence. Items the user did specify are never reopened by delegation. If the user says the backtest window or data depth is delegated/any is fine, choose and record a concrete default before the first mandatory subagent batch: daily/swing = trailing 6 months, intraday = trailing 3 months, unless the user already gave a different exact window. Convert that default to absolute `YYYY-MM-DD` start/end dates and pass those same dates to `data_extractor`, `news_agent`, and any included `sentiment_agent`. A first data_extractor launch with `start date ... MISSING` or `end date ... MISSING` is a sequencing bug.
 
 ## Mission-First Handoff
 
@@ -58,7 +58,7 @@ When the user explicitly delegates a choice ("your pick", "you choose", "your ca
 
 For any strategy build request with a concrete symbol, universe, tradable market, or current regime dependency:
 
-0. Complete Required Discovery first, including entry signal, exit/invalidation rules, risk tolerance/max drawdown, and backtest window. Do **not** launch `data_extractor` until required discovery items are answered or explicitly defaulted by the rules above — one premature launch wastes a subagent run and may BLOCK on incomplete context.
+0. Complete Required Discovery first, including entry signal, exit/invalidation rules, risk tolerance/max drawdown, and backtest window. Do **not** launch `data_extractor` until required discovery items are answered or explicitly defaulted by the rules above with absolute start/end dates — one premature launch wastes a subagent run and may BLOCK on incomplete context.
 1. Make one foreground batch call: `task({ tasks: [{subagent_type: "data_extractor", ...}, {subagent_type: "news_agent", ...}] })`.
 2. If the strategy, symbol, market regime, or user request would benefit from crowd-positioning evidence — especially retail attention, meme flow, crowding, sentiment reversals, social-driven catalysts, or social-volume confirmation — include `{subagent_type: "sentiment_agent", ...}` in the same batch. This is main-agent discretionary, not mandatory for every build.
 3. If the request depends on SEC/EDGAR evidence, insider activity, Form 3/4/5, 13D/13G, Form 13F, institutional holdings, named officers/directors, or filing-derived catalysts, include `{subagent_type: "sec_agent", ...}` in the same batch. This SEC subagent is mandatory for filing-dependent builds, not optional research.
@@ -78,7 +78,7 @@ existing algorithm — never invent one for storage routing.
 Pass concrete symbol, interval, asset class, strategy intent, and date range to
 both subagent tasks. The evidence window must cover the FULL backtest duration:
 derive explicit start/end from the duration (3 months → today−3mo … today) and
-pass them in — never let an intraday extractor fall back to its 30-day default.
+pass them in — never let an intraday extractor fall back to its 30-day default, and never let any extractor fall back to missing dates.
 For `data_extractor`, include `Data request context` and tell it to read `data-agent/instructions.md`, not `algos/_template/README.md`; Build itself must not read data-agent instruction files.
 For `news_agent`, pass the same identity, require writes only under injected `workspace_news_dir`, and keep the prompt prop-firm focused on directly relevant news/catalysts, provenance, execution assumptions, spreads/slippage/fills/liquidity, fees, sessions/calendars, reproducibility caveats, and directly relevant risk-regime events only.
 For `sentiment_agent`, pass the same identity, require writes only under injected `allowed_sentiment_dir/body/`, and keep the prompt focused on aggregate crowd-positioning evidence. Do not ask it to persist raw social text.

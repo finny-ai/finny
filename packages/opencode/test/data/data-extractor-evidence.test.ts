@@ -141,6 +141,68 @@ describe("validateDataExtractorTaskText", () => {
     expect(REQUIRED_DIGEST_FIELDS.every((field) => digest.includes(`${field}:`))).toBe(true)
   })
 
+  test("normalizes boolean manifest usable_for_parent instead of throwing", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-boolean-usable-"))
+    const slug = "btc-daily-strategy"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "crypto/BTC-USD_1d_2025-12-31_2026-06-29.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-12-31T00:00:00Z,1,2,1,2,100\n2026-06-29T00:00:00Z,2,3,2,3,100\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          source: "binance",
+          requested_symbol: "BTC.USD",
+          actual_symbol: "BTC.USD",
+          requested_interval: "1d",
+          actual_interval: "1d",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2025-12-31",
+          requested_end: "2026-06-29",
+          actual_start: "2025-12-31",
+          actual_end: "2026-06-29",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "boolean-usable",
+          coverage: "complete",
+          usable_for_parent: true,
+        },
+        null,
+        2,
+      ),
+    )
+
+    const digest = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: BTC.USD",
+      "actual_symbol: BTC.USD",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_start: 2025-12-31",
+      "requested_end: 2026-06-29",
+      "actual_start: 2025-12-31",
+      "actual_end: 2026-06-29",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: boolean-usable",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("usable_for_parent: yes")
+  })
+
   test("accepts date-only manifest boundaries when CSV timestamps fall on those UTC dates", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-date-boundary-"))
     const slug = "spy-date-boundaries"

@@ -103,6 +103,8 @@ describe("sentiment_agent prompt contract", () => {
     expect(PROMPT_BUILD).toContain("Generated strategy code must not read sentiment CSV/manifest files")
     expect(PROMPT_BUILD).toContain("`open()`")
     expect(PROMPT_BUILD).toContain("read CSV/JSON/manifest artifacts")
+    expect(PROMPT_BUILD).toContain("daily/swing = trailing 6 months")
+    expect(PROMPT_BUILD).toContain("A first data_extractor launch with `start date ... MISSING`")
   })
 
   test("covers v1 sources and aggregate-only storage", () => {
@@ -117,6 +119,8 @@ describe("sentiment_agent prompt contract", () => {
   test("forbids raw text persistence and trading labels", () => {
     expect(PROMPT_SENTIMENT_AGENT).toContain("must not persist raw post bodies")
     expect(PROMPT_SENTIMENT_AGENT).toContain("raw_text_persisted: false")
+    expect(PROMPT_SENTIMENT_AGENT).toContain('string `"yes"` or `"no"`')
+    expect(PROMPT_SENTIMENT_AGENT).toContain("do not write JSON booleans")
     expect(PROMPT_SENTIMENT_AGENT).toContain("Do not produce buy/sell labels")
     expect(PROMPT_SENTIMENT_AGENT).toContain("no material social sentiment found")
   })
@@ -143,6 +147,7 @@ describe("sentiment_agent prompt contract", () => {
     expect(override).toContain("StockTwits")
     expect(override).toContain("ApeWisdom")
     expect(override).toContain("raw_text_persisted: false")
+    expect(override).toContain('string `"yes"` or `"no"`')
     expect(override).not.toContain("Headlines file")
   })
 })

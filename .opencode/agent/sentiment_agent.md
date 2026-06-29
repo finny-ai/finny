@@ -40,7 +40,8 @@ date,symbol,source,bullish_count,bearish_count,neutral_count,unscored_count,bull
 ```
 
 Write a `.manifest.json` sidecar with request identity, actual coverage, rows,
-source attempts, `usable_for_parent`, `raw_text_persisted: false`, and caveats.
+source attempts, `usable_for_parent` as the string `"yes"` or `"no"` (not JSON
+boolean `true` or `false`), `raw_text_persisted: false`, and caveats.
 
 Final response format:
 

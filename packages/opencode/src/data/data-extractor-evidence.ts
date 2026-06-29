@@ -72,7 +72,7 @@ export interface DataExtractorManifest {
   run_id?: string
   coverage?: string
   coverage_note?: string
-  usable_for_parent?: string
+  usable_for_parent?: string | boolean
   // Optional, lenient enrichment (issue #81). Never gates identity or reuse:
   // candidate edge analysis the data agent derives from the saved rows.
   analysis_summary_path?: string
@@ -407,7 +407,7 @@ function missingDigestFields(text: string): string[] {
   for (const field of REQUIRED_DIGEST_FIELDS) {
     if (!fieldValue(text, field)) missing.push(field)
   }
-  const usable = fieldValue(text, "usable_for_parent")?.toLowerCase()
+  const usable = normalizeUsableForParent(fieldValue(text, "usable_for_parent"))
   if (usable && !/^(yes|no)\b/.test(usable)) missing.push("usable_for_parent (must be yes/no)")
   return missing
 }
@@ -424,6 +424,16 @@ function manifestIdentityIssues(manifest: DataExtractorManifest, digest: Record<
 
 function isBlank(value: unknown): boolean {
   return value === undefined || value === null || String(value).trim() === ""
+}
+
+function normalizeUsableForParent(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === "boolean") return value ? "yes" : "no"
+  const trimmed = String(value).trim()
+  if (!trimmed) return undefined
+  if (/^true\b/i.test(trimmed)) return trimmed.replace(/^true\b/i, "yes")
+  if (/^false\b/i.test(trimmed)) return trimmed.replace(/^false\b/i, "no")
+  return trimmed.toLowerCase()
 }
 
 function manifestDigestMismatches(manifest: DataExtractorManifest, digest: Record<string, string | undefined>): string[] {
@@ -471,14 +481,15 @@ function effectiveDigestFromManifest(
     actual_end: digest.actual_end ?? manifest.actual_end,
     artifact_paths: artifactPaths ?? digest.artifact_paths,
     run_id: digest.run_id ?? manifest.run_id,
-    usable_for_parent:
+    usable_for_parent: normalizeUsableForParent(
       digest.usable_for_parent ??
-      manifest.usable_for_parent ??
-      (["complete", "trading_day_complete"].includes(manifest.coverage?.toLowerCase() ?? "") &&
-      manifest.rows &&
-      manifest.rows > 0
-        ? "yes"
-        : undefined),
+        manifest.usable_for_parent ??
+        (["complete", "trading_day_complete"].includes(manifest.coverage?.toLowerCase() ?? "") &&
+        manifest.rows &&
+        manifest.rows > 0
+          ? "yes"
+          : undefined),
+    ),
   }
 }
 
@@ -696,7 +707,7 @@ function usabilityBlocker(
   effectiveDigest: Record<string, string | undefined>,
   toleratedOpenCandlePartial: boolean,
 ): ValidateDataExtractorResult | undefined {
-  const effectiveUsable = effectiveDigest.usable_for_parent?.toLowerCase()
+  const effectiveUsable = normalizeUsableForParent(effectiveDigest.usable_for_parent)
   if (!textUsable.startsWith("no") && !effectiveUsable?.startsWith("no")) return undefined
   if (toleratedOpenCandlePartial) return undefined
   return {
@@ -763,7 +774,7 @@ function prepareDigestPreamble(input: ValidateDataExtractorInput): DigestPreambl
   const rejected = rejectedPreamble(text)
   if (rejected) return rejected
   const issues = [hasEstimatedMetrics(text)].filter((issue): issue is string => Boolean(issue))
-  const textUsable = digestFieldValue(text, "usable_for_parent")?.toLowerCase() ?? ""
+  const textUsable = normalizeUsableForParent(digestFieldValue(text, "usable_for_parent")) ?? ""
   if (!input.workspaceSlug) return { result: blocked([...issues, "no workspace slug bound"]) }
 
   const dataRoot = path.join(algoDir(input.workspaceSlug), "data")
@@ -785,7 +796,7 @@ async function validateLoadedEvidence(input: {
   issues.push(...manifestIdentityIssues(manifest, digest))
   const effectiveDigest = effectiveDigestFromManifest(manifest, digest, workspaceSlug, artifacts)
   const missingFields = REQUIRED_DIGEST_FIELDS.filter((field) => !effectiveDigest[field])
-  const effectiveUsable = effectiveDigest.usable_for_parent?.toLowerCase()
+  const effectiveUsable = normalizeUsableForParent(effectiveDigest.usable_for_parent)
   if (missingFields.length > 0) issues.push(`digest/manifest missing fields: ${missingFields.join(", ")}`)
   if (effectiveUsable && !/^(yes|no)\b/.test(effectiveUsable)) issues.push("usable_for_parent must be yes/no")
 
