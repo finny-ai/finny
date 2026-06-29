@@ -76,12 +76,21 @@ const dataCtx = {
   ...ctx,
   agent: "data_extractor",
 }
+const sentimentCtx = {
+  ...ctx,
+  agent: "sentiment_agent",
+}
 let testSessionCounter = 0
 let envLock: Promise<void> = Promise.resolve()
 
 const dataContext = (): Tool.Context => ({
   ...dataCtx,
   sessionID: SessionID.make(`ses_shell_data_${process.pid}_${++testSessionCounter}`),
+})
+
+const sentimentContext = (): Tool.Context => ({
+  ...sentimentCtx,
+  sessionID: SessionID.make(`ses_shell_sentiment_${process.pid}_${++testSessionCounter}`),
 })
 
 Shell.acceptable.reset()
@@ -1000,6 +1009,178 @@ describe("tool.shell data_extractor write guard", () => {
           )
           expect(result.metadata.exit).toBe(0)
           expect(yield* Effect.promise(() => Bun.file(outside).text())).toBe("ok")
+        }),
+      )
+    }),
+  )
+})
+
+describe("tool.shell sentiment_agent write guard", () => {
+  live("allows sentiment_agent bash writes under workspace data/sentiment/body", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      const xdg = yield* sessionWorkspace(
+        next,
+        (dir) =>
+          fs
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .then(() => {}),
+        "aapl-sentiment",
+      )
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const output = path.join(
+            xdg,
+            "finny/algos/aapl-sentiment/data/sentiment/body/AAPL_2026-06-01_2026-06-29_sentiment.csv",
+          )
+          const result = yield* run(
+            {
+              command: `printf 'date,symbol,source\\n' > ${quote(output)}`,
+              description: "Write sentiment aggregate",
+            },
+            next,
+          )
+          expect(result.metadata.exit).toBe(0)
+          expect(yield* Effect.promise(() => Bun.file(output).text())).toBe("date,symbol,source\n")
+        }),
+      )
+    }),
+  )
+
+  live("blocks sentiment_agent bash writes outside workspace data/sentiment/body", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      const xdg = yield* sessionWorkspace(
+        next,
+        (dir) =>
+          fs
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/headlines"), { recursive: true })
+            .then(() => {}),
+        "aapl-sentiment",
+      )
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const output = path.join(xdg, "finny/algos/aapl-sentiment/data/sentiment/headlines/AAPL.md")
+          const err = yield* fail(
+            {
+              command: `printf wrong > ${quote(output)}`,
+              description: "Write sentiment headline",
+            },
+            next,
+          )
+          expect(err.message).toContain("Sentiment Agent bash write blocked")
+          expect(yield* Effect.promise(() => Bun.file(output).exists())).toBe(false)
+        }),
+      )
+    }),
+  )
+
+  live("blocks sentiment_agent Python scripts that can hide filesystem writes", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      const xdg = yield* sessionWorkspace(
+        next,
+        (dir) =>
+          fs
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .then(() => {}),
+        "aapl-sentiment",
+      )
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const output = path.join(xdg, "finny/algos/aapl-sentiment/data/sentiment/headlines/AAPL.md")
+          const err = yield* fail(
+            {
+              command: `python3 -c "open(${JSON.stringify(output)}, 'w').write('raw text')"`,
+              description: "Write sentiment via Python",
+            },
+            next,
+          )
+          expect(err.message).toContain("Python interpreter commands can hide file writes")
+          expect(yield* Effect.promise(() => Bun.file(output).exists())).toBe(false)
+        }),
+      )
+    }),
+  )
+
+  live("allows sentiment_agent read-only Python parsing to stdout", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      yield* sessionWorkspace(
+        next,
+        (dir) =>
+          fs
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .then(() => {}),
+        "aapl-sentiment",
+      )
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const result = yield* run(
+            {
+              command: `python3 -c "import json; print(json.loads('{\\\"mentions\\\": 7}')['mentions'])"`,
+              description: "Parse sentiment JSON",
+            },
+            next,
+          )
+          expect(result.metadata.exit).toBe(0)
+          expect(result.output.trim()).toBe("7")
+        }),
+      )
+    }),
+  )
+
+  live("blocks sentiment_agent bash reads of env files", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped({
+        init: (dir) =>
+          Effect.promise(() =>
+            Bun.write(path.join(dir, ".env.local"), "POLYGON_API_KEY=should_not_surface\n").then(() => {}),
+          ),
+      })
+      const next = sentimentContext()
+      yield* sessionWorkspace(next, undefined, "aapl-sentiment")
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const err = yield* fail(
+            {
+              command: "cat .env.local",
+              description: "Read sentiment env file",
+            },
+            next,
+          )
+          expect(err.message).toContain("Sentiment Agent bash read blocked")
+        }),
+      )
+    }),
+  )
+
+  live("blocks sentiment_agent credential-like environment output", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      yield* sessionWorkspace(next, undefined, "aapl-sentiment")
+      yield* withEnv("POLYGON_API_KEY", "should_not_surface")
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const err = yield* fail(
+            {
+              command: 'printf "%s\\n" "$POLYGON_API_KEY"',
+              description: "Print sentiment credential",
+            },
+            next,
+          )
+          expect(err.message).toContain("Sentiment Agent bash read blocked")
         }),
       )
     }),

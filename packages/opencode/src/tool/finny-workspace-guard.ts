@@ -27,6 +27,13 @@ function isRepoLocalAlgoSecPath(filepath: string, worktree: string) {
   return parts.length >= 3 && parts[1] === "data" && parts[2] === "sec"
 }
 
+function isRepoLocalAlgoSentimentPath(filepath: string, worktree: string) {
+  const relative = path.relative(path.join(worktree, "algos"), filepath)
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
+  const parts = relative.split(path.sep)
+  return parts.length >= 4 && parts[1] === "data" && parts[2] === "sentiment" && parts[3] === "body"
+}
+
 export const assertResearcherWorkspaceNewsPath = Effect.fn("FinnyWorkspaceGuard.assertResearcherWorkspaceNewsPath")(
   function* (ctx: Tool.Context, filepath: string, operation: "read" | "write" | "edit") {
     if (ctx.agent !== "news_agent" && ctx.agent !== "researcher") return
@@ -82,6 +89,32 @@ export const assertSecAgentWorkspaceSecPath = Effect.fn("FinnyWorkspaceGuard.ass
     return yield* Effect.die(
       new Error(
         `SEC Agent ${operation} blocked: ${filepath} is outside the session workspace SEC directory. Use ${secRoot}.`,
+      ),
+    )
+  },
+)
+
+export const assertSentimentAgentWorkspacePath = Effect.fn("FinnyWorkspaceGuard.assertSentimentAgentWorkspacePath")(
+  function* (ctx: Tool.Context, filepath: string, operation: "read" | "write" | "edit") {
+    if (ctx.agent !== "sentiment_agent") return
+
+    const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
+    if (!workspace) {
+      const instance = yield* InstanceState.context
+      if (operation === "read" && !isRepoLocalAlgoSentimentPath(filepath, instance.worktree)) return
+      return yield* Effect.die(
+        new Error(
+          `Sentiment Agent ${operation} blocked: ${filepath} is not allowed because no allowed_sentiment_dir is bound.`,
+        ),
+      )
+    }
+
+    const sentimentBodyRoot = path.join(algoDir(workspace), "data", "sentiment", "body")
+    if (sameOrInside(sentimentBodyRoot, filepath)) return
+
+    return yield* Effect.die(
+      new Error(
+        `Sentiment Agent ${operation} blocked: ${filepath} is outside the session workspace sentiment body directory. Use ${sentimentBodyRoot}.`,
       ),
     )
   },

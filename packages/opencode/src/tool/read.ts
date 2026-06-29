@@ -11,7 +11,12 @@ import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 import { existsSync } from "fs"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
-import { assertResearcherWorkspaceNewsPath, assertSecAgentWorkspaceSecPath, sameOrInside } from "./finny-workspace-guard"
+import {
+  assertResearcherWorkspaceNewsPath,
+  assertSecAgentWorkspaceSecPath,
+  assertSentimentAgentWorkspacePath,
+  sameOrInside,
+} from "./finny-workspace-guard"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -332,6 +337,7 @@ export const ReadTool = Tool.define<
       yield* assertDataExtractorRead(ctx, filepath)
       yield* assertResearcherWorkspaceNewsPath(ctx, filepath, "read")
       yield* assertSecAgentWorkspaceSecPath(ctx, filepath, "read")
+      yield* assertSentimentAgentWorkspacePath(ctx, filepath, "read")
       const title = path.relative(instance.worktree, filepath)
 
       const stat = yield* fs.stat(filepath).pipe(

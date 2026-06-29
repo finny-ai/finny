@@ -88,6 +88,7 @@ const DATA_SUBDIRS = [
   "data/stock",
   "data/crypto",
   "data/sec",
+  "data/sentiment/body",
   "data/news/headlines",
   "data/news/body",
 ]

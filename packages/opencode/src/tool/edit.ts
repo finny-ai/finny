@@ -19,7 +19,11 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
 import { resolveReadPath } from "./read"
-import { assertResearcherWorkspaceNewsPath, assertSecAgentWorkspaceSecPath } from "./finny-workspace-guard"
+import {
+  assertResearcherWorkspaceNewsPath,
+  assertSecAgentWorkspaceSecPath,
+  assertSentimentAgentWorkspacePath,
+} from "./finny-workspace-guard"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -82,6 +86,7 @@ export const EditTool = Tool.define(
           const filePath = resolveReadPath(params.filePath, instance.directory, instance.worktree)
           yield* assertResearcherWorkspaceNewsPath(ctx, filePath, "edit")
           yield* assertSecAgentWorkspaceSecPath(ctx, filePath, "edit")
+          yield* assertSentimentAgentWorkspacePath(ctx, filePath, "edit")
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

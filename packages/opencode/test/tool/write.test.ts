@@ -34,6 +34,10 @@ const secAgentCtx = {
   ...ctx,
   agent: "sec_agent",
 }
+const sentimentAgentCtx = {
+  ...ctx,
+  agent: "sentiment_agent",
+}
 
 afterEach(async () => {
   await disposeAllInstances()
@@ -459,6 +463,67 @@ describe("tool.write", () => {
             expect(Exit.isFailure(exit)).toBe(true)
           } finally {
             yield* Effect.promise(() => clearSessionWorkspace(secAgentCtx.sessionID).catch(() => {}))
+            if (prev === undefined) delete process.env.XDG_DATA_HOME
+            else process.env.XDG_DATA_HOME = prev
+          }
+        }),
+      ),
+    )
+  })
+
+  describe("sentiment_agent workspace boundaries", () => {
+    it.live("allows bound sentiment_agent writes inside workspace data/sentiment/body", () =>
+      provideTmpdirInstance((dir) =>
+        Effect.gen(function* () {
+          const prev = process.env.XDG_DATA_HOME
+          process.env.XDG_DATA_HOME = dir
+          try {
+            yield* Effect.promise(() =>
+              bindSessionWorkspace(sentimentAgentCtx.sessionID, "aapl-sentiment.1.1.00.00"),
+            )
+            const filepath = path.join(
+              dir,
+              "finny/algos/aapl-sentiment.1.1.00.00/data/sentiment/body/AAPL_2026-06-01_2026-06-29_sentiment.csv",
+            )
+
+            yield* run({ filePath: filepath, content: "date,symbol,source\n" }, sentimentAgentCtx)
+            const content = yield* Effect.promise(() => fs.readFile(filepath, "utf-8"))
+            expect(content).toBe("date,symbol,source\n")
+          } finally {
+            yield* Effect.promise(() => clearSessionWorkspace(sentimentAgentCtx.sessionID).catch(() => {}))
+            if (prev === undefined) delete process.env.XDG_DATA_HOME
+            else process.env.XDG_DATA_HOME = prev
+          }
+        }),
+      ),
+    )
+
+    it.live("blocks bound sentiment_agent writes outside workspace data/sentiment/body", () =>
+      provideTmpdirInstance((dir) =>
+        Effect.gen(function* () {
+          const prev = process.env.XDG_DATA_HOME
+          process.env.XDG_DATA_HOME = dir
+          try {
+            yield* Effect.promise(() =>
+              bindSessionWorkspace(sentimentAgentCtx.sessionID, "aapl-sentiment.1.1.00.00"),
+            )
+            const filepath = path.join(
+              dir,
+              "finny/algos/aapl-sentiment.1.1.00.00/data/sentiment/headlines/AAPL.md",
+            )
+
+            const exit = yield* run({ filePath: filepath, content: "# Wrong\n" }, sentimentAgentCtx).pipe(
+              Effect.exit,
+            )
+            expect(Exit.isFailure(exit)).toBe(true)
+            if (Exit.isFailure(exit)) {
+              const error = Cause.squash(exit.cause)
+              expect(error instanceof Error ? error.message : String(error)).toContain(
+                "Sentiment Agent write blocked",
+              )
+            }
+          } finally {
+            yield* Effect.promise(() => clearSessionWorkspace(sentimentAgentCtx.sessionID).catch(() => {}))
             if (prev === undefined) delete process.env.XDG_DATA_HOME
             else process.env.XDG_DATA_HOME = prev
           }

@@ -87,7 +87,29 @@ const ALL_WRITE_COMMANDS = new Set([
 const DESTINATION_WRITE_COMMANDS = new Set(["cp", "copy-item"])
 const DOWNLOAD_WRITE_COMMANDS = new Set(["curl", "wget"])
 const READ_COMMANDS = new Set(["cat", "get-content", "head", "tail", "wc", "ls"])
+const ENV_READ_COMMANDS = new Set(["env", "printenv", "set", "export"])
 const REDIRECT_TARGET_TYPES = ["word", "string", "raw_string", "concatenation", "generic_token"]
+const SENSITIVE_ENV_RE = /(?:^|_)(?:API|AUTH|BROKER|CREDENTIAL|KEY|PASS|PASSWORD|SECRET|TOKEN)(?:_|$)/i
+const SENTIMENT_ENV_ALLOWLIST = new Set([
+  "PATH",
+  "HOME",
+  "USER",
+  "USERNAME",
+  "TMPDIR",
+  "TMP",
+  "TEMP",
+  "SHELL",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "SSL_CERT_FILE",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "SYSTEMROOT",
+  "WINDIR",
+  "COMSPEC",
+  "PATHEXT",
+])
 
 type Part = {
   type: string
@@ -292,10 +314,21 @@ function workspaceSecRoot(slug: string) {
   return path.join(algoDir(slug), "data", "sec")
 }
 
+function workspaceSentimentBodyRoot(slug: string) {
+  return path.join(algoDir(slug), "data", "sentiment", "body")
+}
+
 function allowedSecRoot(file: string, workspaceSlug: string | null) {
   if (!workspaceSlug) return
   const resolved = path.resolve(file)
   const root = workspaceSecRoot(workspaceSlug)
+  if (sameOrInside(root, resolved)) return root
+}
+
+function allowedSentimentBodyRoot(file: string, workspaceSlug: string | null) {
+  if (!workspaceSlug) return
+  const resolved = path.resolve(file)
+  const root = workspaceSentimentBodyRoot(workspaceSlug)
   if (sameOrInside(root, resolved)) return root
 }
 
@@ -378,6 +411,61 @@ function commandWriteArgs(command: Part[], ps: boolean) {
 
   if (!ALL_WRITE_COMMANDS.has(cmd)) return []
   return args.map((arg) => ({ kind: cmd, arg }))
+}
+
+function pythonCommandCanWrite(text: string) {
+  return (
+    /\bopen\s*\([^)]*,\s*["'][^"']*[wax+]/is.test(text) ||
+    /\.(?:write_text|write_bytes)\s*\(/i.test(text) ||
+    /\b(?:json|pickle)\.dump\s*\(/i.test(text) ||
+    /\bto_csv\s*\(/i.test(text)
+  )
+}
+
+function hasPythonInterpreterWriteCommand(root: Node, ps: boolean) {
+  for (const node of commands(root)) {
+    const command = parts(node)
+    const raw = command[0]?.text
+    if (!raw) continue
+    const executable = ps ? raw.toLowerCase() : unquote(raw)
+    if (isHostInterpreterPath(executable) && pythonCommandCanWrite(node.text)) return true
+  }
+  return false
+}
+
+function hasEnvironmentDumpCommand(root: Node, ps: boolean) {
+  for (const node of commands(root)) {
+    const command = parts(node)
+    const raw = command[0]?.text
+    if (!raw) continue
+    const executable = ps ? raw.toLowerCase() : unquote(raw)
+    if (ENV_READ_COMMANDS.has(executable)) return true
+  }
+  return false
+}
+
+function referencesSensitiveEnv(text: string) {
+  const unix = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g
+  for (const match of text.matchAll(unix)) {
+    if (SENSITIVE_ENV_RE.test(match[1] ?? "")) return true
+  }
+  const powershell = /\$env:([A-Za-z_][A-Za-z0-9_]*)/gi
+  for (const match of text.matchAll(powershell)) {
+    if (SENSITIVE_ENV_RE.test(match[1] ?? "")) return true
+  }
+  return false
+}
+
+function sentimentShellEnv(env: NodeJS.ProcessEnv) {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue
+    const upper = key.toUpperCase()
+    if (SENTIMENT_ENV_ALLOWLIST.has(upper) || upper.startsWith("FINNY_") || upper === "VIRTUAL_ENV") {
+      out[key] = value
+    }
+  }
+  return out
 }
 
 function downloadWriteArgs(cmd: string, args: string[]) {
@@ -796,6 +884,88 @@ export const ShellTool = Tool.define(
       }
     })
 
+    const assertSentimentAgentWrites = Effect.fn("ShellTool.assertSentimentAgentWrites")(function* (
+      ctx: Tool.Context,
+      root: Node,
+      cwd: string,
+      ps: boolean,
+      shell: string,
+    ) {
+      if (ctx.agent !== "sentiment_agent") return
+
+      const targets: WriteTarget[] = [...redirectionTargets(root)]
+      for (const node of commands(root)) {
+        targets.push(...commandWriteArgs(parts(node), ps))
+      }
+      if (hasPythonInterpreterWriteCommand(root, ps)) {
+        throw new Error(
+          "Sentiment Agent bash write blocked: Python interpreter commands can hide file writes inside scripts. Use webfetch/websearch or shell-visible commands with explicit outputs under data/sentiment/body/.",
+        )
+      }
+      if (targets.length === 0) return
+
+      const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
+      const allowedHint = workspace
+        ? workspaceSentimentBodyRoot(workspace)
+        : "the session workspace data/sentiment/body/ directory"
+
+      for (const target of targets) {
+        if (isNullSink(target.arg) || isStdoutSink(target.arg)) continue
+        const resolved = yield* argPath(target.arg, cwd, ps, shell)
+        if (!resolved) {
+          throw new Error(
+            `Sentiment Agent bash write blocked: could not resolve ${target.kind} target "${target.arg}". Use an explicit path under data/sentiment/body/.`,
+          )
+        }
+        if (!allowedSentimentBodyRoot(resolved, workspace)) {
+          throw new Error(
+            `Sentiment Agent bash write blocked: ${resolved} is outside allowed sentiment body roots. Write outputs under ${allowedHint}.`,
+          )
+        }
+      }
+    })
+
+    const assertSentimentAgentReads = Effect.fn("ShellTool.assertSentimentAgentReads")(function* (
+      ctx: Tool.Context,
+      root: Node,
+      cwd: string,
+      ps: boolean,
+      shell: string,
+    ) {
+      if (ctx.agent !== "sentiment_agent") return
+
+      if (hasEnvironmentDumpCommand(root, ps) || referencesSensitiveEnv(root.text)) {
+        throw new Error(
+          "Sentiment Agent bash read blocked: commands may not print environment variables or credential-like env references.",
+        )
+      }
+
+      const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
+      const allowedHint = workspace ? algoDir(workspace) : "the session workspace directory"
+
+      for (const node of commands(root)) {
+        for (const target of commandReadArgs(parts(node), ps)) {
+          const resolved = yield* argPath(target.arg, cwd, ps, shell)
+          if (!resolved) {
+            throw new Error(
+              `Sentiment Agent bash read blocked: could not resolve ${target.kind} target "${target.arg}". Use an explicit path under ${allowedHint}.`,
+            )
+          }
+          if (isDotEnv(resolved)) {
+            throw new Error(
+              `Sentiment Agent bash read blocked: ${target.kind} may not read ${path.basename(resolved)} because env files are not model-visible.`,
+            )
+          }
+          if (isHostInterpreterPath(resolved)) continue
+          if (!allowedWorkspaceReadRoot(resolved, workspace)) {
+            throw new Error(
+              `Sentiment Agent bash read blocked: ${resolved} is outside allowed workspace roots. Use webfetch/websearch for external sources and inspect artifacts under ${workspace ? workspaceSentimentBodyRoot(workspace) : "the session workspace data/sentiment/body/ directory"}.`,
+            )
+          }
+        }
+      }
+    })
+
     const assertDataExtractorReads = Effect.fn("ShellTool.assertDataExtractorReads")(function* (
       ctx: Tool.Context,
       root: Node,
@@ -962,12 +1132,13 @@ export const ShellTool = Tool.define(
           runtimeEnv.FINNY_MANAGED_PYTHON = Python.PATHS.PY_BIN
         }
       }
-      return {
+      const merged = {
         ...fileEnv,
         ...process.env,
         ...runtimeEnv,
         ...extra.env,
       }
+      return ctx.agent === "sentiment_agent" ? sentimentShellEnv(merged) : merged
     })
 
     const run = Effect.fn("ShellTool.run")(function* (
@@ -1189,6 +1360,8 @@ export const ShellTool = Tool.define(
                   yield* assertDataExtractorReads(ctx, tree.rootNode, cwd, ps, shell)
                   yield* assertDataExtractorProviderPreflight(ctx, params.command, env)
                   yield* assertSecAgentWrites(ctx, tree.rootNode, cwd, ps, shell)
+                  yield* assertSentimentAgentWrites(ctx, tree.rootNode, cwd, ps, shell)
+                  yield* assertSentimentAgentReads(ctx, tree.rootNode, cwd, ps, shell)
                   if (!containsPath(cwd, instanceCtx)) scan.dirs.add(cwd)
                   yield* ask(ctx, scan, params)
                 }),

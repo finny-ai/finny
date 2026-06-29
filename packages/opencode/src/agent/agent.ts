@@ -22,6 +22,7 @@ import PROMPT_FINNY_PORTFOLIO_BUILDER_RAW from "./prompt/finny-portfolio-builder
 import PROMPT_FINNY_DATA_EXTRACTOR from "./prompt/finny-data-extractor.txt"
 import PROMPT_FINNY_NEWS_AGENT from "./prompt/finny-news-agent.txt"
 import PROMPT_FINNY_SEC_AGENT from "./prompt/finny-sec-agent.txt"
+import PROMPT_FINNY_SENTIMENT_AGENT from "./prompt/finny-sentiment-agent.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
@@ -296,6 +297,14 @@ export const layer = Layer.effect(
           const patterns = [path.join(root, "*/data/sec/*"), path.join(root, "*/data/sec")]
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
+        function finnyUserAlgoSentimentPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const root = algosRoot()
+          const patterns = [
+            path.join(root, "*/data/sentiment/body/*"),
+            path.join(root, "*/data/sentiment/body"),
+          ]
+          return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
+        }
         const finnySessionDataReadAccess = Permission.fromConfig({
           read: finnyUserAlgoDataPatterns(),
           external_directory: finnyUserAlgoDataPatterns(),
@@ -311,6 +320,12 @@ export const layer = Layer.effect(
           write: finnyUserAlgoSecPatterns(),
           edit: finnyUserAlgoSecPatterns(),
           external_directory: finnyUserAlgoSecPatterns(),
+        })
+        const finnySessionSentimentAccess = Permission.fromConfig({
+          read: finnyUserAlgoSentimentPatterns(),
+          write: finnyUserAlgoSentimentPatterns(),
+          edit: finnyUserAlgoSentimentPatterns(),
+          external_directory: finnyUserAlgoSentimentPatterns(),
         })
         const finnyDataAgentAccess = Permission.fromConfig({
           read: "allow",
@@ -334,7 +349,13 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
-              finnyToolBundle(finnyBuildTools, ["data_extractor", "news_agent", "researcher", "sec_agent"]),
+              finnyToolBundle(finnyBuildTools, [
+                "data_extractor",
+                "news_agent",
+                "researcher",
+                "sec_agent",
+                "sentiment_agent",
+              ]),
               Permission.fromConfig({
                 question: "allow",
               }),
@@ -513,6 +534,29 @@ export const layer = Layer.effect(
               user,
               finnySessionSecAccess,
               finnySecretReadDeny,
+            ),
+            mode: "subagent",
+            native: true,
+            hidden: true,
+          },
+          sentiment_agent: {
+            name: "sentiment_agent",
+            description:
+              "Social sentiment subagent. Fetches free/keyless social sentiment and attention sources, writes " +
+              "aggregate-only artifacts under the active algorithm data/sentiment/body/ folder, and returns a " +
+              "concise crowd-positioning brief. Use when Build needs retail attention, meme-flow, crowding, " +
+              "sentiment-reversal, or social-catalyst evidence.",
+            color: "#ec4899",
+            options: {},
+            prompt: PROMPT_FINNY_SENTIMENT_AGENT,
+            permission: Permission.merge(
+              defaults,
+              finnyFileSystemSandbox,
+              finnyToolBundle(["webfetch", "websearch", "bash"]),
+              user,
+              finnySessionSentimentAccess,
+              finnySecretReadDeny,
+              finnyTemplateMissionReadAccess,
             ),
             mode: "subagent",
             native: true,

@@ -138,7 +138,8 @@ function withFinnySubagentContext(
     params.subagent_type !== "data_extractor" &&
     params.subagent_type !== "news_agent" &&
     params.subagent_type !== "researcher" &&
-    params.subagent_type !== "sec_agent"
+    params.subagent_type !== "sec_agent" &&
+    params.subagent_type !== "sentiment_agent"
   )
     return prompt
 
@@ -209,6 +210,44 @@ function withFinnySubagentContext(
       "",
       "Write durable SEC artifacts only under `allowed_sec_dir`. Return `BLOCKED:` when company/person/date scope cannot be resolved.",
       "Every artifact must record SEC URL, accession number, form type, filing date, CIK, and extraction timestamp.",
+      "</finny-subagent-context>",
+      "",
+      prompt,
+    ].join("\n")
+  }
+
+  if (params.subagent_type === "sentiment_agent") {
+    const sentimentDir = path.join(dataDir, "sentiment")
+    const sentimentSymbol = (symbol || "UNKNOWN").toUpperCase().replace(/[^A-Z0-9._-]/g, "_")
+    const sentimentStart = (dataWindow.start || "START").replace(/[^A-Z0-9._-]/gi, "_")
+    const sentimentEnd = (dataWindow.end || "END").replace(/[^A-Z0-9._-]/gi, "_")
+    const sentimentArtifactStem = `${sentimentSymbol}_${sentimentStart}_${sentimentEnd}_sentiment`
+    const expectedSentimentCsvPath = path.join(sentimentDir, "body", `${sentimentArtifactStem}.csv`)
+    const expectedSentimentManifestPath = path.join(sentimentDir, "body", `${sentimentArtifactStem}.manifest.json`)
+    return [
+      "<finny-subagent-context>",
+      "Authoritative runtime context. It overrides conflicting task wording.",
+      "Social sentiment request context:",
+      field("workspace_slug", workspace),
+      field("workspace_name", humanNameOf(workspace)),
+      field("requested_algorithm_name", algorithmName),
+      field("requested_symbol", symbol),
+      field("requested_interval", interval),
+      field("requested_asset_class", assetClass),
+      field("date window start as absolute YYYY-MM-DD", dataWindow.start),
+      field("date window end as absolute YYYY-MM-DD", dataWindow.end),
+      field("allowed_sentiment_dir", sentimentDir),
+      field("expected_sentiment_csv_path", expectedSentimentCsvPath),
+      field("expected_sentiment_manifest_path", expectedSentimentManifestPath),
+      dataWindow.adjusted
+        ? "- window_adjustment: intraday rolling window capped at the last fully completed UTC date; do not require future social data from the current UTC day."
+        : undefined,
+      "",
+      "When useful evidence is available, write the aggregate CSV exactly to `expected_sentiment_csv_path` and the manifest exactly to `expected_sentiment_manifest_path`.",
+      "Do not use alternate names such as `aggregate.csv`, `manifest.json`, dated snapshots, lowercase symbols, or source-specific filenames.",
+      "Write aggregate CSV and manifest artifacts only under `allowed_sentiment_dir/body/`. Do not create or write `data/sentiment/headlines/`.",
+      "Raw social post/comment text must remain transient and must not be persisted, even if the user asks for local-only storage.",
+      "Return artifact_paths that point to files under `allowed_sentiment_dir/body/`.",
       "</finny-subagent-context>",
       "",
       prompt,
@@ -432,7 +471,7 @@ export const TaskTool = Tool.define(
         const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
         const childWorkspace = await getSessionWorkspace(nextSession.id).catch(() => null)
         let workspace = parentWorkspace ?? childWorkspace
-        if (!workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent")) {
+        if (!workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent" || params.subagent_type === "sentiment_agent")) {
           workspace = (await bootstrapWorkspace(ctx.sessionID, params.prompt).catch(() => undefined))?.slug ?? null
         }
         if (workspace) {
@@ -473,7 +512,7 @@ export const TaskTool = Tool.define(
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
         }
         let workspaceContext: WorkspaceRequestContext | undefined
-        if (workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent")) {
+        if (workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent" || params.subagent_type === "sentiment_agent")) {
           workspaceContext = yield* Effect.promise(() =>
             syncWorkspaceRequestContext({
               sessionID: ctx.sessionID,
@@ -687,8 +726,8 @@ export const TaskTool = Tool.define(
     const run = Effect.fn("TaskTool.execute")(function* (params: TaskParameters, ctx: Tool.Context) {
       if (!isBatchParameters(params)) return yield* runSingle(params, ctx)
 
-      if (params.tasks.length < 2 || params.tasks.length > 3) {
-        return yield* Effect.fail(new Error("Task batch mode requires two or three foreground tasks"))
+      if (params.tasks.length < 2 || params.tasks.length > 4) {
+        return yield* Effect.fail(new Error("Task batch mode requires two to four foreground tasks"))
       }
       const subagentTypes = params.tasks.map((task) => task.subagent_type)
       if (new Set(subagentTypes).size !== subagentTypes.length) {
@@ -698,7 +737,7 @@ export const TaskTool = Tool.define(
       const existingWorkspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
       if (
         !existingWorkspace &&
-        subagentTypes.some((type) => ["data_extractor", "news_agent", "researcher", "sec_agent"].includes(type))
+        subagentTypes.some((type) => ["data_extractor", "news_agent", "researcher", "sec_agent", "sentiment_agent"].includes(type))
       ) {
         const bootstrapped = yield* Effect.promise(() =>
           bootstrapWorkspace(

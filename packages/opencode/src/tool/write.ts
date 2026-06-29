@@ -15,7 +15,11 @@ import { trimDiff } from "./edit"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { resolveReadPath } from "./read"
-import { assertResearcherWorkspaceNewsPath, assertSecAgentWorkspaceSecPath } from "./finny-workspace-guard"
+import {
+  assertResearcherWorkspaceNewsPath,
+  assertSecAgentWorkspaceSecPath,
+  assertSentimentAgentWorkspacePath,
+} from "./finny-workspace-guard"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -43,6 +47,7 @@ export const WriteTool = Tool.define(
           const filepath = resolveReadPath(params.filePath, instance.directory, instance.worktree)
           yield* assertResearcherWorkspaceNewsPath(ctx, filepath, "write")
           yield* assertSecAgentWorkspaceSecPath(ctx, filepath, "write")
+          yield* assertSentimentAgentWorkspacePath(ctx, filepath, "write")
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)

@@ -723,6 +723,16 @@ describe("tool.task", () => {
                   prompt: "Research current SPY equity 15m execution context.",
                   subagent_type: "news_agent",
                 },
+                {
+                  description: "Research SPY sentiment",
+                  prompt: "Research SPY equity 15m social sentiment from 2026-03-21 to 2026-06-18.",
+                  subagent_type: "sentiment_agent",
+                },
+                {
+                  description: "Research SPY SEC filings",
+                  prompt: "Research SPY ETF SEC filings and holdings context.",
+                  subagent_type: "sec_agent",
+                },
               ],
             },
             {
@@ -737,25 +747,39 @@ describe("tool.task", () => {
             },
           )
 
-          expect(seenAgents.sort()).toEqual(["data_extractor", "news_agent"])
+          expect(seenAgents.sort()).toEqual(["data_extractor", "news_agent", "sec_agent", "sentiment_agent"])
           expect(result.output).toContain('<task_batch state="completed">')
           expect(result.output).toContain('subagent_type="data_extractor"')
           expect(result.output).toContain("BLOCKED: data_extractor returned incomplete evidence artifacts")
           expect(result.output).toContain('subagent_type="news_agent"')
+          expect(result.output).toContain('subagent_type="sec_agent"')
+          expect(result.output).toContain('subagent_type="sentiment_agent"')
           expect(result.output).toContain("done")
           expect(result.metadata.batch).toBe(true)
-          expect(result.metadata.subagents).toEqual([
-            expect.objectContaining({
-              subagentType: "data_extractor",
-              description: "Extract SPY data",
-              state: "completed",
-            }),
-            expect.objectContaining({
-              subagentType: "news_agent",
-              description: "Research SPY news",
-              state: "completed",
-            }),
-          ])
+          expect(result.metadata.subagents).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                subagentType: "data_extractor",
+                description: "Extract SPY data",
+                state: "completed",
+              }),
+              expect.objectContaining({
+                subagentType: "news_agent",
+                description: "Research SPY news",
+                state: "completed",
+              }),
+              expect.objectContaining({
+                subagentType: "sec_agent",
+                description: "Research SPY SEC filings",
+                state: "completed",
+              }),
+              expect.objectContaining({
+                subagentType: "sentiment_agent",
+                description: "Research SPY sentiment",
+                state: "completed",
+              }),
+            ]),
+          )
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -911,6 +935,65 @@ describe("tool.task", () => {
           expect(text).toContain(`- workspace_news_dir: ${path.join(algoDir(slug), "data", "news")}`)
           expect(text).toContain("at most one compact news/execution/provenance/risk note")
           expect(text).toContain("Do not write to `algos/_template/data/news`")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("injects authoritative workspace context for sentiment_agent tasks", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "aapl-sentiment-breakout.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          yield* def.execute(
+            {
+              description: "AAPL sentiment check",
+              prompt: "Research AAPL equity 1d social sentiment from 2026-06-01 to 2026-06-29.",
+              subagent_type: "sentiment_agent",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("<finny-subagent-context>")
+          expect(text).toContain("Social sentiment request context:")
+          expect(text).toContain("- requested_symbol: AAPL")
+          expect(text).toContain("- requested_interval: 1d")
+          expect(text).toContain("- requested_asset_class: equity")
+          expect(text).toContain("- date window start as absolute YYYY-MM-DD: 2026-06-01")
+          expect(text).toContain("- date window end as absolute YYYY-MM-DD: 2026-06-29")
+          expect(text).toContain(`- allowed_sentiment_dir: ${path.join(algoDir(slug), "data", "sentiment")}`)
+          expect(text).toContain(
+            `- expected_sentiment_csv_path: ${path.join(algoDir(slug), "data", "sentiment", "body", "AAPL_2026-06-01_2026-06-29_sentiment.csv")}`,
+          )
+          expect(text).toContain(
+            `- expected_sentiment_manifest_path: ${path.join(algoDir(slug), "data", "sentiment", "body", "AAPL_2026-06-01_2026-06-29_sentiment.manifest.json")}`,
+          )
+          expect(text).toContain("allowed_sentiment_dir/body/")
+          expect(text).toContain("Do not use alternate names")
+          expect(text).toContain("must not be persisted")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

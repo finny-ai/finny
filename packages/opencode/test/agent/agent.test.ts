@@ -61,6 +61,7 @@ it.instance("returns default native agents when no config", () =>
     expect(names).toContain("news_agent")
     expect(names).toContain("researcher")
     expect(names).toContain("sec_agent")
+    expect(names).toContain("sentiment_agent")
     expect(names).toContain("portfolio_builder")
     expect(names).toContain("general")
     expect(names).toContain("explore")

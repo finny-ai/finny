@@ -51,6 +51,10 @@ const researcherCtx = {
   ...ctx,
   agent: "researcher",
 }
+const sentimentCtx = {
+  ...ctx,
+  agent: "sentiment_agent",
+}
 
 const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Layer.mergeAll(
@@ -155,6 +159,18 @@ const asks = () => {
 }
 
 describe("tool.read external_directory permission", () => {
+  it.live("allows unbound sentiment_agent reads outside repo-local sentiment data", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const mission = path.join(dir, "algos", "_template", "mission.md")
+      yield* put(mission, "---\nname: template\n---\n")
+      yield* Effect.promise(() => clearSessionWorkspace(sentimentCtx.sessionID).catch(() => {}))
+
+      const result = yield* exec(dir, { filePath: mission }, sentimentCtx)
+      expect(result.output).toContain("name: template")
+    }),
+  )
+
   it.live("allows reading absolute path inside project directory", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
