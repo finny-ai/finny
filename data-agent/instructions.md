@@ -73,15 +73,26 @@ application default. Prefer the configured value, then try `https://api.binance.
 Use the source requested in the task or mission when it is explicit. Otherwise:
 
 1. Use enterprise/internal instructions when a matching source is configured.
-2. Use Binance public klines for crypto spot pairs such as `BTC/USD`.
+2. Use Binance public klines for crypto spot pairs such as `BTC/USD`. Load
+   `finny-provider-binance` before the first Binance fetch when the skill tool
+   is available.
 3. For **equities and ETFs**, when both `ALPACA_API_KEY_ID` and
    `ALPACA_API_SECRET_KEY` are present in the bash environment, **try Alpaca
    first** before any public fallback.
-4. Use yfinance for public equities, ETFs, futures roots, and fallback public
+4. For **equities and ETFs**, when `POLYGON_API_KEY` is present, use Polygon
+   aggregate bars after Alpaca and before yfinance. The free Stocks Basic plan
+   is useful for end-of-day aggregate bars; intraday requests may require a paid
+   Stocks tier, so record entitlement/lookback errors and fall back instead of
+   treating a short Polygon response as full-window evidence. Load
+   `finny-provider-polygon` before the first Polygon fetch when the skill tool
+   is available.
+5. Use yfinance for public equities, ETFs, futures roots, and fallback public
    OHLCV when Alpaca is unavailable, fails, or returns unusable coverage.
    If Python `yfinance` is unavailable, use the same Yahoo source through the
    v8 chart HTTP API with Python stdlib `urllib.request`; do not try the v7 CSV
-   download endpoint first because it often requires Yahoo auth.
+   download endpoint first because it often requires Yahoo auth. Load
+   `finny-provider-yfinance` before the first yfinance/Yahoo fetch when the
+   skill tool is available.
 
 If a selected source is unavailable because a CLI, Python package, or credential is
 missing, report that source error and try the next appropriate configured source.
@@ -115,13 +126,18 @@ When both are set:
      gaps) that make the window unusable
 3. If Alpaca fails (missing creds, HTTP/auth error, empty window, partial
    coverage for a full-window request, or failed verification), **record the
-   Alpaca attempt and fall back to yfinance**.
-4. If yfinance also cannot cover the requested window, return
-   `BLOCKED: requested evidence window unavailable` with both source attempts.
+   Alpaca attempt and fall back to Polygon when `POLYGON_API_KEY` is available,
+   otherwise yfinance**.
+4. If Polygon fails because the free plan does not cover the requested interval,
+   date range, or entitlement, record the Polygon attempt and fall back to yfinance
+   only when yfinance can provide usable coverage.
+5. If the attempted sources cannot cover the requested window, return
+   `BLOCKED: requested evidence window unavailable` with all source attempts.
 
-When Alpaca credentials are **not** present, skip straight to yfinance (and other
+When Alpaca credentials are **not** present, try Polygon first when
+`POLYGON_API_KEY` is present; otherwise skip straight to yfinance (and other
 configured sources) using the rules below. Do not return a yfinance-only blocker
-before checking whether Alpaca credentials exist in bash.
+before checking whether Alpaca or Polygon credentials exist in bash.
 
 ## Provider Capability Preflight
 
@@ -134,6 +150,10 @@ with known source limits. This is a guardrail, not a backtest shortcut.
   paid/internal sources are unavailable or have already failed verification**.
 - When Alpaca credentials are present for an equity/ETF request, **do not**
   hard-stop on the yfinance 60-day intraday limit before attempting Alpaca.
+- When `POLYGON_API_KEY` is present for an equity/ETF request, **do not**
+  hard-stop on the yfinance 60-day intraday limit before attempting Polygon.
+  If the key is on the free Stocks Basic plan and Polygon rejects intraday bars,
+  record that as `provider_limit` or `auth_entitlement` and continue fallback.
 - If Alpaca, Polygon, Oracle, Bloomberg, or an internal HTTP source is configured
   for the requested market and can cover the window, use that source first.
 - If only a limited public fallback remains after Alpaca (or other configured
@@ -597,12 +617,152 @@ positive intraday timestamp delta must not be smaller than the requested interva
 for example, a `15m` request containing 5-minute deltas is unusable even if its
 filename and manifest say `15m`. Echo the exact CSV and manifest paths that were
 read back; do not reconstruct or retype them from memory. If verification fails, delete or
-ignore the Alpaca artifact for the final manifest and retry with yfinance. Record
-`source_attempts: ["alpaca", "yfinance"]` and the fallback reason in the return
-summary.
+ignore the Alpaca artifact for the final manifest and retry with Polygon when
+configured, otherwise yfinance. Record `source_attempts` and the fallback reason
+in the return summary.
 
 For options, use Alpaca's options bars endpoint and OCC-formatted symbols. Add the
 exact option symbol mapping to this file when an enterprise fork needs options data.
+
+## Polygon Market Data
+
+Use Polygon aggregate bars for equities and ETFs when `POLYGON_API_KEY` is present.
+For the initial free-plan integration, treat Polygon as the preferred configured
+fallback after Alpaca and before yfinance. Polygon's free Stocks Basic plan is
+best suited for end-of-day aggregate bars. Intraday bars may require a paid Stocks
+tier; if Polygon returns an entitlement, plan, forbidden, or no-access error,
+record the exact HTTP status and short error message in `source_attempts`, then
+continue to the next fallback. Do not mark a free-plan entitlement failure as a
+successful partial extraction.
+
+Required variable:
+
+```text
+POLYGON_API_KEY=
+```
+
+Map the requested interval to Polygon aggregate parameters: `1d` -> `1/day`,
+`1h` -> `1/hour`, `30m` -> `30/minute`, `15m` -> `15/minute`, `5m` -> `5/minute`,
+and `1m`/`1min` -> `1/minute`. Keep `adjusted=true`, `sort=asc`, and
+`limit=50000`. If more rows may exist, follow Polygon pagination through
+`next_url`, adding `apiKey` when the returned URL omits it, until no next page is
+available.
+
+Example: SPY daily bars.
+
+```bash
+"${FINNY_PYTHON_BIN:-python3}" <<'PY'
+import csv, datetime, json, os, sys, urllib.error, urllib.parse, urllib.request
+
+symbol = "SPY"
+requested_interval = "1d"
+requested_start = "2024-01-01"
+requested_end = "2024-12-31"
+requested_asset_class = "equity"
+requested_algorithm_name = os.environ.get("FINNY_STRATEGY_WORKSPACE_NAME", "polygon-demo")
+run_id = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ") + "-polygon-spy"
+out = "stock/SPY_1d_2024-01-01_2024-12-31.csv"
+manifest_out = out.replace(".csv", ".manifest.json")
+
+interval_map = {
+    "1d": ("1", "day"),
+    "1day": ("1", "day"),
+    "1h": ("1", "hour"),
+    "1hour": ("1", "hour"),
+    "30m": ("30", "minute"),
+    "30min": ("30", "minute"),
+    "15m": ("15", "minute"),
+    "15min": ("15", "minute"),
+    "5m": ("5", "minute"),
+    "5min": ("5", "minute"),
+    "1m": ("1", "minute"),
+    "1min": ("1", "minute"),
+}
+multiplier, timespan = interval_map[requested_interval.lower()]
+api_key = os.environ["POLYGON_API_KEY"]
+base = (
+    f"https://api.polygon.io/v2/aggs/ticker/{urllib.parse.quote(symbol)}/range/"
+    f"{multiplier}/{timespan}/{requested_start}/{requested_end}"
+)
+params = {"adjusted": "true", "sort": "asc", "limit": "50000", "apiKey": api_key}
+url = base + "?" + urllib.parse.urlencode(params)
+rows = []
+attempts = []
+
+while url:
+    try:
+        with urllib.request.urlopen(url, timeout=60) as resp:
+            payload = json.load(resp)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", "replace")[:500]
+        try:
+            message = json.loads(body).get("error") or json.loads(body).get("message") or body
+        except Exception:
+            message = body
+        raise SystemExit(f"polygon failed http_status={e.code}: {message}")
+    status = str(payload.get("status", "")).upper()
+    if status not in {"OK", "DELAYED"}:
+        message = payload.get("error") or payload.get("message") or status or "unknown polygon response"
+        raise SystemExit(f"polygon failed status={status}: {message}")
+    rows.extend(payload.get("results") or [])
+    next_url = payload.get("next_url")
+    if next_url and "apiKey=" not in next_url:
+        next_url += ("&" if "?" in next_url else "?") + urllib.parse.urlencode({"apiKey": api_key})
+    url = next_url
+
+if not rows:
+    raise SystemExit("polygon returned no bars for requested window")
+
+rows = sorted({int(r["t"]): r for r in rows}.values(), key=lambda r: int(r["t"]))
+with open(out, "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(["timestamp", "open", "high", "low", "close", "volume"])
+    for r in rows:
+        ts = datetime.datetime.fromtimestamp(int(r["t"]) / 1000, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
+        w.writerow([ts, r["o"], r["h"], r["l"], r["c"], r.get("v", 0)])
+
+actual_start = datetime.datetime.fromtimestamp(int(rows[0]["t"]) / 1000, tz=datetime.timezone.utc).date().isoformat()
+actual_end = datetime.datetime.fromtimestamp(int(rows[-1]["t"]) / 1000, tz=datetime.timezone.utc).date().isoformat()
+coverage = "complete" if actual_start <= requested_start and actual_end >= requested_end else "partial"
+manifest = {
+    "schema_version": 1,
+    "source": "polygon",
+    "symbols": [symbol],
+    "interval": requested_interval,
+    "requested_symbol": symbol,
+    "actual_symbol": symbol,
+    "requested_interval": requested_interval,
+    "actual_interval": requested_interval,
+    "requested_asset_class": requested_asset_class,
+    "actual_asset_class": requested_asset_class,
+    "requested_algorithm_name": requested_algorithm_name,
+    "requested_start": requested_start,
+    "requested_end": requested_end,
+    "actual_start": actual_start,
+    "actual_end": actual_end,
+    "output_path": out,
+    "rows": len(rows),
+    "run_id": run_id,
+    "coverage": coverage,
+    "usable_for_parent": "yes" if coverage == "complete" else "no",
+    "source_attempts": [{"source": "polygon", "status": "ok", "rows": len(rows)}],
+    "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+}
+with open(manifest_out, "w") as f:
+    json.dump(manifest, f, indent=2)
+print(f"wrote {len(rows)} rows to {out} and {manifest_out}")
+PY
+```
+
+If Polygon fails with an entitlement or plan-limit error, do not write a Polygon
+CSV. Return a blocker only when all appropriate fallbacks are exhausted. A useful
+failure summary should include:
+
+```text
+source_attempts: polygon=http_status 403 entitlement/plan limit, yfinance=provider limit
+usable_for_parent: no
+BLOCKED: requested evidence window unavailable
+```
 
 ## Generic HTTP API
 

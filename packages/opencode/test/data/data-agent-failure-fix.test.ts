@@ -3,8 +3,8 @@ import PROMPT_DATA_EXTRACTOR from "../../src/agent/prompt/finny-data-extractor.t
 import PROMPT_BUILD from "../../src/agent/prompt/finny-build.txt"
 
 describe("data_extractor prompt hardening", () => {
-  test("limits tools to read and bash only", () => {
-    expect(PROMPT_DATA_EXTRACTOR).toContain("only tools are `read` and `bash`")
+  test("limits tools to read, skill, and bash only", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("only tools are `read`, `skill`, and `bash`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("Never call `glob`, `write`, `edit`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("removed `finny_extract_data` tool")
   })
@@ -58,6 +58,8 @@ describe("data_extractor prompt hardening", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("BLOCKED: provider limit")
     expect(PROMPT_DATA_EXTRACTOR).toContain("SPY 5m")
     expect(PROMPT_DATA_EXTRACTOR).toContain("try Alpaca first")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("try Polygon before yfinance")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("free-plan entitlement")
   })
 
   test("requires Binance pagination before partial coverage", () => {
@@ -67,6 +69,14 @@ describe("data_extractor prompt hardening", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("BINANCE_BASE_URL")
     expect(PROMPT_DATA_EXTRACTOR).toContain("https://data-api.binance.vision")
     expect(PROMPT_DATA_EXTRACTOR).toContain("require no API key")
+  })
+
+  test("loads provider skills before provider fetches", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("call `skill` exactly once for that provider")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-binance`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-polygon`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-yfinance`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("before the first provider fetch")
   })
 })
 

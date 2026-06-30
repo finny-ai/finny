@@ -257,6 +257,70 @@ describe("validateDataExtractorTaskText", () => {
     expect(result.text).toContain("usable_for_parent: yes")
   })
 
+  test("accepts Polygon aggregate evidence for equity CSV manifests", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-polygon-"))
+    const slug = "spy-polygon-daily"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "stock")
+    await fs.mkdir(dataDir, { recursive: true })
+    const csvRel = "stock/SPY_1d_2024-01-02_2024-01-03.csv"
+    const manifestRel = "stock/SPY_1d_2024-01-02_2024-01-03.manifest.json"
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2024-01-02T05:00:00Z,470.00,475.00,468.00,474.00,1000000",
+        "2024-01-03T05:00:00Z,474.00,476.00,471.00,472.00,1100000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "polygon",
+        symbols: ["SPY"],
+        interval: "1d",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2024-01-02",
+        requested_end: "2024-01-03",
+        actual_start: "2024-01-02",
+        actual_end: "2024-01-03",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "polygon-run-1",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+
+    const digest = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2024-01-02",
+      "requested_end: 2024-01-03",
+      "actual_start: 2024-01-02",
+      "actual_end: 2024-01-03",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: polygon-run-1",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+  })
+
   test("accepts Binance numeric epoch millisecond timestamps in crypto CSV evidence", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-binance-epoch-"))
     const slug = "btc-15m-momentum"

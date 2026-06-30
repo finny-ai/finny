@@ -177,6 +177,8 @@ function withFinnySubagentContext(
       field("mission_path when known", path.join(workspacePath, "mission.md")),
       field("allowed_data_dir when known", dataDir),
       "- cookbook_path: data-agent/instructions.md",
+      "- provider_skill_policy: after selecting a provider, load the matching provider skill before the first provider fetch when available.",
+      "- provider_skill_map: binance=finny-provider-binance; polygon/massive=finny-provider-polygon; yfinance/yahoo=finny-provider-yfinance.",
       dataWindow.adjusted
         ? "- window_adjustment: intraday rolling window capped at the last fully completed UTC date; do not require future bars from the current UTC day."
         : undefined,

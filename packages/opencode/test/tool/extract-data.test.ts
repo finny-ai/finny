@@ -75,12 +75,14 @@ describe("data_extractor subagent", () => {
         )
         const hasBashAllow = info.permission.some((r) => r.permission === "bash" && r.action === "allow")
         const hasReadAllow = info.permission.some((r) => r.permission === "read" && r.action === "allow")
+        const hasSkillAllow = info.permission.some((r) => r.permission === "skill" && r.action === "allow")
         const hasRemovedDataBashAllow = info.permission.some(
           (r) => r.permission === "finny_data_bash" && r.action === "allow",
         )
         expect(hasExtractAllow).toBe(false)
         expect(hasBashAllow).toBe(true)
         expect(hasReadAllow).toBe(true)
+        expect(hasSkillAllow).toBe(true)
         expect(hasRemovedDataBashAllow).toBe(false)
       }),
     ),
@@ -97,6 +99,7 @@ describe("data_extractor subagent", () => {
         expect(Permission.evaluate("read", "algos/_template/mission.md", info.permission).action).toBe("allow")
         expect(Permission.evaluate("external_directory", "/tmp/*", info.permission).action).toBe("allow")
         expect(Permission.evaluate("bash", "curl https://example.com/data.csv", info.permission).action).toBe("allow")
+        expect(Permission.evaluate("skill", "finny-provider-binance", info.permission).action).toBe("allow")
         expect(Permission.evaluate("edit", "algos/_template/data/crypto/btc.md", info.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/_template/data/news/body/btc.md", info.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/_template/mission.md", info.permission).action).toBe("deny")
@@ -171,9 +174,18 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).not.toContain("A/B evaluation")
   })
 
-  test("limits available tools to read and bash", () => {
-    expect(PROMPT_DATA_EXTRACTOR).toContain("only tools are `read` and `bash`")
+  test("limits available tools to read, skill, and bash", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("only tools are `read`, `skill`, and `bash`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("Never call `glob`, `write`, `edit`")
+  })
+
+  test("requires provider skill selection before provider fetches", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Provider-specific skills are available")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("call `skill` exactly once for that provider")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-binance`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-polygon`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("`finny-provider-yfinance`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("matching provider skill name")
   })
 
   test("requires CSV plus manifest and forbids estimated metrics", () => {
@@ -228,11 +240,14 @@ describe("data-agent instructions contract", () => {
     expect(instructions).toContain("## yfinance")
     expect(instructions).toContain("## Binance Public Klines")
     expect(instructions).toContain("## Alpaca Market Data")
+    expect(instructions).toContain("## Polygon Market Data")
     expect(instructions).toContain("## Oracle Read-Only SQL")
     expect(instructions).toContain("ALPACA_API_KEY_ID")
+    expect(instructions).toContain("POLYGON_API_KEY")
     expect(instructions).toContain("${BINANCE_BASE_URL:-https://api.binance.com}/api/v3/klines")
     expect(instructions).toContain("BINANCE_BASE_URL=https://data-api.binance.vision")
     expect(instructions).toContain("https://data.alpaca.markets/v2/stocks/bars")
+    expect(instructions).toContain("https://api.polygon.io/v2/aggs/ticker")
     expect(instructions).toContain("yfinance as yf")
     expect(instructions).not.toContain("finny secret set")
     expect(instructions).toContain("manifest")
@@ -242,7 +257,12 @@ describe("data-agent instructions contract", () => {
     expect(instructions).not.toContain("high >= low >= close >= open")
     expect(instructions).toContain("FINNY_PYTHON_BIN")
     expect(instructions).toContain("Fetch from Alpaca first")
+    expect(instructions).toContain("Polygon aggregate bars")
+    expect(instructions).toContain("finny-provider-binance")
+    expect(instructions).toContain("finny-provider-polygon")
+    expect(instructions).toContain("finny-provider-yfinance")
     expect(instructions).toContain("next_page_token")
+    expect(instructions).toContain("next_url")
     expect(instructions).toContain("fall back to yfinance")
     expect(instructions).toContain("when the provider-capability preflight already proves")
     expect(instructions).toContain("do not make repeated doomed")
@@ -253,6 +273,30 @@ describe("data-agent instructions contract", () => {
     expect(instructions).not.toContain("credential_env_names")
     expect(instructions).not.toContain("finny_extract_data")
     expect(instructions).not.toContain("Legacy Comparison")
+  })
+
+  test("commits project-local provider skills for data sources", async () => {
+    const skillRoot = path.resolve(import.meta.dir, "../../../..", ".opencode/skills")
+    const binance = await Bun.file(path.join(skillRoot, "finny-provider-binance/SKILL.md")).text()
+    const polygon = await Bun.file(path.join(skillRoot, "finny-provider-polygon/SKILL.md")).text()
+    const yfinance = await Bun.file(path.join(skillRoot, "finny-provider-yfinance/SKILL.md")).text()
+
+    expect(binance).toContain("name: finny-provider-binance")
+    expect(binance).toContain("BTC/USD")
+    expect(binance).toContain("limit=1000")
+    expect(binance).toContain("next startTime")
+    expect(binance).toContain('source: "binance"')
+
+    expect(polygon).toContain("name: finny-provider-polygon")
+    expect(polygon).toContain("POLYGON_API_KEY")
+    expect(polygon).toContain("https://api.polygon.io/v2/aggs/ticker")
+    expect(polygon).toContain("adjusted=true")
+    expect(polygon).toContain("entitlement/plan limit")
+
+    expect(yfinance).toContain("name: finny-provider-yfinance")
+    expect(yfinance).toContain("FINNY_PYTHON_BIN")
+    expect(yfinance).toContain("Yahoo v8 chart HTTP API")
+    expect(yfinance).toContain("provider-limit")
   })
 
   test("commits an env template without concrete secret values", async () => {
