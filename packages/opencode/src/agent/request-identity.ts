@@ -70,7 +70,10 @@ export function normalizeSymbol(input?: string): string | undefined {
 /** Canonical interval token: "15min"/"15-minute"/"15 m" → "15m"; "60m"/"1hour" → "1h". */
 export function normalizeInterval(input?: string): string | undefined {
   if (!input) return undefined
-  const m = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i.exec(input.trim())
+  const trimmed = input.trim()
+  if (/\bdaily\b/i.test(trimmed)) return "1d"
+  if (/\bhourly\b/i.test(trimmed)) return "1h"
+  const m = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i.exec(trimmed)
   if (!m) return undefined
   let n = parseInt(m[1]!, 10)
   const unit = m[2]!.toLowerCase()
@@ -144,6 +147,11 @@ function normalizeAssetClass(input?: string): AssetClass | undefined {
 // ── Prompt fact parsing ─────────────────────────────────────────────────────
 
 const INTERVAL_RE = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i
+const BARE_INTERVAL_RE = /\b(daily|hourly)\b/gi
+const BARE_INTERVAL_TIMEFRAME_CONTEXT_RE =
+  /\b(?:bar|bars|candle|candles|chart|charts|cadence|data|frequency|interval|market\s+data|ohlcv|price|prices|resolution|strategy|timeframe|time-frame)\b/i
+const BARE_INTERVAL_RISK_CONTEXT_RE =
+  /\b(?:cap|caps|drawdown|limit|limits|loss|losses|max|maximum|min|minimum|p&l|pnl|profit|profits|return|returns|risk|risking|stop|stops|target|targets|vol|volatility)\b/i
 const REQUESTED_ALGORITHM_NAME_RES = [
   /\b(?:requested_algorithm_name|algorithm\s+name|strategy\s+name)\s*[:=]\s*[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i,
   /\b(?:name\s+it|named|called)\s+[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i,
@@ -155,6 +163,38 @@ function requestedAlgorithmName(prompt: string): string | undefined {
     const match = re.exec(prompt)
     const name = match?.[2] ?? match?.[1]
     if (name) return name.replace(/[.,;:!?]+$/g, "")
+  }
+  return undefined
+}
+
+function promptWords(prompt: string): string[] {
+  return prompt.match(/[A-Za-z0-9$%&]+/g) ?? []
+}
+
+function bareIntervalFromPrompt(prompt: string): string | undefined {
+  BARE_INTERVAL_RE.lastIndex = 0
+  for (const match of prompt.matchAll(BARE_INTERVAL_RE)) {
+    const word = match[1]
+    const index = match.index ?? 0
+    const before = prompt.slice(Math.max(0, index - 40), index)
+    const after = prompt.slice(index + match[0].length, index + match[0].length + 56)
+    const localContext = `${before} ${after}`
+    const immediateContext = [
+      ...promptWords(before)
+        .slice(-2)
+        .map((w) => w.toLowerCase()),
+      ...promptWords(after)
+        .slice(0, 2)
+        .map((w) => w.toLowerCase()),
+    ].join(" ")
+
+    if (BARE_INTERVAL_RISK_CONTEXT_RE.test(immediateContext)) continue
+
+    if (BARE_INTERVAL_TIMEFRAME_CONTEXT_RE.test(localContext)) return normalizeInterval(word)
+
+    // Keep terse prompts like "SOL daily" working without treating common
+    // risk phrases in full sentences as interval requests.
+    if (promptWords(prompt).length <= 4) return normalizeInterval(word)
   }
   return undefined
 }
@@ -193,7 +233,7 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   }
 
   const im = INTERVAL_RE.exec(prompt)
-  if (im) facts.requested_interval = normalizeInterval(im[0])
+  facts.requested_interval = im ? normalizeInterval(im[0]) : bareIntervalFromPrompt(prompt)
 
   const name = requestedAlgorithmName(prompt)
   if (name) facts.requested_algorithm_name = name

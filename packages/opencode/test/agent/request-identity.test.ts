@@ -26,6 +26,8 @@ describe("request identity normalization", () => {
     expect(normalizeInterval("5 m")).toBe("5m")
     expect(normalizeInterval("60m")).toBe("1h")
     expect(normalizeInterval("1 hour")).toBe("1h")
+    expect(normalizeInterval("daily")).toBe("1d")
+    expect(normalizeInterval("hourly")).toBe("1h")
   })
 })
 
@@ -44,6 +46,20 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_symbol).toBe("SPY")
     expect(facts.requested_interval).toBe("5m")
     expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("extracts bare daily interval from terse crypto prompts", () => {
+    const facts = parseRequestFacts("SOL daily")
+    expect(facts.requested_symbol).toBe("SOL")
+    expect(facts.requested_interval).toBe("1d")
+    expect(facts.requested_asset_class).toBe("crypto")
+  })
+
+  test("scopes bare daily interval parsing to timeframe context", () => {
+    expect(parseRequestFacts("SOL daily market data").requested_interval).toBe("1d")
+    expect(parseRequestFacts("Build a SOL daily strategy with max drawdown 10%.").requested_interval).toBe("1d")
+    expect(parseRequestFacts("Build SPY with max daily drawdown 2%.").requested_interval).toBeUndefined()
+    expect(parseRequestFacts("Build SPY with daily risk limit 2%.").requested_interval).toBeUndefined()
   })
 
   test("preserves crypto pair recognition inside compact slugs", () => {

@@ -115,7 +115,7 @@ Follow this order exactly. Do not call `finny_algorithm_scaffold` or `finny_algo
 12. If strict data quality fails, stop and report the exact blocker; never say
    ready/backtested. Offer next steps in this order: verify candles/provider,
    approved window/interval/provider change, explicit research-only repair. For provider lookback limits, report requested vs available coverage and no metrics produced.
-13. If a completed backtest has `return <= 0`, Sharpe <= 0, or `Verdict: failed`, do not present the build as complete. Read `failure_diagnosis` before revising: `zero_trades`/`sizing_failure` → fix sizing; `strategy_loss` → change signal/risk/exit (engine ran; do NOT blame data/backtest); `strategy_exception` → fix state/warmup/broker; blockers → no metrics. Report classification; never ask backtest vs strategy when metrics exist. Rerun until positive ROI/nonnegative Sharpe or a hard blocker stops the loop.
+13. If a completed backtest has `return <= 0`, Sharpe <= 0, or `Verdict: failed`, do not present the build as complete. Read `failure_diagnosis` before revising: `zero_trades` -> fix warmup, entry predicates, lifetime trade gates, and minimum-size filters; `sizing_failure` -> fix fractional/cash-capped sizing; `strategy_loss` -> change signal/risk/exit (engine ran; do NOT blame data/backtest); `strategy_exception` -> fix state/warmup/broker; blockers -> no metrics. Report classification; never ask backtest vs strategy when metrics exist. Rerun until positive ROI/nonnegative Sharpe or a hard blocker stops the loop.
 14. If the first positive run looks promising, optionally walk-forward.
    Report only metrics returned by tool output. Describe walk-forward by its
    verdict line: if it says FAILED, the strategy failed walk-forward — never
@@ -204,19 +204,45 @@ Rules:
 
 Do this arithmetic BEFORE every save; put the numbers in `reasoning`:
 
-1. Warmup: bars = window ÷ interval; engine intervals top out at `1d`, so
+1. Interval integrity: preserve the user/runtime interval in config, mission,
+   subagent prompts, and backtest calls. Bare "daily" means `1d`; do not turn
+   daily requests into `1h` or describe a daily strategy as intraday. If the
+   data manifest says `requested_interval: 1d`, the saved config must also use
+   `interval: "1d"`.
+2. Warmup: bars = window ÷ interval; engine intervals top out at `1d`, so
    multi-day bars aggregate in-strategy — divide again by that factor (6mo of
    1d ≈ 180 bars; 5-day bars → 36). The longest indicator lookback must fit
    in ≤ ~1/3 of the effective bars (SMA(50) on 36 bars never warms up, zero
    trades). If it doesn't fit: shorten lookbacks, extend the window, or ask.
-2. Sizing at the real price: qty = capital × alloc% ÷ price (e.g. $10,000 ×
+3. Entry-condition reachability: before saving, explain why the first entry
+   predicate can fire in the requested window. Do not stack strict filters
+   (RSI extreme + crossover + volatility spike + volume gate + one-trade
+   lifetime cap) unless the evidence shows enough opportunities. For bullish
+   RSI mean reversion, prefer an actual cross such as
+   `prior_rsi <= oversold and current_rsi > oversold`; avoid "current RSI must
+   stay below 30 plus volatility must exceed X" unless the data summary supports
+   it. `max_trades` is a concurrent/open-position limit unless the user asked
+   for a lifetime cap; a lifetime `trades_count < 1` can create one attempted
+   trade and then suppress the rest of the backtest.
+   If the user supplied an entry signal, do not add extra hard entry filters
+   (SMA trend gates, volume gates, volatility gates, session gates) unless the
+   user explicitly requested them or the evidence shows the combined predicate
+   fires enough times. Document those as caveats instead of blockers.
+   `GUARD_NEVER_BINDING` is a blocking validator result, never an expected
+   warning. Do not rationalize it. Remove the extra hard filter first, then
+   relax thresholds if needed, and save again.
+4. Sizing at the real price: qty = capital × alloc% ÷ price (e.g. $10,000 ×
    10% ÷ $60,000 = 0.016 BTC). When qty < 1 whole unit: crypto stays
    fractional (`round(qty, 6)`) — NEVER `int(qty)` (floors to 0 → zero
    trades) and NEVER `max(1, ...)` (submits a whole unit that can cost more
    than the entire account, so every order is rejected for insufficient
    margin; no alloc % fixes the clamp). Whole-share assets: computed qty of
    0 means skip the trade, not a forced 1-share minimum.
-3. Cap order notional at equity (or declared max leverage) before buy/sell.
+5. If using stop-distance risk sizing, final crypto qty must still be
+   cash-capped: `qty = round(min(risk_qty, cash_qty), 6)`, where
+   `risk_qty = risk_amount / stop_dist` and
+   `cash_qty = allowed_notional / price`. Skip when `qty <= 0`.
+6. Cap order notional at equity (or declared max leverage) before buy/sell.
 
 ## Save Contract
 
@@ -231,7 +257,7 @@ For new algorithms include `mission`, `prefs`, and `decisions`.
 
 `mission` must be a complete `schema_version: 3` `mission.md`:
 - Include all required YAML frontmatter fields: `schema_version` (3), `name`, `status`, `created`, `hypothesis`, `scope` (asset_class, universe, horizon), `strategy` (bar_interval, type, direction, entry_signal, risk_profile, max_drawdown_pct, backtest_window, success_metric), `exit_conditions`, and `questionnaire` (all Core 8 records).
-- Use save-contract enum values exactly: `status: research`; equity scope is `asset_class: equities`. Quote YAML string values that contain colons.
+- Use save-contract enum values exactly: `status: research`; equity scope is `asset_class: equities`; daily strategies use `scope.horizon: days`; long-only strategies use `strategy.direction: long`. Never emit invalid synonyms such as `horizon: short_term` or `direction: long_only`. Quote YAML string values that contain colons.
 - YAML safety is mandatory: frontmatter prose that may contain `:`, `#`, `{}`, `[]`, commas, or multiple sentences must use block scalar `|`/`>-`, especially `hypothesis`, `strategy.entry_signal`, `strategy.risk_profile`, `strategy.success_metric`, `exit_conditions`, and long questionnaire answers; never put colon-bearing prose on the same line as a YAML key.
 - Each questionnaire record must have `id`, `question`, `answer`, and `status`.
 - Use these exact Core 8 `questionnaire[].id` values once each and no others: `market_universe`, `timeframe_bar_interval`, `strategy_family`, `directional_thesis_regime`, `entry_signal_idea`, `exit_invalidation_rules`, `risk_tolerance_max_drawdown`, `backtest_window_success_metric`.
