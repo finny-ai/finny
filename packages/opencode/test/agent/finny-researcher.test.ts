@@ -63,16 +63,16 @@ describe("news_agent subagent", () => {
       expect(Permission.evaluate("webfetch", "", info!.permission).action).toBe("allow")
       expect(Permission.evaluate("websearch", "", info!.permission).action).toBe("allow")
       expect(Permission.evaluate("finny_discord_read", "", info!.permission).action).toBe("allow")
-      expect(Permission.evaluate("read", "algos/_template/data/news/body/btc.md", info!.permission).action).toBe(
+      expect(Permission.evaluate("read", "algos/_template/data/news/btc.md", info!.permission).action).toBe(
         "allow",
       )
-      expect(Permission.evaluate("edit", "algos/_template/data/news/body/btc.md", info!.permission).action).toBe(
+      expect(Permission.evaluate("edit", "algos/_template/data/news/btc.md", info!.permission).action).toBe(
         "allow",
       )
       expect(Permission.evaluate("read", "algos/_template/mission.md", info!.permission).action).toBe("allow")
       expect(Permission.evaluate("edit", "algos/_template/mission.md", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("edit", "algos/_template/data/crypto/btc.md", info!.permission).action).toBe("deny")
-      expect(Permission.evaluate("read", "algos/live-strategy/data/news/body/btc.md", info!.permission).action).toBe(
+      expect(Permission.evaluate("read", "algos/live-strategy/data/news/btc.md", info!.permission).action).toBe(
         "deny",
       )
       expect(Permission.evaluate("bash", "", info!.permission).action).toBe("deny")
@@ -136,7 +136,8 @@ describe("news_agent prompt contract", () => {
     expect(override).toContain("directly relevant current news/catalysts")
     expect(override).toContain("data provenance")
     expect(override).toContain("slippage/spreads")
-    expect(override).toContain("workspace_news_dir/body/")
+    expect(override).toContain("directly under `workspace_news_dir`")
+    expect(override).not.toContain("workspace_news_dir/body/")
     expect(override).not.toContain("every relevant piece of information")
     expect(override).not.toContain("Headlines file: `headlines/<YYYY-MM-DD>.md`")
   })

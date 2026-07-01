@@ -101,7 +101,7 @@ describe("data_extractor subagent", () => {
         expect(Permission.evaluate("bash", "curl https://example.com/data.csv", info.permission).action).toBe("allow")
         expect(Permission.evaluate("skill", "finny-provider-binance", info.permission).action).toBe("allow")
         expect(Permission.evaluate("edit", "algos/_template/data/crypto/btc.md", info.permission).action).toBe("deny")
-        expect(Permission.evaluate("edit", "algos/_template/data/news/body/btc.md", info.permission).action).toBe("deny")
+        expect(Permission.evaluate("edit", "algos/_template/data/news/btc.md", info.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/_template/mission.md", info.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/_template/README.md", info.permission).action).toBe("deny")
         expect(Permission.evaluate("edit", "algos/live-strategy/data/crypto/btc.md", info.permission).action).toBe(

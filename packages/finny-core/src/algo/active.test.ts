@@ -14,7 +14,7 @@ import {
   isSlug,
   humanNameOf,
 } from "./index"
-import { DATA_NEWS_BODY_DIR, DATA_NEWS_HEADLINES_DIR, MISSION_FILE } from "./schemas"
+import { DATA_SUBDIRS, MISSION_FILE } from "./schemas"
 
 const MISSION = `---
 schema_version: 2
@@ -172,8 +172,10 @@ describe("ensureAlgoWorkspace", () => {
     const parsed = parseMission(missionRaw)
     expect(parsed.frontmatter.name).toBe("fresh-algo")
 
-    await fs.stat(path.join(res.dir, DATA_NEWS_HEADLINES_DIR))
-    await fs.stat(path.join(res.dir, DATA_NEWS_BODY_DIR))
+    for (const subdir of DATA_SUBDIRS) {
+      const stat = await fs.stat(path.join(res.dir, subdir))
+      expect(stat.isDirectory()).toBe(true)
+    }
   })
 
   test("same human name creates distinct workspaces by default", async () => {

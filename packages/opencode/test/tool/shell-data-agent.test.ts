@@ -937,14 +937,14 @@ describe("tool.shell data_extractor write guard", () => {
     Effect.gen(function* () {
       const project = yield* tmpdirScoped({
         init: (dir) =>
-          Effect.promise(() => fs.mkdir(path.join(dir, "packages/opencode/data/news/body"), { recursive: true })),
+          Effect.promise(() => fs.mkdir(path.join(dir, "packages/opencode/data/news"), { recursive: true })),
       })
       const next = dataContext()
       yield* sessionWorkspace(next)
       yield* runIn(
         project,
         Effect.gen(function* () {
-          const newsPath = path.join(project, "packages/opencode/data/news/body/spy.md")
+          const newsPath = path.join(project, "packages/opencode/data/news/spy.md")
           const err = yield* fail(
             {
               command: `printf test > ${quote(newsPath)}`,
@@ -1016,7 +1016,7 @@ describe("tool.shell data_extractor write guard", () => {
 })
 
 describe("tool.shell sentiment_agent write guard", () => {
-  live("allows sentiment_agent bash writes under workspace data/sentiment/body", () =>
+  live("allows sentiment_agent bash writes directly under workspace data/sentiment", () =>
     Effect.gen(function* () {
       const project = yield* tmpdirScoped()
       const next = sentimentContext()
@@ -1024,7 +1024,7 @@ describe("tool.shell sentiment_agent write guard", () => {
         next,
         (dir) =>
           fs
-            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment"), { recursive: true })
             .then(() => {}),
         "aapl-sentiment",
       )
@@ -1033,7 +1033,7 @@ describe("tool.shell sentiment_agent write guard", () => {
         Effect.gen(function* () {
           const output = path.join(
             xdg,
-            "finny/algos/aapl-sentiment/data/sentiment/body/AAPL_2026-06-01_2026-06-29_sentiment.csv",
+            "finny/algos/aapl-sentiment/data/sentiment/AAPL_2026-06-01_2026-06-29_sentiment.csv",
           )
           const result = yield* run(
             {
@@ -1049,7 +1049,7 @@ describe("tool.shell sentiment_agent write guard", () => {
     }),
   )
 
-  live("blocks sentiment_agent bash writes outside workspace data/sentiment/body", () =>
+  live("blocks sentiment_agent bash writes to nested sentiment folders", () =>
     Effect.gen(function* () {
       const project = yield* tmpdirScoped()
       const next = sentimentContext()
@@ -1057,7 +1057,7 @@ describe("tool.shell sentiment_agent write guard", () => {
         next,
         (dir) =>
           fs
-            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/headlines"), { recursive: true })
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment"), { recursive: true })
             .then(() => {}),
         "aapl-sentiment",
       )
@@ -1087,7 +1087,7 @@ describe("tool.shell sentiment_agent write guard", () => {
         next,
         (dir) =>
           fs
-            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment"), { recursive: true })
             .then(() => {}),
         "aapl-sentiment",
       )
@@ -1117,7 +1117,7 @@ describe("tool.shell sentiment_agent write guard", () => {
         next,
         (dir) =>
           fs
-            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment/body"), { recursive: true })
+            .mkdir(path.join(dir, "finny/algos/aapl-sentiment/data/sentiment"), { recursive: true })
             .then(() => {}),
         "aapl-sentiment",
       )

@@ -224,8 +224,8 @@ function withFinnySubagentContext(
     const sentimentStart = (dataWindow.start || "START").replace(/[^A-Z0-9._-]/gi, "_")
     const sentimentEnd = (dataWindow.end || "END").replace(/[^A-Z0-9._-]/gi, "_")
     const sentimentArtifactStem = `${sentimentSymbol}_${sentimentStart}_${sentimentEnd}_sentiment`
-    const expectedSentimentCsvPath = path.join(sentimentDir, "body", `${sentimentArtifactStem}.csv`)
-    const expectedSentimentManifestPath = path.join(sentimentDir, "body", `${sentimentArtifactStem}.manifest.json`)
+    const expectedSentimentCsvPath = path.join(sentimentDir, `${sentimentArtifactStem}.csv`)
+    const expectedSentimentManifestPath = path.join(sentimentDir, `${sentimentArtifactStem}.manifest.json`)
     return [
       "<finny-subagent-context>",
       "Authoritative runtime context. It overrides conflicting task wording.",
@@ -247,9 +247,9 @@ function withFinnySubagentContext(
       "",
       "When useful evidence is available, write the aggregate CSV exactly to `expected_sentiment_csv_path` and the manifest exactly to `expected_sentiment_manifest_path`.",
       "Do not use alternate names such as `aggregate.csv`, `manifest.json`, dated snapshots, lowercase symbols, or source-specific filenames.",
-      "Write aggregate CSV and manifest artifacts only under `allowed_sentiment_dir/body/`. Do not create or write `data/sentiment/headlines/`.",
+      "Write aggregate CSV and manifest artifacts directly under `allowed_sentiment_dir`. Do not create or write nested `body/` or `headlines/` folders.",
       "Raw social post/comment text must remain transient and must not be persisted, even if the user asks for local-only storage.",
-      "Return artifact_paths that point to files under `allowed_sentiment_dir/body/`.",
+      "Return artifact_paths that point to files directly under `allowed_sentiment_dir`.",
       "</finny-subagent-context>",
       "",
       prompt,
@@ -267,7 +267,7 @@ function withFinnySubagentContext(
     field("requested_asset_class", assetClass),
     field("workspace_news_dir", newsDir),
     "",
-    "Write at most one compact news/execution/provenance/risk note under `workspace_news_dir/body/`. Do not write headline rolls unless the parent prompt explicitly says `explicit_news_scan: true`.",
+    "Write at most one compact news/execution/provenance/risk markdown note directly under `workspace_news_dir`. Do not create nested `body/` or `headlines/` folders.",
     "Do not write to `algos/_template/data/news` or any repo-local `algos/*/data/news` path.",
     "Return artifact_paths that point to files under `workspace_news_dir`.",
     "</finny-subagent-context>",

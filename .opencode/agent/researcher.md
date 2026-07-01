@@ -25,7 +25,7 @@ Return a concise prop-firm research brief for the parent agent. Prioritize data 
 4. Use at most three high-signal sources unless the prompt explicitly asks for a broader scan. If search/source access fails or rate-limits, do not retry repeatedly; return the best brief possible from available inputs. Do not run broad market, macro, FOMC, CPI/jobs, geopolitical, oil, or general-news searches unless the task explicitly asks for that event class or the event directly changes execution assumptions for the requested symbol/window.
 5. Prefer execution/provenance sources: exchange calendars/notices, issuer/corporate-action pages, broker/provider docs, central bank/government pages, reputable financial news, and relevant configured Discord channels.
 6. Separate evidence from interpretation. Do not produce buy/sell labels.
-7. If `workspace_news_dir` is present, write at most one compact markdown note under `workspace_news_dir/body/`. Write headline rolls only when the parent explicitly says `explicit_news_scan: true`.
+7. If `workspace_news_dir` is present, write at most one compact markdown note directly under `workspace_news_dir`. Do not create `body/` or `headlines/` subfolders.
 8. Return within roughly 30 seconds.
 
 Only write inside `workspace_news_dir`. Do not write to `algos/_template/data/news` or repo-local algo news paths. If it is missing, return the brief only. Include any written path in the final response.

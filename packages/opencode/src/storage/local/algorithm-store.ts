@@ -86,11 +86,13 @@ function currentPointerPath(algorithmId: string) {
 
 const DATA_SUBDIRS = [
   "data/stock",
+  "data/etf",
+  "data/future",
+  "data/option",
   "data/crypto",
   "data/sec",
-  "data/sentiment/body",
-  "data/news/headlines",
-  "data/news/body",
+  "data/sentiment",
+  "data/news",
 ]
 
 async function scaffoldAlgoStructure(

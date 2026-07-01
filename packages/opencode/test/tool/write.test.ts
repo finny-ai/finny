@@ -288,7 +288,7 @@ describe("tool.write", () => {
   })
 
   describe("researcher workspace boundaries", () => {
-    it.live("allows bound researcher writes inside workspace news body", () =>
+    it.live("allows bound researcher writes directly inside workspace news", () =>
       provideTmpdirInstance((dir) =>
         Effect.gen(function* () {
           const prev = process.env.XDG_DATA_HOME
@@ -297,7 +297,7 @@ describe("tool.write", () => {
             yield* Effect.promise(() => bindSessionWorkspace(researcherCtx.sessionID, "spy-5m-strategy.1.1.00.00"))
             const filepath = path.join(
               dir,
-              "finny/algos/spy-5m-strategy.1.1.00.00/data/news/body/execution-risk.md",
+              "finny/algos/spy-5m-strategy.1.1.00.00/data/news/execution-risk.md",
             )
 
             yield* run({ filePath: filepath, content: "# Execution Risk\n" }, researcherCtx)
@@ -312,7 +312,7 @@ describe("tool.write", () => {
       ),
     )
 
-    it.live("blocks bound researcher headline-roll writes", () =>
+    it.live("blocks bound researcher nested news writes", () =>
       provideTmpdirInstance((dir) =>
         Effect.gen(function* () {
           const prev = process.env.XDG_DATA_HOME
@@ -328,7 +328,7 @@ describe("tool.write", () => {
             expect(Exit.isFailure(exit)).toBe(true)
             if (Exit.isFailure(exit)) {
               const error = Cause.squash(exit.cause)
-              expect(error instanceof Error ? error.message : String(error)).toContain("headline rolls are disabled")
+              expect(error instanceof Error ? error.message : String(error)).toContain("do not use body/ or headlines/")
             }
             expect(yield* Effect.promise(() => fs.stat(filepath).catch(() => null))).toBeNull()
           } finally {
@@ -472,7 +472,7 @@ describe("tool.write", () => {
   })
 
   describe("sentiment_agent workspace boundaries", () => {
-    it.live("allows bound sentiment_agent writes inside workspace data/sentiment/body", () =>
+    it.live("allows bound sentiment_agent writes directly inside workspace data/sentiment", () =>
       provideTmpdirInstance((dir) =>
         Effect.gen(function* () {
           const prev = process.env.XDG_DATA_HOME
@@ -483,7 +483,7 @@ describe("tool.write", () => {
             )
             const filepath = path.join(
               dir,
-              "finny/algos/aapl-sentiment.1.1.00.00/data/sentiment/body/AAPL_2026-06-01_2026-06-29_sentiment.csv",
+              "finny/algos/aapl-sentiment.1.1.00.00/data/sentiment/AAPL_2026-06-01_2026-06-29_sentiment.csv",
             )
 
             yield* run({ filePath: filepath, content: "date,symbol,source\n" }, sentimentAgentCtx)
@@ -498,7 +498,7 @@ describe("tool.write", () => {
       ),
     )
 
-    it.live("blocks bound sentiment_agent writes outside workspace data/sentiment/body", () =>
+    it.live("blocks bound sentiment_agent nested writes", () =>
       provideTmpdirInstance((dir) =>
         Effect.gen(function* () {
           const prev = process.env.XDG_DATA_HOME

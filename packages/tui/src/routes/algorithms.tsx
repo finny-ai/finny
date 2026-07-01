@@ -10,6 +10,7 @@ import { useRouteData } from "../context/route"
 import { useAlgorithms } from "../context/algorithms"
 import { useBacktestHistory } from "../context/backtest-history"
 import { useLiveRuns } from "../context/live-runs"
+import { useSDK } from "../context/sdk"
 import { useDialog } from "../ui/dialog"
 import { DialogSelect } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
@@ -23,8 +24,9 @@ import { DialogLiveConfirm } from "../component/dialog-live-confirm"
 import { DialogLiveRun } from "../component/dialog-live-run"
 import { DialogAlert } from "../ui/dialog-alert"
 import { DialogAlgorithmVersions } from "../component/dialog-algorithm-versions"
+import { resolveAlgorithmFolder } from "../util/algorithm-folder"
+import { errorMessage } from "../util/error"
 
-const CLOUD_URL = "https://cloud.finnyai.tech"
 type RunMode = "paper" | "live"
 
 export function Algorithms() {
@@ -32,6 +34,7 @@ export function Algorithms() {
   const algos = useAlgorithms()
   const history = useBacktestHistory()
   const liveRuns = useLiveRuns()
+  const sdk = useSDK()
   const dialog = useDialog()
   const toast = useToast()
   const routeData = useRouteData("algorithms")
@@ -110,10 +113,30 @@ export function Algorithms() {
     }
   }
 
-  const requestCloudRun = async () => {
-    open(CLOUD_URL)
-      .then(() => toast.show({ message: "Opening Finny Cloud", variant: "info", duration: 3000 }))
-      .catch(() => toast.show({ message: CLOUD_URL, variant: "info", duration: 5000 }))
+  const openAlgorithmFolder = async (algo: Algorithm.Info) => {
+    try {
+      const home = await sdk.client.config.finnyHome.get({}, { throwOnError: true })
+      const artifacts = home.data!.artifacts
+      const resolved = await resolveAlgorithmFolder({
+        algorithmId: algo.algorithmId,
+        name: algo.name,
+        algosRoot: artifacts.algos,
+        algorithmsRoot: artifacts.algorithms,
+      })
+      if (!resolved.found) {
+        toast.show({ message: `No local folder found for ${algo.name}`, variant: "warning", duration: 5000 })
+        return
+      }
+
+      try {
+        await open(resolved.path)
+        toast.show({ message: `Opening folder: ${algo.name}`, variant: "info", duration: 3000 })
+      } catch {
+        toast.show({ message: `Open failed: ${resolved.path}`, variant: "error", duration: 7000 })
+      }
+    } catch (err) {
+      toast.show({ message: errorMessage(err), variant: "error", duration: 5000 })
+    }
   }
 
   const openRunMode = (algo: Algorithm.Info) => {
@@ -328,11 +351,11 @@ export function Algorithms() {
                       paddingRight={2}
                       backgroundColor={theme.backgroundElement}
                       onMouseUp={() => {
-                        void requestCloudRun()
+                        void openAlgorithmFolder(algo())
                       }}
                     >
                       <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                        Request Cloud
+                        Open Folder
                       </text>
                     </box>
                   </box>

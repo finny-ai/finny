@@ -16,10 +16,6 @@ function isRepoLocalAlgoNewsPath(filepath: string, worktree: string) {
   return parts.length >= 3 && parts[1] === "data" && parts[2] === "news"
 }
 
-function isHeadlineRollPath(newsRoot: string, filepath: string) {
-  return sameOrInside(path.join(newsRoot, "headlines"), filepath)
-}
-
 function isRepoLocalAlgoSecPath(filepath: string, worktree: string) {
   const relative = path.relative(path.join(worktree, "algos"), filepath)
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
@@ -31,7 +27,15 @@ function isRepoLocalAlgoSentimentPath(filepath: string, worktree: string) {
   const relative = path.relative(path.join(worktree, "algos"), filepath)
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
   const parts = relative.split(path.sep)
-  return parts.length >= 4 && parts[1] === "data" && parts[2] === "sentiment" && parts[3] === "body"
+  return parts.length >= 3 && parts[1] === "data" && parts[2] === "sentiment"
+}
+
+function isFlatArtifactTarget(root: string, filepath: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(filepath))
+  if (relative === "") return true
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false
+  const parts = relative.split(path.sep).filter(Boolean)
+  return parts.length === 1 && parts[0] !== "body" && parts[0] !== "headlines"
 }
 
 export const assertResearcherWorkspaceNewsPath = Effect.fn("FinnyWorkspaceGuard.assertResearcherWorkspaceNewsPath")(
@@ -52,10 +56,10 @@ export const assertResearcherWorkspaceNewsPath = Effect.fn("FinnyWorkspaceGuard.
 
     const newsRoot = path.join(algoDir(workspace), "data", "news")
     if (sameOrInside(newsRoot, filepath)) {
-      if ((operation === "write" || operation === "edit") && isHeadlineRollPath(newsRoot, filepath)) {
+      if ((operation === "write" || operation === "edit") && !isFlatArtifactTarget(newsRoot, filepath)) {
         return yield* Effect.die(
           new Error(
-            `${agentLabel} ${operation} blocked: headline rolls are disabled by default. Write one compact note under ${path.join(newsRoot, "body")}.`,
+            `${agentLabel} ${operation} blocked: write one compact markdown note directly under ${newsRoot}; do not use body/ or headlines/ subfolders.`,
           ),
         )
       }
@@ -109,12 +113,21 @@ export const assertSentimentAgentWorkspacePath = Effect.fn("FinnyWorkspaceGuard.
       )
     }
 
-    const sentimentBodyRoot = path.join(algoDir(workspace), "data", "sentiment", "body")
-    if (sameOrInside(sentimentBodyRoot, filepath)) return
+    const sentimentRoot = path.join(algoDir(workspace), "data", "sentiment")
+    if (sameOrInside(sentimentRoot, filepath)) {
+      if ((operation === "write" || operation === "edit") && !isFlatArtifactTarget(sentimentRoot, filepath)) {
+        return yield* Effect.die(
+          new Error(
+            `Sentiment Agent ${operation} blocked: write aggregate artifacts directly under ${sentimentRoot}; do not use body/ or headlines/ subfolders.`,
+          ),
+        )
+      }
+      return
+    }
 
     return yield* Effect.die(
       new Error(
-        `Sentiment Agent ${operation} blocked: ${filepath} is outside the session workspace sentiment body directory. Use ${sentimentBodyRoot}.`,
+        `Sentiment Agent ${operation} blocked: ${filepath} is outside the session workspace sentiment directory. Use ${sentimentRoot}.`,
       ),
     )
   },

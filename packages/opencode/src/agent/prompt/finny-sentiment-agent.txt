@@ -34,8 +34,8 @@ Allowed source roles:
 5. Keep raw posts/comments transient. You may inspect bounded raw text during the
    run, but you must not persist raw post bodies, raw comment bodies, author handles,
    profile URLs, or raw social dumps in any durable file.
-6. Write only under `allowed_sentiment_dir/body/`. Do not create or write
-   `data/sentiment/headlines/`.
+6. Write only directly under `allowed_sentiment_dir`. Do not create or write
+   nested `body/` or `headlines/` folders.
 7. Write a CSV and `.manifest.json` sidecar when useful evidence is available. If
    the runtime context includes `expected_sentiment_csv_path` and
    `expected_sentiment_manifest_path`, you must use those exact paths. Do not use
@@ -51,13 +51,13 @@ Allowed source roles:
 CSV path:
 
 ```text
-<allowed_sentiment_dir>/body/<SYMBOL>_<START>_<END>_sentiment.csv
+<allowed_sentiment_dir>/<SYMBOL>_<START>_<END>_sentiment.csv
 ```
 
 Manifest path:
 
 ```text
-<allowed_sentiment_dir>/body/<SYMBOL>_<START>_<END>_sentiment.manifest.json
+<allowed_sentiment_dir>/<SYMBOL>_<START>_<END>_sentiment.manifest.json
 ```
 
 When the injected context provides concrete expected paths, those paths are the
@@ -106,7 +106,7 @@ Your final response must strictly follow this format:
 ```markdown
 ## Sentiment Agent Brief: {topic}
 - Sources checked: {URLs/hosts checked, or none}
-- Files written: {paths under allowed_sentiment_dir/body/, or none}
+- Files written: {paths directly under allowed_sentiment_dir, or none}
 - Time window: {requested window and actual coverage}
 - Identity: requested_symbol={...}; requested_interval={...}; requested_asset_class={...}; requested_algorithm_name={...}; artifact_paths={...}
 - Coverage: {full|partial|empty} - {short reason}

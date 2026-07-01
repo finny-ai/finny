@@ -9,6 +9,7 @@ import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
 import { readActiveBrokerKind } from "../live/brokers/active"
+import { linkAlgorithmToWorkspace } from "../plugin/finny-workspace"
 import {
   missingRequiredNewSaveConfigFields,
   normalizeConfigForSave,
@@ -470,6 +471,12 @@ export const AlgorithmSaveTool = Tool.define(
                 2,
               ),
             ]
+
+            await linkAlgorithmToWorkspace(ctx.sessionID, {
+              algorithmId: algo.algorithmId,
+              name: algo.name,
+              version: algo.version,
+            }).catch(() => undefined)
 
             if (validation.warnings.length > 0) {
               parts.push("", Validate.format({ valid: true, errors: [], warnings: validation.warnings }))

@@ -5,8 +5,7 @@ import path from "node:path"
 import {
   parseMission,
   writeAlgo,
-  DATA_NEWS_HEADLINES_DIR,
-  DATA_NEWS_BODY_DIR,
+  DATA_NEWS_DIR,
   NEWS_HEADLINES_FILE_RE,
 } from "../algo"
 
@@ -112,58 +111,49 @@ describe("researcher agent definition", () => {
     }
   })
 
-  test("documents all six workflow phases", () => {
-    for (const phase of [
-      "Understand the topic",
-      "Gather data from Discord",
-      "Gather data from the web",
-      "Deduplicate",
-      "Write output files",
-      "Return a summary",
+  test("documents the current prop-firm workflow contract", () => {
+    for (const phrase of [
+      "Read the active strategy mission",
+      "BLOCKED: missing research topic",
+      "last 14 days",
+      "Use at most three high-signal sources",
+      "Prefer execution/provenance sources",
+      "Do not produce buy/sell labels",
+      "write at most one compact markdown note directly under `workspace_news_dir`",
     ]) {
-      expect(content).toContain(phase)
+      expect(content).toContain(phrase)
     }
   })
 
-  test("documents headlines file format fields", () => {
-    for (const field of ["Time (UTC)", "Headline", "Source", "Slug"]) {
-      expect(content).toContain(field)
-    }
+  test("documents flat workspace news storage and identity tagging", () => {
+    expect(content).toContain("Do not create `body/` or `headlines/` subfolders")
+    expect(content).toContain("Only write inside `workspace_news_dir`")
+    expect(content).toContain("artifact_paths")
+    expect(content).toContain("Never reuse another algorithm's note or context")
   })
 
-  test("documents body file format sections", () => {
+  test("documents returned brief sections", () => {
     for (const section of [
-      "## Summary",
-      "## Key Facts",
-      "## Market Impact",
-      "## Citations",
+      "## Prop-Firm Research Brief",
+      "### Execution / Market Microstructure",
+      "### Data Provenance / Reproducibility",
+      "### Risk Regime",
+      "### Strategy Implications",
+      "### Gaps / Caveats",
     ]) {
       expect(content).toContain(section)
     }
   })
 
-  test("includes tool call budget and 429 handling", () => {
-    expect(content).toContain("Budget your tool calls")
-    expect(content).toContain("429")
-    expect(content).toContain("STOP gathering")
+  test("includes source failure and retry discipline", () => {
+    expect(content).toContain("search/source access fails or rate-limits")
+    expect(content).toContain("do not retry repeatedly")
+    expect(content).toContain("return the best brief possible")
   })
 
-  test("documents all Discord channels", () => {
-    for (const ch of [
-      "trump",
-      "china-us-news",
-      "congressional-trades",
-      "market-news",
-      "options-flow",
-      "dark-pool",
-    ]) {
-      expect(content).toContain(ch)
-    }
-  })
-
-  test("includes websearch fallback guidance", () => {
-    expect(content).toContain("websearch` is unavailable")
-    expect(content).toContain("webfetch")
+  test("mentions web and configured Discord source paths", () => {
+    expect(content).toContain("web")
+    expect(content).toContain("configured Discord channels")
   })
 })
 
@@ -172,12 +162,8 @@ describe("researcher agent definition", () => {
 // ---------------------------------------------------------------------------
 
 describe("news data structure contract", () => {
-  test("DATA_NEWS_HEADLINES_DIR matches expected path", () => {
-    expect(DATA_NEWS_HEADLINES_DIR).toBe("data/news/headlines")
-  })
-
-  test("DATA_NEWS_BODY_DIR matches expected path", () => {
-    expect(DATA_NEWS_BODY_DIR).toBe("data/news/body")
+  test("DATA_NEWS_DIR matches expected path", () => {
+    expect(DATA_NEWS_DIR).toBe("data/news")
   })
 
   test("NEWS_HEADLINES_FILE_RE accepts valid date filenames", () => {
@@ -191,7 +177,7 @@ describe("news data structure contract", () => {
     expect(NEWS_HEADLINES_FILE_RE.test("2026-05-18.txt")).toBe(false)
   })
 
-  test("writeAlgo creates both headlines and body directories", async () => {
+  test("writeAlgo creates a flat news directory", async () => {
     const root = await mkSandbox()
     const mission = parseMission(MISSION_YAML)
     const { dir: algoDir } = await writeAlgo({
@@ -201,12 +187,10 @@ describe("news data structure contract", () => {
       versions: { v01: { strategy: "class Strategy:\n    pass\n" } },
     })
 
-    const headlinesStat = await fs.stat(
-      path.join(algoDir, DATA_NEWS_HEADLINES_DIR),
-    )
-    const bodyStat = await fs.stat(path.join(algoDir, DATA_NEWS_BODY_DIR))
-    expect(headlinesStat.isDirectory()).toBe(true)
-    expect(bodyStat.isDirectory()).toBe(true)
+    const newsStat = await fs.stat(path.join(algoDir, DATA_NEWS_DIR))
+    expect(newsStat.isDirectory()).toBe(true)
+    await expect(fs.stat(path.join(algoDir, DATA_NEWS_DIR, "headlines")).catch(() => null)).resolves.toBeNull()
+    await expect(fs.stat(path.join(algoDir, DATA_NEWS_DIR, "body")).catch(() => null)).resolves.toBeNull()
   })
 })
 
@@ -227,11 +211,10 @@ describe("E2E workflow: dispatch → write → read", () => {
     }
   })
 
-  test("simulates researcher writing headlines and body files that Finny can read", async () => {
+  test("simulates researcher writing flat news files that Finny can read", async () => {
     const { algoDir } = await setupEnv()
 
-    const headlinesDir = path.join(algoDir, DATA_NEWS_HEADLINES_DIR)
-    const bodyDir = path.join(algoDir, DATA_NEWS_BODY_DIR)
+    const newsDir = path.join(algoDir, DATA_NEWS_DIR)
 
     const headlinesContent = `# Headlines — 2026-05-18
 
@@ -241,7 +224,7 @@ describe("E2E workflow: dispatch → write → read", () => {
 | 10:30 | Beijing welcomes tariff reduction, signals reciprocal measures | SCMP | beijing-welcomes-tariff-reduction |
 | 14:00 | Markets rally on US-China trade thaw | Bloomberg | markets-rally-trade-thaw |
 `
-    await fs.writeFile(path.join(headlinesDir, "2026-05-18.md"), headlinesContent)
+    await fs.writeFile(path.join(newsDir, "2026-05-18.md"), headlinesContent)
 
     const bodyContent1 = `# Trump announces 25% tariff reduction on Chinese goods
 
@@ -268,7 +251,7 @@ BABA +4.2%, JD +3.8%, PDD +5.1% in pre-market. FXI ETF up 2.7%.
 - [Reuters: Trump slashes China tariffs](https://reuters.com/example) — Breaking news report
 `
     await fs.writeFile(
-      path.join(bodyDir, "trump-tariff-reduction-china.md"),
+      path.join(newsDir, "trump-tariff-reduction-china.md"),
       bodyContent1,
     )
 
@@ -286,37 +269,33 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
 - [SCMP: Beijing responds](https://scmp.com/example) — First Chinese response
 `
     await fs.writeFile(
-      path.join(bodyDir, "beijing-welcomes-tariff-reduction.md"),
+      path.join(newsDir, "beijing-welcomes-tariff-reduction.md"),
       bodyContent2,
     )
 
-    // Verify progressive disclosure: list headlines first
-    const headlinesFiles = await fs.readdir(headlinesDir)
-    const dateFiles = headlinesFiles.filter((f) =>
+    const newsFiles = await fs.readdir(newsDir)
+    const dateFiles = newsFiles.filter((f) =>
       NEWS_HEADLINES_FILE_RE.test(f),
     )
     expect(dateFiles).toEqual(["2026-05-18.md"])
 
-    // Read headlines
     const headlines = await fs.readFile(
-      path.join(headlinesDir, "2026-05-18.md"),
+      path.join(newsDir, "2026-05-18.md"),
       "utf8",
     )
     expect(headlines).toContain("Trump announces 25% tariff reduction")
     expect(headlines).toContain("trump-tariff-reduction-china")
 
-    // Read body file on demand
     const body = await fs.readFile(
-      path.join(bodyDir, "trump-tariff-reduction-china.md"),
+      path.join(newsDir, "trump-tariff-reduction-china.md"),
       "utf8",
     )
     expect(body).toContain("## Summary")
     expect(body).toContain("## Citations")
     expect(body).toContain("BABA +4.2%")
 
-    // List all body files
-    const bodyFiles = await fs.readdir(bodyDir)
-    expect(bodyFiles.sort()).toEqual([
+    const detailFiles = newsFiles.filter((f) => !NEWS_HEADLINES_FILE_RE.test(f)).sort()
+    expect(detailFiles).toEqual([
       "beijing-welcomes-tariff-reduction.md",
       "trump-tariff-reduction-china.md",
     ])
@@ -325,34 +304,34 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
   test("simulates multiple days of research accumulating over time", async () => {
     const { algoDir } = await setupEnv()
 
-    const headlinesDir = path.join(algoDir, DATA_NEWS_HEADLINES_DIR)
-    const bodyDir = path.join(algoDir, DATA_NEWS_BODY_DIR)
+    const newsDir = path.join(algoDir, DATA_NEWS_DIR)
 
     // Day 1
     await fs.writeFile(
-      path.join(headlinesDir, "2026-05-17.md"),
+      path.join(newsDir, "2026-05-17.md"),
       `# Headlines — 2026-05-17\n\n| Time (UTC) | Headline | Source | Slug |\n|--|--|--|--|\n| 08:00 | Rumours of tariff talks | FT | tariff-talks-rumours |\n`,
     )
     await fs.writeFile(
-      path.join(bodyDir, "tariff-talks-rumours.md"),
+      path.join(newsDir, "tariff-talks-rumours.md"),
       `# Rumours of tariff talks\n\n**Date:** 2026-05-17 08:00 UTC\n**Source:** FT\n\n## Summary\n\nSources report...\n\n## Citations\n\n- [FT](https://ft.com/ex) — original report\n`,
     )
 
     // Day 2
     await fs.writeFile(
-      path.join(headlinesDir, "2026-05-18.md"),
+      path.join(newsDir, "2026-05-18.md"),
       `# Headlines — 2026-05-18\n\n| Time (UTC) | Headline | Source | Slug |\n|--|--|--|--|\n| 09:15 | Tariff cut confirmed | Reuters | tariff-cut-confirmed |\n`,
     )
     await fs.writeFile(
-      path.join(bodyDir, "tariff-cut-confirmed.md"),
+      path.join(newsDir, "tariff-cut-confirmed.md"),
       `# Tariff cut confirmed\n\n**Date:** 2026-05-18 09:15 UTC\n**Source:** Reuters\n\n## Summary\n\nConfirmed.\n\n## Citations\n\n- [Reuters](https://reuters.com/ex) — confirmation\n`,
     )
 
     // Verify accumulated across days
-    const headlinesFiles = (await fs.readdir(headlinesDir)).filter(f => NEWS_HEADLINES_FILE_RE.test(f)).sort()
+    const allNewsFiles = await fs.readdir(newsDir)
+    const headlinesFiles = allNewsFiles.filter(f => NEWS_HEADLINES_FILE_RE.test(f)).sort()
     expect(headlinesFiles).toEqual(["2026-05-17.md", "2026-05-18.md"])
 
-    const bodyFiles = (await fs.readdir(bodyDir)).sort()
+    const bodyFiles = allNewsFiles.filter((f) => !NEWS_HEADLINES_FILE_RE.test(f)).sort()
     expect(bodyFiles).toEqual([
       "tariff-cut-confirmed.md",
       "tariff-talks-rumours.md",
@@ -362,28 +341,20 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
   test("researcher output integrates with loadAlgo data structure", async () => {
     const { algoDir } = await setupEnv()
 
-    const headlinesDir = path.join(algoDir, DATA_NEWS_HEADLINES_DIR)
-    const bodyDir = path.join(algoDir, DATA_NEWS_BODY_DIR)
+    const newsDir = path.join(algoDir, DATA_NEWS_DIR)
 
     await fs.writeFile(
-      path.join(headlinesDir, "2026-05-18.md"),
+      path.join(newsDir, "2026-05-18.md"),
       "# Headlines — 2026-05-18\n\n| Time (UTC) | Headline | Source | Slug |\n|--|--|--|--|\n| 12:00 | Test headline | TestSrc | test-slug |\n",
     )
     await fs.writeFile(
-      path.join(bodyDir, "test-slug.md"),
+      path.join(newsDir, "test-slug.md"),
       "# Test headline\n\n**Date:** 2026-05-18 12:00 UTC\n\n## Summary\n\nTest.\n\n## Citations\n\n- [Test](https://example.com)\n",
     )
 
     // Verify algo data directory structure
-    const newsDir = path.join(algoDir, "data", "news")
     const newsEntries = await fs.readdir(newsDir)
-    expect(newsEntries.sort()).toEqual(["body", "headlines"])
-
-    const hFiles = await fs.readdir(path.join(newsDir, "headlines"))
-    expect(hFiles.filter(f => f.endsWith(".md"))).toContain("2026-05-18.md")
-
-    const bFiles = await fs.readdir(path.join(newsDir, "body"))
-    expect(bFiles).toContain("test-slug.md")
+    expect(newsEntries.sort()).toEqual(["2026-05-18.md", "test-slug.md"])
   })
 })
 

@@ -165,18 +165,23 @@ export const FINNY_DIR = ".finny"
 
 export const DATA_DIR = "data"
 export const DATA_STOCK_DIR = "data/stock"
+export const DATA_ETF_DIR = "data/etf"
+export const DATA_FUTURE_DIR = "data/future"
+export const DATA_OPTION_DIR = "data/option"
 export const DATA_CRYPTO_DIR = "data/crypto"
 export const DATA_SEC_DIR = "data/sec"
 export const DATA_NEWS_DIR = "data/news"
-export const DATA_NEWS_HEADLINES_DIR = "data/news/headlines"
-export const DATA_NEWS_BODY_DIR = "data/news/body"
+export const DATA_SENTIMENT_DIR = "data/sentiment"
 
 export const DATA_SUBDIRS = [
   DATA_STOCK_DIR,
+  DATA_ETF_DIR,
+  DATA_FUTURE_DIR,
+  DATA_OPTION_DIR,
   DATA_CRYPTO_DIR,
   DATA_SEC_DIR,
-  DATA_NEWS_HEADLINES_DIR,
-  DATA_NEWS_BODY_DIR,
+  DATA_NEWS_DIR,
+  DATA_SENTIMENT_DIR,
 ] as const
 
 export const NEWS_HEADLINES_FILE_RE = /^\d{4}-\d{2}-\d{2}\.md$/

@@ -25,7 +25,7 @@ Allowed sources:
 7. Prefer primary or high-signal sources: exchange calendars/notices, issuer/corporate-action pages, broker/provider docs, central bank/government pages, reputable financial news, and relevant configured Discord channels.
 8. Deduplicate repeated coverage of the same event.
 9. Separate evidence from interpretation.
-10. If a source contains usable news, execution, provenance, or risk evidence and `workspace_news_dir` is present, write at most one compact markdown note under `workspace_news_dir/body/`; write headline rolls under `workspace_news_dir/headlines/` only for explicit news-scan requests.
+10. If a source contains usable news, execution, provenance, or risk evidence and `workspace_news_dir` is present, write at most one compact markdown note directly under `workspace_news_dir`. Do not create `body/` or `headlines/` subfolders.
 11. Return within roughly 30 seconds.
 
 Only write inside `workspace_news_dir`. Do not write to `algos/_template/data/news` or repo-local algo news paths. If it is missing, do not write durable files; return the brief only. Return any written path to the parent.
@@ -44,7 +44,7 @@ Your final response must be a compact, trading-system summary. It must strictly 
 ```
 ## News Agent Brief: {topic}
 - Sources checked: {comma-separated list of URLs and channels checked}
-- Files written: {list of exact paths under workspace_news_dir/body/ only, or none}
+- Files written: {list of exact markdown paths directly under workspace_news_dir, or none}
 - Time window: {window, e.g. last 14 days}
 - Identity: requested_symbol={...}; requested_interval={...}; requested_asset_class={...}; requested_algorithm_name={...}; artifact_paths={...}
 - Relevance: {one sentence explaining why this news/context matters to validation/tradability}

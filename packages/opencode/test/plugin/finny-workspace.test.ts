@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { getSessionWorkspace, setActiveAlgo, ensureAlgoWorkspace, algoDir, parseMission } from "@finny-ai/core/algo"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import {
   bootstrapWorkspace,
   deriveIntent,
@@ -315,6 +316,39 @@ describe("session consolidation", () => {
     const manifest = JSON.parse(await fs.readFile(path.join(boot!.dir, "manifest.json"), "utf8"))
     expect(manifest.algorithms).toHaveLength(1)
     expect(manifest.algorithms[0].latest_version).toBe(2)
+  })
+
+  test("saved algorithm store receives flat workspace data and removes the workspace copy", async () => {
+    const boot = await bootstrapWorkspace("ses_consol_data", SPY_PROMPT)
+    const dataRoot = path.join(boot!.dir, "data")
+    await fs.mkdir(path.join(dataRoot, "stock"), { recursive: true })
+    await fs.mkdir(path.join(dataRoot, "news"), { recursive: true })
+    await fs.mkdir(path.join(dataRoot, "sentiment"), { recursive: true })
+    await fs.writeFile(path.join(dataRoot, "stock", "SPY_15m.csv"), "timestamp,open\n", "utf8")
+    await fs.writeFile(path.join(dataRoot, "news", "spy-context.md"), "# news\n", "utf8")
+    await fs.writeFile(path.join(dataRoot, "sentiment", "SPY_sentiment.csv"), "date,symbol\n", "utf8")
+
+    const storeData = path.join(finnyArtifactPath("algorithms"), "store-with-data", "data")
+    await linkAlgorithmToWorkspace("ses_consol_data", {
+      algorithmId: "store-with-data",
+      name: "spy-with-data",
+      version: 1,
+    })
+
+    await expect(fs.readFile(path.join(storeData, "stock", "SPY_15m.csv"), "utf8")).resolves.toBe(
+      "timestamp,open\n",
+    )
+    await expect(fs.readFile(path.join(storeData, "news", "spy-context.md"), "utf8")).resolves.toBe(
+      "# news\n",
+    )
+    await expect(fs.readFile(path.join(storeData, "sentiment", "SPY_sentiment.csv"), "utf8")).resolves.toBe(
+      "date,symbol\n",
+    )
+    await expect(fs.stat(path.join(storeData, "news", "body")).catch(() => null)).resolves.toBeNull()
+    await expect(fs.stat(path.join(storeData, "news", "headlines")).catch(() => null)).resolves.toBeNull()
+    await expect(fs.stat(path.join(storeData, "sentiment", "body")).catch(() => null)).resolves.toBeNull()
+    await expect(fs.stat(path.join(storeData, "sentiment", "headlines")).catch(() => null)).resolves.toBeNull()
+    await expect(fs.stat(dataRoot).catch(() => null)).resolves.toBeNull()
   })
 
   test("unbound session does not link", async () => {

@@ -160,7 +160,7 @@ describe("tool.edit", () => {
           process.env.XDG_DATA_HOME = dir
           try {
             yield* Effect.promise(() => bindSessionWorkspace(researcherCtx.sessionID, "spy-5m-strategy.1.1.00.00"))
-            const filepath = path.join(dir, "finny/algos/spy-5m-strategy.1.1.00.00/data/news/body/regime.md")
+            const filepath = path.join(dir, "finny/algos/spy-5m-strategy.1.1.00.00/data/news/regime.md")
 
             yield* run({ filePath: filepath, oldString: "", newString: "# Regime\n" }, researcherCtx)
 
@@ -181,7 +181,7 @@ describe("tool.edit", () => {
           process.env.XDG_DATA_HOME = dir
           try {
             yield* Effect.promise(() => bindSessionWorkspace(researcherCtx.sessionID, "spy-5m-strategy.1.1.00.00"))
-            const filepath = path.join(dir, "repo/algos/spy-5m-rsi-momentum/data/news/body/regime.md")
+            const filepath = path.join(dir, "repo/algos/spy-5m-rsi-momentum/data/news/regime.md")
 
             const exit = yield* run(
               { filePath: filepath, oldString: "", newString: "# Wrong\n" },
@@ -207,7 +207,7 @@ describe("tool.edit", () => {
         (dir) =>
           Effect.gen(function* () {
             yield* Effect.promise(() => clearSessionWorkspace(researcherCtx.sessionID).catch(() => {}))
-            const filepath = path.join(dir, "algos/spy-5m-rsi-momentum/data/news/body/regime.md")
+            const filepath = path.join(dir, "algos/spy-5m-rsi-momentum/data/news/regime.md")
 
             const exit = yield* run(
               { filePath: filepath, oldString: "", newString: "# Wrong\n" },

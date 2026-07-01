@@ -4,8 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import {
   Backtest,
-  DATA_NEWS_BODY_DIR,
-  DATA_NEWS_HEADLINES_DIR,
+  DATA_SUBDIRS,
   DATA_STOCK_DIR,
   MEMORY_FILE,
   MissionFrontmatter,
@@ -283,7 +282,8 @@ describe("loadAlgo + listAlgos", () => {
       versions: { v01: { strategy: "class Strategy: pass\n" } },
     })
     expect(dir).toBe(algoDir(slug, root))
-    for (const sub of [DATA_STOCK_DIR, DATA_NEWS_HEADLINES_DIR, DATA_NEWS_BODY_DIR]) {
+    expect(DATA_SUBDIRS).toContain(DATA_STOCK_DIR)
+    for (const sub of DATA_SUBDIRS) {
       const stat = await fs.stat(path.join(dir, sub))
       expect(stat.isDirectory()).toBe(true)
     }

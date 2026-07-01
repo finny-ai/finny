@@ -314,8 +314,8 @@ function workspaceSecRoot(slug: string) {
   return path.join(algoDir(slug), "data", "sec")
 }
 
-function workspaceSentimentBodyRoot(slug: string) {
-  return path.join(algoDir(slug), "data", "sentiment", "body")
+function workspaceSentimentRoot(slug: string) {
+  return path.join(algoDir(slug), "data", "sentiment")
 }
 
 function allowedSecRoot(file: string, workspaceSlug: string | null) {
@@ -325,11 +325,19 @@ function allowedSecRoot(file: string, workspaceSlug: string | null) {
   if (sameOrInside(root, resolved)) return root
 }
 
-function allowedSentimentBodyRoot(file: string, workspaceSlug: string | null) {
+function isFlatArtifactTarget(root: string, file: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(file))
+  if (relative === "") return true
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return false
+  const parts = relative.split(path.sep).filter(Boolean)
+  return parts.length === 1 && parts[0] !== "body" && parts[0] !== "headlines"
+}
+
+function allowedSentimentWriteRoot(file: string, workspaceSlug: string | null) {
   if (!workspaceSlug) return
   const resolved = path.resolve(file)
-  const root = workspaceSentimentBodyRoot(workspaceSlug)
-  if (sameOrInside(root, resolved)) return root
+  const root = workspaceSentimentRoot(workspaceSlug)
+  if (sameOrInside(root, resolved) && isFlatArtifactTarget(root, resolved)) return root
 }
 
 function allowedWorkspaceReadRoot(file: string, workspaceSlug: string | null) {
@@ -899,27 +907,27 @@ export const ShellTool = Tool.define(
       }
       if (hasPythonInterpreterWriteCommand(root, ps)) {
         throw new Error(
-          "Sentiment Agent bash write blocked: Python interpreter commands can hide file writes inside scripts. Use webfetch/websearch or shell-visible commands with explicit outputs under data/sentiment/body/.",
+          "Sentiment Agent bash write blocked: Python interpreter commands can hide file writes inside scripts. Use webfetch/websearch or shell-visible commands with explicit outputs directly under data/sentiment/.",
         )
       }
       if (targets.length === 0) return
 
       const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
       const allowedHint = workspace
-        ? workspaceSentimentBodyRoot(workspace)
-        : "the session workspace data/sentiment/body/ directory"
+        ? workspaceSentimentRoot(workspace)
+        : "the session workspace data/sentiment/ directory"
 
       for (const target of targets) {
         if (isNullSink(target.arg) || isStdoutSink(target.arg)) continue
         const resolved = yield* argPath(target.arg, cwd, ps, shell)
         if (!resolved) {
           throw new Error(
-            `Sentiment Agent bash write blocked: could not resolve ${target.kind} target "${target.arg}". Use an explicit path under data/sentiment/body/.`,
+            `Sentiment Agent bash write blocked: could not resolve ${target.kind} target "${target.arg}". Use an explicit path directly under data/sentiment/.`,
           )
         }
-        if (!allowedSentimentBodyRoot(resolved, workspace)) {
+        if (!allowedSentimentWriteRoot(resolved, workspace)) {
           throw new Error(
-            `Sentiment Agent bash write blocked: ${resolved} is outside allowed sentiment body roots. Write outputs under ${allowedHint}.`,
+            `Sentiment Agent bash write blocked: ${resolved} is outside allowed flat sentiment roots. Write outputs directly under ${allowedHint}.`,
           )
         }
       }
@@ -959,7 +967,7 @@ export const ShellTool = Tool.define(
           if (isHostInterpreterPath(resolved)) continue
           if (!allowedWorkspaceReadRoot(resolved, workspace)) {
             throw new Error(
-              `Sentiment Agent bash read blocked: ${resolved} is outside allowed workspace roots. Use webfetch/websearch for external sources and inspect artifacts under ${workspace ? workspaceSentimentBodyRoot(workspace) : "the session workspace data/sentiment/body/ directory"}.`,
+              `Sentiment Agent bash read blocked: ${resolved} is outside allowed workspace roots. Use webfetch/websearch for external sources and inspect artifacts under ${workspace ? workspaceSentimentRoot(workspace) : "the session workspace data/sentiment/ directory"}.`,
             )
           }
         }

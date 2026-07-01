@@ -271,7 +271,7 @@ export const layer = Layer.effect(
             ...finnyWorkspacePatterns("algos/_template/mission.md"),
           },
         })
-        function finnyUserAlgoNewsPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+        function finnyUserAlgoNewsReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
           const root = algosRoot()
           const patterns = [
             path.join(root, "*/data/news/*"),
@@ -280,6 +280,20 @@ export const layer = Layer.effect(
             path.join(root, "*/data/news"),
           ]
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
+        }
+        function finnyUserAlgoNewsWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const root = algosRoot()
+          const allow = [path.join(root, "*/data/news/*"), path.join(root, "*/data/news")]
+          const deny = [
+            path.join(root, "*/data/news/body"),
+            path.join(root, "*/data/news/body/*"),
+            path.join(root, "*/data/news/headlines"),
+            path.join(root, "*/data/news/headlines/*"),
+          ]
+          return {
+            ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
+            ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
+          }
         }
         function finnyUserAlgoDataPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
           const root = algosRoot()
@@ -297,23 +311,39 @@ export const layer = Layer.effect(
           const patterns = [path.join(root, "*/data/sec/*"), path.join(root, "*/data/sec")]
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
-        function finnyUserAlgoSentimentPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+        function finnyUserAlgoSentimentReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
           const root = algosRoot()
           const patterns = [
+            path.join(root, "*/data/sentiment/*"),
             path.join(root, "*/data/sentiment/body/*"),
             path.join(root, "*/data/sentiment/body"),
+            path.join(root, "*/data/sentiment"),
           ]
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
+        }
+        function finnyUserAlgoSentimentWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const root = algosRoot()
+          const allow = [path.join(root, "*/data/sentiment/*"), path.join(root, "*/data/sentiment")]
+          const deny = [
+            path.join(root, "*/data/sentiment/body"),
+            path.join(root, "*/data/sentiment/body/*"),
+            path.join(root, "*/data/sentiment/headlines"),
+            path.join(root, "*/data/sentiment/headlines/*"),
+          ]
+          return {
+            ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
+            ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
+          }
         }
         const finnySessionDataReadAccess = Permission.fromConfig({
           read: finnyUserAlgoDataPatterns(),
           external_directory: finnyUserAlgoDataPatterns(),
         })
         const finnySessionNewsAccess = Permission.fromConfig({
-          read: finnyUserAlgoNewsPatterns(),
-          write: finnyUserAlgoNewsPatterns(),
-          edit: finnyUserAlgoNewsPatterns(),
-          external_directory: finnyUserAlgoNewsPatterns(),
+          read: finnyUserAlgoNewsReadPatterns(),
+          write: finnyUserAlgoNewsWritePatterns(),
+          edit: finnyUserAlgoNewsWritePatterns(),
+          external_directory: finnyUserAlgoNewsReadPatterns(),
         })
         const finnySessionSecAccess = Permission.fromConfig({
           read: finnyUserAlgoSecPatterns(),
@@ -322,10 +352,10 @@ export const layer = Layer.effect(
           external_directory: finnyUserAlgoSecPatterns(),
         })
         const finnySessionSentimentAccess = Permission.fromConfig({
-          read: finnyUserAlgoSentimentPatterns(),
-          write: finnyUserAlgoSentimentPatterns(),
-          edit: finnyUserAlgoSentimentPatterns(),
-          external_directory: finnyUserAlgoSentimentPatterns(),
+          read: finnyUserAlgoSentimentReadPatterns(),
+          write: finnyUserAlgoSentimentWritePatterns(),
+          edit: finnyUserAlgoSentimentWritePatterns(),
+          external_directory: finnyUserAlgoSentimentReadPatterns(),
         })
         const finnyDataAgentAccess = Permission.fromConfig({
           read: "allow",
@@ -543,7 +573,7 @@ export const layer = Layer.effect(
             name: "sentiment_agent",
             description:
               "Social sentiment subagent. Fetches free/keyless social sentiment and attention sources, writes " +
-              "aggregate-only artifacts under the active algorithm data/sentiment/body/ folder, and returns a " +
+              "aggregate-only artifacts directly under the active algorithm data/sentiment/ folder, and returns a " +
               "concise crowd-positioning brief. Use when Build needs retail attention, meme-flow, crowding, " +
               "sentiment-reversal, or social-catalyst evidence.",
             color: "#ec4899",

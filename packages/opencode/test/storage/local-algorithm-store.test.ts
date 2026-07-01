@@ -36,5 +36,10 @@ describe("LocalAlgorithmStore", () => {
     expect(
       await fs.readFile(path.join(sandbox, "home", "algorithms", "algo-home-test", "v01", "strategy.py"), "utf8"),
     ).toBe("class Strategy:\n    pass\n")
+
+    for (const dir of ["stock", "etf", "future", "option", "crypto", "sec", "news", "sentiment"]) {
+      const stat = await fs.stat(path.join(sandbox, "home", "algorithms", "algo-home-test", "data", dir))
+      expect(stat.isDirectory()).toBe(true)
+    }
   })
 })

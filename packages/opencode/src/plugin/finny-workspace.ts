@@ -232,8 +232,8 @@ export async function bootstrapWorkspace(
 }
 
 // ── Session consolidation ────────────────────────────────────────────────────
-// Everything a session produces belongs in its one workspace: extracted data
-// (handled by finny_extract_data), saved algorithms, and research notes.
+// A session writes data into its workspace while the final algorithm identity is
+// unknown. Once saved, data moves under the named saved-algorithm folder.
 
 interface ManifestEntry {
   name: string
@@ -244,10 +244,9 @@ interface ManifestEntry {
 }
 
 /**
- * Link a saved algorithm into the session workspace: a symlink under
- * `<workspace>/algorithms/<name>` pointing at the UUID store dir, plus an
- * entry in `<workspace>/manifest.json`. Keeps the workspace the single place
- * to find every artifact the session produced without duplicating the store.
+ * Link a saved algorithm into the session workspace and move the workspace data
+ * tree into the saved algorithm store. Finder users can then open
+ * `<workspace>/algorithms/<name>` and see data beside the saved versions.
  */
 export async function linkAlgorithmToWorkspace(
   sessionID: string,
@@ -263,6 +262,8 @@ export async function linkAlgorithmToWorkspace(
   const linkPath = path.join(linksDir, meta.name)
   await fs.rm(linkPath, { force: true }).catch(() => {})
   await fs.symlink(storePath, linkPath)
+
+  await moveWorkspaceDataToAlgorithmStore(wsDir, storePath).catch(() => undefined)
 
   const manifestPath = path.join(wsDir, "manifest.json")
   let manifest: { algorithms: ManifestEntry[] } = { algorithms: [] }
@@ -286,6 +287,67 @@ export async function linkAlgorithmToWorkspace(
   return linkPath
 }
 
+async function moveWorkspaceDataToAlgorithmStore(workspaceDir: string, storePath: string): Promise<string | undefined> {
+  const src = path.join(workspaceDir, "data")
+  const dest = path.join(storePath, "data")
+  try {
+    const stat = await fs.stat(src)
+    if (!stat.isDirectory()) return undefined
+  } catch {
+    return undefined
+  }
+
+  await fs.mkdir(storePath, { recursive: true })
+  await fs.cp(src, dest, { recursive: true, force: true, errorOnExist: false })
+  await normalizeFlatArtifactFolders(dest)
+  await fs.rm(src, { recursive: true, force: true })
+  return dest
+}
+
+async function normalizeFlatArtifactFolders(dataRoot: string): Promise<void> {
+  for (const artifactKind of ["news", "sentiment"]) {
+    await normalizeFlatArtifactKind(dataRoot, artifactKind)
+  }
+}
+
+async function normalizeFlatArtifactKind(dataRoot: string, artifactKind: string): Promise<void> {
+  const root = path.join(dataRoot, artifactKind)
+  await fs.mkdir(root, { recursive: true })
+  for (const legacy of ["body", "headlines"]) {
+    await flattenLegacyArtifactFolder(root, legacy)
+  }
+}
+
+async function flattenLegacyArtifactFolder(root: string, legacy: string): Promise<void> {
+  const legacyRoot = path.join(root, legacy)
+  const files = await listFiles(legacyRoot)
+  for (const file of files) {
+    await copyFileToFlatArtifactRoot(file, root)
+  }
+  await fs.rm(legacyRoot, { recursive: true, force: true }).catch(() => undefined)
+}
+
+async function copyFileToFlatArtifactRoot(file: string, root: string): Promise<void> {
+  const dest = path.join(root, path.basename(file))
+  if (path.resolve(file) === path.resolve(dest)) return
+  const exists = await fs
+    .stat(dest)
+    .then(() => true)
+    .catch(() => false)
+  if (!exists) await fs.copyFile(file, dest)
+}
+
+async function listFiles(root: string): Promise<string[]> {
+  const entries = await fs.readdir(root, { withFileTypes: true }).catch(() => [])
+  const out: string[] = []
+  for (const entry of entries) {
+    const child = path.join(root, entry.name)
+    if (entry.isDirectory()) out.push(...(await listFiles(child)))
+    else if (entry.isFile()) out.push(child)
+  }
+  return out
+}
+
 const NEWS_PATH_RE = /[/\\]algos[/\\][^/\\]+[/\\]data[/\\]news[/\\](.+)$/
 
 /**
@@ -300,7 +362,7 @@ export async function mirrorNewsToWorkspace(sessionID: string, filePath: string)
   if (!slug) return undefined
   const wsDir = algoDir(slug)
   if (path.resolve(filePath).startsWith(path.resolve(wsDir) + path.sep)) return undefined // already in workspace
-  const dest = path.join(wsDir, "data", "news", m[1])
+  const dest = path.join(wsDir, "data", "news", path.basename(m[1]))
   await fs.mkdir(path.dirname(dest), { recursive: true })
   await fs.copyFile(filePath, dest)
   return dest

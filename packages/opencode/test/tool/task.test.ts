@@ -933,7 +933,7 @@ describe("tool.task", () => {
           expect(text).toContain("- requested_interval: 5m")
           expect(text).toContain("- requested_asset_class: equity")
           expect(text).toContain(`- workspace_news_dir: ${path.join(algoDir(slug), "data", "news")}`)
-          expect(text).toContain("at most one compact news/execution/provenance/risk note")
+          expect(text).toContain("at most one compact news/execution/provenance/risk markdown note")
           expect(text).toContain("Do not write to `algos/_template/data/news`")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
@@ -986,12 +986,12 @@ describe("tool.task", () => {
           expect(text).toContain("- date window end as absolute YYYY-MM-DD: 2026-06-29")
           expect(text).toContain(`- allowed_sentiment_dir: ${path.join(algoDir(slug), "data", "sentiment")}`)
           expect(text).toContain(
-            `- expected_sentiment_csv_path: ${path.join(algoDir(slug), "data", "sentiment", "body", "AAPL_2026-06-01_2026-06-29_sentiment.csv")}`,
+            `- expected_sentiment_csv_path: ${path.join(algoDir(slug), "data", "sentiment", "AAPL_2026-06-01_2026-06-29_sentiment.csv")}`,
           )
           expect(text).toContain(
-            `- expected_sentiment_manifest_path: ${path.join(algoDir(slug), "data", "sentiment", "body", "AAPL_2026-06-01_2026-06-29_sentiment.manifest.json")}`,
+            `- expected_sentiment_manifest_path: ${path.join(algoDir(slug), "data", "sentiment", "AAPL_2026-06-01_2026-06-29_sentiment.manifest.json")}`,
           )
-          expect(text).toContain("allowed_sentiment_dir/body/")
+          expect(text).toContain("directly under `allowed_sentiment_dir`")
           expect(text).toContain("Do not use alternate names")
           expect(text).toContain("must not be persisted")
         } finally {

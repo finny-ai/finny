@@ -20,8 +20,8 @@ import {
   humanNameOf,
 } from "./index"
 import {
-  DATA_NEWS_HEADLINES_DIR,
-  DATA_NEWS_BODY_DIR,
+  DATA_NEWS_DIR,
+  DATA_SUBDIRS,
   DATA_STOCK_DIR,
   DATA_CRYPTO_DIR,
   DATA_SEC_DIR,
@@ -64,7 +64,10 @@ describe("subagents-without-scaffold: full lifecycle with slugs", () => {
 
     // Verify full directory tree was created
     const dir = res1.dir
-    for (const sub of [DATA_STOCK_DIR, DATA_CRYPTO_DIR, DATA_SEC_DIR, DATA_NEWS_HEADLINES_DIR, DATA_NEWS_BODY_DIR]) {
+    expect(DATA_SUBDIRS).toEqual(
+      expect.arrayContaining([DATA_STOCK_DIR, DATA_CRYPTO_DIR, DATA_SEC_DIR, DATA_NEWS_DIR]),
+    )
+    for (const sub of DATA_SUBDIRS) {
       const stat = await fs.stat(path.join(dir, sub))
       expect(stat.isDirectory()).toBe(true)
     }
@@ -85,7 +88,7 @@ describe("subagents-without-scaffold: full lifecycle with slugs", () => {
     // ─── Phase 3: simulate subagent writing data files ───
     const parquetPath = path.join(dir, DATA_CRYPTO_DIR, "btc-usd-1h.parquet")
     await fs.writeFile(parquetPath, "fake-parquet-bytes")
-    const headlinePath = path.join(dir, DATA_NEWS_HEADLINES_DIR, "2024-03-15.md")
+    const headlinePath = path.join(dir, DATA_NEWS_DIR, "2024-03-15.md")
     await fs.writeFile(headlinePath, "# BTC headlines\n- market up 3%\n")
 
     // ─── Phase 4: agent does the real save using the same slug ───

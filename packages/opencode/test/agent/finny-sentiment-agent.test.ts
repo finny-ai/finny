@@ -61,7 +61,6 @@ describe("sentiment_agent subagent", () => {
         "aapl-sentiment.abc12345",
         "data",
         "sentiment",
-        "body",
         "AAPL_2026-06-01_2026-06-29_sentiment.csv",
       )
       const headlineFile = path.join(
@@ -112,8 +111,9 @@ describe("sentiment_agent prompt contract", () => {
     expect(PROMPT_SENTIMENT_AGENT).toContain("ApeWisdom")
     expect(PROMPT_SENTIMENT_AGENT).toContain("Arctic Shift")
     expect(PROMPT_SENTIMENT_AGENT).toContain("PullPush")
-    expect(PROMPT_SENTIMENT_AGENT).toContain("allowed_sentiment_dir/body/")
-    expect(PROMPT_SENTIMENT_AGENT).toContain("data/sentiment/headlines")
+    expect(PROMPT_SENTIMENT_AGENT).toContain("directly under `allowed_sentiment_dir`")
+    expect(PROMPT_SENTIMENT_AGENT).toContain("nested `body/` or `headlines/` folders")
+    expect(PROMPT_SENTIMENT_AGENT).not.toContain("allowed_sentiment_dir/body/")
   })
 
   test("forbids raw text persistence and trading labels", () => {
@@ -138,10 +138,11 @@ describe("sentiment_agent prompt contract", () => {
     expect(PROMPT_SENTIMENT_AGENT).toContain("net_sentiment")
   })
 
-  test("repo-local sentiment_agent override keeps body-only aggregate scope", async () => {
+  test("repo-local sentiment_agent override keeps flat aggregate scope", async () => {
     const override = await fs.readFile(path.join(root, ".opencode/agent/sentiment_agent.md"), "utf8")
 
-    expect(override).toContain("allowed_sentiment_dir/body/")
+    expect(override).toContain("directly under `allowed_sentiment_dir`")
+    expect(override).not.toContain("allowed_sentiment_dir/body/")
     expect(override).toContain("expected_sentiment_csv_path")
     expect(override).toContain("<SYMBOL>_<START>_<END>_sentiment.csv")
     expect(override).toContain("StockTwits")
