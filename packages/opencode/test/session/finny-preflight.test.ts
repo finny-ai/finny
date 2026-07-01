@@ -12,6 +12,8 @@ import type { SessionStatus } from "../../src/session/status"
 let sandbox: string
 let prevXdg: string | undefined
 let prevDisablePreflight: string | undefined
+const SMH_EDGE_PROMPT =
+  "I am market-aware and I want to test a stronger edge than broad SPY daily mean reversion. Use SMH as the traded symbol. Prefer 1h or 4h bars with semiconductor/AI leadership momentum."
 
 async function pythonAvailable(): Promise<boolean> {
   return Bun.spawn(["python3", "--version"], { stdout: "ignore", stderr: "ignore" })
@@ -106,6 +108,26 @@ describe("finny preflight", () => {
       expect(statuses.some((s) => s.type === "preflight" && s.phase === "ready")).toBe(true)
       const ready = statuses.findLast((s) => s.type === "preflight" && s.phase === "ready")
       expect(ready?.type === "preflight" && ready.steps?.length).toBeGreaterThan(2)
+    },
+    180_000,
+  )
+
+  test(
+    "comparison prompt preflight binds request identity to explicit SMH target",
+    async () => {
+      if (!(await pythonAvailable())) return
+      const { result } = await runPreflight(SMH_EDGE_PROMPT, "ses_smh_preflight")
+
+      expect(result).toBeDefined()
+      expect(result!.workspaceSlug.startsWith("smh-1h-momentum.")).toBe(true)
+      expect(result!.workspaceSlug).not.toContain("spy")
+      expect(await getSessionWorkspace("ses_smh_preflight")).toBe(result!.workspaceSlug)
+
+      const request = JSON.parse(await fs.readFile(path.join(result!.workspacePath, "request.json"), "utf8"))
+      expect(request.requested_symbol).toBe("SMH")
+      expect(request.requested_interval).toBe("1h")
+      expect(request.requested_asset_class).toBe("equity")
+      expect(request.requested_algorithm_name).toBe("smh-1h-momentum")
     },
     180_000,
   )

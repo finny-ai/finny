@@ -485,6 +485,112 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("blocks explicit data_extractor target that conflicts with the bound workspace", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "spy-1h-mean-reversion.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Extract SPY 1h equity data from 2026-03-30 to 2026-06-30.",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "SMH data extraction retry",
+              prompt: "Extract SMH 1h equity data from 2026-03-30 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("BLOCKED: data request context mismatch")
+          expect(result.output).toContain("SMH 1h equity")
+          expect(result.output).toContain(`workspace_slug=${slug}`)
+          expect(result.output).toContain("do not reuse existing workspace artifacts")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("blocks curated data_extractor target that conflicts with a non-curated workspace symbol", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "smh-1h-momentum.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Extract SMH 1h equity data from 2026-03-30 to 2026-06-30.",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "QQQ data extraction retry",
+              prompt: "Extract QQQ 1h equity data from 2026-03-30 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("BLOCKED: data request context mismatch")
+          expect(result.output).toContain("QQQ 1h equity")
+          expect(result.output).toContain("workspace_symbol=SMH")
+          expect(result.output).toContain("do not reuse existing workspace artifacts")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("passes requested algorithm name separately from workspace slug", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {

@@ -21,6 +21,8 @@ import { extractDateWindow } from "../../src/agent/finny-workspace-context"
 
 const SPY_PROMPT =
   "Build a new SPY 15-minute mean reversion strategy with $10,000 over 3 months. Keep it clean and validate/backtest it in strict mode."
+const SMH_EDGE_PROMPT =
+  "I am market-aware and I want to test a stronger edge than broad SPY daily mean reversion. Use SMH as the traded symbol. Prefer 1h or 4h bars with semiconductor/AI leadership momentum."
 
 let sandbox: string
 let prevXdg: string | undefined
@@ -46,12 +48,15 @@ describe("workspace naming", () => {
   test("derives intent from the prompt", () => {
     expect(deriveIntent(SPY_PROMPT)).toBe("mean-reversion")
     expect(deriveIntent("build a BTC momentum bot")).toBe("momentum")
+    expect(deriveIntent(SMH_EDGE_PROMPT)).toBe("momentum")
     expect(deriveIntent("what is a sharpe ratio?")).toBeUndefined()
   })
 
   test("derives a kebab workspace name from request facts", () => {
     const facts = parseRequestFacts(SPY_PROMPT)
     expect(deriveWorkspaceName(facts, "mean-reversion", SPY_PROMPT)).toBe("spy-15m-mean-reversion")
+    const smhFacts = parseRequestFacts(SMH_EDGE_PROMPT)
+    expect(deriveWorkspaceName(smhFacts, deriveIntent(SMH_EDGE_PROMPT), SMH_EDGE_PROMPT)).toBe("smh-1h-momentum")
   })
 
   test("derives a name from the prompt when no symbol is present", () => {
@@ -227,6 +232,19 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     expect(second!.slug.startsWith("btc-5m-momentum.")).toBe(true)
     expect(second!.rebound).toBe(true)
     expect(await getSessionWorkspace("ses_pivot")).toBe(second!.slug)
+  })
+
+  test("comparison prompt binds to explicit SMH target instead of SPY baseline", async () => {
+    const result = await bootstrapWorkspace("ses_smh_edge", SMH_EDGE_PROMPT)
+    expect(result).toBeDefined()
+    expect(result!.slug.startsWith("smh-1h-momentum.")).toBe(true)
+    expect(result!.slug).not.toContain("spy")
+
+    const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
+    expect(request.requested_symbol).toBe("SMH")
+    expect(request.requested_interval).toBe("1h")
+    expect(request.requested_asset_class).toBe("equity")
+    expect(request.requested_algorithm_name).toBe("smh-1h-momentum")
   })
 })
 

@@ -55,10 +55,25 @@ const INTENT_PATTERNS: Array<[RegExp, string]> = [
 ]
 
 export function deriveIntent(prompt: string): string | undefined {
-  for (const [re, name] of INTENT_PATTERNS) {
-    if (re.test(prompt)) return name
-  }
-  return undefined
+  const candidates: Array<{ name: string; index: number; score: number }> = []
+  INTENT_PATTERNS.forEach(([re, name], order) => {
+    const flags = re.flags.includes("g") ? re.flags : `${re.flags}g`
+    const matcher = new RegExp(re.source, flags)
+    for (const match of prompt.matchAll(matcher)) {
+      const index = match.index ?? 0
+      const before = prompt.slice(Math.max(0, index - 96), index)
+      const nearbyBefore = prompt.slice(Math.max(0, index - 40), index)
+      const rejected =
+        /\b(?:stronger|better|cleaner|sharper|different|more\s+\w+)\b[^.?!,;]{0,80}\bthan\b/i.test(before) ||
+        /\b(?:instead\s+of|rather\s+than|not|avoid|baseline|benchmark|broad|compared\s+to|versus|vs\.?)\b/i.test(
+          nearbyBefore,
+        )
+      const baseScore = INTENT_PATTERNS.length - order
+      candidates.push({ name, index, score: rejected ? baseScore - 100 : baseScore })
+    }
+  })
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index)
+  return candidates[0] && candidates[0].score > 0 ? candidates[0].name : undefined
 }
 
 export function hasStrategyContinuationIntent(prompt: string): boolean {

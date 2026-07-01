@@ -106,6 +106,8 @@ function kindToAssetClass(kind: string): AssetClass {
 }
 
 const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
+const TICKERISH_RE = /^[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?$/
+const NON_TRADEABLE_ACRONYMS = new Set(["CPI", "FED", "FOMC", "GDP", "ISM", "NFP", "PCE"])
 
 /**
  * Strictly recognize a single token as a known symbol. Unlike `resolveSymbol`,
@@ -124,6 +126,30 @@ function recognizeToken(token: string): { sym: string; asset: AssetClass } | und
   const pair = PAIR_RE.exec(upper)
   if (pair) return { sym: normalizeSymbol(pair[1])!, asset: "crypto" }
   return undefined
+}
+
+function cleanSymbolToken(token: string): string {
+  return token.trim().replace(/^[`"'([{]+|[`"',.;:!?)}\]]+$/g, "")
+}
+
+function recognizeExplicitSymbol(
+  token: string,
+  opts: { allowUnknown: boolean; requireUppercaseForUnknown?: boolean },
+): { sym: string; asset: AssetClass } | undefined {
+  const cleaned = cleanSymbolToken(token)
+  if (!cleaned) return undefined
+
+  const strict = recognizeToken(cleaned)
+  if (strict) return strict
+
+  if (!opts.allowUnknown) return undefined
+  if (opts.requireUppercaseForUnknown && cleaned !== cleaned.toUpperCase()) return undefined
+  const upper = cleaned.toUpperCase()
+  if (!TICKERISH_RE.test(upper) || NON_TRADEABLE_ACRONYMS.has(upper)) return undefined
+
+  const resolved = resolveSymbol(upper)
+  if (!resolved) return undefined
+  return { sym: normalizeSymbol(resolved.name)!, asset: kindToAssetClass(resolved.kind) }
 }
 
 /** Best-effort asset class for a symbol, via the supported-symbol registry. */
@@ -157,6 +183,44 @@ const REQUESTED_ALGORITHM_NAME_RES = [
   /\b(?:name\s+it|named|called)\s+[`"']?([a-z0-9][a-z0-9._-]{2,})[`"']?/i,
   /\b(?:existing|current|active|saved)?\s*(?:algorithm|algo|strategy)\s+([`"'])([a-z0-9][a-z0-9._-]{2,})\1/i,
 ]
+const EXPLICIT_SYMBOL_RES: Array<{
+  re: RegExp
+  score: number
+  allowUnknown: boolean
+  requireUppercaseForUnknown?: boolean
+  capture?: number
+}> = [
+  {
+    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    score: 120,
+    allowUnknown: true,
+  },
+  {
+    re: /\buse\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?\s+as\s+(?:the\s+)?(?:traded\s+)?(?:symbol|ticker|vehicle|market|instrument)\b/gi,
+    score: 115,
+    allowUnknown: true,
+    requireUppercaseForUnknown: true,
+  },
+  {
+    re: /\b(?:(?:instead\s+of|rather\s+than|avoid|not)\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?|do\s+not\s+use\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?)[^.?!;]{0,80}?\buse\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?\b/gi,
+    score: 180,
+    allowUnknown: true,
+    requireUppercaseForUnknown: true,
+    capture: 3,
+  },
+  {
+    re: /\b(?:traded\s+symbol|target\s+(?:symbol|ticker|vehicle)|market|instrument)\s*(?:is|as|=|:)?\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    score: 110,
+    allowUnknown: true,
+    requireUppercaseForUnknown: true,
+  },
+  {
+    re: /\b(?:trade|backtest|test|build|run|extract|fetch|load|download|retrieve)\s+(?:historical\s+)?(?:data\s+for\s+|on\s+|for\s+|against\s+)?[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)\b/gi,
+    score: 90,
+    allowUnknown: true,
+    requireUppercaseForUnknown: true,
+  },
+]
 
 function requestedAlgorithmName(prompt: string): string | undefined {
   for (const re of REQUESTED_ALGORITHM_NAME_RES) {
@@ -169,6 +233,63 @@ function requestedAlgorithmName(prompt: string): string | undefined {
 
 function promptWords(prompt: string): string[] {
   return prompt.match(/[A-Za-z0-9$%&]+/g) ?? []
+}
+
+function isRejectedComparisonContext(prompt: string, index: number): boolean {
+  const before = prompt.slice(Math.max(0, index - 96), index)
+  const nearbyBefore = prompt.slice(Math.max(0, index - 40), index)
+  const after = prompt.slice(index, index + 48)
+  return (
+    /\b(?:stronger|better|cleaner|sharper|different|more\s+\w+)\b[^.?!,;]{0,80}\bthan\b/i.test(before) ||
+    /\b(?:instead\s+of|rather\s+than|not|avoid|baseline|benchmark|broad|compared\s+to|versus|vs\.?)\b/i.test(
+      nearbyBefore,
+    ) ||
+    /^\W*(?:baseline|benchmark)\b/i.test(after)
+  )
+}
+
+function explicitSymbolFromPrompt(prompt: string): { sym: string; asset: AssetClass } | undefined {
+  const candidates: Array<{ index: number; score: number; symbol: { sym: string; asset: AssetClass } }> = []
+  for (const pattern of EXPLICIT_SYMBOL_RES) {
+    pattern.re.lastIndex = 0
+    for (const match of prompt.matchAll(pattern.re)) {
+      const raw = match[pattern.capture ?? 1]
+      if (!raw) continue
+      const symbol = recognizeExplicitSymbol(raw, {
+        allowUnknown: pattern.allowUnknown,
+        requireUppercaseForUnknown: pattern.requireUppercaseForUnknown,
+      })
+      if (!symbol) continue
+      const index = match.index ?? 0
+      candidates.push({
+        index,
+        score: pattern.score - (isRejectedComparisonContext(prompt, index) ? 80 : 0),
+        symbol,
+      })
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index)
+  return candidates[0]?.score && candidates[0].score > 0 ? candidates[0].symbol : undefined
+}
+
+function looseSymbolFromPrompt(prompt: string): { sym: string; asset: AssetClass } | undefined {
+  const tokens = prompt.match(/[A-Za-z0-9]{2,6}(?:[\/\-][A-Za-z0-9]{2,6})?/g) ?? []
+  for (const tok of tokens) {
+    const index = prompt.indexOf(tok)
+    if (index >= 0 && isRejectedComparisonContext(prompt, index)) continue
+    const recognized = recognizeToken(tok)
+    if (recognized) return recognized
+
+    // Terse prompts often arrive as strategy slugs, e.g. "spy-5m-momentum".
+    // The regex above sees "spy-5m" as one token, which is not a market pair.
+    // Fall back to strict recognition of each slug segment without enabling
+    // arbitrary ticker guesses.
+    for (const part of tok.split(/[\/\-_]+/)) {
+      const segment = recognizeToken(part)
+      if (segment) return segment
+    }
+  }
+  return undefined
 }
 
 function bareIntervalFromPrompt(prompt: string): string | undefined {
@@ -208,28 +329,10 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   const facts: RequestFacts = {}
   if (!prompt) return facts
 
-  // Symbol: first token that strictly recognizes as a curated symbol or pair.
-  const tokens = prompt.match(/[A-Za-z0-9]{2,6}(?:[\/\-][A-Za-z0-9]{2,6})?/g) ?? []
-  for (const tok of tokens) {
-    const recognized = recognizeToken(tok)
-    if (recognized) {
-      facts.requested_symbol = recognized.sym
-      facts.requested_asset_class = recognized.asset
-      break
-    }
-
-    // Terse prompts often arrive as strategy slugs, e.g. "spy-5m-momentum".
-    // The regex above sees "spy-5m" as one token, which is not a market pair.
-    // Fall back to strict recognition of each slug segment without enabling
-    // arbitrary ticker guesses.
-    for (const part of tok.split(/[\/\-_]+/)) {
-      const segment = recognizeToken(part)
-      if (!segment) continue
-      facts.requested_symbol = segment.sym
-      facts.requested_asset_class = segment.asset
-      break
-    }
-    if (facts.requested_symbol) break
+  const symbol = explicitSymbolFromPrompt(prompt) ?? looseSymbolFromPrompt(prompt)
+  if (symbol) {
+    facts.requested_symbol = symbol.sym
+    facts.requested_asset_class = symbol.asset
   }
 
   const im = INTERVAL_RE.exec(prompt)

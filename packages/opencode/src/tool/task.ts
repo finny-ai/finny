@@ -17,7 +17,14 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
 import * as path from "path"
-import { assetClassForSymbol, parseRequestFacts } from "@/agent/request-identity"
+import {
+  assetClassForSymbol,
+  normalizeInterval,
+  normalizeSymbol,
+  parseRequestFacts,
+  workspaceMatchesRequest,
+  type RequestFacts,
+} from "@/agent/request-identity"
 import {
   algorithmNameFromWorkspaceSlug,
   extractDateWindow,
@@ -125,6 +132,92 @@ function dataExtractorValidationContext(context: WorkspaceRequestContext | undef
     requested_start: window.start,
     requested_end: window.end,
   }
+}
+
+function describeRequestFacts(facts: RequestFacts) {
+  const symbol = normalizeSymbol(facts.requested_symbol) ?? "?"
+  const interval = normalizeInterval(facts.requested_interval) ?? "?"
+  const assetClass = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol) ?? "?"
+  return `${symbol} ${interval} ${assetClass}`
+}
+
+function workspaceSymbolHintFromSlug(slug: string | null | undefined) {
+  if (!slug) return undefined
+  const base = slug.split(".")[0] ?? slug
+  const parts = base
+    .split(/[-_\s.]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  const first = parts[0]
+  if (!first || !/^[a-z]{1,5}$/i.test(first)) return undefined
+  if (!parts.slice(1).some((part) => Boolean(normalizeInterval(part)))) return undefined
+  return normalizeSymbol(first)
+}
+
+function workspaceMismatchIssues(workspace: string | null, facts: RequestFacts) {
+  if (!workspace) return []
+
+  const issues: string[] = []
+  const requestedSymbol = normalizeSymbol(facts.requested_symbol)
+  const workspaceSymbolHint = workspaceSymbolHintFromSlug(workspace)
+  const workspaceFacts = parseRequestFacts(workspace)
+  const requestedInterval = normalizeInterval(facts.requested_interval)
+  const workspaceInterval = normalizeInterval(workspaceFacts.requested_interval)
+
+  if (facts.requested_symbol && !workspaceMatchesRequest(workspace, facts)) issues.push(`workspace_slug=${workspace}`)
+  if (requestedSymbol && workspaceSymbolHint && requestedSymbol !== workspaceSymbolHint) {
+    issues.push(`workspace_symbol=${workspaceSymbolHint}`)
+  }
+  if (requestedInterval && workspaceInterval && requestedInterval !== workspaceInterval) {
+    issues.push(`workspace_interval=${workspaceFacts.requested_interval}`)
+  }
+
+  return issues
+}
+
+function contextMismatchIssues(context: WorkspaceRequestContext | undefined, facts: RequestFacts) {
+  if (!context) return []
+
+  const issues: string[] = []
+  const requestedSymbol = normalizeSymbol(facts.requested_symbol)
+  const contextSymbol = normalizeSymbol(context.requested_symbol)
+  const requestedInterval = normalizeInterval(facts.requested_interval)
+  const contextInterval = normalizeInterval(context.requested_interval)
+  const requestedAsset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol)
+
+  if (requestedSymbol && contextSymbol && requestedSymbol !== contextSymbol) {
+    issues.push(`context_symbol=${contextSymbol}`)
+  }
+  if (requestedInterval && contextInterval && requestedInterval !== contextInterval) {
+    issues.push(`context_interval=${contextInterval}`)
+  }
+  if (requestedAsset && context.requested_asset_class && requestedAsset !== context.requested_asset_class) {
+    issues.push(`context_asset_class=${context.requested_asset_class}`)
+  }
+
+  return issues
+}
+
+function dataRequestContextMismatchBlock(input: {
+  prompt: string
+  workspace: string | null
+  context?: WorkspaceRequestContext
+}): string | undefined {
+  const facts = parseRequestFacts(input.prompt)
+  if (!facts.requested_symbol && !facts.requested_interval && !facts.requested_asset_class) return undefined
+
+  const issues = [
+    ...workspaceMismatchIssues(input.workspace, facts),
+    ...contextMismatchIssues(input.context, facts),
+  ]
+
+  if (issues.length === 0) return undefined
+
+  return [
+    `BLOCKED: data request context mismatch — workspace is ${input.workspace ?? "MISSING"} but data_extractor task explicitly requested ${describeRequestFacts(facts)}.`,
+    "Start a new workspace or rebind the session before extracting; do not reuse existing workspace artifacts.",
+    `Conflicts: ${issues.join(", ")}.`,
+  ].join(" ")
 }
 
 function withFinnySubagentContext(
@@ -513,6 +606,10 @@ export const TaskTool = Tool.define(
         if (params.subagent_type === "data_extractor" && !workspace) {
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
         }
+        if (params.subagent_type === "data_extractor") {
+          const mismatch = dataRequestContextMismatchBlock({ prompt: params.prompt, workspace })
+          if (mismatch) return mismatch
+        }
         let workspaceContext: WorkspaceRequestContext | undefined
         if (workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent" || params.subagent_type === "sentiment_agent")) {
           workspaceContext = yield* Effect.promise(() =>
@@ -526,6 +623,8 @@ export const TaskTool = Tool.define(
         const validationContext =
           params.subagent_type === "data_extractor" ? dataExtractorValidationContext(workspaceContext) : workspaceContext
         if (params.subagent_type === "data_extractor") {
+          const mismatch = dataRequestContextMismatchBlock({ prompt: params.prompt, workspace, context: workspaceContext })
+          if (mismatch) return mismatch
           const existing = yield* Effect.promise(() =>
             validateExistingDataExtractorEvidence({
               workspaceSlug: workspace,

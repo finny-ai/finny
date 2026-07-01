@@ -13,6 +13,9 @@ const SPY_REQUEST: RequestFacts = {
   requested_asset_class: "equity",
 }
 
+const SMH_EDGE_PROMPT =
+  "I am market-aware and I want to test a stronger edge than broad SPY daily mean reversion. Use SMH as the traded symbol. Prefer 1h or 4h bars with semiconductor/AI leadership momentum."
+
 describe("request identity normalization", () => {
   test("collapses symbols to bare ticker", () => {
     expect(normalizeSymbol("BTC/USD")).toBe("BTC")
@@ -45,6 +48,33 @@ describe("parseRequestFacts", () => {
     const facts = parseRequestFacts("spy-5m-momentum")
     expect(facts.requested_symbol).toBe("SPY")
     expect(facts.requested_interval).toBe("5m")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("prefers an explicit traded symbol over a rejected baseline symbol", () => {
+    const facts = parseRequestFacts(SMH_EDGE_PROMPT)
+    expect(facts.requested_symbol).toBe("SMH")
+    expect(facts.requested_interval).toBe("1h")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("recognizes non-curated tickers only in high-confidence symbol contexts", () => {
+    expect(parseRequestFacts("requested_symbol: SMH, interval 1h").requested_symbol).toBe("SMH")
+    expect(parseRequestFacts("target vehicle SMH with 1h bars").requested_symbol).toBe("SMH")
+    expect(parseRequestFacts("Review AI SEMI leadership without choosing a symbol").requested_symbol).toBeUndefined()
+  })
+
+  test("downranks instead-of symbols in favor of the requested replacement", () => {
+    const facts = parseRequestFacts("Instead of SPY, use QQQ for the 1h momentum strategy.")
+    expect(facts.requested_symbol).toBe("QQQ")
+    expect(facts.requested_interval).toBe("1h")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("does not treat generic use of an indicator as an unknown ticker", () => {
+    const facts = parseRequestFacts("Build a SPY mean reversion strategy. Use RSI for entries on 15m bars.")
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_interval).toBe("15m")
     expect(facts.requested_asset_class).toBe("equity")
   })
 
