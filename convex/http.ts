@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server"
 import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
+import { hasValidNativeHedgeSecret, isNativeHedgeIngestPayload } from "./nativeHedgeLiveValidation"
 
 const http = httpRouter()
 const HASH_RE = /^[a-f0-9]{64}$/i
@@ -225,6 +226,36 @@ http.route({
     try {
       const result = await ctx.runMutation(internal.licenses.revoke, {
         source_id: payload.source_id,
+      })
+      return json(result, result?.ok ? 200 : 400)
+    } catch {
+      return json({ ok: false, error_code: "internal_error" }, 500)
+    }
+  }),
+})
+
+http.route({
+  path: "/ingest/native-hedge-live",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!hasValidNativeHedgeSecret(request)) {
+      return denied("verification_failed")
+    }
+
+    let payload: unknown
+    try {
+      payload = await request.json()
+    } catch {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    if (!isNativeHedgeIngestPayload(payload)) {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    try {
+      const result = await ctx.runMutation((internal as any).nativeHedgeLive.ingest, {
+        batch: payload.batch,
       })
       return json(result, result?.ok ? 200 : 400)
     } catch {

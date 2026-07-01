@@ -170,6 +170,52 @@ export default defineSchema({
     .index("by_userId_eventType", ["userId", "eventType"])
     .index("by_algorithmId", ["algorithmId"]),
 
+  nativeHedgeLiveRuns: defineTable({
+    runId: v.string(),
+    algorithmId: v.optional(v.string()),
+    algorithmName: v.optional(v.string()),
+    symbol: v.optional(v.string()),
+    interval: v.optional(v.string()),
+    brokerage: v.optional(v.string()),
+    mode: v.optional(v.string()),
+    status: v.string(),
+    startedAt: v.optional(v.number()),
+    stoppedAt: v.optional(v.number()),
+    lastEventAt: v.number(),
+    error: v.optional(v.string()),
+    time_created: v.number(),
+    time_updated: v.number(),
+  })
+    .index("by_runId", ["runId"])
+    .index("by_status", ["status"])
+    .index("by_lastEventAt", ["lastEventAt"])
+    .index("by_algorithmId", ["algorithmId"]),
+
+  nativeHedgeLiveEvents: defineTable({
+    eventId: v.string(),
+    runId: v.string(),
+    eventType: v.string(),
+    sequence: v.number(),
+    timestamp: v.number(),
+    source: v.optional(v.string()),
+    algorithmId: v.optional(v.string()),
+    symbol: v.optional(v.string()),
+    orderId: v.optional(v.string()),
+    side: v.optional(v.string()),
+    qty: v.optional(v.number()),
+    price: v.optional(v.number()),
+    status: v.optional(v.string()),
+    why: v.optional(v.string()),
+    features: v.optional(v.any()),
+    payload: v.optional(v.any()),
+    time_created: v.number(),
+  })
+    .index("by_eventId", ["eventId"])
+    .index("by_runId_sequence", ["runId", "sequence"])
+    .index("by_runId_timestamp", ["runId", "timestamp"])
+    .index("by_runId_eventType", ["runId", "eventType"])
+    .index("by_algorithmId", ["algorithmId"]),
+
   licenses: defineTable({
     license_key_hash: v.string(),
     org_id: v.string(),

@@ -13,7 +13,7 @@ A Strategy class should follow this interface:
 
         def on_bar(self, symbol, bar):
             # bar: dict with timestamp/open/high/low/close/volume/symbol
-            # call self.broker.buy(symbol, qty=N) / .sell(symbol, qty=N)
+            # call self.broker.buy(symbol, qty=N, reason="...", features={...})
             pass
 
 Legacy classes that implement on_tick(bar) -> "BUY"/"SELL"/"HOLD" (or similar
@@ -41,9 +41,9 @@ def log_err(msg: str) -> None:
 
 
 class OrderRecord:
-    __slots__ = ("order_id", "symbol", "side", "qty", "price", "status", "ts")
+    __slots__ = ("order_id", "symbol", "side", "qty", "price", "status", "ts", "reason", "features")
 
-    def __init__(self, order_id, symbol, side, qty, price, status, ts):
+    def __init__(self, order_id, symbol, side, qty, price, status, ts, reason=None, features=None):
         self.order_id = order_id
         self.symbol = symbol
         self.side = side
@@ -51,9 +51,11 @@ class OrderRecord:
         self.price = price
         self.status = status
         self.ts = ts
+        self.reason = reason
+        self.features = features
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        data = {
             "order_id": self.order_id,
             "symbol": self.symbol,
             "side": self.side,
@@ -62,15 +64,20 @@ class OrderRecord:
             "status": self.status,
             "ts": self.ts,
         }
+        if self.reason is not None:
+            data["reason"] = self.reason
+        if self.features is not None:
+            data["features"] = self.features
+        return data
 
 
 class Broker:
     """Abstract broker interface. Strategies only depend on this."""
 
-    def buy(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+    def buy(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None, reason: Optional[str] = None, features: Optional[Dict[str, Any]] = None) -> OrderRecord:
         raise NotImplementedError
 
-    def sell(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+    def sell(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None, reason: Optional[str] = None, features: Optional[Dict[str, Any]] = None) -> OrderRecord:
         raise NotImplementedError
 
     def position(self, symbol: str) -> float:
@@ -257,13 +264,13 @@ class SimBroker(Broker):
         if qty is None:
             qty = self._cash / (fill * (1 + self._fee_rate))
         if qty <= 0:
-            self._reject(symbol, "buy", "invalid qty")
+            self._reject(symbol, "buy", "invalid qty", reason=order.get("reason"), features=order.get("features"))
             return
         cost = qty * fill * (1 + self._fee_rate)
         if cost > self._cash:
             qty = self._cash / (fill * (1 + self._fee_rate))
             if qty <= 0:
-                self._reject(symbol, "buy", "insufficient cash")
+                self._reject(symbol, "buy", "insufficient cash", reason=order.get("reason"), features=order.get("features"))
                 return
             cost = qty * fill * (1 + self._fee_rate)
         self._check_participation(symbol, qty)
@@ -280,7 +287,7 @@ class SimBroker(Broker):
         fill = mark * (1 - self._slippage)
         current = self._positions.get(symbol, 0)
         if current <= 0:
-            self._reject(symbol, "sell", "no position")
+            self._reject(symbol, "sell", "no position", reason=order.get("reason"), features=order.get("features"))
             return
         qty = order.get("qty")
         notional = order.get("notional")
@@ -290,7 +297,7 @@ class SimBroker(Broker):
             qty = notional / fill
         qty = min(qty, current)
         if qty <= 0:
-            self._reject(symbol, "sell", "invalid qty")
+            self._reject(symbol, "sell", "invalid qty", reason=order.get("reason"), features=order.get("features"))
             return
         self._check_participation(symbol, qty)
         proceeds = qty * fill * (1 - self._fee_rate)
@@ -324,24 +331,26 @@ class SimBroker(Broker):
         rec.price = price
         rec.status = status
 
-    def _enqueue(self, symbol: str, side: str, qty: Optional[float], notional: Optional[float]) -> OrderRecord:
+    def _enqueue(self, symbol: str, side: str, qty: Optional[float], notional: Optional[float], reason=None, features=None) -> OrderRecord:
         if self._killed is not None:
-            return self._reject(symbol, side, f"killed: {self._killed['reason']}")
-        rec = self._record(symbol, side, qty if qty is not None else 0.0, 0.0, "pending")
+            return self._reject(symbol, side, f"killed: {self._killed['reason']}", reason=reason, features=features)
+        rec = self._record(symbol, side, qty if qty is not None else 0.0, 0.0, "pending", reason=reason, features=features)
         self._pending_orders.append({
             "symbol": symbol,
             "side": side,
             "qty": qty,
             "notional": notional,
+            "reason": reason,
+            "features": features,
             "record": rec,
         })
         return rec
 
-    def buy(self, symbol, qty=None, notional=None):
-        return self._enqueue(symbol, "buy", qty, notional)
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
+        return self._enqueue(symbol, "buy", qty, notional, reason=reason, features=features)
 
-    def sell(self, symbol, qty=None, notional=None):
-        return self._enqueue(symbol, "sell", qty, notional)
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
+        return self._enqueue(symbol, "sell", qty, notional, reason=reason, features=features)
 
     def position(self, symbol):
         return self._positions.get(symbol, 0)
@@ -355,7 +364,7 @@ class SimBroker(Broker):
     def price(self, symbol):
         return self._last_price.get(symbol)
 
-    def _record(self, symbol, side, qty, price, status):
+    def _record(self, symbol, side, qty, price, status, reason=None, features=None):
         self._order_counter += 1
         order = OrderRecord(
             order_id=f"sim-{self._order_counter}",
@@ -365,11 +374,13 @@ class SimBroker(Broker):
             price=price,
             status=status,
             ts=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            features=features,
         )
         self._orders.append(order)
         return order
 
-    def _reject(self, symbol, side, reason):
+    def _reject(self, symbol, side, reject_reason, reason=None, features=None):
         self._order_counter += 1
         order = OrderRecord(
             order_id=f"sim-{self._order_counter}",
@@ -377,13 +388,15 @@ class SimBroker(Broker):
             side=side,
             qty=0,
             price=0,
-            status=f"rejected: {reason}",
+            status=f"rejected: {reject_reason}",
             ts=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            features=features,
         )
         self._orders.append(order)
         self._reject_log_count += 1
         if self._reject_log_count <= 5:
-            log_err(f"[SimBroker] order rejected: {side} {symbol} — {reason}")
+            log_err(f"[SimBroker] order rejected: {side} {symbol} — {reject_reason}")
             if self._reject_log_count == 5:
                 log_err("[SimBroker] further rejection logs suppressed (see diagnostics)")
         return order
@@ -432,13 +445,13 @@ class ScanBroker(SimBroker):
         self.buy_signals = 0
         self.sell_signals = 0
 
-    def buy(self, symbol, qty=None, notional=None):
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
         self.buy_signals += 1
-        return self._record(symbol, "buy", 0, 0, "scan")
+        return self._record(symbol, "buy", 0, 0, "scan", reason=reason, features=features)
 
-    def sell(self, symbol, qty=None, notional=None):
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
         self.sell_signals += 1
-        return self._record(symbol, "sell", 0, 0, "scan")
+        return self._record(symbol, "sell", 0, 0, "scan", reason=reason, features=features)
 
 
 class AlpacaBroker(Broker):
@@ -566,25 +579,25 @@ class AlpacaBroker(Broker):
     def set_price(self, symbol: str, price: float) -> None:
         self._last_price[symbol] = float(price)
 
-    def buy(self, symbol, qty=None, notional=None):
-        return self._submit(symbol, "buy", qty, notional)
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
+        return self._submit(symbol, "buy", qty, notional, reason=reason, features=features)
 
-    def sell(self, symbol, qty=None, notional=None):
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
         # Default sell = close full position.
         if qty is None and notional is None:
             try:
                 pos = self._trading.get_open_position(self.normalize_symbol(symbol))
                 qty = float(pos.qty)
             except Exception:
-                return self._reject(symbol, "sell", "no open position")
-        return self._submit(symbol, "sell", qty, notional)
+                return self._reject(symbol, "sell", "no open position", reason=reason, features=features)
+        return self._submit(symbol, "sell", qty, notional, reason=reason, features=features)
 
-    def _submit(self, symbol, side, qty, notional):
+    def _submit(self, symbol, side, qty, notional, reason=None, features=None):
         try:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
         except ImportError as e:
-            return self._reject(symbol, side, f"alpaca-py missing: {e}")
+            return self._reject(symbol, side, f"alpaca-py missing: {e}", reason=reason, features=features)
 
         is_crypto = self.is_crypto(symbol)
         req_kwargs: Dict[str, Any] = {
@@ -597,7 +610,7 @@ class AlpacaBroker(Broker):
         elif notional is not None:
             req_kwargs["notional"] = notional
         else:
-            return self._reject(symbol, side, "must specify qty or notional")
+            return self._reject(symbol, side, "must specify qty or notional", reason=reason, features=features)
 
         try:
             order = self._trading.submit_order(MarketOrderRequest(**req_kwargs))
@@ -610,9 +623,11 @@ class AlpacaBroker(Broker):
                 price=filled_price,
                 status=str(order.status),
                 ts=datetime.now(timezone.utc).isoformat(),
+                reason=reason,
+                features=features,
             )
         except Exception as e:
-            return self._reject(symbol, side, str(e))
+            return self._reject(symbol, side, str(e), reason=reason, features=features)
 
     def position(self, symbol):
         try:
@@ -632,15 +647,17 @@ class AlpacaBroker(Broker):
     def price(self, symbol):
         return self._last_price.get(symbol)
 
-    def _reject(self, symbol, side, reason):
+    def _reject(self, symbol, side, reject_reason, reason=None, features=None):
         return OrderRecord(
             order_id="rejected",
             symbol=symbol,
             side=side,
             qty=0,
             price=0,
-            status=f"rejected: {reason}",
+            status=f"rejected: {reject_reason}",
             ts=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            features=features,
         )
 
 
@@ -710,27 +727,27 @@ class BinanceBroker(Broker):
     def price(self, symbol: str) -> Optional[float]:
         return self._last_price.get(symbol)
 
-    def buy(self, symbol, qty=None, notional=None):
-        return self._submit(symbol, "buy", qty, notional)
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
+        return self._submit(symbol, "buy", qty, notional, reason=reason, features=features)
 
-    def sell(self, symbol, qty=None, notional=None):
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
         if qty is None and notional is None:
             qty = self.position(symbol)
             if qty <= 0:
-                return self._reject(symbol, "sell", "no open position")
-        return self._submit(symbol, "sell", qty, notional)
+                return self._reject(symbol, "sell", "no open position", reason=reason, features=features)
+        return self._submit(symbol, "sell", qty, notional, reason=reason, features=features)
 
-    def _submit(self, symbol, side, qty, notional):
+    def _submit(self, symbol, side, qty, notional, reason=None, features=None):
         norm = BinanceBroker.normalize_symbol(symbol)
         try:
             if qty is None and notional is not None:
                 ticker = self._exchange.fetch_ticker(norm)
                 px = float(ticker.get("last") or ticker.get("close") or 0)
                 if px <= 0:
-                    return self._reject(symbol, side, "no price for notional sizing")
+                    return self._reject(symbol, side, "no price for notional sizing", reason=reason, features=features)
                 qty = notional / px
             if qty is None:
-                return self._reject(symbol, side, "must specify qty or notional")
+                return self._reject(symbol, side, "must specify qty or notional", reason=reason, features=features)
             order = self._exchange.create_order(norm, "market", side, qty)
             filled_price = float(order.get("average") or order.get("price") or 0) or self._last_price.get(symbol, 0)
             return OrderRecord(
@@ -741,9 +758,11 @@ class BinanceBroker(Broker):
                 price=filled_price,
                 status=str(order.get("status", "submitted")),
                 ts=datetime.now(timezone.utc).isoformat(),
+                reason=reason,
+                features=features,
             )
         except Exception as e:
-            return self._reject(symbol, side, str(e))
+            return self._reject(symbol, side, str(e), reason=reason, features=features)
 
     def position(self, symbol: str) -> float:
         norm = BinanceBroker.normalize_symbol(symbol)
@@ -800,15 +819,17 @@ class BinanceBroker(Broker):
             "volume": float(v),
         }
 
-    def _reject(self, symbol, side, reason):
+    def _reject(self, symbol, side, reject_reason, reason=None, features=None):
         return OrderRecord(
             order_id="rejected",
             symbol=symbol,
             side=side,
             qty=0,
             price=0,
-            status=f"rejected: {reason}",
+            status=f"rejected: {reject_reason}",
             ts=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            features=features,
         )
 
 
@@ -1357,7 +1378,7 @@ class IBKRBroker(Broker):
 
     # --- order placement ---
 
-    def _place_market_order(self, symbol: str, side: str, qty: float) -> OrderRecord:
+    def _place_market_order(self, symbol: str, side: str, qty: float, reason=None, features=None) -> OrderRecord:
         import math as _math
         from ib_insync import MarketOrder
         contract = self._contract(symbol)
@@ -1375,6 +1396,8 @@ class IBKRBroker(Broker):
                 price=0.0,
                 status="rejected: qty <= 0 after flooring",
                 ts=datetime.now(timezone.utc).isoformat(),
+                reason=reason,
+                features=features,
             )
         order = MarketOrder(side, qty, account=self._account)
         trade = self._ib.placeOrder(contract, order)
@@ -1393,6 +1416,8 @@ class IBKRBroker(Broker):
             price=float(filled_price),
             status=status,
             ts=datetime.now(timezone.utc).isoformat(),
+            reason=reason,
+            features=features,
         )
 
     def _per_unit_cost(self, symbol: str, price: float) -> float:
@@ -1407,13 +1432,13 @@ class IBKRBroker(Broker):
             return price * self._OPTION_MULTIPLIER
         return price
 
-    def buy(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+    def buy(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None, reason: Optional[str] = None, features: Optional[Dict[str, Any]] = None) -> OrderRecord:
         # Futures use margin not cash — default sizing is unsafe. Force explicit qty.
         if self.is_future(symbol) and qty is None:
             return OrderRecord(
                 order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
                 status="rejected: futures require explicit qty (margin-based; cannot size from cash)",
-                ts=datetime.now(timezone.utc).isoformat(),
+                ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
             )
 
         if qty is None and notional is None:
@@ -1423,7 +1448,7 @@ class IBKRBroker(Broker):
             if px <= 0:
                 return OrderRecord(
                     order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
-                    status="rejected: no price", ts=datetime.now(timezone.utc).isoformat(),
+                    status="rejected: no price", ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
                 )
             per_unit = self._per_unit_cost(symbol, px)
             qty = self.cash() / per_unit if per_unit > 0 else 0
@@ -1432,13 +1457,13 @@ class IBKRBroker(Broker):
             if px <= 0:
                 return OrderRecord(
                     order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
-                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(),
+                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
                 )
             per_unit = self._per_unit_cost(symbol, px)
             qty = (notional or 0.0) / per_unit if per_unit > 0 else 0
-        return self._place_market_order(symbol, "BUY", float(qty))
+        return self._place_market_order(symbol, "BUY", float(qty), reason=reason, features=features)
 
-    def sell(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None) -> OrderRecord:
+    def sell(self, symbol: str, qty: Optional[float] = None, notional: Optional[float] = None, reason: Optional[str] = None, features: Optional[Dict[str, Any]] = None) -> OrderRecord:
         if qty is None and notional is None:
             # Default: close the entire position (works for any instrument
             # type — position() already returns contracts for options/futures).
@@ -1446,18 +1471,18 @@ class IBKRBroker(Broker):
             if qty <= 0:
                 return OrderRecord(
                     order_id="rejected", symbol=symbol, side="sell", qty=0, price=0.0,
-                    status="rejected: no position to close", ts=datetime.now(timezone.utc).isoformat(),
+                    status="rejected: no position to close", ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
                 )
         elif qty is None:
             px = self.price(symbol) or 0.0
             if px <= 0:
                 return OrderRecord(
                     order_id="rejected", symbol=symbol, side="sell", qty=0, price=0.0,
-                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(),
+                    status="rejected: no price for notional sizing", ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
                 )
             per_unit = self._per_unit_cost(symbol, px)
             qty = (notional or 0.0) / per_unit if per_unit > 0 else 0
-        return self._place_market_order(symbol, "SELL", float(qty))
+        return self._place_market_order(symbol, "SELL", float(qty), reason=reason, features=features)
 
 
 class StrategyAdapter:

@@ -26,7 +26,11 @@ export function liveTradingDisabledReason(
 
   const mode = creds.mode ?? spec.mode
   const expectedEndpoint = spec.endpointForMode?.(mode, creds)
-  if (expectedEndpoint && normalizeEndpoint(creds.endpoint) !== normalizeEndpoint(expectedEndpoint)) {
+  const allowedEndpoints = [expectedEndpoint]
+  if (spec.kind === "ibkr" && creds.connection === undefined) {
+    allowedEndpoints.push(spec.endpointForMode?.(mode, { connection: "tws" } as BrokerCredentials))
+  }
+  if (expectedEndpoint && !allowedEndpoints.some((endpoint) => normalizeEndpoint(creds.endpoint) === normalizeEndpoint(endpoint))) {
     return `${spec.displayName} custom endpoints are disabled while FINNY_LIVE_TRADING=false. Use the default ${mode} endpoint or set FINNY_LIVE_TRADING=true.`
   }
 

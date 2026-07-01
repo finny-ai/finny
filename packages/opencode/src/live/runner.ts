@@ -14,6 +14,7 @@ import { emit } from "@/analytics/emit"
 import { requireBrokerTier } from "@/plan/brokers"
 import { License } from "@/license"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import { NativeHedgeLedger, type NativeHedgeLiveEventInput, type NativeHedgeLiveEventType } from "./native-hedge-ledger"
 
 const log = Log.create({ service: "live" })
 
@@ -28,6 +29,8 @@ export namespace LiveRunner {
     price: number
     status: string
     ts: string
+    reason?: string
+    features?: unknown
   }
 
   export interface EquitySnapshot {
@@ -112,13 +115,14 @@ export namespace LiveRunner {
     proc: Process.Child
     tmpDir: string
     listeners: Set<(run: Run) => void>
+    nativeStopRecorded?: boolean
   }
 
   const runs = new Map<string, RunState>()
   const globalListeners = new Set<(runs: Run[]) => void>()
 
   function snapshot(state: RunState): Run {
-    const { proc: _p, tmpDir: _t, listeners: _l, ...rest } = state
+    const { proc: _p, tmpDir: _t, listeners: _l, nativeStopRecorded: _n, ...rest } = state
     return { ...rest, positions: { ...rest.positions }, orders: [...rest.orders], logs: [...rest.logs] }
   }
 
@@ -166,7 +170,144 @@ export namespace LiveRunner {
     })
   }
 
+  const DEFAULT_ORDER_WHY = "Strategy submitted order without explicit reason"
+
+  type NativeContext = Pick<Run, "id" | "algorithmId" | "algorithmName" | "symbol" | "interval" | "brokerKind" | "mode">
+
+  function orderEventType(status: unknown): NativeHedgeLiveEventType {
+    const normalized = typeof status === "string" ? status.toLowerCase() : ""
+    if (normalized.includes("reject")) return "order.rejected"
+    if (normalized === "filled" || normalized === "fully_filled") return "order.filled"
+    return "order.submitted"
+  }
+
+  function nativeBase(state: NativeContext, msg: Record<string, any>): Omit<NativeHedgeLiveEventInput, "eventType"> {
+    return {
+      runId: state.id,
+      algorithmId: state.algorithmId,
+      algorithmName: state.algorithmName,
+      symbol: typeof msg.symbol === "string" ? msg.symbol : state.symbol,
+      interval: typeof msg.interval === "string" ? msg.interval : state.interval,
+      brokerage: typeof msg.brokerage === "string" ? msg.brokerage : state.brokerKind,
+      mode: typeof msg.mode === "string" ? msg.mode : state.mode,
+    }
+  }
+
+  function nativeOrderFields(msg: Record<string, any>) {
+    return {
+      orderId: typeof msg.order_id === "string" ? msg.order_id : typeof msg.orderId === "string" ? msg.orderId : undefined,
+      side: typeof msg.side === "string" ? msg.side : undefined,
+      qty: typeof msg.qty === "number" ? msg.qty : undefined,
+      price: typeof msg.price === "number" ? msg.price : undefined,
+      status: typeof msg.status === "string" ? msg.status : undefined,
+      why: typeof msg.reason === "string" && msg.reason.trim().length > 0 ? msg.reason : DEFAULT_ORDER_WHY,
+      features: msg.features,
+    }
+  }
+
+  function nativeEventsForMessage(state: NativeContext, msg: Record<string, any>): NativeHedgeLiveEventInput[] {
+    const base = nativeBase(state, msg)
+    switch (msg.type) {
+      case "init":
+        return [
+          {
+            ...base,
+            eventType: "run.started",
+            payload: {
+              cash: msg.cash,
+              equity: msg.equity,
+            },
+          },
+        ]
+      case "bar":
+        return [{ ...base, eventType: "bar.seen", payload: msg }]
+      case "order_intent": {
+        const fields = nativeOrderFields(msg)
+        return [
+          {
+            ...base,
+            eventType: "decision.made",
+            side: fields.side,
+            qty: fields.qty,
+            why: fields.why,
+            features: fields.features,
+            payload: { action: fields.side, ...msg },
+          },
+          {
+            ...base,
+            ...fields,
+            eventType: "order.intent",
+            payload: msg,
+          },
+        ]
+      }
+      case "order": {
+        const fields = nativeOrderFields(msg)
+        return [
+          {
+            ...base,
+            ...fields,
+            eventType: orderEventType(msg.status),
+            payload: msg,
+          },
+        ]
+      }
+      case "equity":
+        return [
+          { ...base, eventType: "equity.snapshot", payload: { cash: msg.cash, equity: msg.equity } },
+          { ...base, eventType: "position.snapshot", payload: { positions: msg.positions } },
+        ]
+      case "log":
+        if (!msg.message || IGNORED_LIVE_LOG.test(String(msg.message))) return []
+        return [{ ...base, eventType: "log", status: typeof msg.level === "string" ? msg.level : undefined, payload: msg }]
+      case "error":
+        return [{ ...base, eventType: "log", status: "error", payload: msg }]
+      case "stop":
+        return [{ ...base, eventType: "run.stopped", status: typeof msg.reason === "string" ? msg.reason : undefined, payload: msg }]
+      default:
+        return []
+    }
+  }
+
+  function recordNative(state: RunState, msg: Record<string, any>) {
+    for (const event of nativeEventsForMessage(state, msg)) recordNativeEvent(state, event)
+  }
+
+  function recordNativeEvent(state: RunState, event: NativeHedgeLiveEventInput) {
+    if (event.eventType === "run.stopped") {
+      if (state.nativeStopRecorded) return
+      state.nativeStopRecorded = true
+    }
+    NativeHedgeLedger.record(event)
+  }
+
+  function recordNativeStop(state: RunState, status: string, payload: Record<string, unknown>) {
+    recordNativeEvent(state, {
+      runId: state.id,
+      algorithmId: state.algorithmId,
+      algorithmName: state.algorithmName,
+      symbol: state.symbol,
+      interval: state.interval,
+      brokerage: state.brokerKind,
+      mode: state.mode,
+      eventType: "run.stopped",
+      status,
+      payload,
+    })
+  }
+
+  async function drainNativeLedger() {
+    await NativeHedgeLedger.drain().catch((error) => {
+      log.warn("native hedge ledger drain failed", { error })
+    })
+  }
+
+  export function nativeEventsForMessageForTests(state: NativeContext, msg: Record<string, any>) {
+    return nativeEventsForMessage(state, msg)
+  }
+
   const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback, zlib
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -192,16 +333,39 @@ class _OrderLoggingBroker:
         # position, fetch_bar, market_is_open, set_price, ...).
         return getattr(self._inner, name)
 
-    def buy(self, symbol, qty=None, notional=None):
-        return self._record(self._inner.buy(symbol, qty=qty, notional=notional))
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
+        self._intent("buy", symbol, qty=qty, notional=notional, reason=reason, features=features)
+        return self._record(self._inner.buy(symbol, qty=qty, notional=notional, reason=reason, features=features), reason, features)
 
-    def sell(self, symbol, qty=None, notional=None):
-        return self._record(self._inner.sell(symbol, qty=qty, notional=notional))
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
+        self._intent("sell", symbol, qty=qty, notional=notional, reason=reason, features=features)
+        return self._record(self._inner.sell(symbol, qty=qty, notional=notional, reason=reason, features=features), reason, features)
 
-    def _record(self, rec):
+    def _intent(self, side, symbol, qty=None, notional=None, reason=None, features=None):
+        try:
+            payload = {
+                "type": "order_intent",
+                "side": side,
+                "symbol": symbol,
+                "qty": qty if qty is not None else 0,
+                "notional": notional,
+                "reason": reason,
+                "features": features,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+            emit(payload)
+        except Exception as e:
+            log_err("order intent emit failed: {}".format(e))
+
+    def _record(self, rec, reason=None, features=None):
         try:
             if rec is not None and hasattr(rec, "to_dict"):
-                emit({"type": "order", **rec.to_dict()})
+                data = rec.to_dict()
+                if "reason" not in data and reason is not None:
+                    data["reason"] = reason
+                if "features" not in data and features is not None:
+                    data["features"] = features
+                emit({"type": "order", **data})
         except Exception as e:
             log_err("order emit failed: {}".format(e))
         return rec
@@ -496,6 +660,23 @@ if __name__ == "__main__":
     }
     runs.set(id, preState)
     pushLog(preState, "info", "Preparing live run…")
+    if (NativeHedgeLedger.enabled()) {
+      pushLog(preState, "info", `Native hedge ledger enabled. Spool: ${NativeHedgeLedger.spoolPathForRun(id)}`)
+      NativeHedgeLedger.record({
+        runId: preState.id,
+        algorithmId: preState.algorithmId,
+        algorithmName: preState.algorithmName,
+        symbol: preState.symbol,
+        interval: preState.interval,
+        brokerage: preState.brokerKind,
+        mode: preState.mode,
+        eventType: "run.started",
+        status: "starting",
+        payload: { phase: "starting" },
+      })
+    } else if (NativeHedgeLedger.flagEnabled()) {
+      pushLog(preState, "warn", `Native hedge ledger disabled: ${NativeHedgeLedger.disabledReason() ?? "missing configuration"}`)
+    }
     notify(preState)
 
     // Kick off the async setup. Do NOT await — return the initial snapshot so
@@ -549,6 +730,8 @@ if __name__ == "__main__":
         preState.error = msg
         preState.stoppedAt = Date.now()
         pushLog(preState, "error", msg)
+        recordNativeStop(preState, "setup_failed", { reason: "setup_failed", error: msg })
+        await drainNativeLedger()
         notify(preState)
         if (preState.tmpDir) {
           await fs.rm(preState.tmpDir, { recursive: true, force: true }).catch(() => {})
@@ -587,13 +770,14 @@ if __name__ == "__main__":
         for (const line of text.split("\n")) {
           if (!line.trim()) continue
           pushLog(state, "warn", line.trim())
+          recordNative(state, { type: "log", level: "warn", message: line.trim() })
           notify(state)
         }
       })
     }
 
     proc.exited
-      .then((code) => {
+      .then(async (code) => {
         state.status = code === 0 ? "stopped" : "error"
         state.stoppedAt = Date.now()
         if (code !== 0) state.error = state.error ?? `Process exited with code ${code}`
@@ -603,9 +787,14 @@ if __name__ == "__main__":
           algorithmId: state.algorithmId,
           payload: { runId: state.id, reason: code === 0 ? "clean_exit" : `exit_code_${code}` },
         })
+        recordNativeStop(state, code === 0 ? "clean_exit" : `exit_code_${code}`, {
+          reason: code === 0 ? "clean_exit" : `exit_code_${code}`,
+          error: state.error,
+        })
+        await drainNativeLedger()
         notify(state)
       })
-      .catch((err) => {
+      .catch(async (err) => {
         state.status = "error"
         state.stoppedAt = Date.now()
         state.error = String(err?.message ?? err)
@@ -615,6 +804,8 @@ if __name__ == "__main__":
           algorithmId: state.algorithmId,
           payload: { runId: state.id, reason: "crash" },
         })
+        recordNativeStop(state, "crash", { reason: "crash", error: state.error })
+        await drainNativeLedger()
         notify(state)
       })
   }
@@ -627,9 +818,12 @@ if __name__ == "__main__":
       // Not JSON — treat as a plain log line.
       pushLog(state, "info", line)
       emitLiveLog(state, "info", line)
+      recordNative(state, { type: "log", level: "info", message: line })
       notify(state)
       return
     }
+
+    recordNative(state, msg)
 
     switch (msg.type) {
       case "init": {
@@ -685,6 +879,9 @@ if __name__ == "__main__":
         })
         break
       }
+      case "order_intent": {
+        break
+      }
       case "log": {
         const level = (msg.level as LogEntry["level"]) ?? "info"
         const message = msg.message ?? ""
@@ -725,6 +922,8 @@ if __name__ == "__main__":
       await Process.stop(state.proc)
     } catch (e) {
       log.warn("stop failed", { id, error: e })
+    } finally {
+      await drainNativeLedger()
     }
     // Clean up temp dir after process exits
     state.proc.exited

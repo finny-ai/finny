@@ -16,6 +16,8 @@ import type * as devices from "../devices.js";
 import type * as http from "../http.js";
 import type * as licenses from "../licenses.js";
 import type * as messages from "../messages.js";
+import type * as nativeHedgeLive from "../nativeHedgeLive.js";
+import type * as nativeHedgeLiveValidation from "../nativeHedgeLiveValidation.js";
 import type * as parts from "../parts.js";
 import type * as permissions from "../permissions.js";
 import type * as projects from "../projects.js";
@@ -40,6 +42,8 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   licenses: typeof licenses;
   messages: typeof messages;
+  nativeHedgeLive: typeof nativeHedgeLive;
+  nativeHedgeLiveValidation: typeof nativeHedgeLiveValidation;
   parts: typeof parts;
   permissions: typeof permissions;
   projects: typeof projects;
