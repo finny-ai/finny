@@ -5,7 +5,7 @@ import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { useDialog, type DialogContext } from "../ui/dialog"
-import { BrokerRegistry, type BrokerKind, type BrokerMode, type BrokerSpec } from "@/live/brokers"
+import { BrokerRegistry, type BrokerConnection, type BrokerKind, type BrokerMode, type BrokerSpec } from "@/live/brokers"
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
 
@@ -26,7 +26,7 @@ function initialFields(spec: BrokerSpec): Fields {
   // the default mode so the value visible in the form matches the mode the
   // user is about to save under.
   if (spec.endpointForMode && out.mode) {
-    out.endpoint = spec.endpointForMode(out.mode as BrokerMode) || out.endpoint
+    out.endpoint = spec.endpointForMode(out.mode as BrokerMode, { connection: out.connection as BrokerConnection }) || out.endpoint
   }
   return out
 }
@@ -67,12 +67,14 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const setField = (name: string, value: string) => {
     setFields((prev) => {
       const next = { ...prev, [name]: value }
-      // When the user picks paper/live/testnet, replace the endpoint with the
-      // mode's canonical URL — unless they've already typed a custom one.
-      if (name === "mode") {
+      // When the user picks paper/live/testnet or a connection app, replace the
+      // endpoint with the canonical URL — unless they've already typed a custom one.
+      if (name === "mode" || name === "connection") {
         const spec = activeSpec()
         if (spec.endpointForMode && !endpointTouched()) {
-          next.endpoint = spec.endpointForMode(value as BrokerMode)
+          const mode = (name === "mode" ? value : next.mode) as BrokerMode
+          const connection = (name === "connection" ? value : next.connection) as BrokerConnection
+          next.endpoint = spec.endpointForMode(mode, { connection })
         }
       }
       if (name === "endpoint") {
@@ -125,7 +127,9 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
     const f = fields()
     const label = (f.label ?? "").trim()
     const keyId = (f.keyId ?? "").trim()
-    const requiresSecret = spec.credentialFields.some((c) => c.name === "secret")
+    const secretField = spec.credentialFields.find((c) => c.name === "secret")
+    const hasSecretField = Boolean(secretField)
+    const requiresSecret = secretField ? secretField.required !== false : false
     const secret = (f.secret ?? "").trim()
     const endpoint = (f.endpoint ?? spec.defaultEndpoint).trim() || spec.defaultEndpoint
 
@@ -157,13 +161,16 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
         const modeField = spec.credentialFields.find((c) => c.name === "mode")
         metadata.mode = (f.mode ?? modeField?.default ?? "paper").trim() || "paper"
       }
+      if (spec.credentialFields.some((c) => c.name === "connection")) {
+        const connectionField = spec.credentialFields.find((c) => c.name === "connection")
+        metadata.connection = (f.connection ?? connectionField?.default ?? "gateway").trim() || "gateway"
+      }
       const result = await sdk.client.auth.set({
         providerID,
-        // Brokerages without an API secret (e.g. IBKR, where the Client Portal
-        // Gateway maintains the session via browser login) still need an `api`
-        // entry in the auth store so listAccounts can find them — store an
-        // empty key in that case.
-        auth: { type: "api", key: requiresSecret ? secret : "", metadata },
+        // Brokerages without a required API secret still need an `api` entry in
+        // the auth store so listAccounts can find them. If an optional secret
+        // field is filled (for example IBKR Client ID), keep it locally too.
+        auth: { type: "api", key: hasSecretField ? secret : "", metadata },
       })
       if ((result as any)?.error) {
         throw new Error((result as any).error?.message ?? "auth.set returned an error")

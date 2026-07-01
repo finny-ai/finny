@@ -51,6 +51,8 @@ export interface DialogSelectProps<T> {
   current?: T
 }
 
+type DialogSelectGutter = JSX.Element | (() => JSX.Element)
+
 export interface DialogSelectOption<T = any> {
   title: string
   titleView?: JSX.Element
@@ -64,7 +66,7 @@ export interface DialogSelectOption<T = any> {
   categoryView?: JSX.Element
   disabled?: boolean
   bg?: RGBA
-  gutter?: () => JSX.Element
+  gutter?: DialogSelectGutter
   margin?: JSX.Element
   onSelect?: (ctx: DialogContext) => void
 }
@@ -655,11 +657,15 @@ function Option(props: {
   footer?: JSX.Element | string
   titleWidth?: number
   truncateTitle?: boolean | "left"
-  gutter?: () => JSX.Element
+  gutter?: DialogSelectGutter
   onMouseOver?: () => void
 }) {
   const { theme } = useTheme()
   const fg = selectedForeground(theme)
+  const gutter = createMemo(() => {
+    const value = props.gutter
+    return typeof value === "function" ? value() : value
+  })
   const text = createMemo(() => {
     if (props.active && !props.muted) return fg
     if (props.muted && (props.active || props.current)) return theme.textMuted
@@ -674,9 +680,9 @@ function Option(props: {
           ●
         </text>
       </Show>
-      <Show when={props.gutter}>
+      <Show when={gutter()}>
         <box flexShrink={0} marginRight={0}>
-          {props.gutter?.()}
+          {gutter()}
         </box>
       </Show>
       <text

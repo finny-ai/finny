@@ -237,7 +237,14 @@ def make_broker(kind: str, run_id: str):
         mode = os.environ.get("IBKR_MODE", "paper").lower()
         if mode not in ("paper", "live"):
             raise RuntimeError(f"IBKR_MODE must be 'paper' or 'live', got {mode!r}")
-        port_str = os.environ.get("IBKR_PORT", "7496" if mode == "live" else "7497")
+        connection_app = os.environ.get("IBKR_CONNECTION_APP", "tws").lower()
+        if connection_app not in ("tws", "gateway"):
+            raise RuntimeError(f"IBKR_CONNECTION_APP must be 'tws' or 'gateway', got {connection_app!r}")
+        if connection_app == "gateway":
+            default_port = "4001" if mode == "live" else "4002"
+        else:
+            default_port = "7496" if mode == "live" else "7497"
+        port_str = os.environ.get("IBKR_PORT", default_port)
         client_id_str = os.environ.get("IBKR_CLIENT_ID")
         if not account_id:
             raise RuntimeError("Missing IBKR_ACCOUNT_ID — add an IBKR account in Settings → Brokerages.")
@@ -253,7 +260,8 @@ def make_broker(kind: str, run_id: str):
         else:
             client_id = _default_ibkr_client_id(run_id)
         broker = IBKRBroker(account_id=account_id, host=host, port=port, client_id=client_id)
-        return broker, f"IBKR {'paper' if mode != 'live' else 'LIVE'}"
+        connection_label = "IB Gateway" if connection_app == "gateway" else "TWS"
+        return broker, f"IBKR {connection_label} {'paper' if mode != 'live' else 'LIVE'}"
     raise RuntimeError(f"Unknown broker kind: {kind}")
 
 

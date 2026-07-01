@@ -1,15 +1,17 @@
 import crypto from "crypto"
 import { Auth } from "@/auth"
-import type { BrokerAccount, BrokerCredentials, BrokerMode, BrokerSpec } from "./types"
+import type { BrokerAccount, BrokerConnection, BrokerCredentials, BrokerMode, BrokerSpec } from "./types"
 import { brokerModeChoices } from "./live-trading"
 
 export const IBKR_PROVIDER_PREFIX = "ibkr"
 
-// Default TWS API socket: paper=7497, live=7496. The Gateway-mode equivalents
-// are 4002 / 4001 but we standardize on TWS for personal use.
-const PAPER_ENDPOINT = "127.0.0.1:7497"
-const LIVE_ENDPOINT = "127.0.0.1:7496"
-const DEFAULT_ENDPOINT = PAPER_ENDPOINT
+const TWS_PAPER_ENDPOINT = "127.0.0.1:7497"
+const TWS_LIVE_ENDPOINT = "127.0.0.1:7496"
+const GATEWAY_PAPER_ENDPOINT = "127.0.0.1:4002"
+const GATEWAY_LIVE_ENDPOINT = "127.0.0.1:4001"
+const DEFAULT_CONNECTION: BrokerConnection = "gateway"
+const LEGACY_CONNECTION: BrokerConnection = "tws"
+const DEFAULT_ENDPOINT = GATEWAY_PAPER_ENDPOINT
 const DEFAULT_MODE: BrokerMode = "paper"
 
 const CRYPTO_BASES = new Set([
@@ -65,16 +67,37 @@ function isValidMode(value: unknown): value is BrokerMode {
   return value === "paper" || value === "live"
 }
 
-function ibkrEndpointForMode(mode: BrokerMode): string {
-  return mode === "live" ? LIVE_ENDPOINT : PAPER_ENDPOINT
+function isValidConnection(value: unknown): value is BrokerConnection {
+  return value === "tws" || value === "gateway"
 }
 
-function parseHostPort(endpoint: string): { host: string; port: string } {
-  // Accept "host:port", "host" (port defaults to 7497), or full "tcp://host:port".
+function ibkrEndpointForMode(mode: BrokerMode, creds?: Pick<BrokerCredentials, "connection">): string {
+  const connection = isValidConnection(creds?.connection) ? creds.connection : DEFAULT_CONNECTION
+  if (connection === "gateway") return mode === "live" ? GATEWAY_LIVE_ENDPOINT : GATEWAY_PAPER_ENDPOINT
+  return mode === "live" ? TWS_LIVE_ENDPOINT : TWS_PAPER_ENDPOINT
+}
+
+function legacyIbkrEndpointForMode(mode: BrokerMode): string {
+  return ibkrEndpointForMode(mode, { connection: LEGACY_CONNECTION })
+}
+
+function endpointPort(endpoint: string): string {
   const stripped = endpoint.replace(/^tcp:\/\//i, "").trim()
   const idx = stripped.indexOf(":")
-  if (idx === -1) return { host: stripped || "127.0.0.1", port: "7497" }
-  return { host: stripped.slice(0, idx) || "127.0.0.1", port: stripped.slice(idx + 1) || "7497" }
+  return idx === -1 ? "7497" : stripped.slice(idx + 1) || "7497"
+}
+
+function parseHostPort(endpoint: string, fallbackPort = "7497"): { host: string; port: string } {
+  // Accept "host:port", "host" (port defaults to the selected app/mode), or full "tcp://host:port".
+  const stripped = endpoint.replace(/^tcp:\/\//i, "").trim()
+  const idx = stripped.indexOf(":")
+  if (idx === -1) return { host: stripped || "127.0.0.1", port: fallbackPort }
+  return { host: stripped.slice(0, idx) || "127.0.0.1", port: stripped.slice(idx + 1) || fallbackPort }
+}
+
+function parseClientId(secret: string): string | undefined {
+  const trimmed = secret.trim()
+  return /^\d+$/.test(trimmed) ? trimmed : undefined
 }
 
 export const ibkrSpec: BrokerSpec = {
@@ -90,17 +113,27 @@ export const ibkrSpec: BrokerSpec = {
   assetClasses: ["equity", "crypto", "option", "future"],
   staticTakerFee: 0.0005,
   defaultEndpoint: DEFAULT_ENDPOINT,
-  docsUrl: "https://interactivebrokers.github.io/tws-api/",
+  docsUrl: "https://www.interactivebrokers.com/campus/ibkr-api-page/twsapi-doc/",
   credentialFields: [
     { name: "label", label: "Label" },
     { name: "keyId", label: "Account ID", placeholder: "DU1234567 (paper) or U1234567 (live)" },
-    { name: "endpoint", label: "TWS host:port", default: DEFAULT_ENDPOINT, placeholder: "127.0.0.1:7497" },
+    {
+      name: "secret",
+      label: "Client ID (optional)",
+      placeholder: "Numeric session/client ID, e.g. 101",
+      secret: true,
+      required: false,
+    },
+    { name: "connection", label: "Connection app", default: DEFAULT_CONNECTION, choices: ["gateway", "tws"] },
+    { name: "endpoint", label: "TWS / IB Gateway host:port", default: DEFAULT_ENDPOINT, placeholder: "127.0.0.1:4002" },
     { name: "mode", label: "Mode", default: DEFAULT_MODE, choices: brokerModeChoices(["paper", "live"]) },
   ],
   promptFragment: [
     "## Active brokerage: IBKR (Interactive Brokers)",
     "",
     "The user's algorithm will run against an `IBKRBroker` runtime backed by the `ib_insync` library, which talks to a locally-running TWS or IB Gateway desktop app (paper or live, picked at account-add time). The strategy stays broker-agnostic — use `self.broker.buy/sell/position/equity/cash/price`; do NOT import `ib_insync` or read `IBKR_*` env vars from strategy code. The runtime handles the TWS connection, contract qualification, and order placement.",
+    "",
+    "If you have multiple TWS/Gateway sessions, set **Client ID** here. If left blank, the runner generates a stable session ID per deployment.",
     "",
     "**Asset classes (refuse mismatches):**",
     "- US equities and ETFs — routed via `SMART` exchange.",
@@ -151,16 +184,21 @@ export const ibkrSpec: BrokerSpec = {
   },
   envVars(creds) {
     const mode = isValidMode(creds.mode) ? creds.mode : DEFAULT_MODE
+    const connection = isValidConnection(creds.connection) ? creds.connection : LEGACY_CONNECTION
+    const canonical = ibkrEndpointForMode(mode, { connection })
     // If the user toggled mode after saving, fall back to the canonical
     // host:port for the active mode rather than silently using the wrong port.
-    const opposite = ibkrEndpointForMode(mode === "live" ? "paper" : "live")
-    const endpoint = creds.endpoint && creds.endpoint !== opposite ? creds.endpoint : ibkrEndpointForMode(mode)
-    const { host, port } = parseHostPort(endpoint)
+    const opposite = ibkrEndpointForMode(mode === "live" ? "paper" : "live", { connection })
+    const endpoint = creds.endpoint && creds.endpoint !== opposite ? creds.endpoint : canonical
+    const { host, port } = parseHostPort(endpoint, endpointPort(canonical))
+    const clientId = parseClientId(creds.secret)
     return {
       IBKR_ACCOUNT_ID: creds.keyId,
       IBKR_HOST: host,
       IBKR_PORT: port,
       IBKR_MODE: mode,
+      IBKR_CONNECTION_APP: connection,
+      ...(clientId ? { IBKR_CLIENT_ID: clientId } : {}),
     }
   },
   endpointForMode: ibkrEndpointForMode,
@@ -182,13 +220,17 @@ export async function listIbkrAccounts(): Promise<BrokerAccount[]> {
     if (info.type !== "api") continue
     const meta = (info as any).metadata ?? {}
     const mode = isValidMode(meta.mode) ? meta.mode : DEFAULT_MODE
+    const hasConnection = isValidConnection(meta.connection)
+    const connection = hasConnection ? meta.connection : LEGACY_CONNECTION
+    const fallbackEndpoint = hasConnection ? ibkrEndpointForMode(mode, { connection }) : legacyIbkrEndpointForMode(mode)
     accounts.push({
       providerID: key,
       brokerKind: "ibkr",
       label: meta.label ?? "Default",
       keyId: meta.keyId ?? "",
-      endpoint: meta.endpoint ?? ibkrEndpointForMode(mode),
+      endpoint: meta.endpoint ?? fallbackEndpoint,
       mode,
+      connection,
     })
   }
   return accounts
@@ -201,11 +243,16 @@ export async function readIbkrCredentials(providerID: string): Promise<BrokerCre
   const keyId = meta.keyId
   if (!keyId) return null
   const mode = isValidMode(meta.mode) ? meta.mode : DEFAULT_MODE
+  const hasConnection = isValidConnection(meta.connection)
+  const connection = hasConnection ? meta.connection : LEGACY_CONNECTION
+  const fallbackEndpoint = hasConnection ? ibkrEndpointForMode(mode, { connection }) : legacyIbkrEndpointForMode(mode)
   return {
     keyId,
-    // TWS API auth is socket-based via the TWS desktop app; no API secret.
+    // Client ID is optional; if not provided, Python runner defaults using
+    // the run_id-derived stable id.
     secret: info.key ?? "",
-    endpoint: meta.endpoint ?? ibkrEndpointForMode(mode),
+    endpoint: meta.endpoint ?? fallbackEndpoint,
     mode,
+    connection,
   }
 }

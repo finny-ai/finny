@@ -1,5 +1,5 @@
 import { createMemo, createResource } from "solid-js"
-import { DialogSelect } from "@tui/ui/dialog-select"
+import { DialogSelect, type DialogSelectOption } from "@tui/ui/dialog-select"
 import { useDialog } from "@tui/ui/dialog"
 import { useTheme } from "../context/theme"
 import { useLocal } from "../context/local"
@@ -13,7 +13,7 @@ export function DialogBrokerage() {
 
   const [accounts] = createResource(() => BrokerRegistry.listAccounts())
 
-  const options = createMemo(() => {
+  const options = createMemo<DialogSelectOption<BrokerKind>[]>(() => {
     const accs = accounts() ?? []
     return BrokerRegistry.specs().map((spec) => {
       const count = accs.filter((a) => a.brokerKind === spec.kind).length
@@ -22,7 +22,7 @@ export function DialogBrokerage() {
         title: spec.displayName,
         value: spec.kind as BrokerKind,
         description: count > 0 ? `${count} account${count === 1 ? "" : "s"}` : "No accounts — pick to add one",
-        gutter: isActive ? <text fg={theme.success}>✓</text> : undefined,
+        gutter: isActive ? () => <text fg={theme.success}>✓</text> : undefined,
         onSelect() {
           local.brokerage.set(spec.kind)
           if (count === 0) {

@@ -18,7 +18,7 @@ import {
   readIbkrCredentials,
 } from "./ibkr"
 
-export type { BrokerAccount, BrokerCredentials, BrokerKind, BrokerMode, BrokerSpec, PythonDep } from "./types"
+export type { BrokerAccount, BrokerConnection, BrokerCredentials, BrokerKind, BrokerMode, BrokerSpec, PythonDep } from "./types"
 export { ALPACA_PROVIDER_PREFIX } from "./alpaca"
 export { BINANCE_PROVIDER_PREFIX } from "./binance"
 export { IBKR_PROVIDER_PREFIX } from "./ibkr"

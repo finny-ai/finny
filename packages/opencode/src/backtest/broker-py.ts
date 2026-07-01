@@ -817,13 +817,14 @@ class IBKRBroker(Broker):
 
     Setup expected from the user (one-time per machine):
       1. Run TWS or IB Gateway, log in (paper or live credentials).
-      2. File → Global Configuration → API → Settings:
+      2. TWS: File → Global Configuration → API → Settings
+         IB Gateway: Configure → Settings → API → Settings
          - Enable ActiveX and Socket Clients
-         - Socket port = 7497 (paper) or 7496 (live)
+         - Socket port = 7497/7496 for TWS or 4002/4001 for IB Gateway
          - Uncheck "Read-Only API"
-      3. Keep TWS open while strategies run. TWS auto-logs-out once every ~24h
-         and the user has to re-login in the TWS window — this class will
-         attempt automatic reconnects with exponential backoff once TWS is
+      3. Keep TWS / IB Gateway open while strategies run. IBKR sessions can
+         require periodic re-login in the desktop app - this class will
+         attempt automatic reconnects with exponential backoff once IBKR is
          reachable again, so the algo recovers without manual restart.
     """
 
@@ -899,12 +900,12 @@ class IBKRBroker(Broker):
         # doesn't fight a planned shutdown.
         self._shutting_down = False
 
-        # Symbol -> qualified Contract. Qualification is a round-trip to TWS,
+        # Symbol -> qualified Contract. Qualification is a round-trip to IBKR,
         # so we cache.
         self._contracts: Dict[str, Any] = {}
         # Symbol -> Ticker subscription. Once subscribed, ticks flow into the
         # Ticker object continuously; we just read .marketPrice() / .last.
-        # Re-subscribed after auto-reconnect because TWS-side subscriptions
+        # Re-subscribed after auto-reconnect because IBKR-side subscriptions
         # die with the socket.
         self._tickers: Dict[str, Any] = {}
         self._last_price: Dict[str, float] = {}
@@ -922,11 +923,11 @@ class IBKRBroker(Broker):
         self._ib.errorEvent += _on_error
 
         # Auto-reconnect with exponential backoff on socket loss. Capped at
-        # 5 attempts so a stuck TWS doesn't infinite-loop us.
+        # 5 attempts so a stuck TWS / IB Gateway doesn't infinite-loop us.
         def _on_disconnected():
             if self._shutting_down:
                 return
-            log_err("[IBKRBroker] TWS disconnected — attempting reconnect")
+            log_err("[IBKRBroker] TWS / IB Gateway disconnected - attempting reconnect")
             delay = 1.0
             for attempt in range(1, 6):
                 try:
@@ -954,9 +955,9 @@ class IBKRBroker(Broker):
             )
         except Exception as e:
             raise RuntimeError(
-                f"Could not connect to TWS at {self._host}:{self._port} (clientId={self._client_id}). "
-                f"Is TWS or IB Gateway running with API enabled? "
-                f"File → Global Configuration → API → Settings → 'Enable ActiveX and Socket Clients'. "
+                f"Could not connect to TWS / IB Gateway at {self._host}:{self._port} "
+                f"(clientId={self._client_id}). Is TWS or IB Gateway running with API enabled? "
+                f"Enable socket clients in API Settings and confirm the socket port matches this account. "
                 f"Underlying error: {e}"
             ) from e
 

@@ -25,7 +25,7 @@ export function liveTradingDisabledReason(
   if (creds.mode === "live") return `${spec.displayName} live trading is disabled. Set FINNY_LIVE_TRADING=true to enable live mode.`
 
   const mode = creds.mode ?? spec.mode
-  const expectedEndpoint = spec.endpointForMode?.(mode)
+  const expectedEndpoint = spec.endpointForMode?.(mode, creds)
   if (expectedEndpoint && normalizeEndpoint(creds.endpoint) !== normalizeEndpoint(expectedEndpoint)) {
     return `${spec.displayName} custom endpoints are disabled while FINNY_LIVE_TRADING=false. Use the default ${mode} endpoint or set FINNY_LIVE_TRADING=true.`
   }
