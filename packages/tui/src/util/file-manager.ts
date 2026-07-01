@@ -24,6 +24,22 @@ type DirectoryPickerRequest = FileManagerPlatformRequest & {
   currentPath: string
 }
 
+type ZipOpenPickerCommandRequest = FileManagerPlatformRequest & {
+  initialPath: string
+}
+
+type ZipSavePickerCommandRequest = FileManagerPlatformRequest & {
+  defaultPath: string
+}
+
+type ZipOpenPickerRequest = FileManagerPlatformRequest & {
+  currentPath: string
+}
+
+type ZipSavePickerRequest = FileManagerPlatformRequest & {
+  defaultPath: string
+}
+
 type PathRequest = {
   path: string
 }
@@ -53,6 +69,10 @@ export function chooseDirectoryLabel(request: FileManagerPlatformRequest = {}): 
   if (platform === "darwin") return "Choose with Finder..."
   if (platform === "win32") return "Choose with File Explorer..."
   return "Choose folder..."
+}
+
+export function supportsNativeZipPicker(request: FileManagerPlatformRequest = {}): boolean {
+  return (request.platform ?? process.platform) === "darwin"
 }
 
 function appleScriptString(request: QuotedStringRequest): string {
@@ -99,6 +119,32 @@ export function directoryPickerCommands(request: DirectoryPickerCommandRequest):
     },
     { command: "kdialog", args: ["--getexistingdirectory", initialPath, "--title", "Choose Finny Home"] },
   ]
+}
+
+export function zipOpenPickerCommands(request: ZipOpenPickerCommandRequest): CommandSpec[] {
+  const platform = request.platform ?? process.platform
+  if (platform !== "darwin") return []
+
+  const script = [
+    `set defaultFolder to POSIX file ${appleScriptString({ value: request.initialPath })}`,
+    `set selectedFile to choose file with prompt "Import Finny Algorithm Bundle" of type {"zip"} default location defaultFolder`,
+    "POSIX path of selectedFile",
+  ].join("\n")
+  return [{ command: "osascript", args: ["-e", script] }]
+}
+
+export function zipSavePickerCommands(request: ZipSavePickerCommandRequest): CommandSpec[] {
+  const platform = request.platform ?? process.platform
+  if (platform !== "darwin") return []
+
+  const defaultFolder = path.dirname(request.defaultPath)
+  const defaultName = path.basename(request.defaultPath)
+  const script = [
+    `set defaultFolder to POSIX file ${appleScriptString({ value: defaultFolder })}`,
+    `set selectedFile to choose file name with prompt "Export Finny Algorithm Bundle" default location defaultFolder default name ${appleScriptString({ value: defaultName })}`,
+    "POSIX path of selectedFile",
+  ].join("\n")
+  return [{ command: "osascript", args: ["-e", script] }]
 }
 
 async function nearestExistingDirectory(request: PathRequest): Promise<string> {
@@ -197,4 +243,25 @@ export async function chooseDirectoryWithFileManager(request: DirectoryPickerReq
   if (result.cancelled) return undefined
 
   throw result.error ?? new Error("No directory picker is available")
+}
+
+export async function chooseZipFileWithFileManager(request: ZipOpenPickerRequest): Promise<string | undefined> {
+  const initialPath = await nearestExistingDirectory({ path: request.currentPath })
+  const result = await runPickerCommands(zipOpenPickerCommands({ platform: request.platform, initialPath }))
+
+  if (result.selectedPath) return path.resolve(result.selectedPath)
+  if (result.cancelled) return undefined
+
+  throw result.error ?? new Error("No zip picker is available")
+}
+
+export async function chooseZipSavePathWithFileManager(request: ZipSavePickerRequest): Promise<string | undefined> {
+  const defaultDir = await nearestExistingDirectory({ path: path.dirname(request.defaultPath) })
+  const defaultPath = path.join(defaultDir, path.basename(request.defaultPath))
+  const result = await runPickerCommands(zipSavePickerCommands({ platform: request.platform, defaultPath }))
+
+  if (result.selectedPath) return path.resolve(result.selectedPath)
+  if (result.cancelled) return undefined
+
+  throw result.error ?? new Error("No zip picker is available")
 }

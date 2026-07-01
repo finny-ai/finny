@@ -7,6 +7,9 @@ import {
   directoryPickerCommands,
   fileManagerName,
   finnyHomeForSelectedDirectory,
+  supportsNativeZipPicker,
+  zipOpenPickerCommands,
+  zipSavePickerCommands,
 } from "../../src/util/file-manager"
 
 describe("util.file-manager", () => {
@@ -29,6 +32,33 @@ describe("util.file-manager", () => {
     expect(directoryPickerCommands({ platform: "linux", initialPath: "/home/me/finny" }).map((item) => item.command)).toEqual(
       ["zenity", "kdialog"],
     )
+  })
+
+  test("builds macOS zip open picker command without launching it", () => {
+    const command = zipOpenPickerCommands({ platform: "darwin", initialPath: "/Users/me/Downloads" })[0]!
+
+    expect(command.command).toBe("osascript")
+    expect(command.args.join("\n")).toContain("choose file")
+    expect(command.args.join("\n")).toContain('of type {"zip"}')
+    expect(command.args.join("\n")).toContain("/Users/me/Downloads")
+  })
+
+  test("builds macOS zip save panel command without launching it", () => {
+    const command = zipSavePickerCommands({
+      platform: "darwin",
+      defaultPath: "/Users/me/Downloads/eth-daily-momentum-v8.zip",
+    })[0]!
+
+    expect(command.command).toBe("osascript")
+    expect(command.args.join("\n")).toContain("choose file name")
+    expect(command.args.join("\n")).toContain("eth-daily-momentum-v8.zip")
+    expect(command.args.join("\n")).toContain("/Users/me/Downloads")
+  })
+
+  test("keeps manual zip path fallback available off macOS", () => {
+    expect(supportsNativeZipPicker({ platform: "linux" })).toBe(false)
+    expect(zipOpenPickerCommands({ platform: "linux", initialPath: "/tmp" })).toEqual([])
+    expect(zipSavePickerCommands({ platform: "linux", defaultPath: "/tmp/algo.zip" })).toEqual([])
   })
 
   test("treats a selected parent as the place where the finny folder should live", async () => {

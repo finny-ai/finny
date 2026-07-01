@@ -1,3 +1,4 @@
+import crypto from "crypto"
 import fs from "fs/promises"
 import path from "path"
 import { Filesystem } from "../../util/filesystem"
@@ -9,7 +10,7 @@ const log = Log.create({ service: "local-algorithm-store" })
 
 const MAX_RETRY = 5
 
-interface AlgorithmRow {
+export interface AlgorithmRow {
   algorithmId: string
   userId: string
   name: string
@@ -27,7 +28,7 @@ interface AlgorithmRow {
   time_updated: number
 }
 
-interface AlgorithmMeta {
+export interface AlgorithmMeta {
   algorithmId: string
   userId: string
   name: string
@@ -180,6 +181,21 @@ async function scanVersions(algorithmId: string): Promise<number[]> {
   }
 }
 
+async function scanVersionsInDir(dir: string): Promise<number[]> {
+  try {
+    const entries = await fs.readdir(dir, { withFileTypes: true })
+    const versions: number[] = []
+    for (const e of entries) {
+      if (!e.isDirectory()) continue
+      const m = e.name.match(/^v(\d+)$/)
+      if (m) versions.push(parseInt(m[1], 10))
+    }
+    return versions.sort((a, b) => a - b)
+  } catch {
+    return []
+  }
+}
+
 async function readVersion(algorithmId: string, version: number, meta: AlgorithmMeta): Promise<AlgorithmRow | null> {
   try {
     const code = await Filesystem.readText(codePath(algorithmId, version))
@@ -218,6 +234,118 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
 }
 
 export namespace LocalAlgorithmStore {
+  export interface ImportCopyInput {
+    sourceDir: string
+    userId: string
+    now?: number
+  }
+
+  export function directoryFor(algorithmId: string): string {
+    return algoDir(algorithmId)
+  }
+
+  async function nextImportedName(userId: string, sourceName: string): Promise<string> {
+    const base = `${sourceName}-imported`
+    if (!(await getByName(userId, base))) return base
+
+    for (let i = 2; i < 1000; i++) {
+      const candidate = `${base}-${i}`
+      if (!(await getByName(userId, candidate))) return candidate
+    }
+
+    throw new Error(`Unable to find an available imported name for "${sourceName}"`)
+  }
+
+  async function assertImportableStoreDir(sourceDir: string, meta: AlgorithmMeta): Promise<void> {
+    if (!meta || typeof meta !== "object") throw new Error("Imported algorithm is missing meta.json")
+    if (typeof meta.algorithmId !== "string" || !meta.algorithmId) throw new Error("Imported meta.json has no algorithmId")
+    if (typeof meta.userId !== "string" || !meta.userId) throw new Error("Imported meta.json has no userId")
+    if (typeof meta.name !== "string" || !meta.name) throw new Error("Imported meta.json has no name")
+    if (typeof meta.language !== "string" || !meta.language) throw new Error("Imported meta.json has no language")
+    if (typeof meta.status !== "string" || !meta.status) throw new Error("Imported meta.json has no status")
+    if (!Number.isInteger(meta.latestVersion) || meta.latestVersion < 1) {
+      throw new Error("Imported meta.json has an invalid latestVersion")
+    }
+    if (typeof meta.time_created !== "number" || typeof meta.time_updated !== "number") {
+      throw new Error("Imported meta.json has invalid timestamps")
+    }
+
+    const versions = await scanVersionsInDir(sourceDir)
+    if (!versions.includes(meta.latestVersion)) {
+      throw new Error(`Imported algorithm is missing latest version v${String(meta.latestVersion).padStart(2, "0")}`)
+    }
+
+    let current: string
+    try {
+      current = (await fs.readFile(path.join(sourceDir, "CURRENT"), "utf8")).trim()
+    } catch {
+      throw new Error("Imported algorithm is missing CURRENT")
+    }
+    const currentMatch = current.match(/^v(\d+)$/)
+    if (!currentMatch || !versions.includes(parseInt(currentMatch[1]!, 10))) {
+      throw new Error("Imported algorithm CURRENT points at a missing version")
+    }
+
+    for (const version of versions) {
+      const strategyPath = path.join(sourceDir, versionTag(version), "strategy.py")
+      try {
+        const stat = await fs.stat(strategyPath)
+        if (!stat.isFile()) throw new Error()
+      } catch {
+        throw new Error(`Imported algorithm version ${versionTag(version)} is missing strategy.py`)
+      }
+    }
+  }
+
+  export async function importCopy(input: ImportCopyInput): Promise<AlgorithmRow> {
+    const sourceDir = path.resolve(input.sourceDir)
+    const sourceMeta = await Filesystem.readJson<AlgorithmMeta>(path.join(sourceDir, "meta.json"))
+    await assertImportableStoreDir(sourceDir, sourceMeta)
+
+    const now = input.now ?? Date.now()
+    const importedName = await nextImportedName(input.userId, sourceMeta.name)
+
+    let algorithmId: string
+    let targetDir: string
+    do {
+      algorithmId = crypto.randomUUID()
+      targetDir = algoDir(algorithmId)
+    } while (await Filesystem.exists(targetDir))
+
+    await fs.mkdir(algorithmsDir(), { recursive: true })
+    try {
+      await fs.cp(sourceDir, targetDir, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+        dereference: false,
+      })
+
+      const meta: AlgorithmMeta = {
+        ...sourceMeta,
+        algorithmId,
+        userId: input.userId,
+        name: importedName,
+        time_created: now,
+        time_updated: now,
+      }
+      await writeMeta(meta)
+
+      const row = await readVersion(algorithmId, meta.latestVersion, meta)
+      if (!row) throw new Error(`Imported algorithm "${importedName}" has no readable latest version`)
+
+      const nameIndex = await readNameIndex()
+      nameIndex[nameKey(input.userId, importedName)] = algorithmId
+      await writeNameIndex(nameIndex)
+
+      log.info("algorithm imported locally", { algorithmId, name: importedName, version: row.version })
+      return row
+    } catch (err) {
+      await fs.rm(targetDir, { recursive: true, force: true })
+      throw err
+    }
+  }
+
   export async function insertVersion(values: {
     algorithmId: string
     userId: string

@@ -1,8 +1,11 @@
+import os from "node:os"
+import path from "node:path"
 import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import open from "open"
 import { BacktestRunner } from "@/backtest/runner"
 import { Algorithm } from "@/algorithm"
+import { exportAlgorithmBundle, importAlgorithmBundle } from "@/algorithm/import-export"
 import { parseConfig } from "@/algorithm/strategy-params"
 import { liveTradingEnabled } from "@/live/brokers/live-trading"
 import { useTheme } from "../context/theme"
@@ -11,7 +14,9 @@ import { useAlgorithms } from "../context/algorithms"
 import { useBacktestHistory } from "../context/backtest-history"
 import { useLiveRuns } from "../context/live-runs"
 import { useSDK } from "../context/sdk"
+import { useTuiTerminalEnvironment } from "../context/runtime"
 import { useDialog } from "../ui/dialog"
+import { DialogPrompt } from "../ui/dialog-prompt"
 import { DialogSelect } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
 import { Card } from "../component/card"
@@ -26,6 +31,12 @@ import { DialogAlert } from "../ui/dialog-alert"
 import { DialogAlgorithmVersions } from "../component/dialog-algorithm-versions"
 import { resolveAlgorithmFolder } from "../util/algorithm-folder"
 import { errorMessage } from "../util/error"
+import {
+  chooseZipFileWithFileManager,
+  chooseZipSavePathWithFileManager,
+  fileManagerName,
+  supportsNativeZipPicker,
+} from "../util/file-manager"
 
 type RunMode = "paper" | "live"
 
@@ -37,6 +48,7 @@ export function Algorithms() {
   const sdk = useSDK()
   const dialog = useDialog()
   const toast = useToast()
+  const terminal = useTuiTerminalEnvironment()
   const routeData = useRouteData("algorithms")
   const [selectedId, setSelectedId] = createSignal<string | undefined>(routeData.algorithmId)
   const showLiveRun = liveTradingEnabled()
@@ -139,6 +151,125 @@ export function Algorithms() {
     }
   }
 
+  const safeZipName = (value: string) => {
+    const name = value
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-+|-+$/g, "")
+    return name || "algorithm"
+  }
+
+  const defaultExportZipPath = (algo: Algorithm.Info): string => {
+    return path.join(os.homedir(), "Downloads", `${safeZipName(algo.name)}-v${algo.version}.zip`)
+  }
+
+  const expandHomePath = (value: string): string => {
+    if (value === "~") return os.homedir()
+    if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2))
+    return value
+  }
+
+  const ensureZipExtension = (value: string): string => {
+    return path.extname(value).toLowerCase() === ".zip" ? value : `${value}.zip`
+  }
+
+  const promptForImportZipPath = async (): Promise<string | undefined> => {
+    if (supportsNativeZipPicker({ platform: terminal.platform })) {
+      dialog.clear()
+      try {
+        const selectedPath = await chooseZipFileWithFileManager({
+          currentPath: path.join(os.homedir(), "Downloads"),
+          platform: terminal.platform,
+        })
+        if (selectedPath) return selectedPath
+        return undefined
+      } catch {
+        toast.show({
+          message: `Could not open ${fileManagerName({ platform: terminal.platform })} picker; enter a zip path manually`,
+          variant: "warning",
+          duration: 5000,
+        })
+      }
+    }
+
+    const value = await DialogPrompt.show(dialog, "Import Algorithm Zip", {
+      placeholder: "/absolute/path/algorithm.zip",
+    })
+    if (value === null) return undefined
+    const trimmed = value.trim()
+    return trimmed ? expandHomePath(trimmed) : undefined
+  }
+
+  const promptForExportZipPath = async (algo: Algorithm.Info): Promise<string | undefined> => {
+    const defaultPath = defaultExportZipPath(algo)
+    if (supportsNativeZipPicker({ platform: terminal.platform })) {
+      dialog.clear()
+      try {
+        const selectedPath = await chooseZipSavePathWithFileManager({
+          defaultPath,
+          platform: terminal.platform,
+        })
+        if (selectedPath) return ensureZipExtension(selectedPath)
+        return undefined
+      } catch {
+        toast.show({
+          message: `Could not open ${fileManagerName({ platform: terminal.platform })} picker; enter an export path manually`,
+          variant: "warning",
+          duration: 5000,
+        })
+      }
+    }
+
+    const value = await DialogPrompt.show(dialog, "Export Algorithm Zip", {
+      value: defaultPath,
+      placeholder: "/absolute/path/algorithm.zip",
+    })
+    if (value === null) return undefined
+    const trimmed = value.trim()
+    return trimmed ? ensureZipExtension(expandHomePath(trimmed)) : undefined
+  }
+
+  const exportSelectedAlgorithm = async () => {
+    const algo = selected()
+    if (!algo) {
+      toast.show({ message: "Select an algorithm to export", variant: "warning", duration: 3000 })
+      return
+    }
+
+    const zipPath = await promptForExportZipPath(algo)
+    if (!zipPath) return
+
+    try {
+      const result = await exportAlgorithmBundle(algo, zipPath)
+      toast.show({
+        message: `Exported "${algo.name}" to ${result.zipPath}`,
+        variant: "success",
+        duration: 5000,
+      })
+    } catch (err) {
+      toast.show({ message: errorMessage(err), variant: "error", duration: 7000 })
+    }
+  }
+
+  const importAlgorithmZip = async () => {
+    const zipPath = await promptForImportZipPath()
+    if (!zipPath) return
+
+    try {
+      const imported = await importAlgorithmBundle(zipPath, { conflictPolicy: "copy" })
+      algos.refetch()
+      setSelectedId(imported.algorithm.algorithmId)
+      toast.show({
+        message: `Imported "${imported.algorithm.name}"`,
+        variant: "success",
+        duration: 5000,
+      })
+    } catch (err) {
+      toast.show({ message: errorMessage(err), variant: "error", duration: 7000 })
+    }
+  }
+
   const openRunMode = (algo: Algorithm.Info) => {
     dialog.replace(() => (
       <DialogSelect
@@ -235,6 +366,34 @@ export function Algorithms() {
         title="Algorithms"
         subtitle="AI-generated trading strategies"
         meta={`${list().length} total`}
+        right={
+          <box flexDirection="row" gap={1}>
+            <box
+              paddingLeft={2}
+              paddingRight={2}
+              backgroundColor={theme.backgroundElement}
+              onMouseUp={() => {
+                void importAlgorithmZip()
+              }}
+            >
+              <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                Import
+              </text>
+            </box>
+            <box
+              paddingLeft={2}
+              paddingRight={2}
+              backgroundColor={theme.backgroundElement}
+              onMouseUp={() => {
+                void exportSelectedAlgorithm()
+              }}
+            >
+              <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                Export
+              </text>
+            </box>
+          </box>
+        }
       />
 
       <box
