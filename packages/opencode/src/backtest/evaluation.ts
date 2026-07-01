@@ -56,7 +56,8 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
       : Number.NaN
   const benchmarkSharpe = finite(results.benchmarkSharpeRatio, Number.NaN)
   const benchmarkDrawdown = finite(results.benchmarkMaxDrawdown, Number.NaN)
-  const requiresBenchmark = results.runKind === "crucible_2_0" || results.productLabel === "Crucible 2.0" || Boolean(results.v2)
+  const strictRun = results.runKind === "crucible_2_0" || results.productLabel === "Crucible 2.0"
+  const requiresBenchmark = strictRun
 
   if (liquidationAdjustedReturn <= 0) reasons.push("liquidation-adjusted return <= 0")
   if (requiresBenchmark && !Number.isFinite(benchmarkReturn)) reasons.push("buy-and-hold benchmark unavailable")
@@ -82,7 +83,7 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   }
 
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
-  if (Number.isFinite(benchmarkSharpe) && results.sharpeRatio <= benchmarkSharpe) reasons.push("Sharpe <= buy-and-hold Sharpe")
+  if (strictRun && Number.isFinite(benchmarkSharpe) && results.sharpeRatio <= benchmarkSharpe) reasons.push("Sharpe <= buy-and-hold Sharpe")
   if (liquidationAdjustedDrawdown > 0.15) reasons.push("liquidation-adjusted max drawdown > 15%")
   if (Number.isFinite(benchmarkDrawdown) && benchmarkDrawdown > 0 && liquidationAdjustedDrawdown >= benchmarkDrawdown) reasons.push("max drawdown >= buy-and-hold max drawdown")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")

@@ -88,6 +88,33 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.reasons).toContain("buy-and-hold benchmark unavailable")
   })
 
+  test("does not require benchmark for legacy stability blobs", () => {
+    const quality = evaluateBacktestQuality(result({
+      runKind: "legacy",
+      productLabel: "Legacy backtest",
+      benchmarkReturn: undefined,
+      benchmarkMaxDrawdown: undefined,
+      benchmarkSharpeRatio: undefined,
+      alpha: undefined,
+      v2: {
+        stability: { equity_curve_r2: 0.9 },
+      } as any,
+    }))
+
+    expect(quality.reasons).not.toContain("buy-and-hold benchmark unavailable")
+  })
+
+  test("does not compare legacy strategy Sharpe against calendar-adjusted benchmark Sharpe", () => {
+    const quality = evaluateBacktestQuality(result({
+      runKind: "legacy",
+      productLabel: "Legacy backtest",
+      sharpeRatio: 1.2,
+      benchmarkSharpeRatio: 2.4,
+    }))
+
+    expect(quality.reasons).not.toContain("Sharpe <= buy-and-hold Sharpe")
+  })
+
   test("keeps defensive outperformance blocked by the absolute return gate", () => {
     const quality = evaluateBacktestQuality(result({
       totalReturn: -0.04,

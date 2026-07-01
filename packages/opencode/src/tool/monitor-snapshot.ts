@@ -8,10 +8,12 @@ import { BacktestStore } from "../backtest/store"
 
 async function latestBacktest(algorithm: Algorithm.Info | null): Promise<BacktestStore.Manifest | null> {
   if (!algorithm) return null
-  const byName = await BacktestStore.list({ algorithmName: algorithm.name, limit: 1 })
-  if (byName[0]) return byName[0]
+  const exact = await BacktestStore.list({ algorithmName: algorithm.name, algorithmId: algorithm.algorithmId, limit: 1 })
+  if (exact[0]) return exact[0]
   const byId = await BacktestStore.list({ algorithmId: algorithm.algorithmId, limit: 1 })
-  return byId[0] ?? null
+  if (byId[0]) return byId[0]
+  const legacyByName = await BacktestStore.list({ algorithmName: algorithm.name, limit: 10 })
+  return legacyByName.find((entry) => !entry.algorithmId) ?? null
 }
 
 const parameters = z.object({

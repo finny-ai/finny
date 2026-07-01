@@ -4,7 +4,7 @@ import os from "os"
 import path from "path"
 import { BacktestRunner } from "../../src/backtest/runner"
 
-const { parseResults, calendarBarsPerYear } = BacktestRunner._internalForTests
+const { parseResults, calendarBarsPerYear, computeBuyHoldBenchmark } = BacktestRunner._internalForTests
 
 // Minimal valid stdout — just the keys parseResults requires.
 function minimal(extra = ""): string {
@@ -43,11 +43,55 @@ function minimal(extra = ""): string {
 }
 
 describe("parseResults", () => {
+  function sharpe(values: number[], barsPerYear: number): number | null {
+    const returns: number[] = []
+    for (let i = 1; i < values.length; i++) {
+      returns.push(values[i] / values[i - 1] - 1)
+    }
+    if (returns.length < 2) return null
+    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
+    const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / returns.length
+    const std = Math.sqrt(variance)
+    return std > 0 ? (mean / std) * Math.sqrt(barsPerYear) : null
+  }
+
   test("uses asset-calendar annualization for benchmark Sharpe helpers", () => {
     expect(calendarBarsPerYear("1h", "US_EQUITIES")).toBeCloseTo(6.5 * 252)
     expect(calendarBarsPerYear("1d", "US_EQUITIES")).toBeCloseTo(252)
     expect(calendarBarsPerYear("1h", "24/7")).toBeCloseTo(24 * 365)
     expect(calendarBarsPerYear("1h", "FX_24_5")).toBeCloseTo(24 * 260)
+  })
+
+  test("computes benchmark Sharpe and drawdown from invested equity points", async () => {
+    const tmp = await fs.mkdtemp(path.join(os.tmpdir(), "finny-benchmark-evidence-"))
+    try {
+      const ohlcv = [
+        "timestamp,open,high,low,close,volume",
+        "2026-01-01T14:30:00Z,100,101,97,98,1000",
+        "2026-01-02T14:30:00Z,100,101,97,99,1000",
+        "2026-01-03T14:30:00Z,100,101,97,97,1000",
+      ].join("\n")
+      const csv = path.join(tmp, "ohlcv.csv")
+      await fs.writeFile(csv, ohlcv)
+
+      const benchmark = await computeBuyHoldBenchmark({
+        ohlcvCsv: csv,
+        capital: 10000,
+        assumptions: { feeBps: 0, slippageBps: 0, fillModel: "next_open" },
+        interval: "1d",
+        calendar: "US_EQUITIES",
+      })
+
+      const investedEquity = [9800, 9900, 9700]
+      const cashPrependedEquity = [10000, ...investedEquity]
+      expect(benchmark).not.toBeNull()
+      expect(benchmark!.summary.totalReturn).toBeCloseTo(-0.03)
+      expect(benchmark!.summary.maxDrawdown).toBeCloseTo((9900 - 9700) / 9900)
+      expect(benchmark!.summary.sharpeRatio).toBeCloseTo(sharpe(investedEquity, 252)!)
+      expect(benchmark!.summary.sharpeRatio).not.toBeCloseTo(sharpe(cashPrependedEquity, 252)!)
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true })
+    }
   })
 
   test("parses minimal valid output", async () => {

@@ -375,8 +375,9 @@ with open("_data_provider.txt", "w") as f:
   export const _internalForTests = {
     parseResults: (stdout: string, tmpDir: string) => parseResults(stdout, tmpDir),
     calendarBarsPerYear,
+    computeBuyHoldBenchmark,
     ENGINE_VERSION: "",  // populated below once ENGINE_VERSION is in scope
-  } as { parseResults: typeof parseResults; calendarBarsPerYear: typeof calendarBarsPerYear; ENGINE_VERSION: string }
+  } as { parseResults: typeof parseResults; calendarBarsPerYear: typeof calendarBarsPerYear; computeBuyHoldBenchmark: typeof computeBuyHoldBenchmark; ENGINE_VERSION: string }
 
   function assumptionsFromV2(v2: EngineV2.Results): Assumptions {
     const cfg = (v2 as any).execution_config ?? {}
@@ -1520,7 +1521,7 @@ if __name__ == "__main__":
       timestamp: bar.timestamp,
       benchmarkEquity: qty * bar.close,
     }))
-    const equity = [input.capital, ...series.map((row) => row.benchmarkEquity)]
+    const equity = series.map((row) => row.benchmarkEquity)
     const endingEquity = equity[equity.length - 1] ?? input.capital
     const barsPerYear = calendarBarsPerYear(input.interval, input.calendar)
     return {
