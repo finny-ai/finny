@@ -150,9 +150,11 @@ class SimBroker(Broker):
         self._orders: list = []
         self._pending_orders: list = []  # queued intents awaiting settle()
         self._trade_pnls: list = []
+        self._trades: list = []
         self._equity_curve: list = [float(starting_cash)]
         self._position_history: list = []
         self._order_counter = 0
+        self._current_ts: Optional[str] = None
         self._reject_log_count = 0
         # Participation tracking — set by the runner before each settle() so
         # we can warn when a single fill exceeds a fraction of bar volume.
@@ -169,6 +171,9 @@ class SimBroker(Broker):
     def set_bar_volume(self, symbol: str, volume: float) -> None:
         self._bar_volume[symbol] = float(volume)
 
+    def set_time(self, ts) -> None:
+        self._current_ts = str(ts) if ts is not None else None
+
     @property
     def starting_cash(self) -> float:
         return self._starting_cash
@@ -180,6 +185,10 @@ class SimBroker(Broker):
     @property
     def trade_pnls(self) -> list:
         return list(self._trade_pnls)
+
+    @property
+    def trades(self) -> list:
+        return list(self._trades)
 
     @property
     def orders(self) -> list:
@@ -266,13 +275,17 @@ class SimBroker(Broker):
         if qty <= 0:
             self._reject(symbol, "buy", "invalid qty", reason=order.get("reason"), features=order.get("features"))
             return
-        cost = qty * fill * (1 + self._fee_rate)
+        gross = qty * fill
+        fee = gross * self._fee_rate
+        cost = gross + fee
         if cost > self._cash:
             qty = self._cash / (fill * (1 + self._fee_rate))
             if qty <= 0:
                 self._reject(symbol, "buy", "insufficient cash", reason=order.get("reason"), features=order.get("features"))
                 return
-            cost = qty * fill * (1 + self._fee_rate)
+            gross = qty * fill
+            fee = gross * self._fee_rate
+            cost = gross + fee
         self._check_participation(symbol, qty)
         prev_qty = self._positions.get(symbol, 0)
         prev_basis = self._cost_basis.get(symbol, 0)
@@ -281,6 +294,14 @@ class SimBroker(Broker):
         self._positions[symbol] = new_qty
         self._cost_basis[symbol] = new_basis
         self._cash -= cost
+        self._trades.append({
+            "timestamp": self._current_ts,
+            "side": "buy",
+            "qty": qty,
+            "price": fill,
+            "fee_usd": fee,
+            "pnl": None,
+        })
         self._update_pending_order_record(order, qty, fill, "filled")
 
     def _execute_sell(self, symbol: str, order: Dict[str, Any], mark: float) -> None:
@@ -300,7 +321,9 @@ class SimBroker(Broker):
             self._reject(symbol, "sell", "invalid qty", reason=order.get("reason"), features=order.get("features"))
             return
         self._check_participation(symbol, qty)
-        proceeds = qty * fill * (1 - self._fee_rate)
+        gross = qty * fill
+        fee = gross * self._fee_rate
+        proceeds = gross - fee
         basis = self._cost_basis.get(symbol, fill) * qty
         pnl = proceeds - basis
         self._trade_pnls.append(pnl)
@@ -309,6 +332,14 @@ class SimBroker(Broker):
         if new_qty == 0:
             self._cost_basis.pop(symbol, None)
         self._cash += proceeds
+        self._trades.append({
+            "timestamp": self._current_ts,
+            "side": "sell",
+            "qty": qty,
+            "price": fill,
+            "fee_usd": fee,
+            "pnl": pnl,
+        })
         self._update_pending_order_record(order, qty, fill, "filled")
 
     def _check_participation(self, symbol: str, qty: float) -> None:
@@ -373,7 +404,7 @@ class SimBroker(Broker):
             qty=qty,
             price=price,
             status=status,
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=self._current_ts or datetime.now(timezone.utc).isoformat(),
             reason=reason,
             features=features,
         )
@@ -389,7 +420,7 @@ class SimBroker(Broker):
             qty=0,
             price=0,
             status=f"rejected: {reject_reason}",
-            ts=datetime.now(timezone.utc).isoformat(),
+            ts=self._current_ts or datetime.now(timezone.utc).isoformat(),
             reason=reason,
             features=features,
         )

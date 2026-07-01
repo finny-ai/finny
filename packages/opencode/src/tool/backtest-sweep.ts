@@ -26,11 +26,11 @@ const parameters = z.object({
   duration: z
     .string()
     .regex(/^\d+[dwmy]$/i)
-    .default("1m")
+    .default("3m")
     .describe("Backtest period for each combo. Same format as finny_backtest_run."),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
-    .default("5min")
+    .default("1h")
     .describe("Bar interval"),
   capital: z.string().default("10000").describe("Starting capital in USD"),
 })
@@ -154,6 +154,7 @@ export const BacktestSweepTool = Tool.define(
             interval: input.interval,
             capital: input.capital,
             configOverrides: { params: combo },
+            source: "sweep",
             robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
           })
           if (r.ok) results.push({ params: combo, ok: true, metrics: r.results })

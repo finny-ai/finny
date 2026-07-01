@@ -823,6 +823,13 @@ def main() -> None:
                 post_rows=int(len(df)),
             ))
 
+    out_dir = Path(args.out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv(
+        out_dir / "processed_ohlcv.csv",
+        index=False,
+    )
+
     ba = from_dataframe(df, symbol=symbol, atr_period=14)
     snap = MarketSnapshot({symbol: ba})
 

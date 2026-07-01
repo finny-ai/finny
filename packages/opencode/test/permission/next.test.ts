@@ -589,9 +589,35 @@ it.instance(
         }),
       )
       expect(err).toBeInstanceOf(PermissionV1.DeniedError)
+      const message = err instanceof Error ? err.message : String(err)
+      expect(message).toContain("denied by the user's permission rules")
+      expect(message).toContain('(permission "bash" is denied)')
+      expect(message).toContain("Do not retry the same call")
+      expect(message).not.toContain('\\"')
+      expect(message).not.toContain('"pattern"')
+
+      const mixed = new PermissionV1.DeniedError({
+        ruleset: [
+          { permission: "bash", pattern: "*", action: "allow" },
+          { permission: "edit", pattern: "*", action: "deny" },
+        ],
+      })
+      expect(mixed.message).toContain('(permission "edit" is denied)')
+      expect(mixed.message).not.toContain("bash")
     }),
   { git: true },
 )
+
+test("DeniedError message lists only denied permissions", () => {
+  const err = new PermissionV1.DeniedError({
+    ruleset: [
+      { permission: "bash", pattern: "git *", action: "allow" },
+      { permission: "edit", pattern: "*", action: "deny" },
+    ],
+  })
+  expect(err.message).toContain('(permission "edit" is denied)')
+  expect(err.message).not.toContain("bash")
+})
 
 it.instance(
   "ask - stays pending when action is ask",

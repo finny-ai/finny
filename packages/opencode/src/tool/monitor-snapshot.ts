@@ -1,44 +1,17 @@
-import path from "path"
 import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { parseConfig } from "../algorithm/strategy-params"
 import { AlpacaData } from "../cron/alpaca-data"
-import { Global } from "../global"
-import { Filesystem } from "../util/filesystem"
+import { BacktestStore } from "../backtest/store"
 
-type BacktestHistoryEntry = {
-  algorithmId: string
-  algorithmName: string
-  params: { duration: string; interval: string; capital: string }
-  results: {
-    totalReturn: number
-    maxDrawdown: number
-    annualizedVolatility: number
-    sharpeRatio: number
-    endingEquity: number
-    totalTrades: number
-    winRate: number
-    profitFactor: number | null
-  }
-  symbol?: string
-  timestamp: number
-}
-
-async function latestBacktest(algorithm: Algorithm.Info | null): Promise<BacktestHistoryEntry | null> {
+async function latestBacktest(algorithm: Algorithm.Info | null): Promise<BacktestStore.Manifest | null> {
   if (!algorithm) return null
-  try {
-    const kvPath = path.join(Global.Path.state, "kv.json")
-    const kv = await Filesystem.readJson<Record<string, unknown>>(kvPath)
-    const raw = Array.isArray(kv?.backtest_history) ? (kv.backtest_history as BacktestHistoryEntry[]) : []
-    const matches = raw
-      .filter((entry) => entry.algorithmId === algorithm.algorithmId || entry.algorithmName === algorithm.name)
-      .sort((a, b) => b.timestamp - a.timestamp)
-    return matches[0] ?? null
-  } catch {
-    return null
-  }
+  const byName = await BacktestStore.list({ algorithmName: algorithm.name, limit: 1 })
+  if (byName[0]) return byName[0]
+  const byId = await BacktestStore.list({ algorithmId: algorithm.algorithmId, limit: 1 })
+  return byId[0] ?? null
 }
 
 const parameters = z.object({
@@ -100,6 +73,9 @@ export const MonitorSnapshotTool = Tool.define(
                 symbol: backtest.symbol ?? null,
                 params: backtest.params,
                 results: backtest.results,
+                benchmark: backtest.benchmark,
+                alpha: backtest.alpha,
+                evidence: backtest.dir ?? null,
               }
             : null,
         }

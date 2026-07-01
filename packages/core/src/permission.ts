@@ -89,9 +89,30 @@ export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("P
   feedback: Schema.String,
 }) {}
 
+function deniedActionNames(rules: unknown): string[] {
+  if (!Array.isArray(rules)) return []
+  return Array.from(
+    new Set(
+      rules
+        .map((rule) => rule?.effect === "deny" && typeof rule?.action === "string" ? rule.action : undefined)
+        .filter((action): action is string => Boolean(action)),
+    ),
+  )
+}
+
 export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("PermissionV2.DeniedError", {
   rules: PermissionSchema.Ruleset,
-}) {}
+}) {
+  override get message() {
+    const actions = deniedActionNames(this.rules)
+    const detail = actions.length === 1
+      ? `permission "${actions[0]}" is denied`
+      : actions.length > 1
+        ? `permissions ${actions.map((action) => `"${action}"`).join(", ")} are denied`
+        : "a matching permission is denied"
+    return `This tool call was denied by the user's permission rules (${detail}). Do not retry the same call; choose an allowed approach.`
+  }
+}
 
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("PermissionV2.NotFoundError", {
   requestID: ID,

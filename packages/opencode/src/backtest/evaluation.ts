@@ -48,8 +48,19 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
     ? Math.max(0, (results.v2.starting_equity - liquidationNav.nav) / results.v2.starting_equity)
     : results.maxDrawdown
   const liquidationAdjustedDrawdown = Math.max(results.maxDrawdown, terminalDrawdown)
+  const benchmarkReturn = finite(results.benchmarkReturn, Number.NaN)
+  const alpha = typeof results.alpha === "number" && Number.isFinite(results.alpha)
+    ? results.alpha
+    : Number.isFinite(benchmarkReturn)
+      ? results.totalReturn - benchmarkReturn
+      : Number.NaN
+  const benchmarkSharpe = finite(results.benchmarkSharpeRatio, Number.NaN)
+  const benchmarkDrawdown = finite(results.benchmarkMaxDrawdown, Number.NaN)
+  const requiresBenchmark = results.runKind === "crucible_2_0" || results.productLabel === "Crucible 2.0" || Boolean(results.v2)
 
   if (liquidationAdjustedReturn <= 0) reasons.push("liquidation-adjusted return <= 0")
+  if (requiresBenchmark && !Number.isFinite(benchmarkReturn)) reasons.push("buy-and-hold benchmark unavailable")
+  if (Number.isFinite(alpha) && alpha <= 0) reasons.push("alpha vs buy-and-hold <= 0")
   if (results.sharpeRatio <= 0) reasons.push("Sharpe <= 0")
   if (liquidationAdjustedDrawdown >= 0.5) reasons.push("liquidation-adjusted max drawdown >= 50%")
   if (repaired) reasons.push("uses repaired data")
@@ -71,7 +82,9 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   }
 
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
+  if (Number.isFinite(benchmarkSharpe) && results.sharpeRatio <= benchmarkSharpe) reasons.push("Sharpe <= buy-and-hold Sharpe")
   if (liquidationAdjustedDrawdown > 0.15) reasons.push("liquidation-adjusted max drawdown > 15%")
+  if (Number.isFinite(benchmarkDrawdown) && benchmarkDrawdown > 0 && liquidationAdjustedDrawdown >= benchmarkDrawdown) reasons.push("max drawdown >= buy-and-hold max drawdown")
   if (profitFactor != null && profitFactor < 1.5) reasons.push("profit factor < 1.5")
   if (wf) {
     const oosTrades = finite(wf.stitched_oos_trades, 0)

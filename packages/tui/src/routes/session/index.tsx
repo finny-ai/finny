@@ -1894,6 +1894,7 @@ function InlineTool(props: {
       error()?.includes("QuestionRejectedError") ||
       error()?.includes("rejected permission") ||
       error()?.includes("specified a rule") ||
+      error()?.includes("denied by the user's permission rules") ||
       error()?.includes("user dismissed"),
   )
 

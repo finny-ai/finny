@@ -4,7 +4,7 @@ import os from "os"
 import path from "path"
 import { BacktestRunner } from "../../src/backtest/runner"
 
-const { parseResults } = BacktestRunner._internalForTests
+const { parseResults, calendarBarsPerYear } = BacktestRunner._internalForTests
 
 // Minimal valid stdout — just the keys parseResults requires.
 function minimal(extra = ""): string {
@@ -43,6 +43,13 @@ function minimal(extra = ""): string {
 }
 
 describe("parseResults", () => {
+  test("uses asset-calendar annualization for benchmark Sharpe helpers", () => {
+    expect(calendarBarsPerYear("1h", "US_EQUITIES")).toBeCloseTo(6.5 * 252)
+    expect(calendarBarsPerYear("1d", "US_EQUITIES")).toBeCloseTo(252)
+    expect(calendarBarsPerYear("1h", "24/7")).toBeCloseTo(24 * 365)
+    expect(calendarBarsPerYear("1h", "FX_24_5")).toBeCloseTo(24 * 260)
+  })
+
   test("parses minimal valid output", async () => {
     const r = await parseResults(minimal(), "")
     expect(r).not.toBeNull()

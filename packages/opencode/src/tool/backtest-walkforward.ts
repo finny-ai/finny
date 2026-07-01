@@ -19,7 +19,7 @@ const parameters = z.object({
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
-    .default("5min")
+    .default("1h")
     .describe("Bar interval. Should match the algorithm's designed interval."),
   capital: z.string().default("10000").describe("Starting capital in USD"),
 })
@@ -78,10 +78,15 @@ export function formatWalkForwardLines(input: {
   start: string
   end: string
   walkForward: NonNullable<WfMeta["walkForward"]>
+  benchmarkReturn?: number
+  alpha?: number
   verdict: string
   verdictReason: string
 }): string[] {
   const walkForward = input.walkForward
+  const robustnessRatio = Number.isFinite(walkForward.is_sharpe_mean) && walkForward.is_sharpe_mean > 0 && Number.isFinite(walkForward.oos_sharpe_mean)
+    ? walkForward.oos_sharpe_mean / walkForward.is_sharpe_mean
+    : null
   return [
     `Algorithm: ${input.algorithmName} (v${input.version})`,
     `Total window: ${input.duration} (${input.start} → ${input.end})`,
@@ -90,8 +95,10 @@ export function formatWalkForwardLines(input: {
     `IS Sharpe mean:        ${fmtNum(walkForward.is_sharpe_mean)}`,
     `OOS Sharpe mean:       ${fmtNum(walkForward.oos_sharpe_mean)}`,
     `IS→OOS Sharpe change:  ${fmtNum(walkForward.is_to_oos_sharpe_change ?? (walkForward.oos_sharpe_mean - walkForward.is_sharpe_mean))}`,
-    `OOS decay ratio:       ${fmtNum(walkForward.oos_decay)}`,
+    `Robustness ratio:      ${fmtNum(robustnessRatio)}`,
     `Stitched OOS return:   ${fmtNum((walkForward.stitched_oos_return ?? 0) * 100)}%`,
+    input.benchmarkReturn === undefined ? null : `Buy-hold return:       ${fmtNum(input.benchmarkReturn * 100)}%`,
+    input.alpha === undefined ? null : `Alpha vs buy-hold:     ${fmtNum(input.alpha * 100)} pts`,
     `Stitched OOS Sharpe:   ${fmtNum(walkForward.stitched_oos_sharpe ?? walkForward.oos_sharpe_mean)}`,
     `Stitched OOS trades:   ${walkForward.stitched_oos_trades ?? "N/A"}`,
     `OOS coverage:          ${fmtNum((walkForward.stitched_oos_coverage ?? 0) * 100)}%`,
@@ -106,7 +113,7 @@ export function formatWalkForwardLines(input: {
     ),
     ``,
     `Verdict: ${input.verdict.toUpperCase()} — ${input.verdictReason}`,
-  ]
+  ].filter((line): line is string => line !== null)
 }
 
 export const BacktestWalkforwardTool = Tool.define(
@@ -184,6 +191,7 @@ export const BacktestWalkforwardTool = Tool.define(
           capital: params.capital,
           startDate: fmt(start),
           endDate: fmt(end),
+          source: "walkforward",
           robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
         })
 
@@ -224,6 +232,8 @@ export const BacktestWalkforwardTool = Tool.define(
           start: fmt(start),
           end: fmt(end),
           walkForward,
+          benchmarkReturn: result.results.benchmarkReturn,
+          alpha: result.results.alpha,
           verdict,
           verdictReason,
         })

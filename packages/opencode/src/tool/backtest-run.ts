@@ -30,14 +30,14 @@ const parameters = z.object({
   duration: z
     .string()
     .regex(/^\d+[dwmy]$/i, "Duration must match <number><unit> where unit is d/w/m/y (e.g. '5d', '2w', '1m', '1y')")
-    .default("1m")
+    .default("3m")
     .describe(
       "Backtest period as <number><unit> where unit is d (days), w (weeks), m (months), or y (years). " +
         "Examples: '5d' = 5 days, '2w' = 2 weeks, '1m' = 1 month, '3m' = 3 months, '1y' = 1 year.",
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
-    .default("5min")
+    .default("1h")
     .describe("Bar interval. Should match the algorithm's designed interval."),
   capital: z
     .string()
@@ -562,7 +562,30 @@ export const BacktestRunTool = Tool.define(
 
         lines.push(`└──────────────────────┴───────────────────────────┘`)
 
-        if (r.v2?.benchmark) {
+        if (typeof r.benchmarkReturn === "number") {
+          const symbol = r.v2?.symbols?.[0] ?? "asset"
+          const alpha = typeof r.alpha === "number" ? r.alpha : r.totalReturn - r.benchmarkReturn
+          const alphaLine =
+            r.totalReturn < 0 && alpha > 0
+              ? `Alpha vs buy-and-hold: ${fmtPct(alpha)} (defensive outperformance in a down window)`
+              : `Alpha vs buy-and-hold: ${fmtPct(alpha)}`
+          lines.push(
+            ``,
+            `── BENCHMARK ─────────────────────────────────────`,
+            `Benchmark: buy-and-hold ${symbol}, same window`,
+            `Return: ${fmtPct(r.benchmarkReturn)} | Max Drawdown: ${fmtPct(r.benchmarkMaxDrawdown ?? 0)} | Ending Equity: ${fmtDollar(r.benchmarkEndingEquity)}`,
+            alphaLine,
+          )
+          if (typeof r.benchmarkSharpeRatio === "number") {
+            lines.push(`Benchmark Sharpe: ${fmt(r.benchmarkSharpeRatio)}`)
+          }
+          if (r.v2?.benchmark) {
+            const b = r.v2.benchmark as any
+            lines.push(
+              `Engine relative stats: alpha annualized ${fmtPct(r.v2.benchmark.alpha_annualized)} | information ratio ${fmt(r.v2.benchmark.information_ratio)} | beta ${fmt(b.beta)}`,
+            )
+          }
+        } else if (r.v2?.benchmark) {
           const b = r.v2.benchmark as any
           lines.push(
             ``,
@@ -704,11 +727,13 @@ export const BacktestRunTool = Tool.define(
         // Engine + assumptions footer — surfaces fill model, fee/slippage
         // assumptions, kill-switch trips, and parse-warning fallout so
         // consumers don't silently miss them.
-        if (r.engineVersion || r.diagnostics?.assumptions) {
+        if (r.engineVersion || r.diagnostics?.assumptions || r.evidenceError) {
           lines.push(``, `── ENGINE & ASSUMPTIONS ────────────────────────────`)
           if (r.engineVersion) lines.push(`Engine: ${r.engineVersion} (schema_version=${r.schemaVersion ?? "?"})`)
           if (r.runId) lines.push(`Run ID: ${r.runId}`)
           if (r.artifactDir) lines.push(`Artifacts: ${r.artifactDir}`)
+          if (r.evidenceDir) lines.push(`Evidence: ${r.evidenceDir}`)
+          if (r.evidenceError) lines.push(`Evidence error: ${r.evidenceError}`)
           if (r.eligibilityStatus) lines.push(`Eligibility: ${r.eligibilityStatus}`)
           if (r.diagnostics?.assumptions) {
             const a = r.diagnostics.assumptions

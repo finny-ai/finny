@@ -81,11 +81,28 @@ export class CorrectedError extends Schema.TaggedErrorClass<CorrectedError>()("P
   }
 }
 
+function deniedPermissionNames(ruleset: unknown): string[] {
+  if (!Array.isArray(ruleset)) return []
+  return Array.from(
+    new Set(
+      ruleset
+        .map((rule) => rule?.action === "deny" && typeof rule?.permission === "string" ? rule.permission : undefined)
+        .filter((permission): permission is string => Boolean(permission)),
+    ),
+  )
+}
+
 export class DeniedError extends Schema.TaggedErrorClass<DeniedError>()("PermissionDeniedError", {
   ruleset: Schema.Any,
 }) {
   override get message() {
-    return `The user has specified a rule which prevents you from using this specific tool call. Here are some of the relevant rules ${JSON.stringify(this.ruleset)}`
+    const permissions = deniedPermissionNames(this.ruleset)
+    const detail = permissions.length === 1
+      ? `permission "${permissions[0]}" is denied`
+      : permissions.length > 1
+        ? `permissions ${permissions.map((permission) => `"${permission}"`).join(", ")} are denied`
+        : "a matching permission is denied"
+    return `This tool call was denied by the user's permission rules (${detail}). Do not retry the same call; choose an allowed approach.`
   }
 }
 

@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
 import { Database } from "@opencode-ai/core/database/database"
@@ -111,6 +111,17 @@ function waitForRequest() {
 }
 
 describe("PermissionV2", () => {
+  test("DeniedError message lists only denied actions", () => {
+    const err = new PermissionV2.DeniedError({
+      rules: [
+        { action: "bash", resource: "git status", effect: "allow" },
+        { action: "edit", resource: "*", effect: "deny" },
+      ],
+    })
+    expect(err.message).toContain('(permission "edit" is denied)')
+    expect(err.message).not.toContain("bash")
+  })
+
   it.effect("returns the evaluated effect and only queues prompts", () =>
     Effect.gen(function* () {
       yield* setup([{ action: "read", resource: "*", effect: "allow" }])
@@ -157,6 +168,15 @@ describe("PermissionV2", () => {
       yield* setRules([{ action: "read", resource: "*", effect: "deny" }])
       const denied = yield* service.assert(assertion()).pipe(Effect.flip)
       expect(denied).toBeInstanceOf(PermissionV2.DeniedError)
+      const message = denied instanceof Error ? denied.message : String(denied)
+      expect(message).toContain('(permission "read" is denied)')
+      expect(message).not.toContain("write")
+      expect(new PermissionV2.DeniedError({
+        rules: [
+          { action: "read", resource: "*", effect: "allow" },
+          { action: "write", resource: "*", effect: "deny" },
+        ],
+      }).message).toContain('(permission "write" is denied)')
       expect(yield* service.list()).toEqual([])
     }),
   )

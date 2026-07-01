@@ -16,6 +16,7 @@ import { resolveAssetSpec } from "./asset-spec"
 import { BrokerRegistry } from "@/live/brokers"
 import { evaluateBacktestQuality } from "./evaluation"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import { BacktestStore } from "./store"
 
 export namespace BacktestRunner {
   export interface Params {
@@ -39,6 +40,7 @@ export namespace BacktestRunner {
     seed?: number
     engineMode?: "strict_v2" | "legacy_unsafe"
     dataQualityMode?: "strict" | "repair_outliers"
+    source?: BacktestStore.Source
     robustness?: {
       monteCarloPaths?: number
       regimes?: boolean
@@ -127,6 +129,15 @@ export namespace BacktestRunner {
     runId?: string
     /** Absolute path to immutable local run artifacts, present for strict_v2 runs. */
     artifactDir?: string
+    /** Absolute path to the user-facing local evidence bundle under Global.Path.data/backtests. */
+    evidenceDir?: string
+    /** Evidence persistence failure surfaced while keeping the completed simulation result. */
+    evidenceError?: string
+    benchmarkReturn?: number
+    benchmarkMaxDrawdown?: number
+    benchmarkEndingEquity?: number
+    benchmarkSharpeRatio?: number | null
+    alpha?: number
     /** Deployment gate state derived from validation and backtest diagnostics. */
     eligibilityStatus?: "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
     productLabel?: string
@@ -363,8 +374,9 @@ with open("_data_provider.txt", "w") as f:
    */
   export const _internalForTests = {
     parseResults: (stdout: string, tmpDir: string) => parseResults(stdout, tmpDir),
+    calendarBarsPerYear,
     ENGINE_VERSION: "",  // populated below once ENGINE_VERSION is in scope
-  } as { parseResults: typeof parseResults; ENGINE_VERSION: string }
+  } as { parseResults: typeof parseResults; calendarBarsPerYear: typeof calendarBarsPerYear; ENGINE_VERSION: string }
 
   function assumptionsFromV2(v2: EngineV2.Results): Assumptions {
     const cfg = (v2 as any).execution_config ?? {}
@@ -827,6 +839,7 @@ def main():
         scan_step = load_strategy(strategy_path, scan, params=params)
         scan_strategy_errors = 0
         for bar in bars:
+            scan.set_time(bar.get("timestamp"))
             scan.set_price(symbol, bar["open"])
             try:
                 scan_step(symbol, bar)
@@ -856,6 +869,7 @@ def main():
     for bar in bars:
         # 1. SETTLE: fill any pending orders queued on previous bar at this
         #    bar's open. Slippage and fees applied here, not at intent time.
+        broker.set_time(bar.get("timestamp"))
         broker.set_bar_volume(symbol, bar.get("volume", 0.0))
         broker.settle(symbol, bar["open"])
         bar_count += 1
@@ -1066,6 +1080,24 @@ def main():
                 print(f"regimes_json: {json.dumps(regimes)}")
         except Exception as e:
             print(f"[backtest] stability/regime compute failed: {e}", file=sys.stderr)
+
+    try:
+        equity_points = eq_curve[1:] if len(eq_curve) == len(bars) + 1 else eq_curve
+        with open("equity.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["timestamp", "equity"])
+            writer.writeheader()
+            for idx, equity in enumerate(equity_points[:len(bars)]):
+                writer.writerow({
+                    "timestamp": bars[idx].get("timestamp"),
+                    "equity": equity,
+                })
+        with open("trades.csv", "w", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=["timestamp", "side", "qty", "price", "fee_usd", "pnl"])
+            writer.writeheader()
+            for trade in broker.trades:
+                writer.writerow(trade)
+    except Exception as e:
+        print(f"[backtest] artifact write failed: {e}", file=sys.stderr)
 
     print("engine_version: ${ENGINE_VERSION}")
     print("backtest_schema_version: 3")
@@ -1282,6 +1314,461 @@ if __name__ == "__main__":
     return crypto.createHash("sha256").update(input).digest("hex")
   }
 
+  function makeRunId(date = new Date()): string {
+    const compact = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+    return `${compact}-${crypto.randomBytes(8).toString("hex")}`
+  }
+
+  function finiteNumber(value: unknown, fallback = 0): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : fallback
+  }
+
+  function nullableFinite(value: unknown): number | null {
+    return typeof value === "number" && Number.isFinite(value) ? value : null
+  }
+
+  function splitCsvLine(line: string): string[] {
+    const cells: string[] = []
+    let current = ""
+    let quoted = false
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i]
+      if (ch === "\"") {
+        if (quoted && line[i + 1] === "\"") {
+          current += "\""
+          i++
+        } else {
+          quoted = !quoted
+        }
+        continue
+      }
+      if (ch === "," && !quoted) {
+        cells.push(current)
+        current = ""
+        continue
+      }
+      current += ch
+    }
+    cells.push(current)
+    return cells
+  }
+
+  function csvCell(value: string | number | null | undefined): string {
+    if (value === null || value === undefined) return ""
+    const raw = String(value)
+    return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, "\"\"")}"` : raw
+  }
+
+  async function readCsvObjects(file: string): Promise<Record<string, string>[]> {
+    const raw = await fs.readFile(file, "utf8")
+    const lines = raw.split(/\r?\n/).filter((line) => line.trim().length > 0)
+    if (lines.length === 0) return []
+    const headers = splitCsvLine(lines[0]!).map((h) => h.trim())
+    return lines.slice(1).map((line) => {
+      const cells = splitCsvLine(line)
+      const row: Record<string, string> = {}
+      for (let i = 0; i < headers.length; i++) {
+        row[headers[i]!] = cells[i] ?? ""
+      }
+      return row
+    })
+  }
+
+  function rowValue(row: Record<string, string>, ...names: string[]): string | undefined {
+    for (const name of names) {
+      if (row[name] !== undefined) return row[name]
+      const found = Object.keys(row).find((key) => key.toLowerCase() === name.toLowerCase())
+      if (found) return row[found]
+    }
+    return undefined
+  }
+
+  function maxDrawdownFromEquity(values: number[]): number {
+    let peak = values[0] ?? 0
+    let maxDrawdown = 0
+    for (const value of values) {
+      if (!Number.isFinite(value)) continue
+      if (value > peak) peak = value
+      const drawdown = peak > 0 ? (peak - value) / peak : 0
+      if (drawdown > maxDrawdown) maxDrawdown = drawdown
+    }
+    return maxDrawdown
+  }
+
+  function sharpeFromEquity(values: number[], barsPerYear: number): number | null {
+    const returns: number[] = []
+    for (let i = 1; i < values.length; i++) {
+      const prev = values[i - 1]
+      const next = values[i]
+      if (prev > 0 && Number.isFinite(prev) && Number.isFinite(next)) returns.push(next / prev - 1)
+    }
+    if (returns.length < 2) return null
+    const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
+    const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / returns.length
+    const std = Math.sqrt(variance)
+    if (std <= 0) return null
+    return (mean / std) * Math.sqrt(barsPerYear)
+  }
+
+  function normalizeIntervalToken(interval: string): string {
+    const s = interval.trim().toLowerCase()
+    if (s.endsWith("mins")) return s.slice(0, -4) + "m"
+    if (s.endsWith("min")) return s.slice(0, -3) + "m"
+    return s
+  }
+
+  function intervalMinutes(normalized: string): number | null {
+    if (normalized.endsWith("m")) return Number.parseInt(normalized.slice(0, -1), 10)
+    if (normalized.endsWith("h")) return Number.parseInt(normalized.slice(0, -1), 10) * 60
+    return null
+  }
+
+  function intervalDaySpan(normalized: string): number {
+    return normalized.endsWith("d") ? Number.parseInt(normalized.slice(0, -1), 10) : 1
+  }
+
+  function calendarSessionMinutes(calendar: string): number | null {
+    switch (calendar.toUpperCase()) {
+      case "US_EQUITIES":
+      case "US_OPTIONS":
+        return 6.5 * 60
+      case "US_FUTURES":
+        return 23 * 60
+      default:
+        return null
+    }
+  }
+
+  function calendarBarsPerYear(interval: string, calendar: string): number {
+    const normalized = normalizeIntervalToken(interval)
+    let barsPerDay: number
+    if (normalized.endsWith("m")) {
+      const minutes = Number.parseInt(normalized.slice(0, -1), 10)
+      barsPerDay = (24 * 60) / minutes
+    } else if (normalized.endsWith("h")) {
+      const hours = Number.parseInt(normalized.slice(0, -1), 10)
+      barsPerDay = 24 / hours
+    } else if (normalized.endsWith("d")) {
+      const days = Number.parseInt(normalized.slice(0, -1), 10)
+      barsPerDay = 1 / days
+    } else {
+      throw new Error(`Unsupported interval: ${interval}`)
+    }
+
+    const sessionMinutes = calendarSessionMinutes(calendar)
+    if (sessionMinutes !== null) {
+      const minutes = intervalMinutes(normalized)
+      return minutes !== null
+        ? (sessionMinutes / minutes) * 252
+        : 252 / intervalDaySpan(normalized)
+    }
+    if (calendar.toUpperCase() === "FX_24_5") return barsPerDay * 260
+    return barsPerDay * 365
+  }
+
+  function benchmarkAssumptions(results: Results): BacktestStore.Assumptions {
+    const assumptions = results.diagnostics?.assumptions
+    const feeFromRate = typeof assumptions?.fee_rate === "number" ? assumptions.fee_rate * 10_000 : undefined
+    const slippageFromRate = typeof assumptions?.slippage === "number" ? assumptions.slippage * 10_000 : undefined
+    return {
+      feeBps: finiteNumber(assumptions?.taker_fee_bps, finiteNumber(feeFromRate, 7.5)),
+      slippageBps: finiteNumber(assumptions?.slippage_bps, finiteNumber(slippageFromRate, 1)),
+      fillModel: assumptions?.fill_model ?? "next_open",
+    }
+  }
+
+  const PROCESSED_OHLCV_CSV = "processed_ohlcv.csv"
+
+  interface BenchmarkEvidence {
+    summary: BacktestStore.BenchmarkSummary
+    rows: Array<{ timestamp: string; benchmarkEquity: number }>
+  }
+
+  async function readableCsv(...candidates: string[]): Promise<string | null> {
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate)
+        return candidate
+      } catch {}
+    }
+    return null
+  }
+
+  async function computeBuyHoldBenchmark(input: {
+    ohlcvCsv: string
+    capital: number
+    assumptions: BacktestStore.Assumptions
+    interval: string
+    calendar: string
+  }): Promise<BenchmarkEvidence | null> {
+    const rows = await readCsvObjects(input.ohlcvCsv)
+    const bars = rows
+      .map((row) => {
+        const open = Number(rowValue(row, "open", "Open"))
+        const close = Number(rowValue(row, "close", "Close"))
+        const timestamp = rowValue(row, "timestamp", "Timestamp", "date", "Date") ?? ""
+        return { timestamp, open, close }
+      })
+      .filter((row) => Number.isFinite(row.open) && row.open > 0 && Number.isFinite(row.close))
+    if (bars.length === 0 || input.capital <= 0) return null
+
+    const feeRate = Math.max(0, input.assumptions.feeBps) / 10_000
+    const slippageRate = Math.max(0, input.assumptions.slippageBps) / 10_000
+    const firstFill = bars[0]!.open * (1 + slippageRate)
+    const qty = input.capital / (firstFill * (1 + feeRate))
+    const series = bars.map((bar) => ({
+      timestamp: bar.timestamp,
+      benchmarkEquity: qty * bar.close,
+    }))
+    const equity = [input.capital, ...series.map((row) => row.benchmarkEquity)]
+    const endingEquity = equity[equity.length - 1] ?? input.capital
+    const barsPerYear = calendarBarsPerYear(input.interval, input.calendar)
+    return {
+      summary: {
+        kind: "buy_and_hold",
+        totalReturn: endingEquity / input.capital - 1,
+        maxDrawdown: maxDrawdownFromEquity(equity),
+        endingEquity,
+        sharpeRatio: sharpeFromEquity(equity, barsPerYear),
+      },
+      rows: series,
+    }
+  }
+
+  function benchmarkCalendar(config: any, algorithm: Algorithm.Info, results: Results): string {
+    const v2Calendar = results.v2?.asset_spec?.calendar
+    if (typeof v2Calendar === "string" && v2Calendar.trim()) return v2Calendar
+    const metadataCalendar = calendarFromUnknown(results.v2?.run_metadata?.asset_spec)
+    if (metadataCalendar) return metadataCalendar
+    try {
+      return resolveAssetSpec(config, detectSymbol(algorithm)).calendar
+    } catch {
+      return "24/7"
+    }
+  }
+
+  function hasCalendar(value: unknown): value is { calendar: unknown } {
+    return value !== null && typeof value === "object" && "calendar" in value
+  }
+
+  function calendarFromUnknown(value: unknown): string | null {
+    if (!hasCalendar(value)) return null
+    return typeof value.calendar === "string" && value.calendar.trim() ? value.calendar : null
+  }
+
+  async function attachBuyHoldBenchmark(input: {
+    tmpDir: string
+    algorithm: Algorithm.Info
+    config: any
+    results: Results
+    capital: string
+    interval: string
+    assumptions: BacktestStore.Assumptions
+    calendar?: string
+  }): Promise<BenchmarkEvidence | null> {
+    const benchmarkCsv = await readableCsv(
+      path.join(input.tmpDir, PROCESSED_OHLCV_CSV),
+      path.join(input.tmpDir, "ohlcv.csv"),
+    )
+    if (!benchmarkCsv) return null
+    const parsedCapital = parseCapital(input.capital) ?? input.results.endingEquity
+    const benchmark = await computeBuyHoldBenchmark({
+      ohlcvCsv: benchmarkCsv,
+      capital: parsedCapital,
+      assumptions: input.assumptions,
+      interval: input.interval,
+      calendar: input.calendar ?? benchmarkCalendar(input.config, input.algorithm, input.results),
+    })
+    if (benchmark) {
+      input.results.benchmarkReturn = benchmark.summary.totalReturn
+      input.results.benchmarkMaxDrawdown = benchmark.summary.maxDrawdown
+      input.results.benchmarkEndingEquity = benchmark.summary.endingEquity
+      input.results.benchmarkSharpeRatio = benchmark.summary.sharpeRatio
+      input.results.alpha = input.results.totalReturn - benchmark.summary.totalReturn
+    }
+    return benchmark
+  }
+
+  async function writeCombinedEquityCsv(input: {
+    tmpDir: string
+    strategyEquityCsv: string
+    benchmarkRows: Array<{ timestamp: string; benchmarkEquity: number }>
+  }): Promise<string | undefined> {
+    let strategyRows: Array<{ timestamp: string; equity: number }> = []
+    try {
+      const rows = await readCsvObjects(input.strategyEquityCsv)
+      strategyRows = rows
+        .map((row) => {
+          const equity = Number(rowValue(row, "strategy_equity", "equity", "Equity"))
+          const timestamp = rowValue(row, "timestamp", "ts", "date", "Date") ?? ""
+          return { timestamp, equity }
+        })
+        .filter((row) => Number.isFinite(row.equity))
+    } catch {
+      strategyRows = []
+    }
+    if (strategyRows.length === 0 && input.benchmarkRows.length === 0) return undefined
+
+    const lines = ["timestamp,strategy_equity,benchmark_equity"]
+    const strategyByTs = new Map<string, { timestamp: string; equity: number }>()
+    const benchmarkByTs = new Map<string, { timestamp: string; benchmarkEquity: number }>()
+    for (const row of strategyRows) {
+      const key = timestampKey(row.timestamp)
+      if (key) strategyByTs.set(key, row)
+    }
+    for (const row of input.benchmarkRows) {
+      const key = timestampKey(row.timestamp)
+      if (key) benchmarkByTs.set(key, row)
+    }
+
+    if (strategyByTs.size > 0 && benchmarkByTs.size > 0) {
+      const keys = [...new Set([...strategyByTs.keys(), ...benchmarkByTs.keys()])].sort(compareTimestampKeys)
+      for (const key of keys) {
+        const strategy = strategyByTs.get(key)
+        const benchmark = benchmarkByTs.get(key)
+        const timestamp = benchmark?.timestamp || strategy?.timestamp || key
+        lines.push([
+          csvCell(timestamp),
+          csvCell(strategy?.equity),
+          csvCell(benchmark?.benchmarkEquity),
+        ].join(","))
+      }
+    } else {
+      const maxRows = Math.max(strategyRows.length, input.benchmarkRows.length)
+      for (let i = 0; i < maxRows; i++) {
+        const strategy = strategyRows[i]
+        const benchmark = input.benchmarkRows[i]
+        const timestamp = benchmark?.timestamp || strategy?.timestamp || ""
+        lines.push([
+          csvCell(timestamp),
+          csvCell(strategy?.equity),
+          csvCell(benchmark?.benchmarkEquity),
+        ].join(","))
+      }
+    }
+    const out = path.join(input.tmpDir, "finny_evidence_equity.csv")
+    await fs.writeFile(out, lines.join("\n") + "\n")
+    return out
+  }
+
+  function timestampKey(value: string): string | null {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const time = Date.parse(trimmed)
+    return Number.isFinite(time) ? new Date(time).toISOString() : trimmed
+  }
+
+  function compareTimestampKeys(a: string, b: string): number {
+    const at = Date.parse(a)
+    const bt = Date.parse(b)
+    if (Number.isFinite(at) && Number.isFinite(bt)) return at - bt
+    return a.localeCompare(b)
+  }
+
+  interface PersistBacktestEvidenceInput {
+    tmpDir: string
+    runId: string
+    algorithm: Algorithm.Info
+    config: any
+    results: Results
+    duration: string
+    interval: string
+    capital: string
+    startDate?: string
+    endDate?: string
+    source: BacktestStore.Source
+    benchmark?: BenchmarkEvidence | null
+    calendar?: string
+  }
+
+  function errorText(error: unknown): string {
+    return error instanceof Error ? error.message : String(error)
+  }
+
+  async function persistBacktestEvidence(input: PersistBacktestEvidenceInput): Promise<void> {
+    const assumptions = benchmarkAssumptions(input.results)
+    const benchmark = input.benchmark === undefined
+      ? await attachBuyHoldBenchmark({
+          tmpDir: input.tmpDir,
+          algorithm: input.algorithm,
+          config: input.config,
+          results: input.results,
+          capital: input.capital,
+          interval: input.interval,
+          assumptions,
+          calendar: input.calendar,
+        })
+      : input.benchmark
+    if (benchmark) {
+      input.results.benchmarkReturn = benchmark.summary.totalReturn
+      input.results.benchmarkMaxDrawdown = benchmark.summary.maxDrawdown
+      input.results.benchmarkEndingEquity = benchmark.summary.endingEquity
+      input.results.benchmarkSharpeRatio = benchmark.summary.sharpeRatio
+      input.results.alpha = input.results.totalReturn - benchmark.summary.totalReturn
+    }
+    const equityCsv = benchmark
+      ? await writeCombinedEquityCsv({
+          tmpDir: input.tmpDir,
+          strategyEquityCsv: path.join(input.tmpDir, "equity.csv"),
+          benchmarkRows: benchmark.rows,
+        })
+      : undefined
+
+    const saved = await BacktestStore.save({
+      record: {
+        id: input.runId,
+        source: input.source,
+        algorithmId: input.algorithm.algorithmId,
+        algorithmName: input.algorithm.name,
+        algorithmVersion: Number((input.algorithm as any).version ?? 0) || 0,
+        symbol: typeof input.config.symbol === "string" ? input.config.symbol : input.results.v2?.symbols?.[0],
+        params: {
+          duration: input.duration,
+          interval: input.interval,
+          capital: input.capital,
+          startDate: input.startDate,
+          endDate: input.endDate,
+        },
+        assumptions,
+        results: {
+          totalReturn: finiteNumber(input.results.totalReturn),
+          maxDrawdown: finiteNumber(input.results.maxDrawdown),
+          annualizedVolatility: finiteNumber(input.results.annualizedVolatility),
+          sharpeRatio: finiteNumber(input.results.sharpeRatio),
+          endingEquity: finiteNumber(input.results.endingEquity),
+          totalTrades: finiteNumber(input.results.totalTrades),
+          winRate: finiteNumber(input.results.winRate),
+          profitFactor: nullableFinite(input.results.profitFactor),
+          productLabel: input.results.productLabel,
+          runKind: input.results.runKind,
+          eligibilityStatus: input.results.eligibilityStatus,
+        },
+        benchmark: benchmark?.summary ?? null,
+        alpha: benchmark ? input.results.totalReturn - benchmark.summary.totalReturn : null,
+        timestamp: Date.now(),
+        artifacts: {
+          sourceArtifacts: input.results.artifactDir,
+        },
+      },
+      artifacts: {
+        equityCsv,
+        tradesCsv: path.join(input.tmpDir, "trades.csv"),
+        sourceArtifacts: input.results.artifactDir,
+      },
+    })
+    input.results.evidenceDir = saved.dir
+  }
+
+  async function persistBacktestEvidenceOrReport(input: PersistBacktestEvidenceInput): Promise<void> {
+    try {
+      await persistBacktestEvidence(input)
+    } catch (error) {
+      const message = errorText(error)
+      input.results.evidenceError = message
+      console.warn(`[backtest] failed to persist local evidence: ${message}`)
+    }
+  }
+
   function isPlainObj(x: unknown): x is Record<string, unknown> {
     return x !== null && typeof x === "object" && !Array.isArray(x)
   }
@@ -1384,6 +1871,7 @@ if __name__ == "__main__":
 
     await copyIfExists(path.join(input.tmpDir, "results.json"), path.join(base, "results.json"))
     await copyIfExists(path.join(input.tmpDir, "equity.csv"), path.join(base, "equity.csv"))
+    await copyIfExists(path.join(input.tmpDir, PROCESSED_OHLCV_CSV), path.join(base, PROCESSED_OHLCV_CSV))
     await copyIfExists(path.join(input.tmpDir, "trades.csv"), path.join(base, "trades.csv"))
     await copyIfExists(path.join(input.tmpDir, "diagnostics.csv"), path.join(base, "diagnostics.csv"))
     await requireArtifactCopy(path.join(input.tmpDir, "orders.csv"), path.join(base, "orders.csv"))
@@ -1427,6 +1915,7 @@ if __name__ == "__main__":
       seed,
       engineMode = "strict_v2",
       dataQualityMode = "strict",
+      source = "run",
       robustness = {},
       sessionID,
     } = params
@@ -1530,7 +2019,7 @@ if __name__ == "__main__":
       }
     }
 
-    const runId = crypto.randomUUID()
+    const runId = makeRunId()
 
     let tmpDir: string | undefined
     try {
@@ -1741,6 +2230,17 @@ if __name__ == "__main__":
           })
           return { ok: false, error: "Strict engine did not produce a valid engine_v2 results.json.", kind: "results_unparseable" }
         }
+        const assumptions = benchmarkAssumptions(results)
+        const benchmark = await attachBuyHoldBenchmark({
+          tmpDir,
+          algorithm,
+          config,
+          results,
+          capital,
+          interval,
+          assumptions,
+          calendar: assetSpec.calendar,
+        })
         await persistStrictRunArtifacts({
           tmpDir,
           runId,
@@ -1752,6 +2252,21 @@ if __name__ == "__main__":
           interval,
           capital,
           seed: effectiveSeed,
+        })
+        await persistBacktestEvidenceOrReport({
+          tmpDir,
+          runId,
+          algorithm,
+          config,
+          results,
+          duration,
+          interval,
+          capital,
+          startDate: start,
+          endDate: end,
+          source,
+          benchmark,
+          calendar: assetSpec.calendar,
         })
 
         emit({
@@ -1769,6 +2284,10 @@ if __name__ == "__main__":
             maxDrawdown: results.maxDrawdown,
             sharpeRatio: results.sharpeRatio,
             totalTrades: results.totalTrades,
+            benchmarkReturn: results.benchmarkReturn,
+            alpha: results.alpha,
+            evidenceDir: results.evidenceDir,
+            evidenceError: results.evidenceError,
             eligibilityStatus: results.eligibilityStatus,
             diagnostics: {
               barsProcessed: results.diagnostics?.barsProcessed,
@@ -1793,24 +2312,40 @@ if __name__ == "__main__":
         const scanBars = parseInt(scanOut.match(/scan_bars_total:\s*(\d+)/)?.[1] ?? "0", 10)
         // Only short-circuit if zero signals AND no strategy errors (errors could mask real signals)
         if (scanBuys === 0 && scanBars > 0 && scanErrors === 0) {
+          const results: Results = {
+            totalReturn: 0, maxDrawdown: 0, annualizedVolatility: 0, sharpeRatio: 0,
+            endingEquity: parsedCapital, totalTrades: 0, winRate: 0, profitFactor: 0,
+            engineVersion: ENGINE_VERSION,
+            schemaVersion: 3,
+            diagnostics: {
+              barsProcessed: scanBars, buyAttempts: 0, sellAttempts: 0,
+              rejectedOrders: 0, rejectionReasons: {},
+              priceFirst: 0, priceLast: 0, priceRangePct: 0, strategyErrors: 0,
+            },
+            runId,
+          }
+          await persistBacktestEvidenceOrReport({
+            tmpDir,
+            runId,
+            algorithm,
+            config,
+            results,
+            duration,
+            interval,
+            capital,
+            startDate: start,
+            endDate: end,
+            source,
+            calendar: assetSpec.calendar,
+          })
           emit({
             eventType: "backtest.scan_zero_signals",
             algorithmId: algorithm.algorithmId,
-            payload: { scanBars, duration, interval, capital },
+            payload: { scanBars, duration, interval, capital, benchmarkReturn: results.benchmarkReturn, alpha: results.alpha },
           })
           return {
             ok: true,
-            results: {
-              totalReturn: 0, maxDrawdown: 0, annualizedVolatility: 0, sharpeRatio: 0,
-              endingEquity: parsedCapital, totalTrades: 0, winRate: 0, profitFactor: 0,
-              engineVersion: ENGINE_VERSION,
-              schemaVersion: 3,
-              diagnostics: {
-                barsProcessed: scanBars, buyAttempts: 0, sellAttempts: 0,
-                rejectedOrders: 0, rejectionReasons: {},
-                priceFirst: 0, priceLast: 0, priceRangePct: 0, strategyErrors: 0,
-              },
-            },
+            results,
           }
         }
       }
@@ -1865,6 +2400,21 @@ if __name__ == "__main__":
         })
         return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
+      results.runId = runId
+      await persistBacktestEvidenceOrReport({
+        tmpDir,
+        runId,
+        algorithm,
+        config,
+        results,
+        duration,
+        interval,
+        capital,
+        startDate: start,
+        endDate: end,
+        source,
+        calendar: assetSpec.calendar,
+      })
 
       emit({
         eventType: "backtest.completed",
@@ -1879,6 +2429,10 @@ if __name__ == "__main__":
           maxDrawdown: results.maxDrawdown,
           sharpeRatio: results.sharpeRatio,
           totalTrades: results.totalTrades,
+          benchmarkReturn: results.benchmarkReturn,
+          alpha: results.alpha,
+          evidenceDir: results.evidenceDir,
+          evidenceError: results.evidenceError,
         },
       })
       return { ok: true, results }

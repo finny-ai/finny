@@ -12,6 +12,10 @@ function result(overrides: Partial<BacktestRunner.Results>): BacktestRunner.Resu
     totalTrades: 40,
     winRate: 0.55,
     profitFactor: 1.8,
+    benchmarkReturn: 0.04,
+    benchmarkSharpeRatio: 0.8,
+    benchmarkMaxDrawdown: 0.08,
+    alpha: 0.06,
     diagnostics: {
       barsProcessed: 1000,
       buyAttempts: 40,
@@ -60,8 +64,47 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.reasons.join("; ")).toContain("Sharpe < 1.0")
   })
 
+  test("fails positive-return runs that lag buy-and-hold", () => {
+    const quality = evaluateBacktestQuality(result({
+      totalReturn: 0.04,
+      benchmarkReturn: 0.08,
+      alpha: -0.04,
+    }))
+    expect(quality.label).toBe("failed")
+    expect(quality.reasons).toContain("alpha vs buy-and-hold <= 0")
+  })
+
+  test("blocks strict results when the buy-and-hold benchmark is unavailable", () => {
+    const quality = evaluateBacktestQuality(result({
+      runKind: "crucible_2_0",
+      productLabel: "Crucible 2.0",
+      benchmarkReturn: undefined,
+      benchmarkMaxDrawdown: undefined,
+      benchmarkSharpeRatio: undefined,
+      alpha: undefined,
+    }))
+    expect(quality.label).toBe("failed")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("buy-and-hold benchmark unavailable")
+  })
+
+  test("keeps defensive outperformance blocked by the absolute return gate", () => {
+    const quality = evaluateBacktestQuality(result({
+      totalReturn: -0.04,
+      benchmarkReturn: -0.12,
+      alpha: 0.08,
+    }))
+    expect(quality.label).toBe("failed")
+    expect(quality.reasons).toContain("liquidation-adjusted return <= 0")
+    expect(quality.reasons).not.toContain("alpha vs buy-and-hold <= 0")
+  })
+
   test("allows robust results to become paper eligible", () => {
     const quality = evaluateBacktestQuality(result({
+      benchmarkReturn: 0.02,
+      benchmarkMaxDrawdown: 0.08,
+      benchmarkSharpeRatio: 0.8,
+      alpha: 0.08,
       v2: {
         walk_forward: {
           n_folds: 5,
@@ -90,6 +133,10 @@ describe("evaluateBacktestQuality", () => {
 
   test("requires positive stitched OOS return and enough OOS trades", () => {
     const quality = evaluateBacktestQuality(result({
+      benchmarkReturn: 0.02,
+      benchmarkMaxDrawdown: 0.08,
+      benchmarkSharpeRatio: 0.8,
+      alpha: 0.08,
       v2: {
         walk_forward: {
           n_folds: 5,
