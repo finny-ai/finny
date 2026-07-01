@@ -15,6 +15,7 @@ import {
   normalizeConfigForSave,
   unsupportedNewSaveConfigReasons,
 } from "../algorithm/strategy-params"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -278,6 +279,24 @@ export const AlgorithmSaveTool = Tool.define(
               always: ["*"],
               metadata: {},
             })
+
+            const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+            if (!evidence.ok) {
+              RetryOrchestrator.reset(ctx.sessionID, params.name)
+              return {
+                result: {
+                  title: "Save blocked by missing evidence",
+                  output: evidence.text,
+                  metadata: {
+                    blocked: true,
+                    retry: false,
+                    evidenceRequired: true,
+                    workspaceSlug: evidence.workspaceSlug,
+                    issues: evidence.issues,
+                  },
+                },
+              }
+            }
 
             // Environment hard-stop #1: Python isn't installed at all. Probe
             // before validation so we don't let a clean ENOENT slip through

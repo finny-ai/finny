@@ -2,7 +2,14 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { getSessionWorkspace, setActiveAlgo, ensureAlgoWorkspace, algoDir, parseMission } from "@finny-ai/core/algo"
+import {
+  getSessionWorkspace,
+  setActiveAlgo,
+  ensureAlgoWorkspace,
+  algoDir,
+  parseMission,
+  bindSessionWorkspace,
+} from "@finny-ai/core/algo"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import {
   bootstrapWorkspace,
@@ -59,6 +66,11 @@ describe("workspace naming", () => {
     expect(deriveWorkspaceName(smhFacts, deriveIntent(SMH_EDGE_PROMPT), SMH_EDGE_PROMPT)).toBe("smh-1h-momentum")
   })
 
+  test("derives a basket workspace name from an explicit universe", () => {
+    const facts = parseRequestFacts("requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities")
+    expect(deriveWorkspaceName(facts, "swing", "Trump-linked stocks")).toBe("djt-rum-geo-cxw-1d-swing")
+  })
+
   test("derives a name from the prompt when no symbol is present", () => {
     expect(deriveWorkspaceName({}, "options", "options algo")).toBe("options-algo-strategy")
     expect(derivePromptSlug("what is a sharpe ratio?")).toBe("what-sharpe-ratio")
@@ -73,9 +85,10 @@ describe("workspace naming", () => {
   })
 
   test("date window extraction accepts month-name ranges from subagent prompts", () => {
-    expect(
-      extractDateWindow("The full backtest window is 3 months: March 13, 2026 to June 13, 2026."),
-    ).toEqual({ start: "2026-03-13", end: "2026-06-13" })
+    expect(extractDateWindow("The full backtest window is 3 months: March 13, 2026 to June 13, 2026.")).toEqual({
+      start: "2026-03-13",
+      end: "2026-06-13",
+    })
     expect(extractDateWindow("Backtest Mar 13, 2026 – Jun 13, 2026 for SPY.")).toEqual({
       start: "2026-03-13",
       end: "2026-06-13",
@@ -145,6 +158,24 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     expect(second!.rebound).toBe(false)
   })
 
+  test("explicit basket request does not reuse a stale single-symbol workspace", async () => {
+    const stale = await ensureAlgoWorkspace("es-1d-momentum")
+    await bindSessionWorkspace("ses_stale_es", stale.slug)
+    expect(await getSessionWorkspace("ses_stale_es")).toBe(stale.slug)
+
+    const next = await bootstrapWorkspace(
+      "ses_stale_es",
+      "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities swing strategy",
+    )
+    expect(next!.slug).not.toBe(stale.slug)
+    expect(next!.slug.startsWith("djt-rum-geo-cxw-1d-swing.")).toBe(true)
+    expect(await getSessionWorkspace("ses_stale_es")).toBe(next!.slug)
+
+    const request = JSON.parse(await fs.readFile(path.join(next!.dir, "request.json"), "utf8"))
+    expect(request.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
+    expect(request.requested_symbol).toBeUndefined()
+  })
+
   test("continue prompt reuses the session binding", async () => {
     const first = await bootstrapWorkspace("ses_continue", SPY_PROMPT)
     const second = await bootstrapWorkspace("ses_continue", "continue where you left off")
@@ -166,10 +197,7 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
 
   test("explicit news requests still isolate research when they mention the strategy", async () => {
     const first = await bootstrapWorkspace("ses_strategy_news", SPY_PROMPT)
-    const second = await bootstrapWorkspace(
-      "ses_strategy_news",
-      "tell me the latest news affecting the SPY strategy",
-    )
+    const second = await bootstrapWorkspace("ses_strategy_news", "tell me the latest news affecting the SPY strategy")
     expect(second!.slug).not.toBe(first!.slug)
     expect(second!.slug).toContain("-research.")
     expect(second!.rebound).toBe(true)
@@ -211,10 +239,7 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
   })
 
   test("continuation prompt does not reverse requested dates with actual coverage dates", async () => {
-    const first = await bootstrapWorkspace(
-      "ses_cont_dates",
-      "Extract SPY 5-minute data from 2026-03-10 to 2026-06-10.",
-    )
+    const first = await bootstrapWorkspace("ses_cont_dates", "Extract SPY 5-minute data from 2026-03-10 to 2026-06-10.")
     await bootstrapWorkspace(
       "ses_cont_dates",
       "Continue where you left off. You confirmed SPY 5m data is available from 2026-03-17 onward via yfinance. Write `stock/SPY_5m_2026-03-10_2026-06-10.csv`.",

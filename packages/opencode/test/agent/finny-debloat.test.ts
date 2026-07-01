@@ -103,7 +103,7 @@ const EXPECTED_TOOLS = {
     "task",
     "webfetch",
   ],
-  data_extractor: ["bash", "read"],
+  data_extractor: ["bash", "read", "skill"],
   news_agent: ["apply_patch", "edit", "finny_discord_read", "read", "webfetch", "websearch", "write"],
   sec_agent: ["apply_patch", "bash", "edit", "read", "webfetch", "websearch", "write"],
 }
@@ -154,7 +154,7 @@ describe("Finny debloat", () => {
   })
 
   test("subagent prompt budgets stay under target", () => {
-    expect(lineCount(PROMPT_DATA_EXTRACTOR)).toBeLessThanOrEqual(90)
+    expect(lineCount(PROMPT_DATA_EXTRACTOR)).toBeLessThanOrEqual(120)
     expect(lineCount(PROMPT_NEWS_AGENT)).toBeLessThanOrEqual(100)
     expect(lineCount(PROMPT_SEC_AGENT)).toBeLessThanOrEqual(100)
   })
@@ -327,10 +327,17 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("does NOT reset the failure budget")
     expect(PROMPT_BUILD).toContain("`userApproved: true`")
     expect(PROMPT_BUILD).toContain("After 3 failed save/validation attempts, stop")
+    expect(PROMPT_BUILD).toContain("discovery is closed for this request")
+    expect(PROMPT_BUILD).toContain("Do not ask the Core")
+    expect(PROMPT_BUILD).toContain("renewed discovery prompt")
     expect(PROMPT_BUILD).toContain("`write`/`edit` are never allowed in")
     expect(PROMPT_BUILD).toContain("do not save comma-separated `symbol`")
     expect(PROMPT_BUILD).toContain("`finny_portfolio_backtest` or save")
     expect(PROMPT_BUILD).toContain("do not narrow to one ticker")
+    expect(PROMPT_BUILD).toContain("Launch one concrete-symbol `data_extractor` task per portfolio ticker")
+    expect(PROMPT_BUILD).toContain("Do not put multiple `data_extractor` entries in one `task` batch")
+    expect(PROMPT_BUILD).toContain("batch mode requires distinct subagent types")
+    expect(PROMPT_BUILD).toContain("until every requested ticker has verified data evidence")
     // Low closed trade count is inconclusive, not a positive caveat.
     expect(PROMPT_BUILD).toContain("Closed trade count below the dynamic minimum is an inconclusive result")
     // Per-request workspace: storage routing is automatic, never invented.
@@ -360,7 +367,8 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("no performance")
     // Failure diagnosis contract: inspect classification before revising.
     expect(PROMPT_BUILD).toContain("Read `failure_diagnosis`")
-    expect(PROMPT_BUILD).toContain("`zero_trades`/`sizing_failure`")
+    expect(PROMPT_BUILD).toContain("`zero_trades` -> fix")
+    expect(PROMPT_BUILD).toContain("`sizing_failure` -> fix")
     expect(PROMPT_BUILD).toContain("`strategy_loss`")
     expect(PROMPT_BUILD).toContain("do NOT blame data/backtest")
     expect(PROMPT_BUILD).toContain("never ask backtest vs strategy when metrics exist")

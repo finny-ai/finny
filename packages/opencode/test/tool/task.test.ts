@@ -342,6 +342,232 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("rebinds stale parent workspace when data_extractor prompt carries a new stock universe", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, "es-1d-momentum.1.1.00.00"))
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          yield* def.execute(
+            {
+              description: "Trump basket data extraction",
+              prompt: "Extract daily OHLCV data for stock universe DJT,RUM,GEO,CXW from 2026-01-01 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const parentWorkspace = yield* Effect.promise(() => getSessionWorkspace(chat.id))
+          let childWorkspace: string | null | undefined
+          const childSessionID = seen?.sessionID
+          if (childSessionID) {
+            childWorkspace = yield* Effect.promise(() => getSessionWorkspace(childSessionID))
+          }
+          expect(parentWorkspace).toContain("djt-rum-geo-cxw-1d-strategy")
+          expect(childWorkspace).toBe(parentWorkspace)
+
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- symbols or universe: DJT, RUM, GEO, CXW")
+          expect(text).not.toContain("- symbols or universe: ES")
+          expect(text).toContain("- interval: 1d")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("blocks a hallucinated child ticker outside the parent portfolio universe", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "djt-rum-geo-cxw-1d-swing.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "Bad ES data extraction",
+              prompt: "Extract daily OHLCV data for ES from 2026-01-01 to 2026-06-29.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("BLOCKED: context mismatch")
+          expect(result.output).toContain("requested DJT,RUM,GEO,CXW 1d equity")
+          expect(result.output).toContain("references ES 1d equity")
+          const entries = yield* Effect.promise(() => fs.readdir(path.dirname(algoDir(slug))))
+          expect(entries.some((entry) => entry.startsWith("es-1d"))).toBe(false)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("allows an in-universe child ticker to use the parent portfolio workspace", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "djt-rum-geo-cxw-1d-swing.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          const result = yield* def.execute(
+            {
+              description: "RUM data extraction",
+              prompt:
+                "Extract daily OHLCV data for RUM from 2026-01-01 to 2026-06-29. requested_symbol: RUM, requested_interval: 1d, requested_asset_class: equities.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("BLOCKED: context mismatch")
+          const seenInput = seen
+          expect(seenInput).toBeDefined()
+          if (!seenInput) throw new Error("expected RUM child prompt to launch")
+          const childWorkspace = yield* Effect.promise(() => getSessionWorkspace(seenInput.sessionID))
+          expect(childWorkspace).toBe(slug)
+          const text = seenInput.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- symbols or universe: RUM")
+          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-01-01")
+          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-29")
+          expect(text).not.toContain("- symbols or universe: ES")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("preserves parent backtest window when a child extractor prompt widens dates", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "djt-rum-geo-cxw-1d-swing.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+
+          yield* def.execute(
+            {
+              description: "DJT widened data extraction",
+              prompt: "Extract daily OHLCV data for DJT from 2025-07-01 to 2026-06-29.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- symbols or universe: DJT")
+          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-01-01")
+          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-29")
+
+          const request = JSON.parse(
+            yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
+          )
+          expect(request.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
+          expect(request.requested_start).toBe("2026-01-01")
+          expect(request.requested_end).toBe("2026-06-29")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("caps intraday data_extractor context at the last completed UTC date", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -353,7 +579,9 @@ describe("tool.task", () => {
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
           const today = new Date().toISOString().slice(0, 10)
-          const yesterday = new Date(Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()))
+          const yesterday = new Date(
+            Date.UTC(new Date().getUTCFullYear(), new Date().getUTCMonth(), new Date().getUTCDate()),
+          )
           yesterday.setUTCDate(yesterday.getUTCDate() - 1)
           const yesterdayIso = yesterday.toISOString().slice(0, 10)
 
@@ -955,8 +1183,7 @@ describe("tool.task", () => {
             "run_id: batch-success",
           ].join("\n")
           const promptOps = stubOps({
-            text: (input) =>
-              input.agent === "data_extractor" ? dataText : "no material current context found",
+            text: (input) => (input.agent === "data_extractor" ? dataText : "no material current context found"),
           })
           const tool = yield* TaskTool
           const def = yield* tool.init()
@@ -966,8 +1193,7 @@ describe("tool.task", () => {
               tasks: [
                 {
                   description: "Extract SPY data",
-                  prompt:
-                    "Extract SPY equity 15m data from 2026-03-23 to 2026-06-17. Name it spy-batch-success.",
+                  prompt: "Extract SPY equity 15m data from 2026-03-23 to 2026-06-17. Name it spy-batch-success.",
                   subagent_type: "data_extractor",
                 },
                 {

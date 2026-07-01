@@ -16,12 +16,14 @@ import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
+import fs from "fs/promises"
 import * as path from "path"
 import {
   assetClassForSymbol,
   normalizeInterval,
   normalizeSymbol,
   parseRequestFacts,
+  verifyIdentity,
   workspaceMatchesRequest,
   type RequestFacts,
 } from "@/agent/request-identity"
@@ -33,10 +35,7 @@ import {
   type WorkspaceRequestContext,
 } from "@/agent/finny-workspace-context"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
-import {
-  validateDataExtractorTaskText,
-  validateExistingDataExtractorEvidence,
-} from "@/data/data-extractor-evidence"
+import { validateDataExtractorTaskText, validateExistingDataExtractorEvidence } from "@/data/data-extractor-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
 
 /**
@@ -105,12 +104,7 @@ function previousUtcDate(date: Date) {
   return isoUtcDate(prev)
 }
 
-export function completedIntradayWindow(input: {
-  start?: string
-  end?: string
-  interval?: string
-  now?: Date
-}) {
+export function completedIntradayWindow(input: { start?: string; end?: string; interval?: string; now?: Date }) {
   const now = input.now ?? new Date()
   const today = isoUtcDate(now)
   if (!input.end || input.end !== today || !isIntradayInterval(input.interval)) {
@@ -119,25 +113,37 @@ export function completedIntradayWindow(input: {
   return { start: input.start, end: previousUtcDate(now), adjusted: true }
 }
 
-function dataExtractorValidationContext(context: WorkspaceRequestContext | undefined): WorkspaceRequestContext | undefined {
+function dataExtractorValidationContext(
+  context: WorkspaceRequestContext | undefined,
+  promptFacts?: RequestFacts,
+): WorkspaceRequestContext | undefined {
   if (!context) return undefined
+  const childSymbol = childSymbolWithinContextUniverse(promptFacts?.requested_symbol, context)
+  const scoped = childSymbol
+    ? {
+        ...context,
+        requested_symbol: childSymbol,
+        requested_symbols: undefined,
+      }
+    : context
   const window = completedIntradayWindow({
-    start: context.requested_start,
-    end: context.requested_end,
-    interval: context.requested_interval,
+    start: scoped.requested_start,
+    end: scoped.requested_end,
+    interval: scoped.requested_interval,
   })
-  if (!window.adjusted) return context
+  if (!window.adjusted) return scoped
   return {
-    ...context,
+    ...scoped,
     requested_start: window.start,
     requested_end: window.end,
   }
 }
 
 function describeRequestFacts(facts: RequestFacts) {
-  const symbol = normalizeSymbol(facts.requested_symbol) ?? "?"
+  const requestedSymbols = facts.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
+  const symbol = requestedSymbols?.length ? requestedSymbols.join(",") : (normalizeSymbol(facts.requested_symbol) ?? "?")
   const interval = normalizeInterval(facts.requested_interval) ?? "?"
-  const assetClass = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol) ?? "?"
+  const assetClass = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? requestedSymbols?.[0]) ?? "?"
   return `${symbol} ${interval} ${assetClass}`
 }
 
@@ -164,7 +170,9 @@ function workspaceMismatchIssues(workspace: string | null, facts: RequestFacts) 
   const requestedInterval = normalizeInterval(facts.requested_interval)
   const workspaceInterval = normalizeInterval(workspaceFacts.requested_interval)
 
-  if (facts.requested_symbol && !workspaceMatchesRequest(workspace, facts)) issues.push(`workspace_slug=${workspace}`)
+  if ((facts.requested_symbol || facts.requested_symbols?.length) && !workspaceMatchesRequest(workspace, facts)) {
+    issues.push(`workspace_slug=${workspace}`)
+  }
   if (requestedSymbol && workspaceSymbolHint && requestedSymbol !== workspaceSymbolHint) {
     issues.push(`workspace_symbol=${workspaceSymbolHint}`)
   }
@@ -181,11 +189,16 @@ function contextMismatchIssues(context: WorkspaceRequestContext | undefined, fac
   const issues: string[] = []
   const requestedSymbol = normalizeSymbol(facts.requested_symbol)
   const contextSymbol = normalizeSymbol(context.requested_symbol)
+  const contextUniverse = context.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
   const requestedInterval = normalizeInterval(facts.requested_interval)
   const contextInterval = normalizeInterval(context.requested_interval)
-  const requestedAsset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol)
+  const requestedAsset =
+    facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? facts.requested_symbols?.[0])
 
-  if (requestedSymbol && contextSymbol && requestedSymbol !== contextSymbol) {
+  if (requestedSymbol && contextUniverse?.includes(requestedSymbol)) {
+    // In a portfolio request, each child extractor narrows to one symbol in the
+    // parent universe while inheriting interval/date constraints below.
+  } else if (requestedSymbol && contextSymbol && requestedSymbol !== contextSymbol) {
     issues.push(`context_symbol=${contextSymbol}`)
   }
   if (requestedInterval && contextInterval && requestedInterval !== contextInterval) {
@@ -204,10 +217,14 @@ function dataRequestContextMismatchBlock(input: {
   context?: WorkspaceRequestContext
 }): string | undefined {
   const facts = parseRequestFacts(input.prompt)
-  if (!facts.requested_symbol && !facts.requested_interval && !facts.requested_asset_class) return undefined
+  if (!requestHasIdentity(facts)) return undefined
+
+  const requestedSymbol = normalizeSymbol(facts.requested_symbol)
+  const contextUniverse = input.context?.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
+  const childInContextUniverse = Boolean(requestedSymbol && contextUniverse?.includes(requestedSymbol))
 
   const issues = [
-    ...workspaceMismatchIssues(input.workspace, facts),
+    ...(childInContextUniverse ? [] : workspaceMismatchIssues(input.workspace, facts)),
     ...contextMismatchIssues(input.context, facts),
   ]
 
@@ -220,6 +237,97 @@ function dataRequestContextMismatchBlock(input: {
   ].join(" ")
 }
 
+function finnySubagentType(subagentType: string) {
+  return (
+    subagentType === "data_extractor" ||
+    subagentType === "news_agent" ||
+    subagentType === "researcher" ||
+    subagentType === "sec_agent" ||
+    subagentType === "sentiment_agent"
+  )
+}
+
+function requestHasIdentity(facts: RequestFacts): boolean {
+  return Boolean(
+    facts.requested_symbol ||
+      facts.requested_symbols?.length ||
+      facts.requested_interval ||
+      facts.requested_asset_class ||
+      facts.requested_algorithm_name,
+  )
+}
+
+function workspaceMatchesPromptFacts(workspace: string | null, facts: RequestFacts): boolean {
+  if (!workspace || !workspaceMatchesRequest(workspace, facts)) return false
+  if (facts.requested_algorithm_name) return true
+  const symbols = (
+    facts.requested_symbols?.length ? facts.requested_symbols : facts.requested_symbol ? [facts.requested_symbol] : []
+  )
+    .map((symbol) => symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-"))
+    .filter(Boolean)
+  if (symbols.length === 0) return true
+  const base = (workspace.split(".")[0] ?? workspace).toLowerCase()
+  return symbols.every((symbol) => base.includes(symbol))
+}
+
+async function readWorkspaceRequestFacts(workspace: string | null): Promise<RequestFacts> {
+  if (!workspace) return {}
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspace), "request.json"), "utf8"))
+    return {
+      requested_symbol: typeof parsed.requested_symbol === "string" ? parsed.requested_symbol : undefined,
+      requested_symbols: Array.isArray(parsed.requested_symbols)
+        ? parsed.requested_symbols.filter((value: unknown): value is string => typeof value === "string")
+        : undefined,
+      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
+      requested_asset_class:
+        parsed.requested_asset_class === "crypto" || parsed.requested_asset_class === "equity"
+          ? parsed.requested_asset_class
+          : undefined,
+      requested_algorithm_name:
+        typeof parsed.requested_algorithm_name === "string" ? parsed.requested_algorithm_name : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function promptConflictWithParentRequest(parentFacts: RequestFacts, promptFacts: RequestFacts): string | undefined {
+  if (!requestHasIdentity(parentFacts) || !requestHasIdentity(promptFacts)) return undefined
+  const promptSymbols = promptFacts.requested_symbols?.length
+    ? promptFacts.requested_symbols
+    : promptFacts.requested_symbol
+      ? [promptFacts.requested_symbol]
+      : [undefined]
+  for (const symbol of promptSymbols) {
+    const result = verifyIdentity(parentFacts, {
+      actual_symbol: symbol,
+      actual_interval: promptFacts.requested_interval,
+      actual_asset_class: promptFacts.requested_asset_class,
+      algorithm_name: promptFacts.requested_algorithm_name,
+    })
+    if (result.status === "blocked") return result.blocked
+  }
+  return undefined
+}
+
+function childSymbolWithinRequestUniverse(symbol: string | undefined, facts: RequestFacts): string | undefined {
+  const normalized = normalizeSymbol(symbol)
+  if (!normalized || !facts.requested_symbols?.length) return undefined
+  const universe = facts.requested_symbols.map((item) => normalizeSymbol(item)).filter(Boolean)
+  return universe.includes(normalized) ? normalized : undefined
+}
+
+function childSymbolWithinContextUniverse(
+  symbol: string | undefined,
+  context: WorkspaceRequestContext | undefined,
+): string | undefined {
+  const normalized = normalizeSymbol(symbol)
+  if (!normalized || !context?.requested_symbols?.length) return undefined
+  const universe = context.requested_symbols.map((item) => normalizeSymbol(item)).filter(Boolean)
+  return universe.includes(normalized) ? normalized : undefined
+}
+
 function withFinnySubagentContext(
   params: { subagent_type: string },
   prompt: string,
@@ -227,28 +335,25 @@ function withFinnySubagentContext(
   context?: WorkspaceRequestContext,
 ) {
   if (!workspace) return prompt
-  if (
-    params.subagent_type !== "data_extractor" &&
-    params.subagent_type !== "news_agent" &&
-    params.subagent_type !== "researcher" &&
-    params.subagent_type !== "sec_agent" &&
-    params.subagent_type !== "sentiment_agent"
-  )
-    return prompt
+  if (!finnySubagentType(params.subagent_type)) return prompt
 
   const workspacePath = algoDir(workspace)
   const dataDir = path.join(workspacePath, "data")
   const newsDir = path.join(dataDir, "news")
   const facts = parseRequestFacts(prompt)
+  const childSymbol =
+    params.subagent_type === "data_extractor" ? childSymbolWithinContextUniverse(facts.requested_symbol, context) : undefined
   const window = extractDateWindow(prompt)
   const inferred = inferBacktestWindow(prompt)
-  const symbol = context?.requested_symbol ?? facts.requested_symbol
+  const symbol = childSymbol ?? context?.requested_symbol ?? facts.requested_symbol
+  const symbolsOrUniverse = childSymbol ?? context?.requested_symbols?.join(", ") ?? facts.requested_symbols?.join(", ") ?? symbol
   const interval = context?.requested_interval ?? facts.requested_interval
-  const assetClass = context?.requested_asset_class ?? facts.requested_asset_class ?? assetClassForSymbol(symbol)
+  const assetClass =
+    context?.requested_asset_class ??
+    facts.requested_asset_class ??
+    assetClassForSymbol(symbol ?? facts.requested_symbols?.[0])
   const algorithmName =
-    context?.requested_algorithm_name ??
-    facts.requested_algorithm_name ??
-    algorithmNameFromWorkspaceSlug(workspace)
+    context?.requested_algorithm_name ?? facts.requested_algorithm_name ?? algorithmNameFromWorkspaceSlug(workspace)
   const dataWindow = completedIntradayWindow({
     start: context?.requested_start ?? window.start ?? inferred.start,
     end: context?.requested_end ?? window.end ?? inferred.end,
@@ -262,7 +367,7 @@ function withFinnySubagentContext(
       "Data request context:",
       field("workspace_slug", workspace),
       field("requested_algorithm_name", algorithmName),
-      field("symbols or universe", symbol),
+      field("symbols or universe", symbolsOrUniverse),
       field("interval", interval),
       field("start date as absolute YYYY-MM-DD", dataWindow.start),
       field("end date as absolute YYYY-MM-DD", dataWindow.end),
@@ -293,8 +398,8 @@ function withFinnySubagentContext(
       "SEC EDGAR request context:",
       field("workspace_slug", workspace),
       field("workspace_name", humanNameOf(workspace)),
-      field("requested_company_or_ticker", secContext.requested_company_or_ticker ?? symbol),
-      field("resolved_symbol when known", secContext.resolved_symbol ?? symbol),
+      field("requested_company_or_ticker", secContext.requested_company_or_ticker ?? symbolsOrUniverse),
+      field("resolved_symbol when known", secContext.resolved_symbol ?? symbolsOrUniverse),
       field("resolved_cik when known", secContext.resolved_cik),
       field("requested_person", secContext.requested_person),
       field("requested_institution", secContext.requested_institution),
@@ -313,7 +418,7 @@ function withFinnySubagentContext(
 
   if (params.subagent_type === "sentiment_agent") {
     const sentimentDir = path.join(dataDir, "sentiment")
-    const sentimentSymbol = (symbol || "UNKNOWN").toUpperCase().replace(/[^A-Z0-9._-]/g, "_")
+    const sentimentSymbol = (symbolsOrUniverse || "UNKNOWN").toUpperCase().replace(/[^A-Z0-9._-]/g, "_")
     const sentimentStart = (dataWindow.start || "START").replace(/[^A-Z0-9._-]/gi, "_")
     const sentimentEnd = (dataWindow.end || "END").replace(/[^A-Z0-9._-]/gi, "_")
     const sentimentArtifactStem = `${sentimentSymbol}_${sentimentStart}_${sentimentEnd}_sentiment`
@@ -326,7 +431,7 @@ function withFinnySubagentContext(
       field("workspace_slug", workspace),
       field("workspace_name", humanNameOf(workspace)),
       field("requested_algorithm_name", algorithmName),
-      field("requested_symbol", symbol),
+      field("requested_symbol", symbolsOrUniverse),
       field("requested_interval", interval),
       field("requested_asset_class", assetClass),
       field("date window start as absolute YYYY-MM-DD", dataWindow.start),
@@ -355,7 +460,7 @@ function withFinnySubagentContext(
     field("workspace_slug", workspace),
     field("workspace_name", humanNameOf(workspace)),
     field("requested_algorithm_name", context?.requested_algorithm_name ?? facts.requested_algorithm_name),
-    field("requested_symbol", symbol),
+    field("requested_symbol", symbolsOrUniverse),
     field("requested_interval", interval),
     field("requested_asset_class", assetClass),
     field("workspace_news_dir", newsDir),
@@ -439,7 +544,9 @@ type TaskMetadata = {
   }>
 }
 
-function isBatchParameters(params: TaskParameters): params is Extract<TaskParameters, { tasks: ReadonlyArray<unknown> }> {
+function isBatchParameters(
+  params: TaskParameters,
+): params is Extract<TaskParameters, { tasks: ReadonlyArray<unknown> }> {
   return "tasks" in params
 }
 
@@ -492,10 +599,7 @@ export const TaskTool = Tool.define(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
 
-    const runSingle = Effect.fn("TaskTool.executeSingle")(function* (
-      params: SingleTaskParameters,
-      ctx: Tool.Context,
-    ) {
+    const runSingle = Effect.fn("TaskTool.executeSingle")(function* (params: SingleTaskParameters, ctx: Tool.Context) {
       const cfg = yield* config.get()
       const runInBackground = params.background === true
       if (runInBackground && !flags.experimentalBackgroundSubagents) {
@@ -562,19 +666,59 @@ export const TaskTool = Tool.define(
 
       // Subagents inherit the parent session's algo workspace binding so data
       // extraction and research notes land in the same per-request workspace.
-      const workspace = yield* Effect.promise(async () => {
+      const workspaceState = yield* Effect.promise(async () => {
         const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
         const childWorkspace = await getSessionWorkspace(nextSession.id).catch(() => null)
-        let workspace = parentWorkspace ?? childWorkspace
-        if (!workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent" || params.subagent_type === "sentiment_agent")) {
-          workspace = (await bootstrapWorkspace(ctx.sessionID, params.prompt).catch(() => undefined))?.slug ?? null
+        const promptFacts = parseRequestFacts(params.prompt)
+        const parentFacts = await readWorkspaceRequestFacts(parentWorkspace)
+        const inParentUniverse = finnySubagentType(params.subagent_type)
+          ? childSymbolWithinRequestUniverse(promptFacts.requested_symbol, parentFacts)
+          : undefined
+        const parentConflict = finnySubagentType(params.subagent_type) && parentFacts.requested_symbols?.length
+          ? promptConflictWithParentRequest(parentFacts, promptFacts)
+          : undefined
+        if (parentWorkspace && parentConflict) {
+          return { slug: parentWorkspace, blocked: parentConflict }
+        }
+        const singleTargetConflict =
+          parentWorkspace &&
+          finnySubagentType(params.subagent_type) &&
+          requestHasIdentity(parentFacts) &&
+          !parentFacts.requested_symbols?.length &&
+          !promptFacts.requested_symbols?.length
+            ? dataRequestContextMismatchBlock({
+                prompt: params.prompt,
+                workspace: parentWorkspace,
+                context: parentFacts as WorkspaceRequestContext,
+              })
+            : undefined
+        if (singleTargetConflict) {
+          return { slug: parentWorkspace, blocked: singleTargetConflict }
+        }
+        let workspace =
+          parentWorkspace && inParentUniverse
+            ? parentWorkspace
+            : workspaceMatchesPromptFacts(parentWorkspace, promptFacts)
+              ? parentWorkspace
+              : workspaceMatchesPromptFacts(childWorkspace, promptFacts)
+                ? childWorkspace
+                : null
+        const useParentContext = Boolean(
+          parentWorkspace && workspace === parentWorkspace && requestHasIdentity(parentFacts),
+        )
+        if (finnySubagentType(params.subagent_type) && (!workspace || (requestHasIdentity(promptFacts) && !useParentContext))) {
+          workspace = (await bootstrapWorkspace(ctx.sessionID, params.prompt).catch(() => undefined))?.slug ?? workspace
         }
         if (workspace) {
           await bindSessionWorkspace(ctx.sessionID, workspace).catch(() => {})
           await bindSessionWorkspace(nextSession.id, workspace).catch(() => {})
         }
-        return workspace
+        return {
+          slug: workspace,
+          preserveExistingContext: Boolean(parentWorkspace && workspace === parentWorkspace && requestHasIdentity(parentFacts)),
+        }
       })
+      const workspace = workspaceState.slug
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
@@ -603,25 +747,32 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
+        if (workspaceState.blocked) return workspaceState.blocked
         if (params.subagent_type === "data_extractor" && !workspace) {
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
         }
-        if (params.subagent_type === "data_extractor") {
-          const mismatch = dataRequestContextMismatchBlock({ prompt: params.prompt, workspace })
-          if (mismatch) return mismatch
-        }
         let workspaceContext: WorkspaceRequestContext | undefined
-        if (workspace && (params.subagent_type === "data_extractor" || params.subagent_type === "news_agent" || params.subagent_type === "researcher" || params.subagent_type === "sec_agent" || params.subagent_type === "sentiment_agent")) {
+        if (
+          workspace &&
+          (params.subagent_type === "data_extractor" ||
+            params.subagent_type === "news_agent" ||
+            params.subagent_type === "researcher" ||
+            params.subagent_type === "sec_agent" ||
+            params.subagent_type === "sentiment_agent")
+        ) {
           workspaceContext = yield* Effect.promise(() =>
             syncWorkspaceRequestContext({
               sessionID: ctx.sessionID,
               slug: workspace,
               prompt: params.prompt,
+              preserveExisting: workspaceState.preserveExistingContext,
             }).catch(() => undefined),
           )
         }
         const validationContext =
-          params.subagent_type === "data_extractor" ? dataExtractorValidationContext(workspaceContext) : workspaceContext
+          params.subagent_type === "data_extractor"
+            ? dataExtractorValidationContext(workspaceContext, parseRequestFacts(params.prompt))
+            : workspaceContext
         if (params.subagent_type === "data_extractor") {
           const mismatch = dataRequestContextMismatchBlock({ prompt: params.prompt, workspace, context: workspaceContext })
           if (mismatch) return mismatch
@@ -838,13 +989,14 @@ export const TaskTool = Tool.define(
       const existingWorkspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
       if (
         !existingWorkspace &&
-        subagentTypes.some((type) => ["data_extractor", "news_agent", "researcher", "sec_agent", "sentiment_agent"].includes(type))
+        subagentTypes.some((type) =>
+          ["data_extractor", "news_agent", "researcher", "sec_agent", "sentiment_agent"].includes(type),
+        )
       ) {
         const bootstrapped = yield* Effect.promise(() =>
-          bootstrapWorkspace(
-            ctx.sessionID,
-            params.tasks.map((task) => task.prompt).join("\n\n"),
-          ).catch(() => undefined),
+          bootstrapWorkspace(ctx.sessionID, params.tasks.map((task) => task.prompt).join("\n\n")).catch(
+            () => undefined,
+          ),
         )
         if (bootstrapped?.slug) {
           yield* Effect.promise(() => bindSessionWorkspace(ctx.sessionID, bootstrapped.slug).catch(() => {}))
@@ -909,8 +1061,7 @@ export const TaskTool = Tool.define(
         : DESCRIPTION,
       parameters: Parameters,
       jsonSchema: taskJsonSchema({ background: flags.experimentalBackgroundSubagents }),
-      execute: (params: TaskParameters, ctx: Tool.Context) =>
-        run(params, ctx).pipe(Effect.orDie),
+      execute: (params: TaskParameters, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
     }
   }),
 )

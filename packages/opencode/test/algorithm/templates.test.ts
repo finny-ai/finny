@@ -1,12 +1,34 @@
 import { describe, expect, test } from "bun:test"
 import { Templates } from "../../src/algorithm/templates"
 import { Validate } from "../../src/algorithm/validate"
+import { scaffoldValidationOptions } from "../../src/tool/algorithm-scaffold"
 
 describe("algorithm templates", () => {
   test("momentum scaffold is validator-clean", async () => {
     const result = await Validate.run(Templates.get("momentum"), { skipSmokeTest: true })
     expect(result.valid).toBe(true)
     expect(result.errors.map((err) => err.code)).not.toContain("DIVISION_NO_ZERO_CHECK")
+  })
+
+  test("breakout scaffold does not trade on a constant-price series", async () => {
+    const result = await Validate.run(Templates.get("breakout"))
+    expect(result.valid).toBe(true)
+    expect(result.errors.map((err) => err.code)).not.toContain("INVARIANT_CONSTANT_TRADES")
+  })
+
+  test("scaffold validation skips smoke only for intentional no-edge templates", async () => {
+    expect(scaffoldValidationOptions("custom")).toEqual({ skipSmokeTest: true })
+    expect(scaffoldValidationOptions("dca")).toEqual({ skipSmokeTest: true })
+    expect(scaffoldValidationOptions("golden-cross")).toEqual({ skipSmokeTest: true })
+    expect(scaffoldValidationOptions("breakout")).toEqual({ skipSmokeTest: false })
+  })
+
+  test("all scaffold templates are clean under scaffold validation", async () => {
+    for (const type of Templates.TYPES) {
+      const result = await Validate.run(Templates.get(type), scaffoldValidationOptions(type))
+      expect(result.errors, type).toEqual([])
+      expect(result.warnings, type).toEqual([])
+    }
   })
 
   test("validator accepts early denominator guards in helper methods", async () => {

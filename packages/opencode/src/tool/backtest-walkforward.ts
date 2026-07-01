@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 const parameters = z.object({
   algorithmName: z
@@ -125,6 +126,21 @@ export const BacktestWalkforwardTool = Tool.define(
           always: ["*"],
           metadata: {},
         })
+
+        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+        if (!evidence.ok) {
+          return {
+            title: "Walk-forward blocked by missing evidence",
+            output: evidence.text,
+            metadata: {
+              ...EMPTY_META,
+              blocked: true,
+              evidenceRequired: true,
+              workspaceSlug: evidence.workspaceSlug,
+              issues: evidence.issues,
+            },
+          }
+        }
 
         const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {

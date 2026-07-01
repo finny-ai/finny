@@ -37,8 +37,7 @@ const RESEARCH_RE =
 const EXPLICIT_RESEARCH_RE =
   /\b(search|look\s+up|find\s+out|news|headline|ipo|earnings|current\s+event|latest(?:\s+on)?|what(?:'s|\s+is)\s+happening|status\s+of|when\s+is|who\s+is)\b/i
 
-const STRATEGY_REFERENCE_RE =
-  /\b(strategy|algo(?:rithm)?|backtest|entry|exit|signal|stops?|risk|position\s+sizing)\b/i
+const STRATEGY_REFERENCE_RE = /\b(strategy|algo(?:rithm)?|backtest|entry|exit|signal|stops?|risk|position\s+sizing)\b/i
 
 /** Strategy-intent keywords, scanned in order; first hit names the workspace. */
 const INTENT_PATTERNS: Array<[RegExp, string]> = [
@@ -151,10 +150,22 @@ export function derivePromptSlug(prompt: string): string {
   return (words.join("-") || "session").replace(/-{2,}/g, "-").replace(/^-+|-+$/g, "")
 }
 
+function requestedSymbolParts(facts: RequestFacts): string[] {
+  return facts.requested_symbols?.length
+    ? facts.requested_symbols
+    : facts.requested_symbol
+      ? [facts.requested_symbol]
+      : []
+}
+
 /** Kebab-case workspace name from request facts, e.g. "spy-15m-mean-reversion" or "options-algo-strategy". */
 export function deriveWorkspaceName(facts: RequestFacts, intent?: string, prompt = ""): string {
   const tail = intent ?? "strategy"
-  const symbol = facts.requested_symbol?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
+  const symbol = requestedSymbolParts(facts)
+    .slice(0, 6)
+    .join("-")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
   if (symbol) {
     const parts = [symbol]
     if (facts.requested_interval) parts.push(facts.requested_interval)
@@ -179,10 +190,23 @@ function joinWorkspaceParts(parts: string[]): string {
 
 function slugMatchesRequest(slug: string, facts: RequestFacts): boolean {
   if (!workspaceMatchesRequest(slug, facts)) return false
-  const sym = facts.requested_symbol?.toLowerCase().replace(/[^a-z0-9]+/g, "-")
-  if (!sym) return true
+  if (facts.requested_algorithm_name) return true
+  const symbols = requestedSymbolParts(facts)
+    .map((symbol) => symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-"))
+    .filter(Boolean)
+  if (symbols.length === 0) return true
   const base = (slug.split(".")[0] ?? slug).toLowerCase()
-  return base.includes(sym)
+  return symbols.every((symbol) => base.includes(symbol))
+}
+
+function hasRequestIdentity(facts: RequestFacts): boolean {
+  return Boolean(
+    facts.requested_symbol ||
+      facts.requested_symbols?.length ||
+      facts.requested_interval ||
+      facts.requested_asset_class ||
+      facts.requested_algorithm_name,
+  )
 }
 
 export interface BootstrapResult {
@@ -197,10 +221,7 @@ export interface BootstrapResult {
  * is still consistent with the request facts; provisions + rebinds when the
  * request targets a different symbol/asset.
  */
-export async function bootstrapWorkspace(
-  sessionID: string,
-  prompt: string,
-): Promise<BootstrapResult | undefined> {
+export async function bootstrapWorkspace(sessionID: string, prompt: string): Promise<BootstrapResult | undefined> {
   const facts = parseRequestFacts(prompt)
   const existing = await getSessionWorkspace(sessionID)
   const strategyOrigin = existing && isResearchWorkspace(existing) ? await readStrategyOrigin(existing) : null
@@ -228,7 +249,11 @@ export async function bootstrapWorkspace(
     return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, rebound: Boolean(existing) }
   }
 
-  if (existing && slugMatchesRequest(existing, facts)) {
+  if (
+    existing &&
+    (hasRequestIdentity(facts) || continuation || strategyFollowup) &&
+    slugMatchesRequest(existing, facts)
+  ) {
     await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }

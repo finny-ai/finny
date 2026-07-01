@@ -4,12 +4,42 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./algorithm-scaffold.txt"
 import { Templates } from "../algorithm/templates"
 import { Validate } from "../algorithm/validate"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 const parameters = z.object({
   template_type: z
-    .enum(["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "macd", "stochastic", "atr-breakout", "vwap-reversion", "z-score", "keltner", "adx-trend", "custom"])
+    .enum([
+      "momentum",
+      "mean-reversion",
+      "breakout",
+      "dca",
+      "golden-cross",
+      "scalping",
+      "macd",
+      "stochastic",
+      "atr-breakout",
+      "vwap-reversion",
+      "z-score",
+      "keltner",
+      "adx-trend",
+      "custom",
+    ])
     .describe("The type of strategy template to generate"),
 })
+
+type ScaffoldMetadata = {
+  blocked: boolean
+  evidenceRequired: boolean
+  workspaceSlug: string | undefined
+  issues: string[]
+  template: z.infer<typeof parameters>["template_type"] | undefined
+  valid: boolean | undefined
+  warningCount: number | undefined
+}
+
+export function scaffoldValidationOptions(templateType: z.infer<typeof parameters>["template_type"]) {
+  return { skipSmokeTest: templateType === "custom" || templateType === "dca" || templateType === "golden-cross" }
+}
 
 export const AlgorithmScaffoldTool = Tool.define(
   "finny_algorithm_scaffold",
@@ -25,8 +55,25 @@ export const AlgorithmScaffoldTool = Tool.define(
           metadata: {},
         })
 
+        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+        if (!evidence.ok) {
+          return {
+            title: "Scaffold blocked by missing evidence",
+            output: evidence.text,
+            metadata: {
+              blocked: true,
+              evidenceRequired: true,
+              workspaceSlug: evidence.workspaceSlug,
+              issues: evidence.issues,
+              template: undefined,
+              valid: undefined,
+              warningCount: undefined,
+            } as ScaffoldMetadata,
+          }
+        }
+
         const code = Templates.get(params.template_type)
-        const result = await Validate.run(code)
+        const result = await Validate.run(code, scaffoldValidationOptions(params.template_type))
         const desc = Templates.describe(params.template_type)
 
         const parts: string[] = [
@@ -45,10 +92,14 @@ export const AlgorithmScaffoldTool = Tool.define(
           title: `${params.template_type} template`,
           output: parts.join("\n"),
           metadata: {
+            blocked: false,
+            evidenceRequired: false,
+            workspaceSlug: undefined,
+            issues: [],
             template: params.template_type,
             valid: result.valid,
             warningCount: result.warnings.length,
-          },
+          } as ScaffoldMetadata,
         }
       }),
   }),

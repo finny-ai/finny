@@ -7,6 +7,7 @@ import { Validate } from "../algorithm/validate"
 import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
 import { CRUCIBLE_2_0_PRODUCT_LABEL, representativeRerunForAlgorithm } from "../backtest/crucible-reruns"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
@@ -318,6 +319,21 @@ export const BacktestRunTool = Tool.define(
             title: "Backtest blocked by repair approval",
             output: repairBlock,
             metadata: { ...emptyMeta, repair_outliers_allowed: false },
+          }
+        }
+
+        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+        if (!evidence.ok) {
+          return {
+            title: "Backtest blocked by missing evidence",
+            output: evidence.text,
+            metadata: {
+              ...emptyMeta,
+              blocked: true,
+              evidenceRequired: true,
+              workspaceSlug: evidence.workspaceSlug,
+              issues: evidence.issues,
+            },
           }
         }
 

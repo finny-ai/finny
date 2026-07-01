@@ -239,14 +239,19 @@ class Strategy:
         equity = self.broker.equity()
         cash = self.broker.cash()
 
-        if pos == 0 and open_px >= upper_channel and open_px > 0:
+        if upper_channel <= lower_channel:
+            self.highs.append(bar_high)
+            self.lows.append(bar_low)
+            return
+
+        if pos == 0 and open_px > upper_channel and open_px > 0:
             stop_dist = open_px * self.stop_pct
             by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
             by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
             qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
-        elif pos > 0 and open_px <= lower_channel:
+        elif pos > 0 and open_px < lower_channel:
             self.broker.sell(symbol, qty=pos)
 
         self.highs.append(bar_high)
@@ -312,6 +317,10 @@ class Strategy:
             return
 
         if len(self.prices) < self.slow_period:
+            self.prices.append(close_px)
+            return
+
+        if self.fast_period <= 0 or self.slow_period <= 0 or self.fast_period > self.slow_period:
             self.prices.append(close_px)
             return
 
@@ -473,6 +482,7 @@ class Strategy:
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.03))
         self.closes = deque(maxlen=self.slow_period + self.signal_period + 10)
+        self.macd_values = deque(maxlen=self.signal_period + 5)
         self.prev_macd_above = None
         self.entry_px = 0.0
 
@@ -492,8 +502,13 @@ class Strategy:
         if close_px is None:
             return
 
-        self.closes.append(close_px)
-        if len(self.closes) < self.slow_period + self.signal_period:
+        if len(self.closes) < self.slow_period or len(self.macd_values) < self.signal_period:
+            self.closes.append(close_px)
+            vals = list(self.closes)
+            fast_ema = self._ema(vals, self.fast_period)
+            slow_ema = self._ema(vals, self.slow_period)
+            if fast_ema is not None and slow_ema is not None:
+                self.macd_values.append(fast_ema - slow_ema)
             return
 
         # MACD = EMA(fast) - EMA(slow)
@@ -504,18 +519,7 @@ class Strategy:
             return
         macd = fast_ema - slow_ema
 
-        # Signal line = EMA of MACD values (approximate: use recent closes to rebuild)
-        # For a template, we compute a rolling MACD series then EMA it
-        macd_series = []
-        for i in range(self.signal_period + 5, len(vals) + 1):
-            sub = vals[:i]
-            fe = self._ema(sub, self.fast_period)
-            se = self._ema(sub, self.slow_period)
-            if fe is not None and se is not None:
-                macd_series.append(fe - se)
-        if len(macd_series) < self.signal_period:
-            return
-        signal = self._ema(macd_series, self.signal_period)
+        signal = self._ema(self.macd_values, self.signal_period)
         if signal is None:
             return
         histogram = macd - signal
@@ -543,6 +547,12 @@ class Strategy:
                     self.entry_px = 0.0
 
         self.prev_macd_above = macd_above
+        self.closes.append(close_px)
+        vals = list(self.closes)
+        fast_ema = self._ema(vals, self.fast_period)
+        slow_ema = self._ema(vals, self.slow_period)
+        if fast_ema is not None and slow_ema is not None:
+            self.macd_values.append(fast_ema - slow_ema)
 `
 
   const STOCHASTIC = `\
@@ -580,24 +590,18 @@ class Strategy:
         if prev_high is None or prev_low is None or prev_close is None:
             return
 
-        self.highs.append(prev_high)
-        self.lows.append(prev_low)
-
-        if len(self.highs) < self.k_period:
+        if len(self.highs) < self.k_period or len(self.k_values) < self.d_period:
+            self.highs.append(prev_high)
+            self.lows.append(prev_low)
+            if len(self.highs) >= self.k_period:
+                highest = max(self.highs)
+                lowest = min(self.lows)
+                rng = highest - lowest
+                if rng >= 1e-10:
+                    self.k_values.append(((prev_close - lowest) / rng) * 100.0)
             return
 
-        highest = max(self.highs)
-        lowest = min(self.lows)
-        rng = highest - lowest
-        if rng < 1e-10:
-            return
-
-        k = ((prev_close - lowest) / rng) * 100.0
-        self.k_values.append(k)
-
-        if len(self.k_values) < self.d_period:
-            return
-
+        k = self.k_values[-1]
         d = sum(self.k_values) / self.d_period
 
         pos = self.broker.position(symbol)
@@ -625,6 +629,13 @@ class Strategy:
 
         self.prev_k = k
         self.prev_d = d
+        self.highs.append(prev_high)
+        self.lows.append(prev_low)
+        highest = max(self.highs)
+        lowest = min(self.lows)
+        rng = highest - lowest
+        if rng >= 1e-10:
+            self.k_values.append(((prev_close - lowest) / rng) * 100.0)
 `
 
   const ATR_BREAKOUT = `\
@@ -665,10 +676,10 @@ class Strategy:
                      abs(prev_low - self.prev_close))
         else:
             tr = prev_high - prev_low
-        self.true_ranges.append(tr)
-        self.prev_close = prev_close
 
         if len(self.true_ranges) < self.atr_period:
+            self.true_ranges.append(tr)
+            self.prev_close = prev_close
             return
 
         atr = sum(self.true_ranges) / self.atr_period
@@ -698,6 +709,8 @@ class Strategy:
                 self.broker.sell(symbol, qty=pos)
                 self.entry_px = 0.0
                 self.trailing_stop = 0.0
+        self.true_ranges.append(tr)
+        self.prev_close = prev_close
 `
 
   const VWAP_REVERSION = `\
@@ -729,10 +742,9 @@ class Strategy:
         if prev_close is None or volume is None:
             return
 
-        self.prices.append(prev_close)
-        self.volumes.append(max(volume, 1e-10))
-
         if len(self.prices) < self.lookback:
+            self.prices.append(prev_close)
+            self.volumes.append(max(volume, 1e-10))
             return
 
         # VWAP = sum(price * volume) / sum(volume)
@@ -746,6 +758,8 @@ class Strategy:
         vwap_std = math.sqrt(sq_dev / v_sum) if v_sum > 0 else 1e-10
 
         if vwap_std < 1e-10:
+            self.prices.append(prev_close)
+            self.volumes.append(max(volume, 1e-10))
             return
 
         z = (open_px - vwap) / vwap_std
@@ -769,6 +783,8 @@ class Strategy:
             if z >= 0 or stop_hit:
                 self.broker.sell(symbol, qty=pos)
                 self.entry_px = 0.0
+        self.prices.append(prev_close)
+        self.volumes.append(max(volume, 1e-10))
 `
 
   const Z_SCORE = `\
@@ -799,8 +815,8 @@ class Strategy:
         if prev_close is None:
             return
 
-        self.prices.append(prev_close)
         if len(self.prices) < self.lookback:
+            self.prices.append(prev_close)
             return
 
         n = len(self.prices)
@@ -808,6 +824,7 @@ class Strategy:
         variance = sum((x - mean) ** 2 for x in self.prices) / (n - 1) if n > 1 else 0.0
         std = math.sqrt(variance)
         if std < 1e-10:
+            self.prices.append(prev_close)
             return
 
         z = (open_px - mean) / std
@@ -831,6 +848,7 @@ class Strategy:
             if z >= self.exit_z or stop_hit:
                 self.broker.sell(symbol, qty=pos)
                 self.entry_px = 0.0
+        self.prices.append(prev_close)
 `
 
   const KELTNER = `\
@@ -858,6 +876,8 @@ class Strategy:
         self.entry_px = 0.0
 
     def _ema(self, data, period):
+        if period <= 0:
+            return None
         if len(data) < period:
             return None
         vals = list(data)
@@ -882,11 +902,11 @@ class Strategy:
                      abs(prev_low - self.prev_close))
         else:
             tr = prev_high - prev_low
-        self.true_ranges.append(tr)
-        self.closes.append(prev_close)
-        self.prev_close = prev_close
 
         if len(self.true_ranges) < self.atr_period or len(self.closes) < self.ema_period:
+            self.true_ranges.append(tr)
+            self.closes.append(prev_close)
+            self.prev_close = prev_close
             return
 
         ema = self._ema(self.closes, self.ema_period)
@@ -915,6 +935,9 @@ class Strategy:
             if open_px <= ema or open_px <= lower:
                 self.broker.sell(symbol, qty=pos)
                 self.entry_px = 0.0
+        self.true_ranges.append(tr)
+        self.closes.append(prev_close)
+        self.prev_close = prev_close
 `
 
   const ADX_TREND = `\

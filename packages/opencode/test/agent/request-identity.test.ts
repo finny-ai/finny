@@ -114,14 +114,60 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_symbol).toBe("SPY")
     expect(facts.requested_interval).toBe("1h")
     expect(facts.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
-    expect(parseRequestFacts('Build is improving algorithm "spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name).toBe(
-      "spy-1h-momentum-breakout",
-    )
-    expect(parseRequestFacts("Build is improving strategy 'spy-1h-momentum-breakout' for SPY 1h.").requested_algorithm_name).toBe(
-      "spy-1h-momentum-breakout",
-    )
-    expect(parseRequestFacts('Build is improving algorithm `spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name).toBeUndefined()
+    expect(
+      parseRequestFacts('Build is improving algorithm "spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name,
+    ).toBe("spy-1h-momentum-breakout")
+    expect(
+      parseRequestFacts("Build is improving strategy 'spy-1h-momentum-breakout' for SPY 1h.").requested_algorithm_name,
+    ).toBe("spy-1h-momentum-breakout")
+    expect(
+      parseRequestFacts('Build is improving algorithm `spy-1h-momentum-breakout" for SPY 1h.').requested_algorithm_name,
+    ).toBeUndefined()
     expect(parseRequestFacts("Strategy family momentum breakout for SPY 1h.").requested_algorithm_name).toBeUndefined()
+  })
+
+  test("extracts explicit multi-stock universes without narrowing to a stale single symbol", () => {
+    const facts = parseRequestFacts("requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities")
+    expect(facts.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
+    expect(facts.requested_symbol).toBeUndefined()
+    expect(facts.requested_interval).toBe("1d")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("does not parse the asset-class word after a ticker list as a partial ticker", () => {
+    const facts = parseRequestFacts("portfolio universe/tickers DJT,RUM,GEO,CXW, equities, 1d swing")
+    expect(facts.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
+    expect(facts.requested_symbols).not.toContain("EQUITI")
+    expect(facts.requested_interval).toBe("1d")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("does not parse lowercase digest prose as a comma-separated ticker universe", () => {
+    const facts = parseRequestFacts(
+      "Extract daily (1d) OHLCV data for DJT. Return a digest with usable_for_parent: yes or usable_for_parent: no, the requested vs actual coverage, gap counts, and quality notes.",
+    )
+    expect(facts.requested_symbol).toBe("DJT")
+    expect(facts.requested_symbols).toBeUndefined()
+    expect(facts.requested_interval).toBe("1d")
+  })
+
+  test("does not overwrite explicit single tickers with lowercase asset prose", () => {
+    const facts = parseRequestFacts(
+      "Extract daily OHLCV data for RUM from 2026-01-01 to 2026-06-29. requested_symbol: RUM, requested_interval: 1d, requested_asset_class: equities.",
+    )
+    expect(facts.requested_symbol).toBe("RUM")
+    expect(facts.requested_symbols).toBeUndefined()
+    expect(facts.requested_asset_class).toBe("equity")
+    expect(facts.requested_interval).toBe("1d")
+  })
+
+  test("does not parse macro news acronyms as stock identity", () => {
+    const facts = parseRequestFacts(
+      "Research FOMC, CPI, and election risk-regime events for the Trump trade. The target stocks are DJT,RUM,GEO,CXW.",
+    )
+    expect(facts.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
+    expect(facts.requested_symbol).toBeUndefined()
+    expect(facts.requested_asset_class).toBe("equity")
   })
 })
 
@@ -163,6 +209,24 @@ describe("verifyIdentity", () => {
     expect(result.ok).toBe(false)
     expect(result.status).toBe("blocked")
     expect(result.blocked).toContain("BLOCKED: context mismatch")
+  })
+
+  test("accepts a symbol that belongs to the requested universe and blocks one outside it", () => {
+    const universe = {
+      requested_symbols: ["DJT", "RUM", "GEO", "CXW"],
+      requested_interval: "1d",
+      requested_asset_class: "equity",
+    } satisfies RequestFacts
+    expect(
+      verifyIdentity(universe, { actual_symbol: "RUM", actual_interval: "1d", actual_asset_class: "equity" }).ok,
+    ).toBe(true)
+    const blocked = verifyIdentity(universe, {
+      actual_symbol: "ES",
+      actual_interval: "1d",
+      actual_asset_class: "equity",
+    })
+    expect(blocked.ok).toBe(false)
+    expect(blocked.reason).toBe("symbol mismatch")
   })
 
   test("blocks an interval mismatch", () => {

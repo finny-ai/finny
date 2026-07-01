@@ -1,6 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
-import { algoDir } from "@finny-ai/core/algo"
+import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol, type RequestFacts } from "@/agent/request-identity"
 import { STRICT_DATA_QUALITY_LABELS } from "./data-quality-vocab"
@@ -98,6 +98,10 @@ export interface ExistingDataExtractorEvidenceResult {
   result?: ValidateDataExtractorResult
 }
 
+export interface RequireVerifiedEvidenceResult extends ValidateDataExtractorResult {
+  workspaceSlug?: string
+}
+
 function fieldValue(text: string, name: string): string | undefined {
   const patterns = [
     new RegExp(`(?:^|\\n|\\s)${name}\\s*[:=]\\s*([^\\n,;]+)`, "i"),
@@ -129,14 +133,16 @@ function parseArtifactPaths(text: string): string[] {
     fieldValue(text, "manifest path"),
     ...Array.from(text.matchAll(/(?:^|\n)\s*(?:CSV|Manifest)\s*:\s*([^\n]+?)(?=\s+\(|\n|$)/gi), (match) => match[1]),
     ...Array.from(
-      text.matchAll(/(?:^|\n)\s*(?:CSV|Manifest)\s+(?:Path\s+)?([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?:\s|\n|$)/gi),
+      text.matchAll(
+        /(?:^|\n)\s*(?:CSV|Manifest)\s+(?:Path\s+)?([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?:\s|\n|$)/gi,
+      ),
       (match) => match[1],
     ),
+    ...Array.from(text.matchAll(/"(?:csv|manifest)"\s*:\s*"([^"]+\.(?:csv|manifest\.json))"/gi), (match) => match[1]),
     ...Array.from(
-      text.matchAll(/"(?:csv|manifest)"\s*:\s*"([^"]+\.(?:csv|manifest\.json))"/gi),
+      text.matchAll(/(?:^|\s)([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?=\s|,|;|\)|$)/gi),
       (match) => match[1],
     ),
-    ...Array.from(text.matchAll(/(?:^|\s)([A-Za-z0-9_./-]+\.(?:csv|manifest\.json))(?=\s|,|;|\)|$)/gi), (match) => match[1]),
   ].filter((value): value is string => Boolean(value))
   if (rawValues.length === 0) return []
   return rawValues
@@ -200,6 +206,47 @@ async function findManifestCandidates(root: string): Promise<string[]> {
   await walk(root, 4)
   found.sort()
   return found
+}
+
+async function readWorkspaceRequestContext(workspaceSlug: string): Promise<WorkspaceRequestContext | undefined> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspaceSlug), "request.json"), "utf8"))
+    return {
+      requested_symbol: typeof parsed.requested_symbol === "string" ? parsed.requested_symbol : undefined,
+      requested_symbols: Array.isArray(parsed.requested_symbols)
+        ? parsed.requested_symbols.filter((value: unknown): value is string => typeof value === "string")
+        : undefined,
+      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
+      requested_asset_class:
+        typeof parsed.requested_asset_class === "string" ? parsed.requested_asset_class : undefined,
+      requested_algorithm_name:
+        typeof parsed.requested_algorithm_name === "string" ? parsed.requested_algorithm_name : undefined,
+      requested_start: typeof parsed.requested_start === "string" ? parsed.requested_start : undefined,
+      requested_end: typeof parsed.requested_end === "string" ? parsed.requested_end : undefined,
+      request_id: typeof parsed.request_id === "string" ? parsed.request_id : "",
+    }
+  } catch {
+    return undefined
+  }
+}
+
+function evidenceRequiredBlock(reason: string, workspaceSlug?: string): RequireVerifiedEvidenceResult {
+  const context = workspaceSlug ? `workspace_slug: ${workspaceSlug}\n` : ""
+  return {
+    ok: false,
+    workspaceSlug,
+    text: [
+      "BLOCKED: evidence required before strategy build — mandatory data_extractor evidence is not verified.",
+      context.trimEnd(),
+      `reason: ${reason}`,
+      "Run the mandatory data_extractor subagent with concrete symbol, interval, asset class, start date, and end date.",
+      "Do not call finny_algorithm_scaffold, finny_algorithm_save, finny_algorithm_validate, or finny_backtest_run until a matching <data-extractor-manifest> has usable_for_parent: yes.",
+      "No strategy artifact or performance metrics produced.",
+    ]
+      .filter(Boolean)
+      .join("\n"),
+    issues: [reason],
+  }
 }
 
 async function countCsvDataRows(csvPath: string): Promise<number> {
@@ -333,10 +380,7 @@ function csvBoundaryIssue(
   return `manifest ${label}=${value} but CSV ${verb} at ${timestamp.raw}`
 }
 
-async function inspectCsvEvidence(
-  csvPath: string,
-  manifest: DataExtractorManifest,
-): Promise<CsvInspection> {
+async function inspectCsvEvidence(csvPath: string, manifest: DataExtractorManifest): Promise<CsvInspection> {
   const text = await fs.readFile(csvPath, "utf8")
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
   if (lines.length === 0) return { rows: 0, issues: ["CSV is empty"] }
@@ -344,7 +388,10 @@ async function inspectCsvEvidence(
   const header = lines[0].split(",").map((value) => value.trim().toLowerCase())
   const missingColumns = REQUIRED_CSV_COLUMNS.filter((column) => !header.includes(column))
   if (missingColumns.length > 0) {
-    return { rows: Math.max(0, lines.length - 1), issues: [`CSV missing required columns: ${missingColumns.join(", ")}`] }
+    return {
+      rows: Math.max(0, lines.length - 1),
+      issues: [`CSV missing required columns: ${missingColumns.join(", ")}`],
+    }
   }
 
   const rows = lines.length - 1
@@ -436,7 +483,10 @@ function normalizeUsableForParent(value: unknown): string | undefined {
   return trimmed.toLowerCase()
 }
 
-function manifestDigestMismatches(manifest: DataExtractorManifest, digest: Record<string, string | undefined>): string[] {
+function manifestDigestMismatches(
+  manifest: DataExtractorManifest,
+  digest: Record<string, string | undefined>,
+): string[] {
   const pairs: Array<[keyof DataExtractorManifest, string | undefined, "symbol" | "interval" | "asset" | undefined]> = [
     ["requested_symbol", digest.requested_symbol, "symbol"],
     ["actual_symbol", digest.actual_symbol, "symbol"],
@@ -453,7 +503,8 @@ function manifestDigestMismatches(manifest: DataExtractorManifest, digest: Recor
   ]
   return pairs.flatMap(([key, digestValue, kind]) => {
     const manifestValue = manifest[key]
-    const mismatch = digestValue && manifestValue !== undefined && !valuesMatch(String(manifestValue), digestValue, kind)
+    const mismatch =
+      digestValue && manifestValue !== undefined && !valuesMatch(String(manifestValue), digestValue, kind)
     return mismatch ? [`manifest ${String(key)} mismatch (manifest=${manifestValue}, digest=${digestValue})`] : []
   })
 }
@@ -581,7 +632,10 @@ async function resolveManifestFile(input: {
   return { artifacts: input.artifacts, result: blocked(input.issues) }
 }
 
-async function headerOnlyCsvBlocker(artifacts: string[], dataRoot: string): Promise<ValidateDataExtractorResult | undefined> {
+async function headerOnlyCsvBlocker(
+  artifacts: string[],
+  dataRoot: string,
+): Promise<ValidateDataExtractorResult | undefined> {
   const csvArtifact = artifacts.find((p) => p.endsWith(".csv"))
   if (!csvArtifact) return undefined
   const csvFile = path.isAbsolute(csvArtifact) ? csvArtifact : path.join(dataRoot, csvArtifact)
@@ -617,18 +671,60 @@ async function readManifestFile(
   }
 }
 
-function digestContextIssues(
-  digest: Record<string, string | undefined>,
-  context?: WorkspaceRequestContext,
-): string[] {
+function digestContextIssues(digest: Record<string, string | undefined>, context?: WorkspaceRequestContext): string[] {
   return [
+    ...contextSymbolIssues(digest, context),
+    contextMismatch(
+      digest.requested_interval,
+      context?.requested_interval,
+      "requested_interval differs from runtime context",
+      "interval",
+    ),
+    contextMismatch(
+      digest.requested_asset_class,
+      context?.requested_asset_class,
+      "requested_asset_class differs from runtime context",
+      "asset",
+    ),
     contextMismatch(digest.requested_start, context?.requested_start, "requested_start differs from runtime context"),
     contextMismatch(digest.requested_end, context?.requested_end, "requested_end differs from runtime context"),
   ].filter((issue): issue is string => Boolean(issue))
 }
 
-function contextMismatch(digestValue: string | undefined, contextValue: string | undefined, issue: string): string | undefined {
-  return contextValue && digestValue && digestValue !== contextValue ? issue : undefined
+function contextMismatch(
+  digestValue: string | undefined,
+  contextValue: string | undefined,
+  issue: string,
+  kind?: "symbol" | "interval" | "asset",
+): string | undefined {
+  return contextValue && digestValue && !valuesMatch(digestValue, contextValue, kind) ? issue : undefined
+}
+
+function contextSymbolIssues(digest: Record<string, string | undefined>, context?: WorkspaceRequestContext): string[] {
+  const allowed = (
+    context?.requested_symbols?.length
+      ? context.requested_symbols
+      : context?.requested_symbol
+        ? [context.requested_symbol]
+        : []
+  )
+    .map((symbol) => normalizeSymbol(symbol))
+    .filter((symbol): symbol is string => Boolean(symbol))
+  if (allowed.length === 0) return []
+
+  const issues: string[] = []
+  for (const [field, value] of [
+    ["requested_symbol", digest.requested_symbol],
+    ["actual_symbol", digest.actual_symbol],
+  ] as const) {
+    const normalized = normalizeSymbol(value)
+    if (normalized && !allowed.includes(normalized)) {
+      issues.push(
+        `${field} differs from runtime context universe (digest=${value}, expected one of ${allowed.join(",")})`,
+      )
+    }
+  }
+  return issues
 }
 
 async function csvEvidenceIssues(manifest: DataExtractorManifest, dataRoot: string): Promise<string[]> {
@@ -647,10 +743,9 @@ async function csvEvidenceIssues(manifest: DataExtractorManifest, dataRoot: stri
 }
 
 function canonicalArtifacts(manifestFile: string, manifest: DataExtractorManifest, dataRoot: string): string[] {
-  const paths = [
-    manifest.output_path,
-    path.relative(dataRoot, manifestFile).replaceAll(path.sep, "/"),
-  ].filter((value): value is string => Boolean(value))
+  const paths = [manifest.output_path, path.relative(dataRoot, manifestFile).replaceAll(path.sep, "/")].filter(
+    (value): value is string => Boolean(value),
+  )
   return paths.filter((value, index) => paths.indexOf(value) === index)
 }
 
@@ -665,10 +760,7 @@ function normalizeHypotheses(value: unknown): string | undefined {
   return parts.length > 0 ? parts.join(" | ") : undefined
 }
 
-function renderManifestBlock(
-  manifest: DataExtractorManifest,
-  digest: Record<string, string | undefined>,
-): string {
+function renderManifestBlock(manifest: DataExtractorManifest, digest: Record<string, string | undefined>): string {
   const values: Array<[string, string | number | undefined]> = [
     ["requested_algorithm_name", digest.requested_algorithm_name],
     ["workspace_slug", digest.workspace_slug],
@@ -838,6 +930,7 @@ export async function validateExistingDataExtractorEvidence(input: {
   context?: WorkspaceRequestContext
 }): Promise<ExistingDataExtractorEvidenceResult> {
   if (!input.workspaceSlug) return { found: false }
+  if (input.context?.requested_symbols && input.context.requested_symbols.length > 1) return { found: false }
 
   const workspaceSlug = input.workspaceSlug
   const dataRoot = path.join(algoDir(workspaceSlug), "data")
@@ -884,6 +977,25 @@ export async function validateExistingDataExtractorEvidence(input: {
     found: true,
     result: await validateLoadedEvidence({ manifest, artifacts, preamble, context: input.context }),
   }
+}
+
+export async function requireVerifiedDataExtractorEvidenceForSession(
+  sessionID: string,
+): Promise<RequireVerifiedEvidenceResult> {
+  const workspaceSlug = await getSessionWorkspace(sessionID)
+  if (!workspaceSlug) return evidenceRequiredBlock("no session workspace is bound")
+
+  const context = await readWorkspaceRequestContext(workspaceSlug)
+  const existing = await validateExistingDataExtractorEvidence({ workspaceSlug, context })
+  if (existing.found && existing.result?.ok) {
+    return { ...existing.result, workspaceSlug }
+  }
+
+  if (existing.found && existing.result) {
+    return evidenceRequiredBlock(existing.result.text, workspaceSlug)
+  }
+
+  return evidenceRequiredBlock("no matching data_extractor manifest found in the session workspace", workspaceSlug)
 }
 
 export function strictQualityLabelsPresent(text: string): boolean {

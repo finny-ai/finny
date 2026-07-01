@@ -19,6 +19,7 @@ export type AssetClass = "crypto" | "equity"
 /** Immutable facts parsed from the user's build prompt. */
 export interface RequestFacts {
   requested_symbol?: string
+  requested_symbols?: string[]
   requested_interval?: string
   requested_asset_class?: AssetClass
   requested_algorithm_name?: string
@@ -119,9 +120,7 @@ const NON_TRADEABLE_ACRONYMS = new Set(["CPI", "FED", "FOMC", "GDP", "ISM", "NFP
 function recognizeToken(token: string): { sym: string; asset: AssetClass } | undefined {
   const upper = token.trim().toUpperCase()
   if (!upper) return undefined
-  const hit = SUPPORTED_SYMBOLS.find(
-    (s) => s.name === upper || s.yfinance === upper || s.canonical === upper,
-  )
+  const hit = SUPPORTED_SYMBOLS.find((s) => s.name === upper || s.yfinance === upper || s.canonical === upper)
   if (hit) return { sym: normalizeSymbol(hit.name)!, asset: kindToAssetClass(hit.kind) }
   const pair = PAIR_RE.exec(upper)
   if (pair) return { sym: normalizeSymbol(pair[1])!, asset: "crypto" }
@@ -168,6 +167,15 @@ function normalizeAssetClass(input?: string): AssetClass | undefined {
   if (s === "crypto" || s === "cryptocurrency") return "crypto"
   if (s === "equity" || s === "equities" || s === "stock" || s === "stocks" || s === "etf") return "equity"
   return undefined
+}
+
+function normalizedRequestedSymbols(facts: RequestFacts): string[] {
+  const symbols = facts.requested_symbols?.length
+    ? facts.requested_symbols
+    : facts.requested_symbol
+      ? [facts.requested_symbol]
+      : []
+  return symbols.map((symbol) => normalizeSymbol(symbol)).filter((symbol): symbol is string => Boolean(symbol))
 }
 
 // ── Prompt fact parsing ─────────────────────────────────────────────────────
@@ -320,6 +328,74 @@ function bareIntervalFromPrompt(prompt: string): string | undefined {
   return undefined
 }
 
+const EXPLICIT_TICKER_RE = /^[A-Z][A-Z0-9.]{0,5}$/
+const TICKER_STOPWORDS = new Set([
+  "API",
+  "COUNTS",
+  "CPI",
+  "CSV",
+  "DD",
+  "ETF",
+  "ETFS",
+  "FED",
+  "FOMC",
+  "FX",
+  "GDP",
+  "ISM",
+  "JSON",
+  "NFP",
+  "NO",
+  "OHLCV",
+  "PCE",
+  "PCT",
+  "SEC",
+  "THE",
+  "URL",
+  "USD",
+  "YES",
+])
+
+function cleanTickerToken(token: string): string | undefined {
+  const stripped = token
+    .trim()
+    .replace(/^["'`\[]+|["'`\].:;!?]+$/g, "")
+  if (/[a-z]/.test(stripped)) return undefined
+  const cleaned = stripped.toUpperCase()
+  if (!EXPLICIT_TICKER_RE.test(cleaned)) return undefined
+  if (TICKER_STOPWORDS.has(cleaned)) return undefined
+  return cleaned
+}
+
+function parseTickerList(raw: string): string[] {
+  const parts = raw
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .split(/\s*,\s*/)
+    .map(cleanTickerToken)
+    .filter((symbol): symbol is string => Boolean(symbol))
+  return parts.filter((symbol, index) => parts.indexOf(symbol) === index)
+}
+
+function parseExplicitUniverse(prompt: string): string[] | undefined {
+  const keyed =
+    /\b(?:symbols?|tickers?|universe|basket|portfolio|stocks?)\b\s*(?:is|are|=|:|of|for|including|include|linked)?\s*(\[[^\]\n]+\]|\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(
+      prompt,
+    )
+  const rawList = keyed?.[1] ?? /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(prompt)?.[1]
+  if (rawList) {
+    const list = parseTickerList(rawList)
+    if (list.length > 0) return list
+  }
+
+  const single =
+    /\b(?:symbol|ticker|stock)\b\s*(?:is|=|:)?\s*([A-Z][A-Z0-9.]{0,5})\b/.exec(prompt)?.[1] ??
+    (/(\bbuild\b|\bstrategy\b|\bbacktest\b|\bportfolio\b|\bstock\b|\bequity\b|\b\d+\s*[mhd]\b)/i.test(prompt)
+      ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,5})\b/g), (match) => cleanTickerToken(match[1]!)).find(Boolean)
+      : undefined)
+  const cleaned = single ? cleanTickerToken(single) : undefined
+  return cleaned ? [cleaned] : undefined
+}
+
 /**
  * Extract the immutable request facts from a free-form user prompt. Only facts
  * the user actually stated are returned — missing fields stay undefined rather
@@ -329,10 +405,26 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   const facts: RequestFacts = {}
   if (!prompt) return facts
 
-  const symbol = explicitSymbolFromPrompt(prompt) ?? looseSymbolFromPrompt(prompt)
-  if (symbol) {
-    facts.requested_symbol = symbol.sym
-    facts.requested_asset_class = symbol.asset
+  const explicitUniverse = parseExplicitUniverse(prompt)
+  if (explicitUniverse && explicitUniverse.length > 1) {
+    facts.requested_symbols = explicitUniverse
+  }
+
+  if (!facts.requested_symbol && !facts.requested_symbols?.length) {
+    const fallbackSymbol = explicitUniverse?.length === 1 ? explicitUniverse[0] : undefined
+    const symbol =
+      explicitSymbolFromPrompt(prompt) ??
+      (fallbackSymbol
+        ? {
+            sym: normalizeSymbol(fallbackSymbol)!,
+            asset: assetClassForSymbol(fallbackSymbol) ?? "equity",
+          }
+        : undefined) ??
+      looseSymbolFromPrompt(prompt)
+    if (symbol) {
+      facts.requested_symbol = symbol.sym
+      facts.requested_asset_class = symbol.asset
+    }
   }
 
   const im = INTERVAL_RE.exec(prompt)
@@ -345,6 +437,10 @@ export function parseRequestFacts(prompt: string): RequestFacts {
     const am = /\b(crypto|cryptocurrency|equity|equities|stock|stocks|etf)\b/i.exec(prompt)
     if (am) facts.requested_asset_class = normalizeAssetClass(am[1])
   }
+  if (!facts.requested_asset_class && facts.requested_symbol) {
+    facts.requested_asset_class = assetClassForSymbol(facts.requested_symbol)
+  }
+  if (!facts.requested_asset_class && facts.requested_symbols?.length) facts.requested_asset_class = "equity"
 
   return facts
 }
@@ -360,8 +456,9 @@ export function parseRequestFacts(prompt: string): RequestFacts {
 function algoNameConflict(facts: RequestFacts, algoName?: string): boolean {
   if (!algoName) return false
   const reqSym = normalizeSymbol(facts.requested_symbol)
+  const reqSyms = normalizedRequestedSymbols(facts)
   const reqAsset = facts.requested_asset_class
-  if (!reqSym && !reqAsset) return false
+  if (reqSyms.length === 0 && !reqSym && !reqAsset) return false
 
   for (const raw of algoName.split(/[-_\s.]+/)) {
     const token = raw.trim()
@@ -370,7 +467,8 @@ function algoNameConflict(facts: RequestFacts, algoName?: string): boolean {
     const recognized = recognizeToken(token)
     if (!recognized) continue // not a recognizable symbol token
     if (reqAsset && recognized.asset !== reqAsset) return true
-    if (reqSym && recognized.sym !== reqSym) return true
+    if (reqSyms.length > 0 && !reqSyms.includes(recognized.sym)) return true
+    if (reqSyms.length === 0 && reqSym && recognized.sym !== reqSym) return true
   }
   return false
 }
@@ -395,9 +493,10 @@ function describeReference(identity: ArtifactIdentity): string {
 }
 
 function describeRequest(facts: RequestFacts): string {
-  const sym = normalizeSymbol(facts.requested_symbol) ?? "?"
+  const symbols = normalizedRequestedSymbols(facts)
+  const sym = symbols.length > 0 ? symbols.join(",") : (normalizeSymbol(facts.requested_symbol) ?? "?")
   const iv = displayInterval(facts.requested_interval) ?? "?"
-  const asset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol) ?? "?"
+  const asset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? symbols[0]) ?? "?"
   return `${sym} ${iv} ${asset}`
 }
 
@@ -433,15 +532,18 @@ export function verifyIdentity(facts: RequestFacts, identity: ArtifactIdentity):
   }
 
   const reqSym = normalizeSymbol(facts.requested_symbol)
+  const reqSyms = normalizedRequestedSymbols(facts)
   const reqInterval = facts.requested_interval && normalizeInterval(facts.requested_interval)
-  const reqAsset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol)
+  const reqAsset = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? reqSyms[0])
 
   const actSym = normalizeSymbol(identity.actual_symbol)
   const actInterval = normalizeInterval(identity.actual_interval)
-  const actAsset =
-    normalizeAssetClass(identity.actual_asset_class) ?? assetClassForSymbol(identity.actual_symbol)
+  const actAsset = normalizeAssetClass(identity.actual_asset_class) ?? assetClassForSymbol(identity.actual_symbol)
 
-  if (reqSym && actSym && reqSym !== actSym) {
+  if (reqSyms.length > 0 && actSym && !reqSyms.includes(actSym)) {
+    return { ok: false, status: "blocked", blocked: blockedMessage(facts, identity), reason: "symbol mismatch" }
+  }
+  if (reqSyms.length === 0 && reqSym && actSym && reqSym !== actSym) {
     return { ok: false, status: "blocked", blocked: blockedMessage(facts, identity), reason: "symbol mismatch" }
   }
   if (reqInterval && actInterval && reqInterval !== actInterval) {

@@ -47,6 +47,7 @@ export interface DateWindow {
 
 export interface WorkspaceRequestContext {
   requested_symbol?: string
+  requested_symbols?: string[]
   requested_interval?: string
   requested_asset_class?: string
   requested_algorithm_name?: string
@@ -116,8 +117,10 @@ export function workspaceRequestContext(
   const window = inferBacktestWindow(prompt)
   return {
     requested_symbol: facts.requested_symbol,
+    requested_symbols: facts.requested_symbols,
     requested_interval: facts.requested_interval,
-    requested_asset_class: facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol),
+    requested_asset_class:
+      facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? facts.requested_symbols?.[0]),
     requested_algorithm_name: facts.requested_algorithm_name,
     requested_start: window.start,
     requested_end: window.end,
@@ -125,9 +128,7 @@ export function workspaceRequestContext(
   }
 }
 
-function missionAssetClass(
-  assetClass: string | undefined,
-): MissionFrontmatter["scope"]["asset_class"] | undefined {
+function missionAssetClass(assetClass: string | undefined): MissionFrontmatter["scope"]["asset_class"] | undefined {
   if (assetClass === "equity") return "equities"
   if (assetClass === "crypto") return "crypto"
   return undefined
@@ -154,6 +155,7 @@ function renderContextBody(context: WorkspaceRequestContext) {
     "## Data Request Context",
     "",
     `- requested_symbol: ${context.requested_symbol ?? "MISSING"}`,
+    `- requested_symbols: ${context.requested_symbols?.join(", ") ?? "MISSING"}`,
     `- requested_interval: ${context.requested_interval ?? "MISSING"}`,
     `- requested_asset_class: ${context.requested_asset_class ?? "MISSING"}`,
     `- requested_start: ${context.requested_start ?? "MISSING"}`,
@@ -172,6 +174,9 @@ async function readExistingRequestContext(dir: string): Promise<Partial<Workspac
     const parsed = JSON.parse(raw)
     return {
       requested_symbol: typeof parsed.requested_symbol === "string" ? parsed.requested_symbol : undefined,
+      requested_symbols: Array.isArray(parsed.requested_symbols)
+        ? parsed.requested_symbols.filter((value: unknown): value is string => typeof value === "string")
+        : undefined,
       requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
       requested_asset_class:
         typeof parsed.requested_asset_class === "string" ? parsed.requested_asset_class : undefined,
@@ -197,10 +202,13 @@ async function updatePlaceholderMission(dir: string, context: WorkspaceRequestCo
 
   const assetClass = missionAssetClass(context.requested_asset_class)
   if (assetClass) mission.frontmatter.scope.asset_class = assetClass
-  if (context.requested_symbol) mission.frontmatter.scope.universe = [context.requested_symbol]
+  if (context.requested_symbols?.length) mission.frontmatter.scope.universe = context.requested_symbols
+  else if (context.requested_symbol) mission.frontmatter.scope.universe = [context.requested_symbol]
   mission.frontmatter.scope.horizon = missionHorizon(context.requested_interval)
 
-  const label = [context.requested_symbol, context.requested_interval].filter(Boolean).join(" ")
+  const label = [context.requested_symbols?.join(","), context.requested_symbol, context.requested_interval]
+    .filter(Boolean)
+    .join(" ")
   mission.frontmatter.hypothesis = label
     ? `Pending strategy for ${label}; workspace initialized from request context.`
     : "Pending strategy; workspace initialized from request context."
@@ -216,19 +224,36 @@ export async function syncWorkspaceRequestContext(input: {
   slug: string
   prompt: string
   facts?: RequestFacts
+  preserveExisting?: boolean
 }): Promise<WorkspaceRequestContext> {
   const ensured = await ensureAlgoWorkspace(input.slug)
   const dir = ensured.dir
   const next = workspaceRequestContext(input.sessionID, input.prompt, input.facts)
   const existing = await readExistingRequestContext(dir)
+  const requestedSymbols = input.preserveExisting
+    ? (existing.requested_symbols ?? next.requested_symbols)
+    : (next.requested_symbols ?? existing.requested_symbols)
   const context = {
-    requested_symbol: next.requested_symbol ?? existing.requested_symbol,
-    requested_interval: next.requested_interval ?? existing.requested_interval,
-    requested_asset_class: next.requested_asset_class ?? existing.requested_asset_class,
+    requested_symbol: requestedSymbols?.length
+      ? undefined
+      : input.preserveExisting
+        ? (existing.requested_symbol ?? next.requested_symbol)
+        : (next.requested_symbol ?? existing.requested_symbol),
+    requested_symbols: requestedSymbols,
+    requested_interval: input.preserveExisting
+      ? (existing.requested_interval ?? next.requested_interval)
+      : (next.requested_interval ?? existing.requested_interval),
+    requested_asset_class: input.preserveExisting
+      ? (existing.requested_asset_class ?? next.requested_asset_class)
+      : (next.requested_asset_class ?? existing.requested_asset_class),
     requested_algorithm_name:
       next.requested_algorithm_name ?? existing.requested_algorithm_name ?? algorithmNameFromWorkspaceSlug(input.slug),
-    requested_start: next.requested_start ?? existing.requested_start,
-    requested_end: next.requested_end ?? existing.requested_end,
+    requested_start: input.preserveExisting
+      ? (existing.requested_start ?? next.requested_start)
+      : (next.requested_start ?? existing.requested_start),
+    requested_end: input.preserveExisting
+      ? (existing.requested_end ?? next.requested_end)
+      : (next.requested_end ?? existing.requested_end),
     request_id: input.sessionID,
   }
 
