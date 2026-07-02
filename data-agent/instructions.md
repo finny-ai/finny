@@ -120,14 +120,16 @@ When both are set:
    - row count is greater than zero
    - `actual_start` / `actual_end` are computed from saved rows
    - for full-window parent requests, coverage is not materially short of
-     `requested_start` / `requested_end` (weekend/holiday endpoint gaps may be
-     `trading_day_complete`)
+     `requested_start` / `requested_end` (weekend/holiday endpoint gaps and a
+     missing current-day open candle are `trading_day_complete`, not failures)
    - no material quality blockers (`duplicates`, `invalid_ohlc`, large session
      gaps) that make the window unusable
 3. If Alpaca fails (missing creds, HTTP/auth error, empty window, partial
    coverage for a full-window request, or failed verification), **record the
    Alpaca attempt and fall back to Polygon when `POLYGON_API_KEY` is available,
-   otherwise yfinance**.
+   otherwise yfinance**. A window short only by the current day's still-open
+   bar is `trading_day_complete`, not partial coverage — accept the Alpaca
+   result instead of falling back.
 4. If Polygon fails because the free plan does not cover the requested interval,
    date range, or entitlement, record the Polygon attempt and fall back to yfinance
    only when yfinance can provide usable coverage.
@@ -227,6 +229,15 @@ If `actual_end` is before `requested_end` only because the requested end falls o
 a weekend/market holiday and the saved rows include the last trading day before
 that date, set `coverage` to `"trading_day_complete"` and `usable_for_parent` to
 `"yes"` with the non-trading-day caveat.
+The same rule applies when `requested_end` is the current date and that day's bar
+is not yet complete. Providers (Alpaca, Polygon, yfinance/Yahoo) publish a daily
+bar only after the session closes, so a `1d` request ending today can never
+include today's row while the session is open or before it starts. If the saved
+rows reach the last completed trading day before `requested_end`, set `coverage`
+to `"trading_day_complete"` and `usable_for_parent` to `"yes"` with an
+open-candle caveat in `coverage_note`. Do not mark this `"partial"` /
+`usable_for_parent: no`, and do not spend fallback attempts on other providers
+hunting for the current day's bar — no source has it until the session closes.
 
 Do not store command text, credential names, or secret values in manifests.
 

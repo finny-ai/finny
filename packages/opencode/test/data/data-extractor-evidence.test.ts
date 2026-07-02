@@ -98,6 +98,277 @@ describe("validateDataExtractorTaskText", () => {
     }
   })
 
+  test("session build gate accepts manifest whose requested_end was clamped to the last completed session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-clamped-end-"))
+    const slug = "qqq-15m-strategy"
+    const sessionID = "ses_clamped_end"
+    process.env.XDG_DATA_HOME = root
+    const workspaceDir = path.join(root, "finny", "algos", slug)
+    const dataDir = path.join(workspaceDir, "data", "stock")
+    await fs.mkdir(dataDir, { recursive: true })
+    // The parent's request context asks through "today" (2026-07-02); the
+    // extractor correctly clamped to the last completed session (2026-07-01).
+    await fs.writeFile(
+      path.join(workspaceDir, "request.json"),
+      JSON.stringify({
+        requested_symbol: "QQQ",
+        requested_interval: "15m",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-02",
+        request_id: sessionID,
+      }),
+    )
+    const csvRel = "stock/QQQ_15m_2026-04-03_2026-07-01.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    await fs.writeFile(
+      path.join(workspaceDir, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2026-07-01T19:45:00Z,560.00,561.00,559.50,560.80,100000",
+        "2026-07-01T20:00:00Z,560.80,561.20,560.10,560.30,90000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(workspaceDir, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["QQQ"],
+        interval: "15m",
+        requested_symbol: "QQQ",
+        actual_symbol: "QQQ",
+        requested_interval: "15m",
+        actual_interval: "15m",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        workspace_slug: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-01",
+        actual_start: "2026-07-01T19:45:00Z",
+        actual_end: "2026-07-01T20:00:00Z",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "clamped-end-run",
+        coverage: "trading_day_complete",
+        coverage_note: "requested_end session still open; clamped to last completed session",
+        usable_for_parent: "yes",
+      }),
+    )
+    await bindSessionWorkspace(sessionID, slug)
+    try {
+      const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
+      expect(result.ok).toBe(true)
+      expect(result.text).toContain("usable_for_parent: yes")
+    } finally {
+      await clearSessionWorkspace(sessionID)
+    }
+  })
+
+  test("session build gate finds evidence relocated to the linked algorithm store after save", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-relocated-"))
+    const slug = "qqq-15m-linked"
+    const sessionID = "ses_relocated_evidence"
+    process.env.XDG_DATA_HOME = root
+    const workspaceDir = path.join(root, "finny", "algos", slug)
+    // Workspace data tree is empty: finny_algorithm_save moved it into the
+    // algorithm store and left a symlink under <workspace>/algorithms/<name>.
+    await fs.mkdir(path.join(workspaceDir, "data", "stock"), { recursive: true })
+    const storeDir = path.join(root, "finny", "algorithms", "algo-id-1")
+    await fs.mkdir(path.join(storeDir, "data", "stock"), { recursive: true })
+    await fs.mkdir(path.join(workspaceDir, "algorithms"), { recursive: true })
+    await fs.symlink(storeDir, path.join(workspaceDir, "algorithms", "qqq-15m-e2e"))
+    await fs.writeFile(
+      path.join(workspaceDir, "request.json"),
+      JSON.stringify({
+        requested_symbol: "QQQ",
+        requested_interval: "15m",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-02",
+        request_id: sessionID,
+      }),
+    )
+    const csvRel = "stock/QQQ_15m_2026-04-03_2026-07-01.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    await fs.writeFile(
+      path.join(storeDir, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2026-07-01T19:45:00Z,560.00,561.00,559.50,560.80,100000",
+        "2026-07-01T20:00:00Z,560.80,561.20,560.10,560.30,90000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(storeDir, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["QQQ"],
+        interval: "15m",
+        requested_symbol: "QQQ",
+        actual_symbol: "QQQ",
+        requested_interval: "15m",
+        actual_interval: "15m",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        workspace_slug: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-01",
+        actual_start: "2026-07-01T19:45:00Z",
+        actual_end: "2026-07-01T20:00:00Z",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "relocated-run",
+        coverage: "trading_day_complete",
+        usable_for_parent: "yes",
+      }),
+    )
+    await bindSessionWorkspace(sessionID, slug)
+    try {
+      const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
+      expect(result.ok).toBe(true)
+      expect(result.text).toContain("usable_for_parent: yes")
+    } finally {
+      await clearSessionWorkspace(sessionID)
+    }
+  })
+
+  test("session build gate blocks manifests whose window ends after the requested end", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-future-end-"))
+    const slug = "qqq-15m-future"
+    const sessionID = "ses_future_end"
+    process.env.XDG_DATA_HOME = root
+    const workspaceDir = path.join(root, "finny", "algos", slug)
+    await fs.mkdir(path.join(workspaceDir, "data", "stock"), { recursive: true })
+    await fs.writeFile(
+      path.join(workspaceDir, "request.json"),
+      JSON.stringify({
+        requested_symbol: "QQQ",
+        requested_interval: "15m",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-02",
+        request_id: sessionID,
+      }),
+    )
+    const csvRel = "stock/QQQ_15m_2026-04-03_2026-07-06.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    await fs.writeFile(
+      path.join(workspaceDir, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2026-07-06T19:45:00Z,560.00,561.00,559.50,560.80,100000",
+        "2026-07-06T20:00:00Z,560.80,561.20,560.10,560.30,90000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(workspaceDir, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["QQQ"],
+        interval: "15m",
+        requested_symbol: "QQQ",
+        actual_symbol: "QQQ",
+        requested_interval: "15m",
+        actual_interval: "15m",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        workspace_slug: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-06",
+        actual_start: "2026-07-06T19:45:00Z",
+        actual_end: "2026-07-06T20:00:00Z",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "future-end-run",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+    await bindSessionWorkspace(sessionID, slug)
+    try {
+      const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
+      expect(result.ok).toBe(false)
+      expect(result.text).toContain("BLOCKED: evidence required before strategy build")
+    } finally {
+      await clearSessionWorkspace(sessionID)
+    }
+  })
+
+  test("session build gate still blocks manifests from a materially different window", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-far-end-"))
+    const slug = "qqq-15m-stale"
+    const sessionID = "ses_far_end"
+    process.env.XDG_DATA_HOME = root
+    const workspaceDir = path.join(root, "finny", "algos", slug)
+    const dataDir = path.join(workspaceDir, "data", "stock")
+    await fs.mkdir(dataDir, { recursive: true })
+    await fs.writeFile(
+      path.join(workspaceDir, "request.json"),
+      JSON.stringify({
+        requested_symbol: "QQQ",
+        requested_interval: "15m",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2026-04-03",
+        requested_end: "2026-07-02",
+        request_id: sessionID,
+      }),
+    )
+    const csvRel = "stock/QQQ_15m_2026-01-05_2026-03-31.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    await fs.writeFile(
+      path.join(workspaceDir, "data", csvRel),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2026-03-31T19:45:00Z,520.00,521.00,519.50,520.80,100000",
+        "2026-03-31T20:00:00Z,520.80,521.20,520.10,520.30,90000",
+      ].join("\n"),
+    )
+    await fs.writeFile(
+      path.join(workspaceDir, "data", manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "alpaca",
+        symbols: ["QQQ"],
+        interval: "15m",
+        requested_symbol: "QQQ",
+        actual_symbol: "QQQ",
+        requested_interval: "15m",
+        actual_interval: "15m",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        workspace_slug: slug,
+        requested_start: "2026-01-05",
+        requested_end: "2026-03-31",
+        actual_start: "2026-03-31T19:45:00Z",
+        actual_end: "2026-03-31T20:00:00Z",
+        output_path: csvRel,
+        rows: 2,
+        run_id: "stale-window-run",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+    await bindSessionWorkspace(sessionID, slug)
+    try {
+      const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
+      expect(result.ok).toBe(false)
+      expect(result.text).toContain("BLOCKED: evidence required before strategy build")
+    } finally {
+      await clearSessionWorkspace(sessionID)
+    }
+  })
+
   test("blocks incomplete digest without manifest evidence", async () => {
     const result = await validateDataExtractorTaskText({
       text: "saved SPY data under stock/SPY.csv",

@@ -427,11 +427,31 @@ function normalizeAssetClass(value?: string): string | undefined {
   return s
 }
 
-function valuesMatch(a?: string, b?: string, kind?: "symbol" | "interval" | "asset"): boolean {
+type MatchKind = "symbol" | "interval" | "asset" | "date"
+
+// Requested boundary dates legitimately drift a few calendar days between the
+// request context and the manifest, but only inward: a window ending "today"
+// is clamped to the last completed session, and boundaries landing on weekends
+// or market holidays shift to the nearest trading day. The evidence-side date
+// must never be later than the request-side date — a later start is missing
+// data and a later end is lookahead exposure. Symbol/interval/asset/name stay
+// strict; the CSV coverage checks still validate the actual data window.
+const REQUESTED_DATE_TOLERANCE_DAYS = 5
+
+function requestedDatesMatch(evidenceValue: string, requestValue: string): boolean {
+  const evidenceDay = isoDate(evidenceValue)
+  const requestDay = isoDate(requestValue)
+  if (!evidenceDay || !requestDay) return evidenceValue.trim().toLowerCase() === requestValue.trim().toLowerCase()
+  const diff = Date.parse(`${requestDay}T00:00:00Z`) - Date.parse(`${evidenceDay}T00:00:00Z`)
+  return diff >= 0 && diff <= REQUESTED_DATE_TOLERANCE_DAYS * 24 * 60 * 60 * 1000
+}
+
+function valuesMatch(a?: string, b?: string, kind?: MatchKind): boolean {
   if (!a || !b) return true
   if (kind === "symbol") return normalizeSymbol(a) === normalizeSymbol(b)
   if (kind === "interval") return normalizeInterval(a) === normalizeInterval(b)
   if (kind === "asset") return normalizeAssetClass(a) === normalizeAssetClass(b)
+  if (kind === "date") return requestedDatesMatch(a, b)
   return a.trim().toLowerCase() === b.trim().toLowerCase()
 }
 
@@ -487,7 +507,7 @@ function manifestDigestMismatches(
   manifest: DataExtractorManifest,
   digest: Record<string, string | undefined>,
 ): string[] {
-  const pairs: Array<[keyof DataExtractorManifest, string | undefined, "symbol" | "interval" | "asset" | undefined]> = [
+  const pairs: Array<[keyof DataExtractorManifest, string | undefined, MatchKind | undefined]> = [
     ["requested_symbol", digest.requested_symbol, "symbol"],
     ["actual_symbol", digest.actual_symbol, "symbol"],
     ["requested_interval", digest.requested_interval, "interval"],
@@ -495,8 +515,8 @@ function manifestDigestMismatches(
     ["requested_asset_class", digest.requested_asset_class, "asset"],
     ["actual_asset_class", digest.actual_asset_class, "asset"],
     ["requested_algorithm_name", digest.requested_algorithm_name, undefined],
-    ["requested_start", digest.requested_start, undefined],
-    ["requested_end", digest.requested_end, undefined],
+    ["requested_start", digest.requested_start, "date"],
+    ["requested_end", digest.requested_end, "date"],
     ["actual_start", digest.actual_start, undefined],
     ["actual_end", digest.actual_end, undefined],
     ["run_id", digest.run_id, undefined],
@@ -686,8 +706,13 @@ function digestContextIssues(digest: Record<string, string | undefined>, context
       "requested_asset_class differs from runtime context",
       "asset",
     ),
-    contextMismatch(digest.requested_start, context?.requested_start, "requested_start differs from runtime context"),
-    contextMismatch(digest.requested_end, context?.requested_end, "requested_end differs from runtime context"),
+    contextMismatch(
+      digest.requested_start,
+      context?.requested_start,
+      "requested_start differs from runtime context",
+      "date",
+    ),
+    contextMismatch(digest.requested_end, context?.requested_end, "requested_end differs from runtime context", "date"),
   ].filter((issue): issue is string => Boolean(issue))
 }
 
@@ -695,7 +720,7 @@ function contextMismatch(
   digestValue: string | undefined,
   contextValue: string | undefined,
   issue: string,
-  kind?: "symbol" | "interval" | "asset",
+  kind?: MatchKind,
 ): string | undefined {
   return contextValue && digestValue && !valuesMatch(digestValue, contextValue, kind) ? issue : undefined
 }
@@ -928,12 +953,13 @@ export async function validateDataExtractorTaskText(
 export async function validateExistingDataExtractorEvidence(input: {
   workspaceSlug: string | null
   context?: WorkspaceRequestContext
+  dataRoot?: string
 }): Promise<ExistingDataExtractorEvidenceResult> {
   if (!input.workspaceSlug) return { found: false }
   if (input.context?.requested_symbols && input.context.requested_symbols.length > 1) return { found: false }
 
   const workspaceSlug = input.workspaceSlug
-  const dataRoot = path.join(algoDir(workspaceSlug), "data")
+  const dataRoot = input.dataRoot ?? path.join(algoDir(workspaceSlug), "data")
   const baseDigest = digestFieldsFromContext(input.context, workspaceSlug)
   // Require the manifest's actual_* identity to satisfy the request's
   // requested_* identity. Without this, a stale or mislabeled manifest (e.g.
@@ -979,6 +1005,20 @@ export async function validateExistingDataExtractorEvidence(input: {
   }
 }
 
+// finny_algorithm_save consolidates the workspace data tree into the saved
+// algorithm store and leaves a symlink at <workspace>/algorithms/<name>.
+// Evidence verified for the save must keep satisfying later session gates
+// (backtest, validate), so those linked stores are searched as fallback roots.
+async function linkedAlgorithmDataRoots(workspaceSlug: string): Promise<string[]> {
+  const linksDir = path.join(algoDir(workspaceSlug), "algorithms")
+  try {
+    const entries = await fs.readdir(linksDir)
+    return entries.map((name) => path.join(linksDir, name, "data"))
+  } catch {
+    return []
+  }
+}
+
 export async function requireVerifiedDataExtractorEvidenceForSession(
   sessionID: string,
 ): Promise<RequireVerifiedEvidenceResult> {
@@ -986,15 +1026,17 @@ export async function requireVerifiedDataExtractorEvidenceForSession(
   if (!workspaceSlug) return evidenceRequiredBlock("no session workspace is bound")
 
   const context = await readWorkspaceRequestContext(workspaceSlug)
-  const existing = await validateExistingDataExtractorEvidence({ workspaceSlug, context })
-  if (existing.found && existing.result?.ok) {
-    return { ...existing.result, workspaceSlug }
+  const roots: Array<string | undefined> = [undefined, ...(await linkedAlgorithmDataRoots(workspaceSlug))]
+  let blockedText: string | undefined
+  for (const dataRoot of roots) {
+    const existing = await validateExistingDataExtractorEvidence({ workspaceSlug, context, dataRoot })
+    if (existing.found && existing.result?.ok) {
+      return { ...existing.result, workspaceSlug }
+    }
+    if (existing.found && existing.result) blockedText ??= existing.result.text
   }
 
-  if (existing.found && existing.result) {
-    return evidenceRequiredBlock(existing.result.text, workspaceSlug)
-  }
-
+  if (blockedText) return evidenceRequiredBlock(blockedText, workspaceSlug)
   return evidenceRequiredBlock("no matching data_extractor manifest found in the session workspace", workspaceSlug)
 }
 
