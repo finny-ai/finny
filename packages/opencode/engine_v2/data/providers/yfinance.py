@@ -9,6 +9,7 @@ from typing import Dict
 import pandas as pd
 
 from ...assets import to_yfinance_symbol
+from .base import fetch_end_bound_utc
 
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
@@ -38,8 +39,10 @@ class YFinanceProvider:
 
         yf_interval = _INTERVAL_MAP.get(interval, interval)
         yf_symbol = _normalize_yf(symbol)
+        # yfinance's `end` is exclusive, so the exclusive bound maps directly.
+        yf_end = fetch_end_bound_utc(end).to_pydatetime()
         try:
-            df = yf.Ticker(yf_symbol).history(start=start, end=end, interval=yf_interval, auto_adjust=True)
+            df = yf.Ticker(yf_symbol).history(start=start, end=yf_end, interval=yf_interval, auto_adjust=True)
         except Exception as e:
             msg = str(e).lower()
             if "404" in msg or "delisted" in msg or "not found" in msg:

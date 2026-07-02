@@ -15,6 +15,8 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 
+from .base import fetch_end_bound_utc
+
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
 _TIMEFRAME_MAP: Dict[str, str] = {
@@ -92,6 +94,11 @@ class AlpacaProvider:
             raise RuntimeError("alpaca provider currently supports equities and options only")
         request_sym = option_sym or sym
 
+        # Alpaca's `end` filter is inclusive of the instant; back off a
+        # microsecond from the exclusive bound so a date-only end covers its
+        # full calendar day without touching the next one.
+        api_end = fetch_end_bound_utc(end) - pd.Timedelta(microseconds=1)
+
         rows: List[dict] = []
         page_token: Optional[str] = None
         session = requests.Session()
@@ -101,7 +108,7 @@ class AlpacaProvider:
                     "symbols": request_sym,
                     "timeframe": timeframe,
                     "start": pd.Timestamp(start, tz="UTC").isoformat(),
-                    "end": pd.Timestamp(end, tz="UTC").isoformat(),
+                    "end": api_end.isoformat(),
                     "limit": 10000,
                 }
                 if is_option:

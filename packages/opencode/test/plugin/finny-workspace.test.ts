@@ -184,6 +184,29 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     expect(second!.rebound).toBe(false)
   })
 
+  test("identity-less follow-ups (unblock actions) reuse the session binding", async () => {
+    const first = await bootstrapWorkspace("ses_rerun", SPY_PROMPT)
+
+    for (const prompt of [
+      "Re-run with end date 2026-07-01.",
+      "try again with 2026-06-30 as the end date",
+      "use the other provider and go again",
+    ]) {
+      const followup = await bootstrapWorkspace("ses_rerun", prompt)
+      expect(followup!.slug).toBe(first!.slug)
+      expect(followup!.created).toBe(false)
+      expect(followup!.rebound).toBe(false)
+    }
+    expect(await getSessionWorkspace("ses_rerun")).toBe(first!.slug)
+  })
+
+  test("identity-less prompts without retry intent still provision their own workspace", async () => {
+    const first = await bootstrapWorkspace("ses_concept_after", SPY_PROMPT)
+    const second = await bootstrapWorkspace("ses_concept_after", "what is a sharpe ratio and why does it matter?")
+    expect(second!.slug).not.toBe(first!.slug)
+    expect(second!.rebound).toBe(true)
+  })
+
   test("generic strategy follow-ups stay in the existing strategy workspace", async () => {
     const first = await bootstrapWorkspace("ses_strategy_followup", SPY_PROMPT)
 

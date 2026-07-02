@@ -247,3 +247,36 @@ def test_cache_concurrent_writes_no_corruption(tmp_path):
                     pd.Timestamp("2024-01-02", tz="UTC"),
                     lambda s, e: pd.DataFrame())
     assert len(df) > 0
+
+
+def test_fetch_end_bound_covers_full_end_day():
+    from engine_v2.data.providers.base import fetch_end_bound_utc
+
+    bound = fetch_end_bound_utc("2024-03-15")
+    # Date-only end is inclusive of the whole calendar day: the exclusive
+    # bound is midnight of the following day, so a daily bar stamped at
+    # 04:00 UTC on the end date is inside the window.
+    assert bound == pd.Timestamp("2024-03-16", tz="UTC")
+    assert pd.Timestamp("2024-03-15 04:00", tz="UTC") < bound
+
+
+def test_fetch_end_bound_keeps_explicit_timestamps():
+    from engine_v2.data.providers.base import fetch_end_bound_utc
+
+    bound = fetch_end_bound_utc("2024-03-15T12:30:00Z")
+    assert bound == pd.Timestamp("2024-03-15 12:30", tz="UTC")
+
+    # An explicit intraday timestamp on the current day refers to already
+    # completed bars — it must not be capped to today's midnight.
+    same_day = pd.Timestamp.now(tz="UTC").floor("min") - pd.Timedelta(hours=1)
+    assert fetch_end_bound_utc(same_day.isoformat()) == same_day
+
+
+def test_fetch_end_bound_caps_at_current_utc_midnight():
+    from engine_v2.data.providers.base import fetch_end_bound_utc
+
+    today = pd.Timestamp.now(tz="UTC").normalize()
+    # A window ending today (or later) must not include the still-forming
+    # current-day bar in a strict run.
+    assert fetch_end_bound_utc(str(today.date())) == today
+    assert fetch_end_bound_utc(str((today + pd.Timedelta(days=30)).date())) == today

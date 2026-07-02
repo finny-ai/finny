@@ -8,6 +8,8 @@ from typing import Dict, List
 
 import pandas as pd
 
+from .base import fetch_end_bound_utc
+
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
 _INTERVAL_MAP: Dict[str, str] = {
@@ -72,7 +74,10 @@ class BinanceProvider:
         bi_symbol = _to_binance_symbol(symbol)
 
         start_ms = int(pd.Timestamp(start, tz="UTC").timestamp() * 1000)
-        end_ms = int(pd.Timestamp(end, tz="UTC").timestamp() * 1000)
+        # klines endTime is inclusive of a bar's open time; back off 1ms from
+        # the exclusive bound so a date-only end covers its full calendar day
+        # without picking up the next day's opening kline.
+        end_ms = int(fetch_end_bound_utc(end).timestamp() * 1000) - 1
 
         all_klines: List[list] = []
         cursor = start_ms
