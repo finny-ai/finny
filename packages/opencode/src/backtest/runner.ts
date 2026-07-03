@@ -289,6 +289,8 @@ try:
     from engine_v2.data.providers.binance import BinanceProvider
     from engine_v2.data.providers.synthetic_options import SyntheticOptionsProvider
     from engine_v2.data.providers.yfinance import YFinanceProvider
+    from engine_v2.data.quality import completed_window_exclusive_end
+    import pandas as pd
 except Exception as e:
     print(f"__FINNY_FETCH_ERROR__: python_env: provider import failed: {e}", file=sys.stderr)
     sys.exit(2)
@@ -298,6 +300,14 @@ asset_class = ${JSON.stringify(assetClass)}
 start = ${JSON.stringify(start)}
 end = ${JSON.stringify(end)}
 interval = ${JSON.stringify(interval)}
+
+# Providers treat "end" as a timestamp bound, so the bare end DATE would drop
+# the end day's own bars (midnight = start of day) and strict mode would then
+# block on the missing final session. Fetch through end-of-day instead, capped
+# at the last completed session/bar so in-progress bars stay out. The 1-second
+# shave keeps providers with inclusive end bounds from returning the bar that
+# opens exactly at the boundary.
+fetch_end = (completed_window_exclusive_end(end, interval, asset_class) - pd.Timedelta(seconds=1)).isoformat()
 
 if asset_class == "equity":
     providers = [AlpacaProvider(), YFinanceProvider()]
@@ -316,7 +326,7 @@ for provider in providers:
         if not provider.supports_interval(interval):
             errors.append(f"{provider.name}: unsupported interval {interval}")
             continue
-        candidate = provider.fetch(symbol, start, end, interval)
+        candidate = provider.fetch(symbol, start, fetch_end, interval)
         if candidate is not None and not candidate.empty:
             df = candidate
             provider_used = provider.name

@@ -133,7 +133,7 @@ function cleanSymbolToken(token: string): string {
 
 function recognizeExplicitSymbol(
   token: string,
-  opts: { allowUnknown: boolean; requireUppercaseForUnknown?: boolean },
+  opts: { allowUnknown: boolean; requireUppercaseForUnknown?: boolean; rejectAmbiguousUnknown?: boolean },
 ): { sym: string; asset: AssetClass } | undefined {
   const cleaned = cleanSymbolToken(token)
   if (!cleaned) return undefined
@@ -145,6 +145,7 @@ function recognizeExplicitSymbol(
   if (opts.requireUppercaseForUnknown && cleaned !== cleaned.toUpperCase()) return undefined
   const upper = cleaned.toUpperCase()
   if (!TICKERISH_RE.test(upper) || NON_TRADEABLE_ACRONYMS.has(upper)) return undefined
+  if (opts.rejectAmbiguousUnknown && AMBIGUOUS_TICKER_TOKENS.has(upper)) return undefined
 
   const resolved = resolveSymbol(upper)
   if (!resolved) return undefined
@@ -196,6 +197,7 @@ const EXPLICIT_SYMBOL_RES: Array<{
   score: number
   allowUnknown: boolean
   requireUppercaseForUnknown?: boolean
+  rejectAmbiguousUnknown?: boolean
   capture?: number
 }> = [
   {
@@ -227,6 +229,10 @@ const EXPLICIT_SYMBOL_RES: Array<{
     score: 90,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
+    // Verb-adjacent prose is the least reliable signal, so indicator/broker
+    // acronyms ("build ... for IBKR", "backtest RSI mean-reversion") are
+    // rejected here while keyword-anchored patterns above still accept them.
+    rejectAmbiguousUnknown: true,
   },
 ]
 
@@ -266,6 +272,7 @@ function explicitSymbolFromPrompt(prompt: string): { sym: string; asset: AssetCl
       const symbol = recognizeExplicitSymbol(raw, {
         allowUnknown: pattern.allowUnknown,
         requireUppercaseForUnknown: pattern.requireUppercaseForUnknown,
+        rejectAmbiguousUnknown: pattern.rejectAmbiguousUnknown,
       })
       if (!symbol) continue
       const index = match.index ?? 0
@@ -329,6 +336,39 @@ function bareIntervalFromPrompt(prompt: string): string | undefined {
 }
 
 const EXPLICIT_TICKER_RE = /^[A-Z][A-Z0-9.]{0,5}$/
+/**
+ * Acronyms that are far more likely to be indicators, brokers, or order jargon
+ * than traded tickers when they appear in unlabeled prose ("for IBKR, RSI
+ * mean-reversion", "set TP, SL"). They stay valid in keyword-anchored forms
+ * ("symbols: IBKR, RSI" or "ticker: RSI"), where the user is explicit.
+ */
+const AMBIGUOUS_TICKER_TOKENS = new Set([
+  "ADX",
+  "ATR",
+  "BB",
+  "CCI",
+  "DCA",
+  "DEMA",
+  "DMI",
+  "EMA",
+  "IB",
+  "IBKR",
+  "MACD",
+  "MFI",
+  "OBV",
+  "PSAR",
+  "ROC",
+  "RSI",
+  "SAR",
+  "SL",
+  "SMA",
+  "STOCH",
+  "TEMA",
+  "TP",
+  "TWAP",
+  "VWAP",
+  "WMA",
+])
 const TICKER_STOPWORDS = new Set([
   "API",
   "COUNTS",
@@ -376,24 +416,34 @@ function parseTickerList(raw: string): string[] {
   return parts.filter((symbol, index) => parts.indexOf(symbol) === index)
 }
 
-function parseExplicitUniverse(prompt: string): string[] | undefined {
+function parseExplicitUniverse(prompt: string): { list: string[]; keyed: boolean } | undefined {
   const keyed =
     /\b(?:symbols?|tickers?|universe|basket|portfolio|stocks?)\b\s*(?:is|are|=|:|of|for|including|include|linked)?\s*(\[[^\]\n]+\]|\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(
       prompt,
     )
-  const rawList = keyed?.[1] ?? /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(prompt)?.[1]
-  if (rawList) {
-    const list = parseTickerList(rawList)
-    if (list.length > 0) return list
+  if (keyed?.[1]) {
+    const list = parseTickerList(keyed[1])
+    if (list.length > 0) return { list, keyed: true }
+  }
+
+  // Unlabeled comma lists in prose are weak evidence: "for IBKR, RSI
+  // mean-reversion" names a broker and an indicator, not a universe. Only
+  // tokens that survive the ambiguity filter count here.
+  const bare = /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(prompt)?.[1]
+  if (bare) {
+    const list = parseTickerList(bare).filter((symbol) => !AMBIGUOUS_TICKER_TOKENS.has(symbol))
+    if (list.length > 0) return { list, keyed: false }
   }
 
   const single =
     /\b(?:symbol|ticker|stock)\b\s*(?:is|=|:)?\s*([A-Z][A-Z0-9.]{0,5})\b/.exec(prompt)?.[1] ??
     (/(\bbuild\b|\bstrategy\b|\bbacktest\b|\bportfolio\b|\bstock\b|\bequity\b|\b\d+\s*[mhd]\b)/i.test(prompt)
-      ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,5})\b/g), (match) => cleanTickerToken(match[1]!)).find(Boolean)
+      ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,5})\b/g), (match) => cleanTickerToken(match[1]!)).find(
+          (token) => Boolean(token) && !AMBIGUOUS_TICKER_TOKENS.has(token!),
+        )
       : undefined)
   const cleaned = single ? cleanTickerToken(single) : undefined
-  return cleaned ? [cleaned] : undefined
+  return cleaned ? { list: [cleaned], keyed: false } : undefined
 }
 
 /**
@@ -405,15 +455,22 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   const facts: RequestFacts = {}
   if (!prompt) return facts
 
-  const explicitUniverse = parseExplicitUniverse(prompt)
-  if (explicitUniverse && explicitUniverse.length > 1) {
-    facts.requested_symbols = explicitUniverse
+  const universe = parseExplicitUniverse(prompt)
+  const explicitSymbol = explicitSymbolFromPrompt(prompt)
+  const universeList = universe?.list ?? []
+  // An unkeyed comma list is weak evidence; it only stands as the universe
+  // when nothing explicit contradicts it. "for IBKR, RSI mean-reversion ...
+  // requested_symbol=SPY" must resolve to SPY, while "trade AAPL, MSFT daily"
+  // keeps its list because the explicit symbol is part of it.
+  const explicitInUniverse = explicitSymbol ? universeList.map((s) => normalizeSymbol(s)).includes(explicitSymbol.sym) : false
+  if (universeList.length > 1 && (universe!.keyed || !explicitSymbol || explicitInUniverse)) {
+    facts.requested_symbols = universeList
   }
 
   if (!facts.requested_symbol && !facts.requested_symbols?.length) {
-    const fallbackSymbol = explicitUniverse?.length === 1 ? explicitUniverse[0] : undefined
+    const fallbackSymbol = universeList.length === 1 ? universeList[0] : undefined
     const symbol =
-      explicitSymbolFromPrompt(prompt) ??
+      explicitSymbol ??
       (fallbackSymbol
         ? {
             sym: normalizeSymbol(fallbackSymbol)!,

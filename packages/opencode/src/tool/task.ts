@@ -377,6 +377,7 @@ function withFinnySubagentContext(
       "- cookbook_path: data-agent/instructions.md",
       "- provider_skill_policy: after selecting a provider, load the matching provider skill before the first provider fetch when available.",
       "- provider_skill_map: binance=finny-provider-binance; polygon/massive=finny-provider-polygon; yfinance/yahoo=finny-provider-yfinance.",
+      "- end_date_semantics: the end date is INCLUSIVE; its bars are part of the window. Provider end/endTime params are timestamp bounds, so pass end date + 1 day as the fetch bound (e.g. end 2026-07-02 -> end=2026-07-03T00:00:00Z for Alpaca/yfinance/Binance; Polygon /range/ is date-inclusive, pass as-is). Passing the bare end date drops the final session and falsely reads as partial coverage.",
       dataWindow.adjusted
         ? "- window_adjustment: intraday rolling window capped at the last fully completed UTC date; do not require future bars from the current UTC day."
         : undefined,

@@ -169,6 +169,37 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_symbol).toBeUndefined()
     expect(facts.requested_asset_class).toBe("equity")
   })
+
+  test("does not parse broker and indicator prose as the ticker universe", () => {
+    const facts = parseRequestFacts(
+      "Build a new SPY 15-minute equity strategy for IBKR, RSI mean-reversion, long-only. Immutable identity: requested_symbol=SPY, requested_interval=15min, requested_asset_class=equity/equities, requested_algorithm_name=NONE_NEW_REQUEST, requested_start=2026-04-02, requested_end=2026-07-02, capital=10000.",
+    )
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_symbols).toBeUndefined()
+    expect(facts.requested_interval).toBe("15m")
+    expect(facts.requested_asset_class).toBe("equity")
+  })
+
+  test("resolves the traded symbol when broker and indicator lead the sentence", () => {
+    const facts = parseRequestFacts("Build an IBKR, RSI mean-reversion strategy on SPY 15min bars, long-only.")
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_symbols).toBeUndefined()
+  })
+
+  test("keeps keyword-anchored universes even when they contain ambiguous acronyms", () => {
+    const facts = parseRequestFacts("backtest the basket symbols: IBKR, RSI on 1d bars")
+    expect(facts.requested_symbols).toEqual(["IBKR", "RSI"])
+  })
+
+  test("keeps unkeyed universes when the explicit symbol is part of the list", () => {
+    const facts = parseRequestFacts("Trade AAPL, MSFT daily with equal weight")
+    expect(facts.requested_symbols).toEqual(["AAPL", "MSFT"])
+  })
+
+  test("still accepts ambiguous acronyms as tickers in keyed single-symbol form", () => {
+    const facts = parseRequestFacts("Build a 1d strategy. ticker: RSI (Rush Street Interactive)")
+    expect(facts.requested_symbol).toBe("RSI")
+  })
 })
 
 describe("verifyIdentity", () => {

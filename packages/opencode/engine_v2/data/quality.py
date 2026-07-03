@@ -9,6 +9,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 import pandas as pd
 
+from ..options.calendar import is_trading_day
+
 
 @dataclass
 class OutlierDetail:
@@ -109,8 +111,7 @@ def _intraday_outlier_floor(step: pd.Timedelta, asset_group: str) -> float:
 
 
 def _exchange_session_bounds(day: pd.Timestamp, asset_class: str) -> Tuple[pd.Timestamp, pd.Timestamp] | None:
-    weekday = day.weekday()
-    if weekday >= 5:
+    if not is_trading_day(day.date()):
         return None
     if asset_class == "future":
         session_start = day
@@ -153,11 +154,11 @@ def _exchange_expected_count(ts: pd.Series, interval: str, asset_class: str) -> 
 
 
 def _effective_trading_start(start: pd.Timestamp, asset_class: str) -> date:
-    """First weekday on or after start for exchange-traded assets."""
+    """First trading day on or after start for exchange-traded assets."""
     if asset_class not in {"equity", "future", "option"}:
         return start.date()
     cursor = start.date()
-    while cursor.weekday() >= 5:
+    while not is_trading_day(cursor):
         cursor += timedelta(days=1)
     return cursor
 
@@ -177,19 +178,92 @@ def _start_window_reason(
     return None
 
 
+def _session_close_utc(day: date, asset_class: str) -> pd.Timestamp:
+    if asset_class == "future":
+        return pd.Timestamp(day.year, day.month, day.day, 23, 0, tz="UTC")
+    close = pd.Timestamp(day.year, day.month, day.day, 16, 0, tz="America/New_York")
+    return close.tz_convert("UTC")
+
+
+def _last_completed_session_day(now: pd.Timestamp, asset_class: str) -> date:
+    """Most recent exchange day whose session has already closed at `now`."""
+    tz = "UTC" if asset_class == "future" else "America/New_York"
+    cursor = now.tz_convert(tz).date()
+    for _ in range(10):
+        if is_trading_day(cursor) and now >= _session_close_utc(cursor, asset_class):
+            return cursor
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _effective_trading_end(end: pd.Timestamp, asset_class: str, now: pd.Timestamp) -> date:
+    """Last trading day on or before end whose session has closed at `now`.
+
+    Mirror of _effective_trading_start: strict mode must not demand a bar for
+    a weekend, a market holiday, a future date, or a session that has not
+    finished trading yet (e.g. a daily backtest requested intraday with end
+    date = today).
+    """
+    if asset_class not in {"equity", "future", "option"}:
+        return end.date()
+    cursor = min(end.date(), _last_completed_session_day(now, asset_class))
+    while not is_trading_day(cursor):
+        cursor -= timedelta(days=1)
+    return cursor
+
+
+def _completed_bar_exclusive_end(now: pd.Timestamp, step: pd.Timedelta) -> pd.Timestamp:
+    """Exclusive upper bound of bar timestamps that can be complete at `now`."""
+    return now.floor(step if step < pd.Timedelta(days=1) else "D")
+
+
+def completed_window_exclusive_end(
+    requested_end: str,
+    interval: str,
+    asset_class: str,
+    now: pd.Timestamp | None = None,
+) -> pd.Timestamp:
+    """Exclusive fetch upper bound for a requested end DATE (YYYY-MM-DD).
+
+    Providers treat their `end` argument as a timestamp bound, so passing the
+    end date verbatim silently drops the end date's own bars (midnight is the
+    START of that day). This returns end-of-day instead, capped so bars from
+    sessions/periods still in progress at `now` stay out. Derived from the same
+    session logic as the strict end-window gate, so a fetch bounded by this
+    value always satisfies the gate.
+    """
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    end = pd.to_datetime(requested_end, utc=True) + pd.Timedelta(days=1)
+    if asset_class in {"equity", "future", "option"}:
+        last_day = _last_completed_session_day(now, asset_class)
+        cap = pd.Timestamp(last_day.year, last_day.month, last_day.day, tz="UTC") + pd.Timedelta(days=1)
+        return min(end, cap)
+    return min(end, _completed_bar_exclusive_end(now, expected_step(interval)))
+
+
 def _end_window_reason(
     last: pd.Timestamp,
     requested_end: str,
     step: pd.Timedelta,
     asset_class: str,
+    now: pd.Timestamp | None = None,
 ) -> str | None:
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     end = pd.to_datetime(requested_end, utc=True) + pd.Timedelta(days=1)
     if asset_class in {"equity", "future", "option"}:
-        if last.date() < (end - pd.Timedelta(days=1)).date():
-            return f"last bar {last} is before requested end {requested_end}"
+        effective_end = _effective_trading_end(end - pd.Timedelta(days=1), asset_class, now)
+        if last.date() < effective_end:
+            return (
+                f"last bar {last} is before requested end {requested_end}"
+                f" (last completable session {effective_end})"
+            )
         return None
-    if last < end - step * 1.5:
-        return f"last bar {last} is before requested end {requested_end}"
+    effective_exclusive = min(end, _completed_bar_exclusive_end(now, step))
+    if last < effective_exclusive - step * 1.5:
+        return (
+            f"last bar {last} is before requested end {requested_end}"
+            f" (completed-bar cutoff {effective_exclusive})"
+        )
     return None
 
 
@@ -368,10 +442,11 @@ def _maybe_end_window_reason(
     requested_end: str | None,
     step: pd.Timedelta,
     asset_class: str,
+    now: pd.Timestamp | None = None,
 ) -> str | None:
     if not requested_end:
         return None
-    return _end_window_reason(last, requested_end, step, asset_class)
+    return _end_window_reason(last, requested_end, step, asset_class, now)
 
 
 def requested_window_reasons(
@@ -380,6 +455,7 @@ def requested_window_reasons(
     asset_class: str,
     requested_start: str | None,
     requested_end: str | None,
+    now: pd.Timestamp | None = None,
 ) -> List[str]:
     """Strict-mode guard against silently truncated provider windows."""
     if df.empty:
@@ -389,7 +465,7 @@ def requested_window_reasons(
     return [
         reason for reason in (
             _maybe_start_window_reason(ts.iloc[0], requested_start, step, asset_class),
-            _maybe_end_window_reason(ts.iloc[-1], requested_end, step, asset_class),
+            _maybe_end_window_reason(ts.iloc[-1], requested_end, step, asset_class, now),
         )
         if reason
     ]

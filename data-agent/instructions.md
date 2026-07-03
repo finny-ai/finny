@@ -225,6 +225,26 @@ normalization and deduplication. Use `requested_start`/`requested_end` for the
 requested window. If a source truncates history, set `coverage` to `"partial"`
 and include a concise `coverage_note`; do not label requested dates as actual
 coverage.
+
+## End-Date Fetch Bound (inclusive)
+
+`requested_end` is an INCLUSIVE calendar date: the end date's own bars are part
+of the requested window. Most provider `end`/`endTime` parameters are timestamp
+bounds, so passing the bare end date means midnight at the START of that day and
+silently drops the entire final session — the single most common cause of
+"partial" coverage that is actually a fetch bug. Rules:
+
+- Alpaca `end`, yfinance `end`, Binance `endTime`: pass `requested_end + 1 day`
+  (e.g. requested_end `2026-07-02` → `end=2026-07-03T00:00:00Z`). Never pass
+  `requested_end` + `T00:00:00Z` directly.
+- Polygon `/range/{start}/{end}` is date-inclusive; pass `requested_end` as-is.
+- After fetching, drop bars from periods still in progress: any bar whose
+  session/candle has not closed at fetch time (for US equities, bars from
+  today's session while `now` is before 16:00 ET; for crypto, the bar whose
+  open time equals the current interval bucket).
+- Before labeling coverage `"partial"` because `actual_end` is short of
+  `requested_end`, first check your fetch bound: if you passed the bare end
+  date, the missing final day is your own off-by-one, not the provider's.
 If `actual_end` is before `requested_end` only because the requested end falls on
 a weekend/market holiday and the saved rows include the last trading day before
 that date, set `coverage` to `"trading_day_complete"` and `usable_for_parent` to
@@ -479,7 +499,7 @@ Example: AAPL daily bars.
 
 ```bash
 "${FINNY_PYTHON_BIN:-python3}" -c 'import sys, pandas as pd, yfinance as yf
-df = yf.Ticker("AAPL").history(start="2024-01-01", end="2024-12-31", interval="1d").reset_index()
+df = yf.Ticker("AAPL").history(start="2024-01-01", end="2025-01-01", interval="1d").reset_index()  # end is exclusive: requested_end 2024-12-31 + 1 day
 df = df.rename(columns={"Date":"timestamp","Datetime":"timestamp","Open":"open","High":"high","Low":"low","Close":"close","Volume":"volume"})
 df[["timestamp","open","high","low","close","volume"]].to_csv(sys.stdout, index=False)' \
   > stock/AAPL_1d_2024-01-01_2024-12-31.csv
@@ -525,7 +545,8 @@ Example: BTC/USD daily bars.
 
 ```bash
 START_MS=$(python -c 'import datetime; print(int(datetime.datetime.fromisoformat("2024-01-01").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000))')
-END_MS=$(python -c 'import datetime; print(int(datetime.datetime.fromisoformat("2024-12-31").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000))')
+# endTime bound is requested_end 2024-12-31 + 1 day so the end date's own candle is included
+END_MS=$(python -c 'import datetime; print(int(datetime.datetime.fromisoformat("2025-01-01").replace(tzinfo=datetime.timezone.utc).timestamp() * 1000))')
 curl -fsS "${BINANCE_BASE_URL:-https://api.binance.com}/api/v3/klines?symbol=BTCUSDT&interval=1d&startTime=${START_MS}&endTime=${END_MS}&limit=1000" \
   | python -c 'import csv, json, sys
 rows = json.load(sys.stdin)
@@ -563,7 +584,7 @@ Example: AAPL daily stock bars.
 curl -fsS \
   -H "APCA-API-KEY-ID: ${ALPACA_API_KEY_ID}" \
   -H "APCA-API-SECRET-KEY: ${ALPACA_API_SECRET_KEY}" \
-  "https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL&timeframe=1Day&start=2024-01-01T00:00:00Z&end=2024-12-31T00:00:00Z&limit=10000&adjustment=raw&feed=${ALPACA_DATA_FEED:-iex}" \
+  "https://data.alpaca.markets/v2/stocks/bars?symbols=AAPL&timeframe=1Day&start=2024-01-01T00:00:00Z&end=2025-01-01T00:00:00Z&limit=10000&adjustment=raw&feed=${ALPACA_DATA_FEED:-iex}" \
   | python -c 'import csv, json, sys
 payload = json.load(sys.stdin)
 rows = (payload.get("bars") or {}).get("AAPL") or []
@@ -582,7 +603,7 @@ import csv, json, os, sys, urllib.parse, urllib.request
 symbol = "AAPL"
 timeframe = "5Min"
 start = "2026-03-16T00:00:00Z"
-end = "2026-06-16T00:00:00Z"
+end = "2026-06-17T00:00:00Z"  # requested_end 2026-06-16 + 1 day: bars ON the end date must be fetched
 out = "stock/AAPL_5m_2026-03-16_2026-06-16.csv"
 feed = os.environ.get("ALPACA_DATA_FEED", "iex")
 headers = {

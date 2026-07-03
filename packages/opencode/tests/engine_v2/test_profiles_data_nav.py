@@ -112,6 +112,174 @@ def test_requested_window_allows_weekend_start_for_equity():
     assert reasons == []
 
 
+def _equity_daily_rows(start: str, periods: int) -> pd.DataFrame:
+    ts = pd.date_range(start, periods=periods, freq="B", tz="UTC")
+    return pd.DataFrame({
+        "timestamp": ts,
+        "open": np.full(len(ts), 100.0),
+        "high": np.full(len(ts), 101.0),
+        "low": np.full(len(ts), 99.0),
+        "close": np.full(len(ts), 100.0),
+        "volume": np.full(len(ts), 1000.0),
+    })
+
+
+def _equity_end_reasons(requested_end: str, now: str, last_bar_day: str = "2024-01-08") -> list[str]:
+    periods = pd.bdate_range("2024-01-02", last_bar_day).size
+    return DQ.requested_window_reasons(
+        _equity_daily_rows("2024-01-02", periods),
+        "1d",
+        "equity",
+        requested_start="2024-01-02",
+        requested_end=requested_end,
+        now=pd.Timestamp(now, tz="UTC"),
+    )
+
+
+def test_requested_end_today_before_close_does_not_block_equity():
+    # Mon 2024-01-08 is the last completed bar; end requested for Tue 01-09
+    # while Tuesday's session is still open (15:00 UTC = 10:00 ET).
+    assert _equity_end_reasons("2024-01-09", now="2024-01-09 15:00") == []
+
+
+def test_requested_end_today_after_close_still_blocks_truncated_equity():
+    # Same window, but Tuesday's session has closed (22:00 UTC = 17:00 ET),
+    # so a missing Tuesday bar is a genuinely truncated provider window.
+    reasons = _equity_end_reasons("2024-01-09", now="2024-01-09 22:00")
+    assert len(reasons) == 1 and "before requested end" in reasons[0]
+
+
+def test_requested_end_on_weekend_does_not_block_equity():
+    # Fri 2024-01-05 is the last bar; requested end lands on Sat 01-06.
+    assert _equity_end_reasons("2024-01-06", now="2024-01-06 12:00", last_bar_day="2024-01-05") == []
+
+
+def test_requested_end_in_past_still_blocks_truncated_equity():
+    reasons = _equity_end_reasons("2024-01-12", now="2024-02-01 00:00")
+    assert len(reasons) == 1 and "before requested end" in reasons[0]
+
+
+def test_requested_end_on_july4_holiday_does_not_block_equity():
+    # Thu 2024-07-04 is a NYSE holiday; Wed 07-03 is the last real session.
+    assert _equity_end_reasons("2024-07-04", now="2024-07-05 00:00", last_bar_day="2024-07-03") == []
+
+
+def test_requested_end_on_good_friday_does_not_block_equity():
+    # Fri 2024-03-29 is Good Friday (NYSE closed, not a federal holiday).
+    assert _equity_end_reasons("2024-03-29", now="2024-03-30 12:00", last_bar_day="2024-03-28") == []
+
+
+def test_requested_end_rolls_back_over_weekend_and_holiday_chain():
+    # Fri 2025-07-04 is a NYSE holiday; requested end Sun 07-06 must roll
+    # back through the weekend and the holiday to Thu 07-03.
+    assert _equity_end_reasons("2025-07-06", now="2025-07-07 00:00", last_bar_day="2025-07-03") == []
+
+
+def test_truncated_before_holiday_still_blocks_equity():
+    # Last bar Tue 07-02 with end 07-04: Wed 07-03 was a full session that
+    # is genuinely missing, so strict mode must still block.
+    reasons = _equity_end_reasons("2024-07-04", now="2024-07-05 00:00", last_bar_day="2024-07-02")
+    assert len(reasons) == 1 and "before requested end" in reasons[0]
+
+
+def test_requested_start_on_holiday_does_not_block_equity():
+    # Mon 2024-01-01 (New Year's) start with the first bar on Tue 01-02.
+    reasons = DQ.requested_window_reasons(
+        _equity_intraday_rows("2024-01-02 14:30", 10),
+        "15min",
+        "equity",
+        requested_start="2024-01-01",
+        requested_end=None,
+    )
+    assert reasons == []
+
+
+def test_exchange_coverage_skips_market_holiday():
+    # Full 15min sessions on Jul 3 and Jul 5 2024 (13:30 UTC = 9:30 ET in
+    # DST); the Jul 4 holiday must contribute zero expected bars, so
+    # coverage stays complete instead of dropping to ~2/3.
+    df = pd.concat(
+        [
+            _equity_intraday_rows("2024-07-03 13:30", 26),
+            _equity_intraday_rows("2024-07-05 13:30", 26),
+        ],
+        ignore_index=True,
+    )
+    report = DQ.analyze(df, "15min", "equity", provider="test")
+    assert report.coverage_pct == 1.0
+    assert DQ.blocking_reasons(report, "equity") == []
+
+
+def _crypto_daily_rows(start: str, periods: int) -> pd.DataFrame:
+    ts = pd.date_range(start, periods=periods, freq="D", tz="UTC")
+    return pd.DataFrame({
+        "timestamp": ts,
+        "open": np.full(len(ts), 100.0),
+        "high": np.full(len(ts), 101.0),
+        "low": np.full(len(ts), 99.0),
+        "close": np.full(len(ts), 100.0),
+        "volume": np.full(len(ts), 1000.0),
+    })
+
+
+def _crypto_end_reasons(periods: int, requested_end: str, now: str) -> list[str]:
+    return DQ.requested_window_reasons(
+        _crypto_daily_rows("2024-01-01", periods),
+        "1d",
+        "crypto_spot",
+        requested_start="2024-01-01",
+        requested_end=requested_end,
+        now=pd.Timestamp(now, tz="UTC"),
+    )
+
+
+def test_requested_end_today_does_not_block_crypto_daily():
+    # Last completed daily bar is 2024-01-08 00:00 UTC; the 01-09 bar is
+    # still forming at mid-day, so requesting end=today must not block.
+    assert _crypto_end_reasons(8, "2024-01-09", now="2024-01-09 12:00") == []
+
+
+def test_truncated_crypto_daily_still_blocks():
+    reasons = _crypto_end_reasons(5, "2024-01-09", now="2024-01-09 12:00")
+    assert len(reasons) == 1 and "before requested end" in reasons[0]
+
+
+def _fetch_end(requested_end: str, interval: str, asset_class: str, now: str) -> str:
+    ts = DQ.completed_window_exclusive_end(requested_end, interval, asset_class, now=pd.Timestamp(now, tz="UTC"))
+    return ts.isoformat()
+
+
+def test_fetch_end_includes_the_end_days_bars_for_past_windows():
+    # The requested end DATE must be fetched through its end-of-day, not
+    # truncated at its midnight — otherwise every strict backtest is missing
+    # its final session and blocks.
+    assert _fetch_end("2024-01-10", "15m", "equity", now="2024-02-01 00:00") == "2024-01-11T00:00:00+00:00"
+
+
+def test_fetch_end_excludes_todays_open_equity_session():
+    # Tue 2024-01-09 15:00 UTC = 10:00 ET, session still open: cap at the end
+    # of Mon 01-08, matching what the strict gate will demand.
+    assert _fetch_end("2024-01-09", "15m", "equity", now="2024-01-09 15:00") == "2024-01-09T00:00:00+00:00"
+
+
+def test_fetch_end_includes_today_after_equity_close():
+    # 22:00 UTC = 17:00 ET, session closed: today's bars are completable.
+    assert _fetch_end("2024-01-09", "15m", "equity", now="2024-01-09 22:00") == "2024-01-10T00:00:00+00:00"
+
+
+def test_fetch_end_caps_at_last_session_over_weekend_and_holiday():
+    # End Sun 2025-07-06 with Fri 07-04 a NYSE holiday: fetch through Thu 07-03.
+    assert _fetch_end("2025-07-06", "1d", "equity", now="2025-07-07 00:00") == "2025-07-04T00:00:00+00:00"
+
+
+def test_fetch_end_excludes_in_progress_crypto_daily_bar():
+    assert _fetch_end("2024-01-09", "1d", "crypto_spot", now="2024-01-09 12:00") == "2024-01-09T00:00:00+00:00"
+
+
+def test_fetch_end_floors_to_last_completed_crypto_intraday_bar():
+    assert _fetch_end("2024-01-09", "15m", "crypto_spot", now="2024-01-09 12:07") == "2024-01-09T12:00:00+00:00"
+
+
 def test_terminal_liquidation_nav_cancels_pending_and_closes_positions():
     ba = _bars((100, 100, 100, 100, 1_000_000), (100, 100, 100, 100, 1_000_000))
     snap = MarketSnapshot({"X": ba})
