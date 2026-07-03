@@ -13,12 +13,13 @@ import importlib.util
 import inspect
 import json
 import os
-import select
 import subprocess
 import sys
+import threading
 import time
 from itertools import product
 from pathlib import Path
+from queue import Empty, Queue
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -299,6 +300,8 @@ class StrictStrategyWorker:
     RESPONSE_TIMEOUT_S = 2.0
     STARTUP_TIMEOUT_S = 10.0
     RESPONSE_MAX_BYTES = 1_000_000
+    STDOUT_CHUNK_BYTES = 65536
+    STDOUT_QUEUE_CHUNKS = max(1, RESPONSE_MAX_BYTES // STDOUT_CHUNK_BYTES)
     MAX_ORDERS_PER_BAR = 100
 
     def __init__(self, strategy_path: Path, params: Any):
@@ -324,22 +327,66 @@ class StrictStrategyWorker:
             env=env,
         )
         self._read_buffer = b""
+        self._stdout_chunks: Queue[Any] = Queue(maxsize=self.STDOUT_QUEUE_CHUNKS)
+        self._stderr_tail_bytes = bytearray()
+        self._stderr_lock = threading.Lock()
+        self._stdout_thread = self._start_stdout_reader()
+        self._stderr_thread = self._start_stderr_reader()
         ready = self._read(timeout_s=self.STARTUP_TIMEOUT_S)
         if ready.get("type") != "ready":
             self.close()
             raise SystemExit(f"Strategy worker failed: {ready.get('message', ready)}")
 
-    def _stderr_tail(self, max_bytes: int = 4000) -> str:
+    def _start_stdout_reader(self) -> Optional[threading.Thread]:
+        if self.proc.stdout is None:
+            self._stdout_chunks.put(b"")
+            return None
+
+        def read_stdout() -> None:
+            try:
+                fd = self.proc.stdout.fileno()
+                while True:
+                    chunk = os.read(fd, self.STDOUT_CHUNK_BYTES)
+                    # Keep this queue bounded so malformed strategies cannot
+                    # drain arbitrary stdout into parent-process memory. If the
+                    # parent falls behind, this blocks and restores pipe
+                    # backpressure until _read() enforces RESPONSE_MAX_BYTES.
+                    self._stdout_chunks.put(chunk)
+                    if not chunk:
+                        return
+            except Exception as e:
+                self._stdout_chunks.put(e)
+
+        thread = threading.Thread(target=read_stdout, name="strategy-worker-stdout", daemon=True)
+        thread.start()
+        return thread
+
+    def _start_stderr_reader(self) -> Optional[threading.Thread]:
         if self.proc.stderr is None:
-            return ""
-        try:
-            ready, _, _ = select.select([self.proc.stderr], [], [], 0)
-            if not ready:
-                return ""
-            data = os.read(self.proc.stderr.fileno(), max_bytes)
-            return data.decode("utf-8", errors="replace")[-max_bytes:]
-        except Exception:
-            return ""
+            return None
+
+        def read_stderr() -> None:
+            try:
+                fd = self.proc.stderr.fileno()
+                while True:
+                    chunk = os.read(fd, 65536)
+                    if not chunk:
+                        return
+                    with self._stderr_lock:
+                        self._stderr_tail_bytes.extend(chunk)
+                        if len(self._stderr_tail_bytes) > 4000:
+                            del self._stderr_tail_bytes[:-4000]
+            except Exception:
+                return
+
+        thread = threading.Thread(target=read_stderr, name="strategy-worker-stderr", daemon=True)
+        thread.start()
+        return thread
+
+    def _stderr_tail(self, max_bytes: int = 4000) -> str:
+        with self._stderr_lock:
+            data = bytes(self._stderr_tail_bytes[-max_bytes:])
+        return data.decode("utf-8", errors="replace")
 
     def _kill(self) -> None:
         if self.proc.poll() is None:
@@ -358,14 +405,18 @@ class StrictStrategyWorker:
                 self._kill()
                 tail = self._stderr_tail()
                 raise SystemExit(f"Strategy worker timed out after {timeout_s:.1f}s waiting for protocol response. {tail}".strip())
-            ready, _, _ = select.select([self.proc.stdout], [], [], remaining)
-            if not ready:
+            try:
+                chunk = self._stdout_chunks.get(timeout=remaining)
+            except Empty:
                 continue
-            chunk = os.read(self.proc.stdout.fileno(), min(65536, self.RESPONSE_MAX_BYTES + 1 - len(self._read_buffer)))
+            if isinstance(chunk, Exception):
+                tail = self._stderr_tail()
+                raise SystemExit(f"Strategy worker stdout read failed: {chunk}. {tail}".strip()) from chunk
             if not chunk:
                 tail = self._stderr_tail()
                 raise SystemExit(f"Strategy worker exited without protocol response. {tail}".strip())
-            self._read_buffer += chunk
+            remaining_bytes = self.RESPONSE_MAX_BYTES + 1 - len(self._read_buffer)
+            self._read_buffer += chunk[:remaining_bytes]
             if len(self._read_buffer) > self.RESPONSE_MAX_BYTES:
                 self._kill()
                 raise SystemExit(f"Strategy worker protocol response exceeded {self.RESPONSE_MAX_BYTES} bytes")
