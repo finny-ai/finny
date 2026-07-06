@@ -1,6 +1,6 @@
 import os from "node:os"
 import path from "node:path"
-import { createEffect, createMemo, createSignal, For, onMount, Show } from "solid-js"
+import { createEffect, createMemo, createResource, createSignal, For, onMount, Show } from "solid-js"
 import { TextAttributes } from "@opentui/core"
 import open from "open"
 import { BacktestRunner } from "@/backtest/runner"
@@ -21,6 +21,7 @@ import { DialogSelect } from "../ui/dialog-select"
 import { useToast } from "../ui/toast"
 import { Card } from "../component/card"
 import { AlgorithmCodeView } from "../component/algorithm-code-view"
+import { AlgorithmDocsView } from "../component/algorithm-docs-view"
 import { RouteHeader, ROUTE_ICONS } from "../component/route-header"
 import { DialogBacktestParams } from "../component/dialog-backtest-params"
 import { DialogBacktestRunning } from "../component/dialog-backtest-running"
@@ -359,6 +360,30 @@ export function Algorithms() {
     return items.find((a) => a.algorithmId === id) ?? items[0]
   })
 
+  // Resolve the on-disk folder for the selected algorithm so the docs pane can
+  // read mission.md and its companion artifacts. Returns undefined when the
+  // algorithm has no local folder (e.g. store-only entries).
+  const [selectedFolder] = createResource(
+    () => selected()?.algorithmId,
+    async () => {
+      const algo = selected()
+      if (!algo) return undefined
+      try {
+        const home = await sdk.client.config.finnyHome.get({}, { throwOnError: true })
+        const artifacts = home.data!.artifacts
+        const resolved = await resolveAlgorithmFolder({
+          algorithmId: algo.algorithmId,
+          name: algo.name,
+          algosRoot: artifacts.algos,
+          algorithmsRoot: artifacts.algorithms,
+        })
+        return resolved.found ? resolved.path : undefined
+      } catch {
+        return undefined
+      }
+    },
+  )
+
   return (
     <box flexGrow={1} flexDirection="column">
       <RouteHeader
@@ -518,7 +543,14 @@ export function Algorithms() {
                       </text>
                     </box>
                   </box>
-                  <AlgorithmCodeView algorithm={algo()} />
+                  <box flexDirection="row" gap={2} flexGrow={1} minHeight={0}>
+                    <box flexGrow={1} flexBasis={0} minHeight={0}>
+                      <AlgorithmCodeView algorithm={algo()} />
+                    </box>
+                    <box flexGrow={1} flexBasis={0} minHeight={0}>
+                      <AlgorithmDocsView folderPath={selectedFolder()} />
+                    </box>
+                  </box>
                 </box>
               )}
             </Show>
