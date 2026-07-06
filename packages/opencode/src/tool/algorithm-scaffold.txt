@@ -11,18 +11,21 @@ Generate a complete, validated trading strategy from a template. Returns product
 - **momentum** — RSI-based: buys oversold (<30), sells overbought (>70)
 - **mean-reversion** — Bollinger Bands: buys at lower band, sells at upper band
 - **breakout** — Donchian channel: buys at new highs, sells at new lows
-- **dca** — Dollar-cost averaging: buys at intervals, sells at profit target
 - **golden-cross** — SMA 50/200 crossover: buys golden cross, sells death cross
-- **scalping** — EMA with tight stops: quick entries and exits
 
 ### Advanced
 - **macd** — MACD signal-line crossover with histogram confirmation
-- **stochastic** — Stochastic %K/%D crossover, overbought/oversold with smoothing
 - **atr-breakout** — ATR volatility breakout, enters on range expansion, ATR-trailing stop
 - **vwap-reversion** — Volume-weighted mean reversion, buys below VWAP, sells above
 - **z-score** — Normalized distance from rolling mean, statistical entry/exit thresholds
 - **keltner** — Keltner channel (EMA ± ATR bands), volatility-adaptive breakout
 - **adx-trend** — ADX trend strength filter, only trades when trend is confirmed (ADX > 25)
+
+### Modern / mathematical
+- **supertrend** — ATR-band trend follower, flips long/flat on band cross
+- **ttm-squeeze** — Bollinger-inside-Keltner compression, fires on volatility release
+- **ou-reversion** — Ornstein-Uhlenbeck reversion with an AR(1) half-life regime filter
+- **tsmom-vol** — Time-series momentum sized to a fixed annual volatility target
 
 ### Skeleton
 - **custom** — Minimal skeleton: implement your own logic

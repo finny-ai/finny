@@ -1,22 +1,38 @@
 export namespace Templates {
-  export type TemplateType = "momentum" | "mean-reversion" | "breakout" | "dca" | "golden-cross" | "scalping" | "macd" | "stochastic" | "atr-breakout" | "vwap-reversion" | "z-score" | "keltner" | "adx-trend" | "custom"
-
-  export const TYPES: TemplateType[] = ["momentum", "mean-reversion", "breakout", "dca", "golden-cross", "scalping", "macd", "stochastic", "atr-breakout", "vwap-reversion", "z-score", "keltner", "adx-trend", "custom"]
+  export const TYPES = [
+    "momentum",
+    "mean-reversion",
+    "breakout",
+    "golden-cross",
+    "macd",
+    "atr-breakout",
+    "vwap-reversion",
+    "z-score",
+    "keltner",
+    "adx-trend",
+    "supertrend",
+    "ttm-squeeze",
+    "ou-reversion",
+    "tsmom-vol",
+    "custom",
+  ] as const
+  export type TemplateType = (typeof TYPES)[number]
 
   const DESCRIPTIONS: Record<TemplateType, string> = {
     "momentum": "RSI momentum strategy — buys oversold, sells overbought",
     "mean-reversion": "Bollinger Bands mean reversion — buys at lower band, sells at upper",
     "breakout": "Donchian channel breakout — buys new highs, sells new lows",
-    "dca": "Dollar-cost averaging — systematic buying with profit-target exit",
     "golden-cross": "SMA 50/200 crossover — buys golden cross, sells death cross",
-    "scalping": "EMA scalping with tight stops — quick entries and exits",
     "macd": "MACD signal-line crossover — trend-following with histogram confirmation",
-    "stochastic": "Stochastic %K/%D crossover — overbought/oversold with smoothing",
     "atr-breakout": "ATR volatility breakout — enters on range expansion, exits on contraction",
     "vwap-reversion": "VWAP mean reversion — buys below VWAP, sells above, session-anchored",
     "z-score": "Z-score mean reversion — normalized distance from rolling mean, statistical entry/exit",
     "keltner": "Keltner channel breakout — EMA ± ATR bands, volatility-adaptive",
     "adx-trend": "ADX-filtered trend — only trades when trend strength exceeds threshold",
+    "supertrend": "Supertrend — ATR-band trend follower, flips long/flat on band cross",
+    "ttm-squeeze": "TTM Squeeze — Bollinger-inside-Keltner compression, fires on volatility release",
+    "ou-reversion": "Ornstein-Uhlenbeck reversion — half-life-filtered statistical mean reversion",
+    "tsmom-vol": "Vol-targeted time-series momentum — trailing-return signal sized to a volatility target",
     "custom": "Minimal skeleton — implement your own logic",
   }
 
@@ -32,16 +48,10 @@ export namespace Templates {
         return MEAN_REVERSION
       case "breakout":
         return BREAKOUT
-      case "dca":
-        return DCA
       case "golden-cross":
         return GOLDEN_CROSS
-      case "scalping":
-        return SCALPING
       case "macd":
         return MACD
-      case "stochastic":
-        return STOCHASTIC
       case "atr-breakout":
         return ATR_BREAKOUT
       case "vwap-reversion":
@@ -52,6 +62,14 @@ export namespace Templates {
         return KELTNER
       case "adx-trend":
         return ADX_TREND
+      case "supertrend":
+        return SUPERTREND
+      case "ttm-squeeze":
+        return TTM_SQUEEZE
+      case "ou-reversion":
+        return OU_REVERSION
+      case "tsmom-vol":
+        return TSMOM_VOL
       case "custom":
         return CUSTOM
     }
@@ -258,44 +276,6 @@ class Strategy:
         self.lows.append(bar_low)
 `
 
-  const DCA = `\
-class Strategy:
-    def __init__(self, broker, params=None):
-        self.broker = broker
-        p = params or {}
-        self.buy_interval = int(p.get("buy_interval", 10))
-        self.profit_target = float(p.get("profit_target", 0.05))
-        self.dca_pct = float(p.get("dca_pct", 0.10))
-        self.tick_count = 0
-        self.buy_price_sum = 0.0
-        self.buy_count = 0
-
-    def on_bar(self, symbol, bar):
-        open_px = bar["open"]
-        self.tick_count += 1
-
-        pos = self.broker.position(symbol)
-        cash = self.broker.cash()
-
-        # Exit: avg buy price + profit target reached
-        if pos > 0 and self.buy_count > 0:
-            avg_price = self.buy_price_sum / self.buy_count
-            if avg_price > 0 and open_px >= avg_price * (1 + self.profit_target):
-                self.broker.sell(symbol, qty=pos)
-                self.buy_price_sum = 0.0
-                self.buy_count = 0
-                return
-
-        # Buy: every Nth bar, spend a slice of cash
-        if self.tick_count % self.buy_interval == 0 and open_px > 0:
-            spend = cash * self.dca_pct
-            qty = spend / open_px if open_px > 0 else 0.0
-            if qty > 0 and spend <= cash:
-                self.broker.buy(symbol, qty=qty)
-                self.buy_price_sum += open_px
-                self.buy_count += 1
-`
-
   const GOLDEN_CROSS = `\
 from collections import deque
 
@@ -347,69 +327,6 @@ class Strategy:
                 self.broker.sell(symbol, qty=pos)
 
         self.prev_fast_above = fast_above
-        self.prices.append(close_px)
-`
-
-  const SCALPING = `\
-from collections import deque
-
-class Strategy:
-    def __init__(self, broker, params=None):
-        self.broker = broker
-        p = params or {}
-        self.fast_period = int(p.get("fast_period", 8))
-        self.slow_period = int(p.get("slow_period", 21))
-        self.stop_loss_pct = float(p.get("stop_loss_pct", 0.015))
-        self.take_profit_pct = float(p.get("take_profit_pct", 0.01))
-        self.risk_pct = float(p.get("risk_pct", 0.01))
-        self.prices = deque(maxlen=self.slow_period * 2)
-        self.entry_px = 0.0
-
-    def _ema(self, data, period):
-        if len(data) < period:
-            return None
-        prices = list(data)
-        multiplier = 2 / (period + 1)
-        ema = sum(prices[:period]) / period
-        for x in prices[period:]:
-            ema = (x - ema) * multiplier + ema
-        return ema
-
-    def on_bar(self, symbol, bar):
-        open_px = bar["open"]
-        close_px = bar["prev_close"]
-        if close_px is None:
-            return
-
-        if len(self.prices) < self.slow_period:
-            self.prices.append(close_px)
-            return
-
-        pos = self.broker.position(symbol)
-
-        # Exit first: tight stop / take-profit measured at the open
-        if pos > 0 and self.entry_px > 0:
-            move = (open_px - self.entry_px) / self.entry_px if self.entry_px > 0 else 0.0
-            if move <= -self.stop_loss_pct or move >= self.take_profit_pct:
-                self.broker.sell(symbol, qty=pos)
-                self.entry_px = 0.0
-                self.prices.append(close_px)
-                return
-
-        # Entry: fast EMA above slow EMA, no position
-        fast_ema = self._ema(self.prices, self.fast_period)
-        slow_ema = self._ema(self.prices, self.slow_period)
-        if fast_ema is not None and slow_ema is not None and pos == 0 and fast_ema > slow_ema and open_px > 0:
-            equity = self.broker.equity()
-            cash = self.broker.cash()
-            stop_dist = open_px * self.stop_loss_pct
-            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = int(min(by_risk, by_cash))
-            if qty > 0:
-                self.broker.buy(symbol, qty=qty)
-                self.entry_px = open_px
-
         self.prices.append(close_px)
 `
 
@@ -553,89 +470,6 @@ class Strategy:
         slow_ema = self._ema(vals, self.slow_period)
         if fast_ema is not None and slow_ema is not None:
             self.macd_values.append(fast_ema - slow_ema)
-`
-
-  const STOCHASTIC = `\
-from collections import deque
-
-class Strategy:
-    """Stochastic %K/%D crossover — overbought/oversold with smoothing.
-
-    %K = (close - lowest_low) / (highest_high - lowest_low) * 100
-    %D = SMA(%K, d_period)
-    Entry: %K crosses above %D from oversold zone (< 20).
-    Exit: %K crosses below %D from overbought zone (> 80) OR stop loss.
-    """
-    def __init__(self, broker, params=None):
-        self.broker = broker
-        p = params or {}
-        self.k_period = int(p.get("k_period", 14))
-        self.d_period = int(p.get("d_period", 3))
-        self.oversold = float(p.get("oversold", 20.0))
-        self.overbought = float(p.get("overbought", 80.0))
-        self.risk_pct = float(p.get("risk_pct", 0.02))
-        self.stop_pct = float(p.get("stop_pct", 0.03))
-        self.highs = deque(maxlen=self.k_period)
-        self.lows = deque(maxlen=self.k_period)
-        self.k_values = deque(maxlen=self.d_period)
-        self.prev_k = None
-        self.prev_d = None
-        self.entry_px = 0.0
-
-    def on_bar(self, symbol, bar):
-        open_px = bar["open"]
-        prev_high = bar["prev_high"]
-        prev_low = bar["prev_low"]
-        prev_close = bar["prev_close"]
-        if prev_high is None or prev_low is None or prev_close is None:
-            return
-
-        if len(self.highs) < self.k_period or len(self.k_values) < self.d_period:
-            self.highs.append(prev_high)
-            self.lows.append(prev_low)
-            if len(self.highs) >= self.k_period:
-                highest = max(self.highs)
-                lowest = min(self.lows)
-                rng = highest - lowest
-                if rng >= 1e-10:
-                    self.k_values.append(((prev_close - lowest) / rng) * 100.0)
-            return
-
-        k = self.k_values[-1]
-        d = sum(self.k_values) / self.d_period
-
-        pos = self.broker.position(symbol)
-        equity = self.broker.equity()
-        cash = self.broker.cash()
-
-        if self.prev_k is not None and self.prev_d is not None:
-            # Bullish: %K crosses above %D from oversold
-            k_crossed_up = self.prev_k <= self.prev_d and k > d
-            if pos == 0 and k_crossed_up and k < 50 and open_px > 0:
-                stop_dist = open_px * self.stop_pct
-                by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
-                by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-                qty = int(min(by_risk, by_cash))
-                if qty > 0:
-                    self.broker.buy(symbol, qty=qty)
-                    self.entry_px = open_px
-            # Bearish: %K crosses below %D from overbought OR stop
-            elif pos > 0:
-                k_crossed_down = self.prev_k >= self.prev_d and k < d
-                stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
-                if (k_crossed_down and k > 50) or stop_hit:
-                    self.broker.sell(symbol, qty=pos)
-                    self.entry_px = 0.0
-
-        self.prev_k = k
-        self.prev_d = d
-        self.highs.append(prev_high)
-        self.lows.append(prev_low)
-        highest = max(self.highs)
-        lowest = min(self.lows)
-        rng = highest - lowest
-        if rng >= 1e-10:
-            self.k_values.append(((prev_close - lowest) / rng) * 100.0)
 `
 
   const ATR_BREAKOUT = `\
@@ -1034,5 +868,323 @@ class Strategy:
                 self.entry_px = 0.0
 
         self.prev_close = prev_close
+`
+
+  const SUPERTREND = `\
+from collections import deque
+
+class Strategy:
+    """Supertrend — ATR-band trend follower.
+
+    Builds an ATR band around the median price (hl2) of completed bars. When
+    price closes above the upper band the trend flips up (go long); when it
+    closes below the lower band the trend flips down (go flat). The bands
+    ratchet in the trend direction so they never loosen mid-trend. Long/flat
+    only — the broker contract has no shorting.
+    """
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 10))
+        self.mult = float(p.get("mult", 3.0))
+        self.risk_pct = float(p.get("risk_pct", 0.02))
+        self.trs = deque(maxlen=self.period)
+        self.prev_close_v = None
+        self.trend_up = True
+        self.final_upper = None
+        self.final_lower = None
+        self.entry_px = 0.0
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        ph = bar["prev_high"]
+        pl = bar["prev_low"]
+        pc = bar["prev_close"]
+        if ph is None or pl is None or pc is None:
+            return
+
+        # True range from completed bars only
+        if self.prev_close_v is not None:
+            tr = max(ph - pl, abs(ph - self.prev_close_v), abs(pl - self.prev_close_v))
+        else:
+            tr = ph - pl
+        self.trs.append(tr)
+        prev_settled_close = self.prev_close_v
+        self.prev_close_v = pc
+
+        if len(self.trs) < self.period:
+            return
+
+        atr = sum(self.trs) / len(self.trs)
+        hl2 = (ph + pl) / 2.0
+        basic_upper = hl2 + self.mult * atr
+        basic_lower = hl2 - self.mult * atr
+
+        # Ratchet the bands so they only tighten in the trend direction
+        if self.final_upper is None or prev_settled_close is None:
+            self.final_upper = basic_upper
+            self.final_lower = basic_lower
+        else:
+            if basic_upper < self.final_upper or prev_settled_close > self.final_upper:
+                self.final_upper = basic_upper
+            if basic_lower > self.final_lower or prev_settled_close < self.final_lower:
+                self.final_lower = basic_lower
+
+        # Flip the trend on a band break, using the last completed close
+        if pc > self.final_upper:
+            self.trend_up = True
+        elif pc < self.final_lower:
+            self.trend_up = False
+
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if pos == 0 and self.trend_up and open_px > 0:
+            stop_dist = self.mult * atr
+            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+            qty = int(min(by_risk, by_cash))
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_px = open_px
+        elif pos > 0 and not self.trend_up:
+            self.broker.sell(symbol, qty=pos)
+            self.entry_px = 0.0
+`
+
+  const TTM_SQUEEZE = `\
+from collections import deque
+import math
+
+class Strategy:
+    """TTM Squeeze — volatility-compression breakout.
+
+    The squeeze is ON when the Bollinger Bands sit fully inside the Keltner
+    Channels (volatility contracting, energy building). The trade fires when
+    the squeeze RELEASES (bands expand back outside the channels) in the
+    direction of momentum. Enters long on a release with positive momentum;
+    exits when momentum rolls over or the stop is hit. Long/flat only.
+    """
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 20))
+        self.bb_std = float(p.get("bb_std", 2.0))
+        self.kc_mult = float(p.get("kc_mult", 1.5))
+        self.risk_pct = float(p.get("risk_pct", 0.02))
+        self.stop_pct = float(p.get("stop_pct", 0.04))
+        self.closes = deque(maxlen=self.period)
+        self.trs = deque(maxlen=self.period)
+        self.prev_close_v = None
+        self.squeeze_on = False
+        self.entry_px = 0.0
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        ph = bar["prev_high"]
+        pl = bar["prev_low"]
+        pc = bar["prev_close"]
+        if ph is None or pl is None or pc is None:
+            return
+
+        if self.prev_close_v is not None:
+            tr = max(ph - pl, abs(ph - self.prev_close_v), abs(pl - self.prev_close_v))
+        else:
+            tr = ph - pl
+        self.closes.append(pc)
+        self.trs.append(tr)
+        self.prev_close_v = pc
+
+        if len(self.closes) < self.period:
+            return
+
+        n = len(self.closes)
+        mean = sum(self.closes) / n
+        var = sum((x - mean) ** 2 for x in self.closes) / n
+        std = math.sqrt(var)
+        atr = sum(self.trs) / len(self.trs)
+
+        bb_upper = mean + self.bb_std * std
+        bb_lower = mean - self.bb_std * std
+        kc_upper = mean + self.kc_mult * atr
+        kc_lower = mean - self.kc_mult * atr
+
+        was_squeezed = self.squeeze_on
+        self.squeeze_on = bb_lower > kc_lower and bb_upper < kc_upper
+        released = was_squeezed and not self.squeeze_on
+
+        # Momentum: last completed close relative to the window mean
+        momentum = pc - mean
+
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if pos == 0 and released and momentum > 0 and open_px > 0:
+            stop_dist = open_px * self.stop_pct
+            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+            qty = int(min(by_risk, by_cash))
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_px = open_px
+        elif pos > 0:
+            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+            if momentum < 0 or stop_hit:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
+`
+
+  const OU_REVERSION = `\
+from collections import deque
+import math
+
+class Strategy:
+    """Ornstein-Uhlenbeck mean reversion with a half-life regime filter.
+
+    Fits an AR(1) model to the price window to estimate the OU reversion speed
+    and its half-life, and trades only when the series is genuinely
+    mean-reverting (a finite, short half-life). Enters long when price's
+    z-score versus the window mean falls below -entry_z; exits as price reverts
+    back toward the mean (z above -exit_z) or the stop is hit. Long/flat only.
+    """
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 30))
+        self.entry_z = float(p.get("entry_z", 1.5))
+        self.exit_z = float(p.get("exit_z", 0.2))
+        self.max_half_life = float(p.get("max_half_life", 20.0))
+        self.risk_pct = float(p.get("risk_pct", 0.02))
+        self.stop_pct = float(p.get("stop_pct", 0.04))
+        self.prices = deque(maxlen=self.period)
+        self.entry_px = 0.0
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        pc = bar["prev_close"]
+        if pc is None:
+            return
+
+        self.prices.append(pc)
+        if len(self.prices) < self.period:
+            return
+
+        xs = list(self.prices)
+        n = len(xs)
+        mean = sum(xs) / n
+        var = sum((x - mean) ** 2 for x in xs) / (n - 1) if n > 1 else 0.0
+        std = math.sqrt(var)
+        if std <= 1e-10:
+            return
+
+        # AR(1) half-life: regress delta_t = x_t - x_(t-1) on the lagged level.
+        lag = xs[:-1]
+        delta = [xs[i] - xs[i - 1] for i in range(1, n)]
+        lag_mean = sum(lag) / len(lag)
+        delta_mean = sum(delta) / len(delta)
+        cov = sum((lag[i] - lag_mean) * (delta[i] - delta_mean) for i in range(len(lag)))
+        denom = sum((v - lag_mean) ** 2 for v in lag)
+        if denom <= 1e-10:
+            return
+        beta = cov / denom
+        # Mean-reverting only when beta < 0; half-life = -ln(2) / beta.
+        if beta >= 0:
+            return
+        half_life = -math.log(2) / beta
+        if half_life <= 0 or half_life > self.max_half_life:
+            return
+
+        z = (pc - mean) / std
+
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if pos == 0 and z < -self.entry_z and open_px > 0:
+            stop_dist = open_px * self.stop_pct
+            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+            qty = int(min(by_risk, by_cash))
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_px = open_px
+        elif pos > 0:
+            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+            if z > -self.exit_z or stop_hit:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
+`
+
+  const TSMOM_VOL = `\
+from collections import deque
+import math
+
+class Strategy:
+    """Vol-targeted time-series momentum (managed-futures style).
+
+    The signal is the sign of the trailing return over the lookback window.
+    Position size is scaled so the strategy's expected volatility matches a
+    fixed annual target — larger when the market is calm, smaller when it is
+    wild — capped at fully invested (no leverage). Long when trailing momentum
+    is positive, flat otherwise. Long/flat only.
+    """
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.lookback = int(p.get("lookback", 60))
+        self.vol_window = int(p.get("vol_window", 20))
+        self.target_vol = float(p.get("target_vol", 0.15))
+        self.bars_per_year = float(p.get("bars_per_year", 252))
+        maxlen = max(self.lookback, self.vol_window) + 2
+        self.closes = deque(maxlen=maxlen)
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        pc = bar["prev_close"]
+        if pc is None:
+            return
+
+        self.closes.append(pc)
+        need = max(self.lookback, self.vol_window) + 1
+        if len(self.closes) < need:
+            return
+
+        xs = list(self.closes)
+        # Trailing-return momentum over the lookback window
+        past = xs[-(self.lookback + 1)]
+        if past <= 0:
+            return
+        momentum = xs[-1] / past - 1.0
+
+        # Realized volatility from recent bar-to-bar returns, annualized
+        rets = []
+        for i in range(len(xs) - self.vol_window, len(xs)):
+            prev = xs[i - 1]
+            if prev > 0:
+                rets.append(xs[i] / prev - 1.0)
+        if len(rets) < 2:
+            return
+        rmean = sum(rets) / len(rets)
+        rvar = sum((r - rmean) ** 2 for r in rets) / (len(rets) - 1)
+        ann_vol = math.sqrt(rvar) * math.sqrt(self.bars_per_year)
+        if ann_vol <= 1e-6:
+            return
+
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if momentum > 0 and open_px > 0:
+            # Vol-target scalar, capped at fully invested (long-only, no leverage)
+            scale = min(self.target_vol / ann_vol, 1.0)
+            by_target = (equity * scale) / open_px
+            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+            qty = int(min(by_target, by_cash))
+            if pos == 0 and qty > 0:
+                self.broker.buy(symbol, qty=qty)
+        elif pos > 0 and momentum <= 0:
+            self.broker.sell(symbol, qty=pos)
 `
 }

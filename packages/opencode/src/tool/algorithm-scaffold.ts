@@ -8,22 +8,7 @@ import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-ext
 
 const parameters = z.object({
   template_type: z
-    .enum([
-      "momentum",
-      "mean-reversion",
-      "breakout",
-      "dca",
-      "golden-cross",
-      "scalping",
-      "macd",
-      "stochastic",
-      "atr-breakout",
-      "vwap-reversion",
-      "z-score",
-      "keltner",
-      "adx-trend",
-      "custom",
-    ])
+    .enum([...Templates.TYPES] as [Templates.TemplateType, ...Templates.TemplateType[]])
     .describe("The type of strategy template to generate"),
 })
 
@@ -38,7 +23,7 @@ type ScaffoldMetadata = {
 }
 
 export function scaffoldValidationOptions(templateType: z.infer<typeof parameters>["template_type"]) {
-  return { skipSmokeTest: templateType === "custom" || templateType === "dca" || templateType === "golden-cross" }
+  return { skipSmokeTest: templateType === "custom" || templateType === "golden-cross" }
 }
 
 export const AlgorithmScaffoldTool = Tool.define(
