@@ -3,6 +3,7 @@ import {
   createContext,
   createEffect,
   createMemo,
+  createResource,
   createSignal,
   For,
   Match,
@@ -38,6 +39,7 @@ import type {
   ReasoningPart,
   SessionStatus,
 } from "@opencode-ai/sdk/v2"
+import { Algorithm } from "@/algorithm"
 import { useLocal } from "../../context/local"
 import { Locale } from "../../util/locale"
 import { webSearchProviderLabel } from "../../util/tool-display"
@@ -1502,82 +1504,6 @@ function UserMessage(props: {
   )
 }
 
-// Live inline progress for the subagents a (batch) task spawned. A batch task
-// is a single tool part but many child sessions, so the per-part Task view can
-// only show one of them. This lists every running child with its current
-// activity so the user sees all subagents advancing without drilling in.
-function SubagentBatchProgress(props: { sessionID: string }) {
-  const sync = useSync()
-
-  const children = createMemo(() =>
-    sync.data.session
-      .filter((s) => s.parentID === props.sessionID)
-      .toSorted((a, b) => a.time.created - b.time.created),
-  )
-
-  // Pull each child's messages so we can read their live tool activity.
-  createEffect(() => {
-    for (const child of children()) {
-      if (!sync.data.message[child.id]?.length) void sync.session.sync(child.id)
-    }
-  })
-
-  const running = createMemo(() =>
-    children().filter((child) => {
-      const status = sync.data.session_status[child.id]
-      return status !== undefined && status.type !== "idle"
-    }),
-  )
-
-  return (
-    <Show when={running().length > 1}>
-      <box paddingTop={1} paddingLeft={3} flexDirection="column">
-        <For each={running()}>{(child) => <SubagentProgressLine session={child} />}</For>
-      </box>
-    </Show>
-  )
-}
-
-function SubagentProgressLine(props: { session: Session }) {
-  const sync = useSync()
-  const { theme } = useTheme()
-
-  const label = createMemo(() => {
-    const match = props.session.title.match(/@(\w+) subagent/)
-    return match ? Locale.titlecase(match[1]) : "Subagent"
-  })
-
-  const description = createMemo(() => props.session.title.replace(/\s*\(@\w+ subagent\)\s*$/, ""))
-
-  const activity = createMemo(() => {
-    const messages = sync.data.message[props.session.id] ?? []
-    const tools = messages.flatMap((msg) =>
-      (sync.data.part[msg.id] ?? [])
-        .filter((part): part is ToolPart => part.type === "tool")
-        .map((part) => ({ tool: part.tool, state: part.state })),
-    )
-    const current = tools.findLast(
-      (x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title,
-    )
-    if (current) {
-      const state = current.state
-      const title = state.status === "running" || state.status === "completed" ? state.title : undefined
-      return `${Locale.titlecase(current.tool)}${title ? " " + title : ""}`
-    }
-    if (tools.length > 0) return `${tools.length} tool call${tools.length === 1 ? "" : "s"}`
-    return "Starting…"
-  })
-
-  return (
-    <text fg={theme.textMuted} wrapMode="none">
-      <span style={{ fg: theme.textMuted }}>↳ </span>
-      <span style={{ fg: theme.text }}>{label()}</span>
-      <span style={{ fg: theme.textMuted }}> · {description()}</span>
-      <span style={{ fg: theme.textMuted }}> · {activity()}</span>
-    </text>
-  )
-}
-
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
   const ctx = use()
   const local = useLocal()
@@ -1619,7 +1545,6 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
         }}
       </For>
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
-        <SubagentBatchProgress sessionID={props.message.sessionID} />
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {childShortcut()}
@@ -1887,6 +1812,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={display() === "skill"}>
           <Skill {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "finny_algorithm_save"}>
+          <AlgorithmSave {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
@@ -1936,6 +1864,91 @@ function GenericTool(props: ToolProps) {
           </Show>
         </box>
       </BlockTool>
+    </Show>
+  )
+}
+
+// Renders a finny_algorithm_save tool call. Instead of the raw GenericTool
+// output dump, show the saved strategy nicely: a titled block with the
+// version/status line and the strategy source, collapsed to a preview with a
+// click-to-expand affordance (matching the GenericTool idiom).
+function AlgorithmSave(props: ToolProps) {
+  const { theme } = useTheme()
+  const [expanded, setExpanded] = createSignal(false)
+
+  const meta = createMemo(() => props.metadata as { algorithmId?: string; name?: string; version?: number })
+  const completed = createMemo(() => props.part.state.status === "completed")
+  // A completed call with no algorithmId is a blocked/failed save (validation,
+  // missing evidence, etc.) — fall back to the generic renderer so the user
+  // sees the actual reason instead of a misleading "Saved" header.
+  const blocked = createMemo(() => completed() && !meta().algorithmId)
+
+  const [algo] = createResource(
+    () => (completed() ? meta().algorithmId : undefined),
+    (id) => Algorithm.getById(id).catch(() => null),
+  )
+
+  const title = createMemo(() => {
+    const { name, version } = meta()
+    if (!name) return "Saved strategy"
+    return `Saved "${name}"${version ? ` v${version}` : ""}`
+  })
+
+  const PREVIEW_LINES = 16
+  const codeLines = createMemo(() => (algo()?.code ?? "").split("\n"))
+  const overflow = createMemo(() => codeLines().length > PREVIEW_LINES)
+  const shownCode = createMemo(() =>
+    expanded() || !overflow() ? (algo()?.code ?? "") : codeLines().slice(0, PREVIEW_LINES).join("\n"),
+  )
+
+  return (
+    <Show
+      when={completed() && algo()}
+      fallback={
+        <Show
+          when={blocked()}
+          fallback={
+            <InlineTool
+              icon="◆"
+              pending="Saving strategy..."
+              spinner={!completed()}
+              complete={completed() ? title() : false}
+              part={props.part}
+            >
+              {title()}
+            </InlineTool>
+          }
+        >
+          <GenericTool {...props} />
+        </Show>
+      }
+    >
+      {(saved) => (
+        <BlockTool
+          title={`◆ ${title()}`}
+          part={props.part}
+          onClick={overflow() ? () => setExpanded((prev) => !prev) : undefined}
+        >
+          <box gap={1}>
+            <text fg={theme.textMuted} wrapMode="none">
+              v{saved().version} · {saved().status} · {saved().language}
+            </text>
+            <box flexShrink={0}>
+              <text fg={theme.primary} attributes={TextAttributes.BOLD}>
+                strategy.py
+              </text>
+            </box>
+            <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1}>
+              <text fg={theme.text}>{shownCode()}</text>
+            </box>
+            <Show when={overflow()}>
+              <text fg={theme.textMuted}>
+                {expanded() ? "Click to collapse" : `Click to show ${codeLines().length - PREVIEW_LINES} more lines`}
+              </text>
+            </Show>
+          </box>
+        </BlockTool>
+      )}
     </Show>
   )
 }
@@ -2375,13 +2388,11 @@ function Task(props: ToolProps) {
 
   const content = createMemo(() => {
     const description = stringValue(props.input.description)
-    if (!description) return ""
+    const agentType = Locale.titlecase(stringValue(props.input.subagent_type) ?? "General")
     let content = [
-      formatSubagentTitle(
-        Locale.titlecase(stringValue(props.input.subagent_type) ?? "General"),
-        description,
-        props.metadata.background === true,
-      ),
+      description
+        ? formatSubagentTitle(agentType, description, props.metadata.background === true)
+        : `${agentType} Task`,
     ]
 
     const retrying = retry()
