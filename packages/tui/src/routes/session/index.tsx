@@ -31,6 +31,7 @@ import type {
   AssistantMessage,
   Part,
   Provider,
+  Session,
   ToolPart,
   UserMessage,
   TextPart,
@@ -1501,6 +1502,82 @@ function UserMessage(props: {
   )
 }
 
+// Live inline progress for the subagents a (batch) task spawned. A batch task
+// is a single tool part but many child sessions, so the per-part Task view can
+// only show one of them. This lists every running child with its current
+// activity so the user sees all subagents advancing without drilling in.
+function SubagentBatchProgress(props: { sessionID: string }) {
+  const sync = useSync()
+
+  const children = createMemo(() =>
+    sync.data.session
+      .filter((s) => s.parentID === props.sessionID)
+      .toSorted((a, b) => a.time.created - b.time.created),
+  )
+
+  // Pull each child's messages so we can read their live tool activity.
+  createEffect(() => {
+    for (const child of children()) {
+      if (!sync.data.message[child.id]?.length) void sync.session.sync(child.id)
+    }
+  })
+
+  const running = createMemo(() =>
+    children().filter((child) => {
+      const status = sync.data.session_status[child.id]
+      return status !== undefined && status.type !== "idle"
+    }),
+  )
+
+  return (
+    <Show when={running().length > 1}>
+      <box paddingTop={1} paddingLeft={3} flexDirection="column">
+        <For each={running()}>{(child) => <SubagentProgressLine session={child} />}</For>
+      </box>
+    </Show>
+  )
+}
+
+function SubagentProgressLine(props: { session: Session }) {
+  const sync = useSync()
+  const { theme } = useTheme()
+
+  const label = createMemo(() => {
+    const match = props.session.title.match(/@(\w+) subagent/)
+    return match ? Locale.titlecase(match[1]) : "Subagent"
+  })
+
+  const description = createMemo(() => props.session.title.replace(/\s*\(@\w+ subagent\)\s*$/, ""))
+
+  const activity = createMemo(() => {
+    const messages = sync.data.message[props.session.id] ?? []
+    const tools = messages.flatMap((msg) =>
+      (sync.data.part[msg.id] ?? [])
+        .filter((part): part is ToolPart => part.type === "tool")
+        .map((part) => ({ tool: part.tool, state: part.state })),
+    )
+    const current = tools.findLast(
+      (x) => (x.state.status === "running" || x.state.status === "completed") && x.state.title,
+    )
+    if (current) {
+      const state = current.state
+      const title = state.status === "running" || state.status === "completed" ? state.title : undefined
+      return `${Locale.titlecase(current.tool)}${title ? " " + title : ""}`
+    }
+    if (tools.length > 0) return `${tools.length} tool call${tools.length === 1 ? "" : "s"}`
+    return "Starting…"
+  })
+
+  return (
+    <text fg={theme.textMuted} wrapMode="none">
+      <span style={{ fg: theme.textMuted }}>↳ </span>
+      <span style={{ fg: theme.text }}>{label()}</span>
+      <span style={{ fg: theme.textMuted }}> · {description()}</span>
+      <span style={{ fg: theme.textMuted }}> · {activity()}</span>
+    </text>
+  )
+}
+
 function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
   const ctx = use()
   const local = useLocal()
@@ -1542,6 +1619,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
         }}
       </For>
       <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+        <SubagentBatchProgress sessionID={props.message.sessionID} />
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {childShortcut()}
