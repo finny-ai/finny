@@ -29,6 +29,7 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
+import { repairQuestionToolInput, repairToolCallInput } from "./repair-tool-call"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -275,6 +276,12 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
+      const tryRepairQuestionSchema = (toolCall: { toolName: string; input: unknown }) => {
+        if (toolCall.toolName.toLowerCase() !== "question") return undefined
+        const r = repairQuestionToolInput(toolCall.input)
+        if (r === undefined) return undefined
+        return { ...toolCall, input: r }
+      }
       return {
         type: "ai-sdk" as const,
         result: streamText({
@@ -294,13 +301,34 @@ const live: Layer.Layer<
           // Copilot returns the authoritative billed amount only in provider-specific response fields.
           includeRawChunks: input.model.providerID.includes("github-copilot"),
           async experimental_repairToolCall(failed) {
+            const repaired = repairToolCallInput(failed.toolCall.input)
             const lower = failed.toolCall.toolName.toLowerCase()
+
+            if (repaired !== undefined) {
+              if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
+                return {
+                  ...failed.toolCall,
+                  toolName: lower,
+                  input: repaired,
+                }
+              }
+              return {
+                ...failed.toolCall,
+                input: repaired,
+              }
+            }
+
             if (lower !== failed.toolCall.toolName && prepared.tools[lower]) {
               return {
                 ...failed.toolCall,
                 toolName: lower,
               }
             }
+
+            // Tool-specific schema repairs
+            const schemaRepaired = tryRepairQuestionSchema(failed.toolCall)
+            if (schemaRepaired !== undefined) return schemaRepaired
+
             return {
               ...failed.toolCall,
               input: JSON.stringify({
