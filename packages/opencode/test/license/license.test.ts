@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { DeviceProfile } from "@/device"
 import { License } from "@/license"
 
 let tempDir: string
@@ -9,6 +10,7 @@ let originalUrl: string | undefined
 let originalKey: string | undefined
 let originalBypass: string | undefined
 let originalClient: string | undefined
+let originalStateDir: string | undefined
 
 beforeEach(async () => {
   tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-license-test-"))
@@ -16,10 +18,13 @@ beforeEach(async () => {
   originalKey = process.env.FINNY_LICENSE_KEY
   originalBypass = process.env.FINNY_LICENSE_BYPASS
   originalClient = process.env.FINNY_LICENSE_CLIENT
+  originalStateDir = process.env.FINNY_LICENSE_STATE_DIR
   process.env.FINNY_LICENSE_CHECK_URL = "https://license.test/check"
   delete process.env.FINNY_LICENSE_KEY
   delete process.env.FINNY_LICENSE_BYPASS
   delete process.env.FINNY_LICENSE_CLIENT
+  delete process.env.FINNY_LICENSE_STATE_DIR
+  DeviceProfile._resetForTests()
   License._resetForTests()
   License._setCacheDirForTests(tempDir)
 })
@@ -33,6 +38,9 @@ afterEach(async () => {
   else process.env.FINNY_LICENSE_BYPASS = originalBypass
   if (originalClient === undefined) delete process.env.FINNY_LICENSE_CLIENT
   else process.env.FINNY_LICENSE_CLIENT = originalClient
+  if (originalStateDir === undefined) delete process.env.FINNY_LICENSE_STATE_DIR
+  else process.env.FINNY_LICENSE_STATE_DIR = originalStateDir
+  DeviceProfile._resetForTests()
   License._resetForTests()
   await fs.rm(tempDir, { recursive: true, force: true })
 })
@@ -133,6 +141,36 @@ describe("License", () => {
     await License.activate("finny_valid_key")
 
     expect(payload?.client).toBe("finny-internal-prop")
+  })
+
+  test("FINNY_LICENSE_STATE_DIR stores device, license, and terms state together", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-license-state-test-"))
+    License._resetForTests()
+    DeviceProfile._resetForTests()
+    process.env.FINNY_LICENSE_STATE_DIR = stateDir
+    let payload: Record<string, unknown> | undefined
+
+    License._setFetchForTests((async (_input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      payload = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    }) as unknown as typeof fetch)
+
+    await License.activate("finny_valid_key")
+    await License.recordTermsAcceptance()
+
+    const device = JSON.parse(await fs.readFile(path.join(stateDir, "device.json"), "utf8"))
+    const cache = JSON.parse(await fs.readFile(path.join(stateDir, "license-cache.json"), "utf8"))
+    const terms = JSON.parse(await fs.readFile(path.join(stateDir, "terms-acceptance.json"), "utf8"))
+
+    expect(device.userId).toEqual(expect.any(String))
+    expect(cache.machine_id_hash).toBe(payload?.machineIdHash)
+    expect(cache.license_key_hash).toBe(License.hashLicenseKey("finny_valid_key"))
+    expect(terms.version).toBe(License.termsVersion)
+    await expect(fs.access(path.join(tempDir, "license-cache.json"))).rejects.toThrow()
+    await fs.rm(stateDir, { recursive: true, force: true })
   })
 
   test("empty or malformed 200 does not unlock license", async () => {

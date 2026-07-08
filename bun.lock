@@ -532,6 +532,7 @@
       "version": "0.0.0",
       "bin": {
         "finny": "./bin/opencode",
+        "finny-pro": "./bin/opencode",
       },
       "dependencies": {
         "@actions/core": "1.11.1",

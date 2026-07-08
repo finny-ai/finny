@@ -7,6 +7,7 @@ import { Filesystem } from "@/util/filesystem"
 
 const CACHE_FILE = "license-cache.json"
 const TERMS_FILE = "terms-acceptance.json"
+const LICENSE_STATE_DIR_ENV = "FINNY_LICENSE_STATE_DIR"
 const GRACE_MS = 24 * 60 * 60 * 1000
 
 // Bump when the Terms / License Agreement materially change so users are
@@ -60,12 +61,17 @@ let fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis)
 let nowImpl = () => Date.now()
 let cacheDirOverride: string | undefined
 
+function stateDir() {
+  const envDir = process.env[LICENSE_STATE_DIR_ENV]?.trim()
+  return cacheDirOverride ?? (envDir || Global.Path.data)
+}
+
 function cachePath() {
-  return path.join(cacheDirOverride ?? Global.Path.data, CACHE_FILE)
+  return path.join(stateDir(), CACHE_FILE)
 }
 
 function termsPath() {
-  return path.join(cacheDirOverride ?? Global.Path.data, TERMS_FILE)
+  return path.join(stateDir(), TERMS_FILE)
 }
 
 function sha256(value: string) {
