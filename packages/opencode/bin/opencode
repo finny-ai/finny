@@ -208,4 +208,75 @@ if (!resolved) {
   process.exit(1)
 }
 
+// ------------------------------------------------------------------
+// Windows Terminal compatibility: the TUI requires a modern terminal
+// emulator on Windows. Detect and auto-relaunch, or show a clear error.
+// ------------------------------------------------------------------
+const nonInteractiveFlags = new Set(["--version", "-v", "--help", "-h", "--headless", "version", "help"])
+const isNonInteractive = process.argv.slice(2).some((arg) => nonInteractiveFlags.has(arg))
+
+if (os.platform() === "win32" && !isNonInteractive && !process.env.WT_SESSION && process.env.TERM_PROGRAM !== "vscode") {
+  const wtCandidates = [
+    path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", "wt.exe"),
+    path.join(process.env.USERPROFILE || "", "AppData", "Local", "Microsoft", "WindowsApps", "wt.exe"),
+    "wt.exe",
+  ]
+
+  let wtExe = null
+  for (const candidate of wtCandidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        wtExe = candidate
+        break
+      }
+    } catch {}
+  }
+
+  if (!wtExe) {
+    try {
+      const result = childProcess.spawnSync("where", ["wt.exe"], {
+        encoding: "utf8",
+        windowsHide: true,
+      })
+      if (result.status === 0 && result.stdout) {
+        const first = result.stdout.trim().split(/\r?\n/)[0]
+        if (first) wtExe = first
+      }
+    } catch {}
+  }
+
+  if (wtExe) {
+    const argsForWt = [
+      "powershell",
+      "-NoExit",
+      "-Command",
+      "& " + JSON.stringify(resolved) + " " + process.argv.slice(2).map((a) => JSON.stringify(a)).join(" "),
+    ]
+
+    const child = childProcess.spawn(wtExe, argsForWt, {
+      detached: true,
+      windowsHide: false,
+      stdio: "ignore",
+    })
+
+    child.on("error", (err) => {
+      console.error("Failed to launch Windows Terminal:", err.message)
+      process.exit(1)
+    })
+
+    child.unref()
+    process.exit(0)
+  }
+
+  console.error(
+    "Finny requires a modern terminal emulator.\n" +
+      "The legacy Windows Console Host does not support the interactive TUI.\n\n" +
+      "Please run this from Windows Terminal (https://aka.ms/terminal) or VS Code.\n" +
+      "You can also use the web interface at http://127.0.0.1:4096 once the daemon starts.\n\n" +
+      "To install Windows Terminal:\n" +
+      "  winget install Microsoft.WindowsTerminal"
+  )
+  process.exit(1)
+}
+
 run(resolved)
