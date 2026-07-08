@@ -1,16 +1,22 @@
 import { trace, diag, DiagLogLevel, type DiagLogger } from "@opentelemetry/api"
 import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { Log } from "./util/log"
 
-const stderrLogger: DiagLogger = {
+// Route OTel diagnostics through the file logger. Writing them to stderr via
+// console.error corrupts the interactive TUI, since it renders into the same
+// terminal — a benign span-lifecycle warning (e.g. "You can only call end() on
+// a span once") would otherwise paint garbage over the drawn frame.
+const otelLog = Log.create({ service: "otel" })
+const fileLogger: DiagLogger = {
   error(message, ...args) {
-    console.error(`[otel] ${message}`, ...args)
+    otelLog.error(message, args.length ? { args } : undefined)
   },
   warn() {},
   info() {},
   debug() {},
   verbose() {},
 }
-diag.setLogger(stderrLogger, DiagLogLevel.ERROR)
+diag.setLogger(fileLogger, DiagLogLevel.ERROR)
 
 const langfusePublicKey = process.env["LANGFUSE_PUBLIC_KEY"]
 const langfuseSecretKey = process.env["LANGFUSE_SECRET_KEY"]
