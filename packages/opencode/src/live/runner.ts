@@ -9,6 +9,7 @@ import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind, type BrokerMode } from "./brokers"
+import { LiveLedger } from "./ledger"
 import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
 import { requireBrokerTier } from "@/plan/brokers"
@@ -88,7 +89,13 @@ export namespace LiveRunner {
     directory?: string
   }
 
-  export type EligibilityStatus = "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
+  export type EligibilityStatus =
+    | "prototype"
+    | "validated"
+    | "backtested"
+    | "robustness_passed"
+    | "paper_eligible"
+    | "live_eligible"
 
   export class StartRejectedError extends Error {
     constructor(message: string) {
@@ -114,6 +121,7 @@ export namespace LiveRunner {
   type RunState = Run & {
     proc: Process.Child
     tmpDir: string
+    ledgerSeq: number
     listeners: Set<(run: Run) => void>
     nativeStopRecorded?: boolean
   }
@@ -122,7 +130,7 @@ export namespace LiveRunner {
   const globalListeners = new Set<(runs: Run[]) => void>()
 
   function snapshot(state: RunState): Run {
-    const { proc: _p, tmpDir: _t, listeners: _l, nativeStopRecorded: _n, ...rest } = state
+    const { proc: _p, tmpDir: _t, ledgerSeq: _s, listeners: _l, nativeStopRecorded: _n, ...rest } = state
     return { ...rest, positions: { ...rest.positions }, orders: [...rest.orders], logs: [...rest.logs] }
   }
 
@@ -153,6 +161,27 @@ export namespace LiveRunner {
     const entry: LogEntry = { ts: Date.now(), level, message }
     state.logs.push(entry)
     if (state.logs.length > 500) state.logs.splice(0, state.logs.length - 500)
+  }
+
+  function emitLedger(state: RunState, input: Omit<LiveLedger.EmitInput, "seq">) {
+    state.ledgerSeq += 1
+    LiveLedger.emit(
+      {
+        runId: state.id,
+        algorithmId: state.algorithmId,
+        algorithmName: state.algorithmName,
+        symbol: state.symbol,
+        interval: state.interval,
+        brokerKind: state.brokerKind,
+        mode: state.mode,
+      },
+      { ...input, seq: state.ledgerSeq },
+    )
+  }
+
+  function isExecutedOrder(status: string | undefined) {
+    const normalized = status?.trim().toLowerCase()
+    return normalized === "filled" || normalized === "closed"
   }
 
   // Recurring "Market closed, sleeping 5m" lines are pure noise for telemetry.
@@ -195,7 +224,8 @@ export namespace LiveRunner {
 
   function nativeOrderFields(msg: Record<string, any>) {
     return {
-      orderId: typeof msg.order_id === "string" ? msg.order_id : typeof msg.orderId === "string" ? msg.orderId : undefined,
+      orderId:
+        typeof msg.order_id === "string" ? msg.order_id : typeof msg.orderId === "string" ? msg.orderId : undefined,
       side: typeof msg.side === "string" ? msg.side : undefined,
       qty: typeof msg.qty === "number" ? msg.qty : undefined,
       price: typeof msg.price === "number" ? msg.price : undefined,
@@ -259,11 +289,20 @@ export namespace LiveRunner {
         ]
       case "log":
         if (!msg.message || IGNORED_LIVE_LOG.test(String(msg.message))) return []
-        return [{ ...base, eventType: "log", status: typeof msg.level === "string" ? msg.level : undefined, payload: msg }]
+        return [
+          { ...base, eventType: "log", status: typeof msg.level === "string" ? msg.level : undefined, payload: msg },
+        ]
       case "error":
         return [{ ...base, eventType: "log", status: "error", payload: msg }]
       case "stop":
-        return [{ ...base, eventType: "run.stopped", status: typeof msg.reason === "string" ? msg.reason : undefined, payload: msg }]
+        return [
+          {
+            ...base,
+            eventType: "run.stopped",
+            status: typeof msg.reason === "string" ? msg.reason : undefined,
+            payload: msg,
+          },
+        ]
       default:
         return []
     }
@@ -573,7 +612,9 @@ if __name__ == "__main__":
     await License.ensureActive()
 
     if (params.algorithm.backtestCode && params.algorithm.backtestCode.trim().length > 0) {
-      throw new StartRejectedError("Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.")
+      throw new StartRejectedError(
+        "Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.",
+      )
     }
     const validation = await Validate.run(params.algorithm.code, {
       config: {
@@ -589,13 +630,14 @@ if __name__ == "__main__":
         existing.algorithmId === params.algorithm.algorithmId &&
         (existing.status === "running" || existing.status === "starting")
       ) {
-        throw new StartRejectedError(`"${params.algorithm.name}" is already running. Stop it before starting a new run.`)
+        throw new StartRejectedError(
+          `"${params.algorithm.name}" is already running. Stop it before starting a new run.`,
+        )
       }
     }
 
     // Resolve broker kind from explicit param or providerID prefix.
-    const brokerKind: BrokerKind =
-      params.brokerKind ?? BrokerRegistry.detectKind(params.accountProviderID) ?? "alpaca"
+    const brokerKind: BrokerKind = params.brokerKind ?? BrokerRegistry.detectKind(params.accountProviderID) ?? "alpaca"
 
     // Tier gate for live trading on this brokerage. Paper trading bypasses
     // this check entirely — it never enters this code path.
@@ -656,6 +698,7 @@ if __name__ == "__main__":
       logs: [],
       proc: null as unknown as Process.Child, // attached later
       tmpDir: "",
+      ledgerSeq: 0,
       listeners: new Set(),
     }
     runs.set(id, preState)
@@ -675,8 +718,13 @@ if __name__ == "__main__":
         payload: { phase: "starting" },
       })
     } else if (NativeHedgeLedger.flagEnabled()) {
-      pushLog(preState, "warn", `Native hedge ledger disabled: ${NativeHedgeLedger.disabledReason() ?? "missing configuration"}`)
+      pushLog(
+        preState,
+        "warn",
+        `Native hedge ledger disabled: ${NativeHedgeLedger.disabledReason() ?? "missing configuration"}`,
+      )
     }
+    emitLedger(preState, { kind: "status", workerType: "start", status: "starting", reason: "start_requested" })
     notify(preState)
 
     // Kick off the async setup. Do NOT await — return the initial snapshot so
@@ -730,6 +778,7 @@ if __name__ == "__main__":
         preState.error = msg
         preState.stoppedAt = Date.now()
         pushLog(preState, "error", msg)
+        emitLedger(preState, { kind: "status", workerType: "setup", status: "error", reason: msg })
         recordNativeStop(preState, "setup_failed", { reason: "setup_failed", error: msg })
         await drainNativeLedger()
         notify(preState)
@@ -769,8 +818,10 @@ if __name__ == "__main__":
         if (!text) return
         for (const line of text.split("\n")) {
           if (!line.trim()) continue
-          pushLog(state, "warn", line.trim())
-          recordNative(state, { type: "log", level: "warn", message: line.trim() })
+          const message = line.trim()
+          pushLog(state, "warn", message)
+          recordNative(state, { type: "log", level: "warn", message })
+          emitLedger(state, { kind: "log", workerType: "stderr", log: { level: "warn", message } })
           notify(state)
         }
       })
@@ -786,6 +837,12 @@ if __name__ == "__main__":
           eventType: "live.stopped",
           algorithmId: state.algorithmId,
           payload: { runId: state.id, reason: code === 0 ? "clean_exit" : `exit_code_${code}` },
+        })
+        emitLedger(state, {
+          kind: "status",
+          workerType: "exit",
+          status: state.status,
+          reason: code === 0 ? "clean_exit" : `exit_code_${code}`,
         })
         recordNativeStop(state, code === 0 ? "clean_exit" : `exit_code_${code}`, {
           reason: code === 0 ? "clean_exit" : `exit_code_${code}`,
@@ -804,6 +861,7 @@ if __name__ == "__main__":
           algorithmId: state.algorithmId,
           payload: { runId: state.id, reason: "crash" },
         })
+        emitLedger(state, { kind: "status", workerType: "exit", status: "error", reason: state.error })
         recordNativeStop(state, "crash", { reason: "crash", error: state.error })
         await drainNativeLedger()
         notify(state)
@@ -844,6 +902,14 @@ if __name__ == "__main__":
             mode: state.mode,
           },
         })
+        emitLedger(state, {
+          kind: "status",
+          workerType: "init",
+          status: "running",
+          symbol: msg.symbol,
+          interval: msg.interval,
+          mark: { cash: msg.cash, equity: msg.equity },
+        })
         break
       }
       case "bar": {
@@ -855,6 +921,7 @@ if __name__ == "__main__":
           close: msg.close,
           volume: msg.volume,
         }
+        emitLedger(state, { kind: "mark", workerType: "bar", symbol: msg.symbol, mark: state.lastBar })
         break
       }
       case "equity": {
@@ -866,6 +933,11 @@ if __name__ == "__main__":
           algorithmId: state.algorithmId,
           payload: { runId: state.id, cash: msg.cash, equity: msg.equity, positions: msg.positions },
         })
+        emitLedger(state, {
+          kind: "mark",
+          workerType: "equity",
+          mark: { cash: msg.cash, equity: msg.equity, positions: msg.positions },
+        })
         break
       }
       case "order": {
@@ -875,8 +947,18 @@ if __name__ == "__main__":
         emit({
           eventType: "live.order_fill",
           algorithmId: state.algorithmId,
-          payload: { runId: state.id, side: msg.side, qty: msg.qty, symbol: msg.symbol, price: msg.price, status: msg.status },
+          payload: {
+            runId: state.id,
+            side: msg.side,
+            qty: msg.qty,
+            symbol: msg.symbol,
+            price: msg.price,
+            status: msg.status,
+          },
         })
+        if (isExecutedOrder(msg.status)) {
+          emitLedger(state, { kind: "fill", workerType: "order", symbol: msg.symbol, order: msg })
+        }
         break
       }
       case "order_intent": {
@@ -887,6 +969,7 @@ if __name__ == "__main__":
         const message = msg.message ?? ""
         pushLog(state, level, message)
         emitLiveLog(state, level, message)
+        if (level !== "info") emitLedger(state, { kind: "log", workerType: "log", log: { level, message } })
         break
       }
       case "error": {
@@ -894,6 +977,7 @@ if __name__ == "__main__":
         const message = msg.message ?? "unknown error"
         pushLog(state, "error", message)
         emitLiveLog(state, "error", message)
+        emitLedger(state, { kind: "log", workerType: "error", log: { level: "error", message } })
         break
       }
       case "stop": {
@@ -903,6 +987,7 @@ if __name__ == "__main__":
           algorithmId: state.algorithmId,
           payload: { runId: state.id, reason: msg.reason },
         })
+        emitLedger(state, { kind: "status", workerType: "stop", status: "stopped", reason: msg.reason })
         break
       }
       default: {
@@ -1002,7 +1087,8 @@ if __name__ == "__main__":
         try {
           const stat = await fs.stat(runPath)
           const run = JSON.parse(await fs.readFile(runPath, "utf8")) as { eligibilityStatus?: string }
-          if (!newest || stat.mtimeMs > newest.mtime) newest = { mtime: stat.mtimeMs, status: run.eligibilityStatus ?? "prototype" }
+          if (!newest || stat.mtimeMs > newest.mtime)
+            newest = { mtime: stat.mtimeMs, status: run.eligibilityStatus ?? "prototype" }
         } catch {}
       }
       return newest?.status ?? null
