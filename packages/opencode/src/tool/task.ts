@@ -13,7 +13,6 @@ import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Cause, Effect, Exit, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
-import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
 import fs from "fs/promises"
@@ -37,6 +36,7 @@ import {
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
 import { validateDataExtractorTaskText, validateExistingDataExtractorEvidence } from "@/data/data-extractor-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
+import { TaskState } from "@/task/state"
 
 /**
  * Substituted when a subagent's final turn produced no text. Uses the BLOCKED:
@@ -62,9 +62,9 @@ export interface TaskPromptOps {
 
 const id = "task"
 const BACKGROUND_DESCRIPTION = [
-  "Background mode: background=true launches the subagent asynchronously and returns immediately.",
-  "Foreground is the default; use it when you need the result before continuing.",
-  "Use background only for independent work that can run while you continue elsewhere.",
+  "Background mode launches a subagent asynchronously and returns immediately.",
+  "Finny launches single subagent tasks in the background by default.",
+  "Use foreground only for independent batch work that must return all results before continuing.",
   "You will be notified automatically when it finishes.",
 ].join(" ")
 const BACKGROUND_STARTED = [
@@ -94,8 +94,24 @@ function isIntradayInterval(interval: string | undefined) {
   return Boolean(interval && /^(\d+)(m|h|min)$/i.test(interval.trim()))
 }
 
+const EXTENDED_INTRADAY_WINDOW_DAYS = 120
+const EXTENDED_DAILY_WINDOW_DAYS = 730
+
 function isoUtcDate(date: Date) {
   return date.toISOString().slice(0, 10)
+}
+
+function parseIsoDateDay(input: string | undefined): number | undefined {
+  if (!input || !/^\d{4}-\d{2}-\d{2}$/.test(input)) return undefined
+  const time = Date.parse(`${input}T00:00:00Z`)
+  return Number.isFinite(time) ? time : undefined
+}
+
+function dateWindowDays(start: string | undefined, end: string | undefined): number | undefined {
+  const startTime = parseIsoDateDay(start)
+  const endTime = parseIsoDateDay(end)
+  if (startTime === undefined || endTime === undefined || endTime < startTime) return undefined
+  return Math.ceil((endTime - startTime) / 86_400_000)
 }
 
 function previousUtcDate(date: Date) {
@@ -137,6 +153,48 @@ function dataExtractorValidationContext(
     requested_start: window.start,
     requested_end: window.end,
   }
+}
+
+async function readWorkspaceDateWindow(workspace: string | null): Promise<{
+  requested_start?: string
+  requested_end?: string
+  requested_interval?: string
+}> {
+  if (!workspace) return {}
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspace), "request.json"), "utf8"))
+    return {
+      requested_start: typeof parsed.requested_start === "string" ? parsed.requested_start : undefined,
+      requested_end: typeof parsed.requested_end === "string" ? parsed.requested_end : undefined,
+      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
+    }
+  } catch {
+    return {}
+  }
+}
+
+function unapprovedExtendedDataWindowBlock(input: {
+  prompt: string
+  workspace: string | null
+  existing: { requested_start?: string; requested_end?: string; requested_interval?: string }
+}): string | undefined {
+  if (input.existing.requested_start && input.existing.requested_end) return undefined
+
+  const promptWindow = extractDateWindow(input.prompt)
+  const days = dateWindowDays(promptWindow.start, promptWindow.end)
+  if (days === undefined) return undefined
+
+  const interval = input.existing.requested_interval ?? parseRequestFacts(input.prompt).requested_interval
+  const threshold = isIntradayInterval(interval) ? EXTENDED_INTRADAY_WINDOW_DAYS : EXTENDED_DAILY_WINDOW_DAYS
+  if (days <= threshold) return undefined
+
+  return [
+    "BLOCKED: unapproved extended data window.",
+    `The data_extractor prompt requested ${promptWindow.start} to ${promptWindow.end} (${days} days), but the workspace has no user-approved requested_start/requested_end.`,
+    "Ask the user with the `question` tool before launching this extraction, explaining why the longer history is needed and offering a shorter default.",
+    "After the user approves a window, call `finny_workspace_prepare` with the approved `startDate` and `endDate` before relaunching `data_extractor`.",
+    `workspace=${input.workspace ?? "MISSING"}.`,
+  ].join(" ")
 }
 
 function describeRequestFacts(facts: RequestFacts) {
@@ -486,8 +544,6 @@ const BaseParameterFields = {
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
 
-const BaseParameters = Schema.Struct(BaseParameterFields)
-
 const SingleParameters = Schema.Struct({
   ...BaseParameterFields,
   background: Schema.optional(Schema.Boolean).annotate({
@@ -515,8 +571,8 @@ export const Parameters = Schema.Union([SingleParameters, BatchParameters])
 type TaskParameters = Schema.Schema.Type<typeof Parameters>
 type SingleTaskParameters = Exclude<TaskParameters, { tasks: ReadonlyArray<unknown> }>
 
-function taskJsonSchema(input: { background: boolean }): JSONSchema7 {
-  const single = ToolJsonSchema.fromSchema(input.background ? SingleParameters : BaseParameters)
+function taskJsonSchema(): JSONSchema7 {
+  const single = ToolJsonSchema.fromSchema(SingleParameters)
   const batch = ToolJsonSchema.fromSchema(BatchParameters)
   return {
     type: "object",
@@ -541,7 +597,7 @@ type TaskMetadata = {
     sessionId: SessionID
     subagentType: string
     description: string
-    state: "completed" | "error"
+    state: "running" | "completed" | "error"
   }>
 }
 
@@ -589,6 +645,25 @@ function renderBatchOutput(
   ].join("\n")
 }
 
+function taskResultStatus(text: string): Extract<TaskState.Status, "blocked" | "completed"> {
+  return /\bBLOCKED:/.test(text) ? TaskState.Status.blocked : TaskState.Status.completed
+}
+
+function summarizeTaskResult(text: string) {
+  const trimmed = text.trim()
+  return trimmed.length > 4_000 ? trimmed.slice(0, 4_000) : trimmed
+}
+
+export function taskRegistryErrorText(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error)
+  return [
+    "BLOCKED: internal task registry error.",
+    "The subagent did not launch because Finny could not record its task lifecycle.",
+    `Registry error: ${message.slice(0, 500)}`,
+    "Restart Finny with the latest build and let migrations run before retrying. Do not retry this task until the registry is healthy.",
+  ].join(" ")
+}
+
 export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -597,17 +672,15 @@ export const TaskTool = Tool.define(
     const config = yield* Config.Service
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
-    const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
 
-    const runSingle = Effect.fn("TaskTool.executeSingle")(function* (params: SingleTaskParameters, ctx: Tool.Context) {
+    const runSingle = Effect.fn("TaskTool.executeSingle")(function* (
+      params: SingleTaskParameters,
+      ctx: Tool.Context,
+      options?: { forceForeground?: boolean },
+    ) {
       const cfg = yield* config.get()
-      const runInBackground = params.background === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
-        return yield* Effect.fail(
-          new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-        )
-      }
+      const runInBackground = options?.forceForeground === true ? false : ctx.agent === "finny" || params.background === true
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
@@ -739,6 +812,35 @@ export const TaskTool = Tool.define(
         ...(runInBackground ? { background: true } : {}),
       }
 
+      const mode = runInBackground ? "background" : "foreground"
+      const registryExit = yield* Effect.exit(
+        Effect.promise(async () => {
+          const existingTask = await TaskState.get(nextSession.id)
+          if (!existingTask) {
+            await TaskState.upsert({
+              id: nextSession.id,
+              parentSessionID: ctx.sessionID,
+              description: params.description,
+              subagentType: params.subagent_type,
+              mode,
+              status: TaskState.Status.queued,
+            })
+          }
+        }),
+      )
+      if (Exit.isFailure(registryExit)) {
+        return {
+          title: params.description,
+          metadata,
+          output: renderOutput({
+            sessionID: nextSession.id,
+            state: "error",
+            summary: "Task registry error",
+            text: taskRegistryErrorText(Cause.squash(registryExit.cause)),
+          }),
+        }
+      }
+
       yield* ctx.metadata({
         title: params.description,
         metadata,
@@ -751,6 +853,15 @@ export const TaskTool = Tool.define(
         if (workspaceState.blocked) return workspaceState.blocked
         if (params.subagent_type === "data_extractor" && !workspace) {
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
+        }
+        if (params.subagent_type === "data_extractor") {
+          const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(workspace))
+          const dateBlock = unapprovedExtendedDataWindowBlock({
+            prompt: params.prompt,
+            workspace,
+            existing: existingWindow,
+          })
+          if (dateBlock) return dateBlock
         }
         let workspaceContext: WorkspaceRequestContext | undefined
         if (
@@ -820,6 +931,37 @@ export const TaskTool = Tool.define(
         return validated.text
       })
 
+      const trackedRun = Effect.fn("TaskTool.trackedRun")(function* () {
+        const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id)))
+        if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
+        const exit = yield* Effect.exit(runTask())
+        if (Exit.isSuccess(exit)) {
+          const text = exit.value
+          const finalizeExit = yield* Effect.exit(
+            Effect.promise(() =>
+              TaskState.finalizeActive(nextSession.id, {
+                status: taskResultStatus(text),
+                resultSummary: summarizeTaskResult(text),
+                lastError: null,
+              }),
+            ),
+          )
+          if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
+          return text
+        }
+        const error = Cause.squash(exit.cause)
+        const finalizeExit = yield* Effect.exit(
+          Effect.promise(() =>
+            TaskState.finalizeActive(nextSession.id, {
+              status: Cause.hasInterruptsOnly(exit.cause) ? TaskState.Status.cancelled : TaskState.Status.failed,
+              lastError: error instanceof Error ? error.message : String(error),
+            }),
+          ),
+        )
+        if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
+        return yield* Effect.failCause(exit.cause)
+      })
+
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
         state: "completed" | "error",
         text: string,
@@ -866,9 +1008,40 @@ export const TaskTool = Tool.define(
       const notify = Effect.fn("TaskTool.notifyBackgroundResult")(function* (jobID: string) {
         yield* background.wait({ id: jobID }).pipe(
           Effect.flatMap((result) => {
-            if (result.info?.status === "completed")
-              return inject("completed", result.info.output ?? EMPTY_SUBAGENT_RESULT_MARKER)
-            if (result.info?.status === "error") return inject("error", result.info.error ?? "")
+            if (result.info?.status === "completed") {
+              const text = result.info.output ?? EMPTY_SUBAGENT_RESULT_MARKER
+              return Effect.exit(
+                Effect.promise(() =>
+                  TaskState.finalizeActive(nextSession.id, {
+                    status: taskResultStatus(text),
+                    resultSummary: summarizeTaskResult(text),
+                    lastError: null,
+                  }),
+                ),
+              ).pipe(
+                Effect.flatMap((exit) =>
+                  inject(
+                    "completed",
+                    Exit.isFailure(exit) ? taskRegistryErrorText(Cause.squash(exit.cause)) : text,
+                  ),
+                ),
+              )
+            }
+            if (result.info?.status === "error") {
+              const error = result.info.error ?? ""
+              return Effect.exit(
+                Effect.promise(() =>
+                  TaskState.finalizeActive(nextSession.id, {
+                    status: TaskState.Status.failed,
+                    lastError: error,
+                  }),
+                ),
+              ).pipe(
+                Effect.flatMap((exit) =>
+                  inject("error", Exit.isFailure(exit) ? taskRegistryErrorText(Cause.squash(exit.cause)) : error),
+                ),
+              )
+            }
             return Effect.void
           }),
           Effect.forkIn(scope, { startImmediately: true }),
@@ -907,7 +1080,7 @@ export const TaskTool = Tool.define(
           ],
           { discard: true },
         ),
-        run: runTask().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
+        run: trackedRun().pipe(Effect.onInterrupt(() => ops.cancel(nextSession.id))),
       })
 
       function backgroundResult() {
@@ -1004,8 +1177,48 @@ export const TaskTool = Tool.define(
         }
       }
 
+      const runningSubagents = new Map<
+        string,
+        NonNullable<TaskMetadata["subagents"]>[number]
+      >()
+      const batchMetadata = (subagents: NonNullable<TaskMetadata["subagents"]>): TaskMetadata => ({
+        parentSessionId: ctx.sessionID,
+        sessionId: ctx.sessionID,
+        batch: true,
+        taskCount: params.tasks.length,
+        subagentTypes,
+        subagents,
+      })
+      const updateRunningBatch = (task: Extract<TaskParameters, { tasks: ReadonlyArray<unknown> }>["tasks"][number]) =>
+        (val: { title?: string; metadata?: TaskMetadata }) =>
+          Effect.gen(function* () {
+            const sessionId = val.metadata?.sessionId
+            if (!sessionId) return
+            runningSubagents.set(sessionId, {
+              sessionId,
+              subagentType: task.subagent_type,
+              description: task.description,
+              state: "running",
+            })
+            yield* ctx.metadata({
+              title: "Mandatory evidence batch",
+              metadata: batchMetadata([...runningSubagents.values()]),
+            })
+          })
+
       const exits = yield* Effect.all(
-        params.tasks.map((task) => Effect.exit(runSingle(task, ctx))),
+        params.tasks.map((task) =>
+          Effect.exit(
+            runSingle(
+              task,
+              {
+                ...ctx,
+                metadata: updateRunningBatch(task),
+              },
+              { forceForeground: true },
+            ),
+          ),
+        ),
         { concurrency: "unbounded" },
       )
       const results = exits.map((exit, index) => {
@@ -1045,23 +1258,17 @@ export const TaskTool = Tool.define(
       return {
         title: "Mandatory evidence batch",
         metadata: {
-          parentSessionId: ctx.sessionID,
+          ...batchMetadata(childSubagents),
           sessionId: childSubagents[0]?.sessionId ?? ctx.sessionID,
-          batch: true,
-          taskCount: results.length,
-          subagentTypes,
-          subagents: childSubagents,
         } satisfies TaskMetadata,
         output: renderBatchOutput(results),
       }
     })
 
     return {
-      description: flags.experimentalBackgroundSubagents
-        ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
-        : DESCRIPTION,
+      description: [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n"),
       parameters: Parameters,
-      jsonSchema: taskJsonSchema({ background: flags.experimentalBackgroundSubagents }),
+      jsonSchema: taskJsonSchema(),
       execute: (params: TaskParameters, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
     }
   }),

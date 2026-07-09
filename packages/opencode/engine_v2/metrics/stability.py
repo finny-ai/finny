@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -21,9 +21,9 @@ def equity_r2(equity: np.ndarray) -> float:
     return float(corr ** 2)
 
 
-def rolling_sharpe(returns: np.ndarray, bars_per_year: float, window: int = 90) -> Tuple[float, float, float]:
+def rolling_sharpe_series(returns: np.ndarray, bars_per_year: float, window: int = 90) -> np.ndarray:
     if returns.size < window + 5:
-        return 0.0, 0.0, 0.0
+        return np.zeros(0, dtype=np.float64)
     out = np.full(returns.size - window + 1, np.nan)
     cs = np.cumsum(returns)
     cs2 = np.cumsum(returns ** 2)
@@ -36,7 +36,11 @@ def rolling_sharpe(returns: np.ndarray, bars_per_year: float, window: int = 90) 
             out[i - window] = 0.0
         else:
             out[i - window] = float(mean / math.sqrt(var) * math.sqrt(bars_per_year))
-    valid = out[~np.isnan(out)]
+    return out[~np.isnan(out)]
+
+
+def rolling_sharpe(returns: np.ndarray, bars_per_year: float, window: int = 90) -> Tuple[float, float, float]:
+    valid = rolling_sharpe_series(returns, bars_per_year, window)
     if valid.size == 0:
         return 0.0, 0.0, 0.0
     return float(valid.mean()), float(valid.min()), float(valid.max())
@@ -54,3 +58,35 @@ def monthly_returns_heatmap(equity: np.ndarray, ts_ns: np.ndarray) -> Dict[str, 
         m = f"{ts_.month:02d}"
         out.setdefault(y, {})[m] = float(r)
     return out
+
+
+def max_consecutive_negative_periods(equity: np.ndarray, ts_ns: np.ndarray, rule: str) -> Optional[int]:
+    if equity.size < 2:
+        return None
+    ts = pd.to_datetime(ts_ns, unit="ns", utc=True)
+    rets = pd.Series(equity, index=ts).resample(rule).last().dropna().pct_change().dropna()
+    if rets.empty:
+        return None
+    current = 0
+    longest = 0
+    for value in rets:
+        if float(value) < 0:
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 0
+    return int(longest)
+
+
+def top_period_return_share(equity: np.ndarray, ts_ns: np.ndarray, rule: str) -> Optional[float]:
+    if equity.size < 2 or equity[0] <= 0:
+        return None
+    ts = pd.to_datetime(ts_ns, unit="ns", utc=True)
+    rets = pd.Series(equity, index=ts).resample(rule).last().dropna().pct_change().dropna()
+    if rets.empty:
+        return None
+    total = float(equity[-1] / equity[0] - 1.0)
+    if total <= 0:
+        return None
+    best = float(rets.max())
+    return float(best / total)

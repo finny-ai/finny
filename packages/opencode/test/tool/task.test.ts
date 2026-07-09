@@ -18,12 +18,15 @@ import {
   completedIntradayWindow,
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalTaskText,
+  taskRegistryErrorText,
   TaskTool,
   type TaskPromptOps,
 } from "../../src/tool/task"
+import { WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { TaskState } from "@/task/state"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import path from "path"
 import fs from "fs/promises"
@@ -67,7 +70,7 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   )
 
 const it = testEffect(layer())
-const background = testEffect(layer({ experimentalBackgroundSubagents: true }))
+const background = testEffect(layer())
 
 function defer<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
@@ -277,6 +280,56 @@ describe("tool.task", () => {
       },
     },
   )
+
+  it.instance("records foreground subagent lifecycle in TaskState", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "Research QQQ news",
+          prompt: "Research QQQ 15m execution context.",
+          subagent_type: "news_agent",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ text: "news complete" }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id))
+      expect(tasks).toHaveLength(1)
+      expect(tasks[0]).toEqual(
+        expect.objectContaining({
+          id: result.metadata.sessionId,
+          parentSessionID: chat.id,
+          description: "Research QQQ news",
+          subagentType: "news_agent",
+          mode: "foreground",
+          status: TaskState.Status.completed,
+          resultSummary: "news complete",
+        }),
+      )
+      expect(tasks[0]?.startedAt).toBeNumber()
+      expect(tasks[0]?.finishedAt).toBeNumber()
+    }),
+  )
+
+  test("taskRegistryErrorText gives a retry-safe blocker instead of a raw sqlite error", () => {
+    const text = taskRegistryErrorText(new Error("FOREIGN KEY constraint failed"))
+    expect(text).toContain("BLOCKED: internal task registry error")
+    expect(text).toContain("Finny could not record its task lifecycle")
+    expect(text).toContain("Do not retry this task until the registry is healthy")
+    expect(text).toContain("FOREIGN KEY constraint failed")
+  })
 
   it.live("injects authoritative workspace context for data_extractor tasks", () =>
     provideTmpdirInstance((dir) =>
@@ -560,6 +613,165 @@ describe("tool.task", () => {
           expect(request.requested_symbols).toEqual(["DJT", "RUM", "GEO", "CXW"])
           expect(request.requested_start).toBe("2026-01-01")
           expect(request.requested_end).toBe("2026-06-29")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("blocks generated multi-year data windows when the workspace has no approved dates", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "qqq-1d-trend-following.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Research QQQ 1d trend following for equities.",
+            }),
+          )
+
+          const tool = yield* TaskTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "QQQ long history data extraction",
+              prompt:
+                "Fetch QQQ daily OHLCV from 2014-01-01 to 2026-07-08. Aim for the longest clean daily history you can get (>= 3000 bars desired).",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(false)
+          expect(result.output).toContain("BLOCKED: unapproved extended data window")
+          expect(result.output).toContain("Ask the user with the `question` tool")
+
+          const request = JSON.parse(
+            yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
+          )
+          expect(request.requested_symbol).toBe("QQQ")
+          expect(request.requested_interval).toBe("1d")
+          expect(request.requested_start).toBeUndefined()
+          expect(request.requested_end).toBeUndefined()
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("allows approved extended data windows after workspace prepare persists dates", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "btc-4h-trend-following.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Research BTC 4h trend following for crypto.",
+            }),
+          )
+
+          const taskTool = yield* TaskTool
+          const taskDef = yield* taskTool.init()
+
+          const blocked = yield* taskDef.execute(
+            {
+              description: "BTC data extraction",
+              prompt: "Fetch BTC 4h OHLCV from 2025-06-30 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps() },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          expect(blocked.output).toContain("BLOCKED: unapproved extended data window")
+
+          const workspaceTool = yield* WorkspacePrepareTool
+          const workspaceDef = yield* workspaceTool.init()
+          yield* workspaceDef.execute(
+            {
+              algorithmName: "btc-4h-trend-following",
+              symbol: "BTC.USD",
+              assetClass: "crypto",
+              interval: "4h",
+              startDate: "2025-06-30",
+              endDate: "2026-06-30",
+              strategyIntent: "trend following",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const request = JSON.parse(
+            yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
+          )
+          expect(request.requested_start).toBe("2025-06-30")
+          expect(request.requested_end).toBe("2026-06-30")
+
+          let seen: SessionPrompt.PromptInput | undefined
+          const allowed = yield* taskDef.execute(
+            {
+              description: "BTC data extraction approved",
+              prompt: "Fetch BTC 4h OHLCV from 2025-06-30 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(allowed.output).not.toContain("BLOCKED: unapproved extended data window")
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2025-06-30")
+          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-30")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1040,6 +1252,7 @@ describe("tool.task", () => {
           const slug = "spy-15m-batch.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
           const seenAgents: string[] = []
+          const metadataUpdates: Array<{ title?: string; metadata?: Record<string, any> }> = []
           const promptOps = stubOps({ onPrompt: (input) => seenAgents.push(input.agent ?? "") })
           const tool = yield* TaskTool
           const def = yield* tool.init()
@@ -1076,7 +1289,10 @@ describe("tool.task", () => {
               abort: new AbortController().signal,
               extra: { promptOps },
               messages: [],
-              metadata: () => Effect.void,
+              metadata: (input) =>
+                Effect.sync(() => {
+                  metadataUpdates.push(input)
+                }),
               ask: () => Effect.void,
             },
           )
@@ -1111,6 +1327,65 @@ describe("tool.task", () => {
                 subagentType: "sentiment_agent",
                 description: "Research SPY sentiment",
                 state: "completed",
+              }),
+            ]),
+          )
+          expect(metadataUpdates).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                title: "Mandatory evidence batch",
+                metadata: expect.objectContaining({
+                  batch: true,
+                  subagents: expect.arrayContaining([
+                    expect.objectContaining({
+                      subagentType: "data_extractor",
+                      description: "Extract SPY data",
+                      state: "running",
+                    }),
+                  ]),
+                }),
+              }),
+              expect.objectContaining({
+                title: "Mandatory evidence batch",
+                metadata: expect.objectContaining({
+                  batch: true,
+                  subagents: expect.arrayContaining([
+                    expect.objectContaining({
+                      subagentType: "news_agent",
+                      description: "Research SPY news",
+                      state: "running",
+                    }),
+                  ]),
+                }),
+              }),
+            ]),
+          )
+          const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id))
+          expect(tasks).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                subagentType: "data_extractor",
+                description: "Extract SPY data",
+                mode: "foreground",
+                status: TaskState.Status.blocked,
+              }),
+              expect.objectContaining({
+                subagentType: "news_agent",
+                description: "Research SPY news",
+                mode: "foreground",
+                status: TaskState.Status.completed,
+              }),
+              expect.objectContaining({
+                subagentType: "sec_agent",
+                description: "Research SPY SEC filings",
+                mode: "foreground",
+                status: TaskState.Status.completed,
+              }),
+              expect.objectContaining({
+                subagentType: "sentiment_agent",
+                description: "Research SPY sentiment",
+                mode: "foreground",
+                status: TaskState.Status.completed,
               }),
             ]),
           )
@@ -1677,34 +1952,33 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance("rejects background execution when the experiment is disabled", () =>
+  it.instance("allows background execution without an experiment flag", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
       const tool = yield* TaskTool
       const def = yield* tool.init()
 
-      const exit = yield* def
-        .execute(
-          {
-            description: "inspect bug",
-            prompt: "look into the cache key path",
-            subagent_type: "general",
-            background: true,
-          },
-          {
-            sessionID: chat.id,
-            messageID: assistant.id,
-            agent: "build",
-            abort: new AbortController().signal,
-            extra: { promptOps: stubOps() },
-            messages: [],
-            metadata: () => Effect.void,
-            ask: () => Effect.void,
-          },
-        )
-        .pipe(Effect.exit)
+      const result = yield* def.execute(
+        {
+          description: "inspect bug",
+          prompt: "look into the cache key path",
+          subagent_type: "general",
+          background: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
 
-      expect(Exit.isFailure(exit)).toBe(true)
+      expect(result.metadata.background).toBe(true)
+      expect(result.output).toContain('state="running"')
     }),
   )
 

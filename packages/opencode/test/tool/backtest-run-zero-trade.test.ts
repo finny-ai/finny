@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { zeroTradeLikelyCause } from "../../src/tool/backtest-run"
+import { zeroTradeLikelyCause } from "../../src/tool/backtest"
 
 describe("zero-trade likely-cause diagnosis", () => {
   test("diagnoses margin rejection across mixed buy AND sell attempts", () => {

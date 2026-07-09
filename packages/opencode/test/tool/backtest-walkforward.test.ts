@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { formatWalkForwardLines } from "../../src/tool/backtest-walkforward"
+import { formatWalkForwardLines } from "../../src/tool/backtest"
 
 describe("backtest walk-forward formatting", () => {
   test("renders nullable robustness probabilities as N/A", () => {
@@ -51,7 +51,7 @@ describe("backtest walk-forward formatting", () => {
     const output = lines.join("\n")
     expect(output).toContain("Deflated Sharpe prob:  N/A")
     expect(output).toContain("Prob. Sharpe ratio:    N/A")
-    expect(output).toContain("IS→OOS Sharpe change:  -0.80")
+    expect(output).toContain("IS->OOS Sharpe change: -0.80")
     expect(output).toContain("Robustness ratio:      0.33")
     expect(output).not.toContain("OOS decay ratio")
     expect(output).toContain("Multiple-test trials:  1")

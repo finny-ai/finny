@@ -37,7 +37,7 @@ def test_crucible_rollout_schema_blocks_are_serializable():
         explanation="mc",
     )
 
-    assert S.SCHEMA_VERSION == "3.2.0"
+    assert S.SCHEMA_VERSION == "3.4.0"
     assert nav.mark_to_market_nav == 10100.0
     assert costs.total_costs == 12.5
     assert profile.product_label == "Crucible 2.0"

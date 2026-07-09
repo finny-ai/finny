@@ -6,6 +6,8 @@ import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
 import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
+import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../backtest/verdict"
+import { generateReviewPacket } from "../backtest/review-packet"
 import { CRUCIBLE_2_0_PRODUCT_LABEL, representativeRerunForAlgorithm } from "../backtest/crucible-reruns"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import {
@@ -20,8 +22,93 @@ import {
   zeroTradeLikelyCause,
   type FailureDiagnosis,
 } from "./backtest-failure-diagnosis"
+import fs from "node:fs/promises"
+import path from "node:path"
 
 export const MAX_CONSECUTIVE_FAILED_BACKTESTS = 5
+export const BACKTEST_TOOL_IDS = new Set(["finny_backtest", "finny_backtest_run"])
+
+type WfMeta = {
+  n_folds: number
+  is_sharpe_mean: number
+  oos_sharpe_mean: number
+  oos_decay: number
+  is_to_oos_sharpe_change?: number
+  flag_threshold: number
+  flagged: boolean
+  deflated_sharpe: number | null
+  probabilistic_sharpe: number | null
+  stitched_oos_return?: number
+  stitched_oos_sharpe?: number
+  stitched_oos_trades?: number
+  stitched_oos_bars?: number
+  stitched_oos_coverage?: number
+  ruined_folds?: number
+  multiple_testing_trials?: number
+  folds: Array<{
+    fold: number
+    train_start: string
+    train_end: string
+    test_start: string
+    test_end: string
+    is_sharpe: number | null
+    oos_sharpe: number | null
+    is_return: number
+    oos_return: number
+    oos_trades?: number
+    oos_coverage?: number
+    ruined?: boolean
+  }>
+}
+
+function fmtNum(value: number | null | undefined, digits = 2): string {
+  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "N/A"
+}
+
+export function formatWalkForwardLines(input: {
+  algorithmName: string
+  version: number
+  duration: string
+  start: string
+  end: string
+  walkForward: WfMeta
+  benchmarkReturn?: number
+  alpha?: number
+  verdict: string
+  verdictReason: string
+}): string[] {
+  const walkForward = input.walkForward
+  const robustnessRatio = Number.isFinite(walkForward.is_sharpe_mean) && walkForward.is_sharpe_mean > 0 && Number.isFinite(walkForward.oos_sharpe_mean)
+    ? walkForward.oos_sharpe_mean / walkForward.is_sharpe_mean
+    : null
+  return [
+    `Algorithm: ${input.algorithmName} (v${input.version})`,
+    `Total window: ${input.duration} (${input.start} -> ${input.end})`,
+    `Rolling out-of-sample folds: ${walkForward.n_folds}`,
+    ``,
+    `IS Sharpe mean:        ${fmtNum(walkForward.is_sharpe_mean)}`,
+    `OOS Sharpe mean:       ${fmtNum(walkForward.oos_sharpe_mean)}`,
+    `IS->OOS Sharpe change: ${fmtNum(walkForward.is_to_oos_sharpe_change ?? (walkForward.oos_sharpe_mean - walkForward.is_sharpe_mean))}`,
+    `Robustness ratio:      ${fmtNum(robustnessRatio)}`,
+    `Stitched OOS return:   ${fmtNum((walkForward.stitched_oos_return ?? 0) * 100)}%`,
+    input.benchmarkReturn === undefined ? null : `Buy-hold return:       ${fmtNum(input.benchmarkReturn * 100)}%`,
+    input.alpha === undefined ? null : `Alpha vs buy-hold:     ${fmtNum(input.alpha * 100)} pts`,
+    `Stitched OOS Sharpe:   ${fmtNum(walkForward.stitched_oos_sharpe ?? walkForward.oos_sharpe_mean)}`,
+    `Stitched OOS trades:   ${walkForward.stitched_oos_trades ?? "N/A"}`,
+    `OOS coverage:          ${fmtNum((walkForward.stitched_oos_coverage ?? 0) * 100)}%`,
+    `Ruined folds:          ${walkForward.ruined_folds ?? 0}`,
+    `Multiple-test trials:  ${walkForward.multiple_testing_trials ?? 1}`,
+    `Deflated Sharpe prob:  ${fmtNum(walkForward.deflated_sharpe, 3)}`,
+    `Prob. Sharpe ratio:    ${fmtNum(walkForward.probabilistic_sharpe, 3)}`,
+    ``,
+    `fold\ttrain\ttest\tIS Sharpe\tOOS Sharpe\tOOS Return\tOOS Trades\tCoverage\tRuined`,
+    ...walkForward.folds.map(f =>
+      `${f.fold}\t${f.train_start.slice(0, 10)}->${f.train_end.slice(0, 10)}\t${f.test_start.slice(0, 10)}->${f.test_end.slice(0, 10)}\t${fmtNum(f.is_sharpe)}\t${fmtNum(f.oos_sharpe)}\t${(f.oos_return * 100).toFixed(2)}%\t${f.oos_trades ?? "N/A"}\t${fmtNum((f.oos_coverage ?? 0) * 100)}%\t${f.ruined ? "yes" : "no"}`,
+    ),
+    ``,
+    `Verdict: ${input.verdict.toUpperCase()} - ${input.verdictReason}`,
+  ].filter((line): line is string => line !== null)
+}
 
 const parameters = z.object({
   algorithmName: z
@@ -30,10 +117,10 @@ const parameters = z.object({
   duration: z
     .string()
     .regex(/^\d+[dwmy]$/i, "Duration must match <number><unit> where unit is d/w/m/y (e.g. '5d', '2w', '1m', '1y')")
-    .default("3m")
+    .default("6m")
     .describe(
       "Backtest period as <number><unit> where unit is d (days), w (weeks), m (months), or y (years). " +
-        "Examples: '5d' = 5 days, '2w' = 2 weeks, '1m' = 1 month, '3m' = 3 months, '1y' = 1 year.",
+        "Examples: '5d' = 5 days, '2w' = 2 weeks, '6m' = 6 months, '1y' = 1 year. 6m+ is recommended; shorter windows produce insufficient-history durability labels.",
     ),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
@@ -136,7 +223,7 @@ export function countConsecutiveFailedBacktests(
   let count = 0
   for (const msg of [...messages].reverse()) {
     for (const part of [...(msg.parts ?? [])].reverse()) {
-      if (part.type !== "tool" || part.tool !== "finny_backtest_run") continue
+      if (part.type !== "tool" || !BACKTEST_TOOL_IDS.has(String(part.tool))) continue
       if (part.state?.status !== "completed") continue
 
       const input = part.state.input
@@ -292,16 +379,33 @@ export function parseDataQualityFailure(
   }
 }
 
-export const BacktestRunTool = Tool.define(
-  "finny_backtest_run",
+async function mergeRunJson(input: {
+  artifactDir?: string
+  unifiedVerdict: string
+  verdictReasons: string[]
+}) {
+  if (!input.artifactDir) return
+  const file = path.join(input.artifactDir, "run.json")
+  try {
+    const raw = JSON.parse(await fs.readFile(file, "utf8"))
+    await fs.writeFile(file, JSON.stringify({
+      ...raw,
+      unifiedVerdict: input.unifiedVerdict,
+      verdictReasons: input.verdictReasons,
+    }, null, 2))
+  } catch {}
+}
+
+export const BacktestTool = Tool.define(
+  "finny_backtest",
   Effect.succeed({
     description:
-      "Run a backtest on a saved algorithm. Returns performance metrics including total return, max drawdown, Sharpe ratio, win rate, profit factor, and more. Use this to evaluate strategy performance before suggesting changes or going live.",
+      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, durability report, and review packet. This never grants paper eligibility; use finny_paper_approve after human review.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
         await ctx.ask({
-          permission: "finny_backtest_run",
+          permission: "finny_backtest",
           patterns: ["*"],
           always: ["*"],
           metadata: {},
@@ -420,6 +524,17 @@ export const BacktestRunTool = Tool.define(
         const savedBacktestDates = inferSavedBacktestDates(algo.config)
         const effectiveStartDate = params.startDate ?? savedBacktestDates.startDate
         const effectiveEndDate = params.endDate ?? savedBacktestDates.endDate
+        const totalDays = BacktestRunner.parseDurationDays(params.duration)
+        if (!totalDays || totalDays < 14) {
+          const failureDiagnosis = classifyEngineFailedFailure("window too short for >=2 folds")
+          return {
+            title: "Backtest failed",
+            output:
+              `Backtest of "${params.algorithmName}" failed:\nDuration "${params.duration}" is too short for >=2 walk-forward folds. Use a longer duration or coarser interval.\nVerdict: failed` +
+              formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
+            metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
+          }
+        }
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
@@ -428,7 +543,7 @@ export const BacktestRunTool = Tool.define(
           startDate: effectiveStartDate,
           endDate: effectiveEndDate,
           dataQualityMode: params.dataQualityMode,
-          robustness: { monteCarloPaths: 500, regimes: true },
+          robustness: { monteCarloPaths: 500, regimes: true, walkForwardFolds: 5 },
           sessionID: ctx.sessionID,
         })
 
@@ -456,7 +571,7 @@ export const BacktestRunTool = Tool.define(
                 `Strict data quality blocked "${params.algorithmName}".\n` +
                 `${dataQualityFailure.reason}\n` +
                 (details ? `\n${details}\n` : "") +
-                `\nStopped without running repair_outliers.\n\n${strictDataQualityNextSteps()}` +
+                `\nStopped without running repair_outliers.\nVerdict: failed\n\n${strictDataQualityNextSteps()}` +
                 formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
               metadata: {
                 ...emptyMeta,
@@ -470,14 +585,44 @@ export const BacktestRunTool = Tool.define(
             title: "Backtest failed",
             output:
               `Backtest of "${params.algorithmName}" failed:\n${result.error}` +
+              `\nVerdict: failed` +
               formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
             metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
 
         const r = result.results
+        const walkForward = r.v2?.walk_forward
+        if (!walkForward || walkForward.n_folds < 2) {
+          const failureDiagnosis = classifyEngineFailedFailure("not enough walk-forward folds")
+          return {
+            title: "Backtest failed",
+            output:
+              `Backtest of "${params.algorithmName}" failed:\nStrict engine did not produce enough walk-forward folds. Use a longer duration or coarser interval.\nVerdict: failed` +
+              formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
+            metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
+          }
+        }
         const representativeRerun = representativeRerunForAlgorithm(algo.name)
         const quality = evaluateBacktestQuality(r)
+        const walkForwardVerdict = deriveWalkForwardVerdict(walkForward)
+        const unified = composeBacktestVerdict({
+          quality,
+          walkForward: walkForwardVerdict,
+          consistency: r.v2?.consistency,
+          decay: r.v2?.alpha_decay,
+        })
+        await mergeRunJson({
+          artifactDir: r.artifactDir,
+          unifiedVerdict: unified.verdict,
+          verdictReasons: unified.reasons,
+        })
+        const reviewPacket = await generateReviewPacket({
+          algorithm: algo,
+          results: r,
+          verdict: unified.verdict,
+          reasons: unified.reasons,
+        })
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
         const fmtDollar = (v: number | null | undefined) => v == null ? "N/A" : `$${fmt(v)}`
@@ -634,6 +779,59 @@ export const BacktestRunTool = Tool.define(
         }
         lines.push(`────────────────────────────────────────────────────`)
 
+        lines.push(
+          ``,
+          `── WALK-FORWARD ───────────────────────────────────`,
+          ...formatWalkForwardLines({
+            algorithmName: algo.name,
+            version: algo.version,
+            duration: params.duration,
+            start: effectiveStartDate ?? r.v2?.start_ts?.slice(0, 10) ?? "N/A",
+            end: effectiveEndDate ?? r.v2?.end_ts?.slice(0, 10) ?? "N/A",
+            walkForward,
+            benchmarkReturn: r.benchmarkReturn,
+            alpha: r.alpha,
+            verdict: walkForwardVerdict.verdict,
+            verdictReason: walkForwardVerdict.reason,
+          }).slice(3),
+          `────────────────────────────────────────────────────`,
+        )
+
+        const consistency = r.v2?.consistency
+        lines.push(
+          ``,
+          `── CONSISTENCY ─────────────────────────────────────`,
+          `Label: ${consistency?.label ?? "insufficient"} | Confidence: ${consistency?.confidence ?? "low"}`,
+          `Equity R2: ${fmt(consistency?.equity_curve_r2, 3)} | K-ratio: ${fmt(consistency?.k_ratio, 3)} | Fold ICIR: ${fmt(consistency?.fold_icir, 3)}`,
+          `Periods: ${consistency?.n_periods ?? 0} (${consistency?.period_rule ?? "insufficient"}) | Positive periods: ${consistency?.pct_positive_periods == null ? "N/A" : fmtPct(consistency.pct_positive_periods)}`,
+          `Max losing-period streak: ${consistency?.max_consecutive_losing_periods ?? "N/A"} | Top-period return share: ${consistency?.top_period_return_share == null ? "N/A" : fmtPct(consistency.top_period_return_share)}`,
+        )
+        if (consistency?.reasons?.length) lines.push(`Reasons: ${consistency.reasons.join("; ")}`)
+        lines.push(`────────────────────────────────────────────────────`)
+
+        const decay = r.v2?.alpha_decay
+        lines.push(
+          ``,
+          `── ALPHA DECAY ─────────────────────────────────────`,
+          `Label: ${decay?.label ?? "insufficient"} | Confidence: ${decay?.confidence ?? "insufficient"}`,
+          `Mann-Kendall: ${decay?.mann_kendall?.trend ?? "insufficient"} | p=${fmt(decay?.mann_kendall?.p_value, 4)} | n=${decay?.mann_kendall?.n ?? 0}`,
+          `Fold slope: ${fmt(decay?.fold_slope?.slope, 3)} per fold | R2: ${fmt(decay?.fold_slope?.r_squared, 3)}`,
+          `Cost breakeven: ${decay?.breakeven?.months == null ? decay?.breakeven?.status ?? "insufficient_history" : `${fmt(decay.breakeven.months, 1)} months`} | Per-trade cost: ${fmtDollar(decay?.breakeven?.per_trade_cost)}`,
+        )
+        if (decay?.reasons?.length) lines.push(`Reasons: ${decay.reasons.join("; ")}`)
+        lines.push(`────────────────────────────────────────────────────`)
+
+        lines.push(
+          ``,
+          `── UNIFIED VERDICT ─────────────────────────────────`,
+          `Verdict: ${unified.verdict}` + (unified.verdict === "recommended_for_paper" ? " — awaiting user approval via finny_paper_approve" : ""),
+          `Reasons: ${unified.reasons.join("; ")}`,
+        )
+        if (reviewPacket.reviewDir) lines.push(`Review packet: ${reviewPacket.reviewDir}/review.md and review.html`)
+        if (reviewPacket.durabilityPath) lines.push(`Durability report: ${reviewPacket.durabilityPath}`)
+        if (reviewPacket.error) lines.push(`Review packet warning: ${reviewPacket.error}`)
+        lines.push(`────────────────────────────────────────────────────`)
+
         if (r.explanations || r.profileIdentity || (r.sensitivityOutcomes?.length ?? 0) > 0) {
           lines.push(``, `── CRUCIBLE 2.0 EXPLANATIONS ─────────────────────`)
           if (r.explanations) {
@@ -780,6 +978,12 @@ export const BacktestRunTool = Tool.define(
               endDate: effectiveEndDate,
             },
             results: { ...r, v2: undefined },
+            walkForward,
+            verdict: unified.verdict,
+            verdictReasons: unified.reasons,
+            consistencyLabel: r.v2?.consistency?.label,
+            decayLabel: r.v2?.alpha_decay?.label,
+            reviewPacket,
             ...(failureDiagnosis ? { failure_diagnosis: failureDiagnosis } : {}),
           },
         }

@@ -893,6 +893,8 @@ class Strategy:
         self.trend_up = True
         self.final_upper = None
         self.final_lower = None
+        self.atr = None
+        self.ready = False
         self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
@@ -902,6 +904,25 @@ class Strategy:
         pc = bar["prev_close"]
         if ph is None or pl is None or pc is None:
             return
+
+        # Trade at the current open using only trend/ATR state settled before
+        # this callback. The prev_* bar below updates state for the next open.
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if self.ready and self.atr is not None:
+            if pos == 0 and self.trend_up and open_px > 0:
+                stop_dist = self.mult * self.atr
+                by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+                by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+                qty = int(min(by_risk, by_cash))
+                if qty > 0:
+                    self.broker.buy(symbol, qty=qty)
+                    self.entry_px = open_px
+            elif pos > 0 and not self.trend_up:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
 
         # True range from completed bars only
         if self.prev_close_v is not None:
@@ -915,10 +936,10 @@ class Strategy:
         if len(self.trs) < self.period:
             return
 
-        atr = sum(self.trs) / len(self.trs)
+        self.atr = sum(self.trs) / len(self.trs)
         hl2 = (ph + pl) / 2.0
-        basic_upper = hl2 + self.mult * atr
-        basic_lower = hl2 - self.mult * atr
+        basic_upper = hl2 + self.mult * self.atr
+        basic_lower = hl2 - self.mult * self.atr
 
         # Ratchet the bands so they only tighten in the trend direction
         if self.final_upper is None or prev_settled_close is None:
@@ -935,22 +956,7 @@ class Strategy:
             self.trend_up = True
         elif pc < self.final_lower:
             self.trend_up = False
-
-        pos = self.broker.position(symbol)
-        equity = self.broker.equity()
-        cash = self.broker.cash()
-
-        if pos == 0 and self.trend_up and open_px > 0:
-            stop_dist = self.mult * atr
-            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = int(min(by_risk, by_cash))
-            if qty > 0:
-                self.broker.buy(symbol, qty=qty)
-                self.entry_px = open_px
-        elif pos > 0 and not self.trend_up:
-            self.broker.sell(symbol, qty=pos)
-            self.entry_px = 0.0
+        self.ready = True
 `
 
   const TTM_SQUEEZE = `\
@@ -977,7 +983,10 @@ class Strategy:
         self.closes = deque(maxlen=self.period)
         self.trs = deque(maxlen=self.period)
         self.prev_close_v = None
-        self.squeeze_on = False
+        self.squeeze_on = True
+        self.release_signal = False
+        self.momentum = 0.0
+        self.ready = False
         self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
@@ -987,6 +996,27 @@ class Strategy:
         pc = bar["prev_close"]
         if ph is None or pl is None or pc is None:
             return
+
+        # Execute at the current open from prior-window squeeze/momentum state.
+        # The completed bar below updates those signals for the next open.
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if self.ready:
+            if pos == 0 and self.release_signal and self.momentum > 0 and open_px > 0:
+                stop_dist = open_px * self.stop_pct
+                by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+                by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+                qty = int(min(by_risk, by_cash))
+                if qty > 0:
+                    self.broker.buy(symbol, qty=qty)
+                    self.entry_px = open_px
+            elif pos > 0:
+                stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+                if self.momentum < 0 or stop_hit:
+                    self.broker.sell(symbol, qty=pos)
+                    self.entry_px = 0.0
 
         if self.prev_close_v is not None:
             tr = max(ph - pl, abs(ph - self.prev_close_v), abs(pl - self.prev_close_v))
@@ -1000,8 +1030,10 @@ class Strategy:
             return
 
         n = len(self.closes)
+        if n <= 1:
+            return
         mean = sum(self.closes) / n
-        var = sum((x - mean) ** 2 for x in self.closes) / n
+        var = sum((x - mean) ** 2 for x in self.closes) / (n - 1)
         std = math.sqrt(var)
         atr = sum(self.trs) / len(self.trs)
 
@@ -1012,28 +1044,11 @@ class Strategy:
 
         was_squeezed = self.squeeze_on
         self.squeeze_on = bb_lower > kc_lower and bb_upper < kc_upper
-        released = was_squeezed and not self.squeeze_on
+        self.release_signal = was_squeezed and not self.squeeze_on
 
         # Momentum: last completed close relative to the window mean
-        momentum = pc - mean
-
-        pos = self.broker.position(symbol)
-        equity = self.broker.equity()
-        cash = self.broker.cash()
-
-        if pos == 0 and released and momentum > 0 and open_px > 0:
-            stop_dist = open_px * self.stop_pct
-            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = int(min(by_risk, by_cash))
-            if qty > 0:
-                self.broker.buy(symbol, qty=qty)
-                self.entry_px = open_px
-        elif pos > 0:
-            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
-            if momentum < 0 or stop_hit:
-                self.broker.sell(symbol, qty=pos)
-                self.entry_px = 0.0
+        self.momentum = pc - mean
+        self.ready = True
 `
 
   const OU_REVERSION = `\
@@ -1059,6 +1074,9 @@ class Strategy:
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.04))
         self.prices = deque(maxlen=self.period)
+        self.ready = False
+        self.mean_reverting = False
+        self.z_score = 0.0
         self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
@@ -1067,7 +1085,30 @@ class Strategy:
         if pc is None:
             return
 
+        # Execute at the current open from OU state computed before this bar.
+        # The completed close below updates z/half-life for the next open.
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if self.ready and self.mean_reverting:
+            if pos == 0 and self.z_score < -self.entry_z and open_px > 0:
+                stop_dist = open_px * self.stop_pct
+                by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
+                by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+                qty = int(min(by_risk, by_cash))
+                if qty > 0:
+                    self.broker.buy(symbol, qty=qty)
+                    self.entry_px = open_px
+            elif pos > 0:
+                stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+                if self.z_score > -self.exit_z or stop_hit:
+                    self.broker.sell(symbol, qty=pos)
+                    self.entry_px = 0.0
+
         self.prices.append(pc)
+        self.ready = False
+        self.mean_reverting = False
         if len(self.prices) < self.period:
             return
 
@@ -1096,25 +1137,9 @@ class Strategy:
         if half_life <= 0 or half_life > self.max_half_life:
             return
 
-        z = (pc - mean) / std
-
-        pos = self.broker.position(symbol)
-        equity = self.broker.equity()
-        cash = self.broker.cash()
-
-        if pos == 0 and z < -self.entry_z and open_px > 0:
-            stop_dist = open_px * self.stop_pct
-            by_risk = (equity * self.risk_pct) / stop_dist if stop_dist > 0 else 0.0
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = int(min(by_risk, by_cash))
-            if qty > 0:
-                self.broker.buy(symbol, qty=qty)
-                self.entry_px = open_px
-        elif pos > 0:
-            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
-            if z > -self.exit_z or stop_hit:
-                self.broker.sell(symbol, qty=pos)
-                self.entry_px = 0.0
+        self.z_score = (pc - mean) / std
+        self.mean_reverting = True
+        self.ready = True
 `
 
   const TSMOM_VOL = `\
@@ -1139,6 +1164,9 @@ class Strategy:
         self.bars_per_year = float(p.get("bars_per_year", 252))
         maxlen = max(self.lookback, self.vol_window) + 2
         self.closes = deque(maxlen=maxlen)
+        self.ready = False
+        self.momentum = 0.0
+        self.ann_vol = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -1146,7 +1174,26 @@ class Strategy:
         if pc is None:
             return
 
+        # Execute at the current open from prior momentum/volatility state.
+        # The completed close below updates state for the next open.
+        pos = self.broker.position(symbol)
+        equity = self.broker.equity()
+        cash = self.broker.cash()
+
+        if self.ready:
+            if self.momentum > 0 and open_px > 0:
+                # Vol-target scalar, capped at fully invested (long-only, no leverage)
+                scale = min(self.target_vol / self.ann_vol, 1.0) if self.ann_vol > 1e-6 else 0.0
+                by_target = (equity * scale) / open_px
+                by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
+                qty = int(min(by_target, by_cash))
+                if pos == 0 and qty > 0:
+                    self.broker.buy(symbol, qty=qty)
+            elif pos > 0 and self.momentum <= 0:
+                self.broker.sell(symbol, qty=pos)
+
         self.closes.append(pc)
+        self.ready = False
         need = max(self.lookback, self.vol_window) + 1
         if len(self.closes) < need:
             return
@@ -1156,35 +1203,26 @@ class Strategy:
         past = xs[-(self.lookback + 1)]
         if past <= 0:
             return
-        momentum = xs[-1] / past - 1.0
+        self.momentum = xs[-1] / past - 1.0
 
         # Realized volatility from recent bar-to-bar returns, annualized
-        rets = []
+        count = 0
+        total = 0.0
+        total_sq = 0.0
         for i in range(len(xs) - self.vol_window, len(xs)):
             prev = xs[i - 1]
             if prev > 0:
-                rets.append(xs[i] / prev - 1.0)
-        if len(rets) < 2:
+                ret = xs[i] / prev - 1.0
+                count += 1
+                total += ret
+                total_sq += ret * ret
+        if count < 2:
             return
-        rmean = sum(rets) / len(rets)
-        rvar = sum((r - rmean) ** 2 for r in rets) / (len(rets) - 1)
-        ann_vol = math.sqrt(rvar) * math.sqrt(self.bars_per_year)
-        if ann_vol <= 1e-6:
+        rmean = total / count
+        rvar = (total_sq - count * rmean * rmean) / (count - 1)
+        self.ann_vol = math.sqrt(max(rvar, 0.0)) * math.sqrt(self.bars_per_year)
+        if self.ann_vol <= 1e-6:
             return
-
-        pos = self.broker.position(symbol)
-        equity = self.broker.equity()
-        cash = self.broker.cash()
-
-        if momentum > 0 and open_px > 0:
-            # Vol-target scalar, capped at fully invested (long-only, no leverage)
-            scale = min(self.target_vol / ann_vol, 1.0)
-            by_target = (equity * scale) / open_px
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0.0
-            qty = int(min(by_target, by_cash))
-            if pos == 0 and qty > 0:
-                self.broker.buy(symbol, qty=qty)
-        elif pos > 0 and momentum <= 0:
-            self.broker.sell(symbol, qty=pos)
+        self.ready = True
 `
 }

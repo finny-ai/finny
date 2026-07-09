@@ -434,6 +434,47 @@ describe("run subagent data", () => {
     ])
   })
 
+  test("does not create a generic tab from partial foreground batch metadata", () => {
+    const data = createSubagentData()
+
+    bootstrapSubagentData({
+      data,
+      messages: [
+        {
+          parts: [
+            {
+              id: "batch-part-early",
+              sessionID: "parent-1",
+              messageID: "msg-batch-early",
+              type: "tool",
+              callID: "call-batch-early",
+              tool: "task",
+              state: {
+                status: "running",
+                input: {
+                  tasks: [
+                    { description: "Extract SPY data", subagent_type: "data_extractor" },
+                    { description: "Research SPY news", subagent_type: "news_agent" },
+                  ],
+                },
+                title: "Extract SPY data",
+                metadata: {
+                  sessionId: "child-data",
+                },
+                time: { start: 1 },
+              },
+            },
+          ],
+        },
+      ],
+      children: [],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(snapshotSubagentData(data).tabs).toEqual([])
+  })
+
   test("captures child activity and blocker metadata in the footer detail state", () => {
     const data = createSubagentData()
 

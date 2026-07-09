@@ -54,6 +54,7 @@ it.instance("returns default native agents when no config", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())
     const names = agents.map((a) => a.name)
+    expect(names).toContain("finny")
     expect(names).toContain("build")
     expect(names).toContain("research")
     expect(names).toContain("chat")
@@ -85,28 +86,38 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
-it.instance("returns Build, Research, and Chat as visible primary agents", () =>
+it.instance("returns Finny as the visible primary agent", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())
     const visibleModes = agents.filter((a) => a.mode !== "subagent" && !a.hidden).map((a) => a.name)
-    expect(visibleModes).toEqual(["build", "research", "chat"])
+    expect(visibleModes).toEqual(["finny"])
   }),
 )
 
-it.instance("research agent is a visible primary agent", () =>
+it.instance("legacy strategy agents are hidden primary agents", () =>
   Effect.gen(function* () {
+    const finny = yield* load((svc) => svc.get("finny"))
     const build = yield* load((svc) => svc.get("build"))
     const research = yield* load((svc) => svc.get("research"))
+    const chat = yield* load((svc) => svc.get("chat"))
+    expect(finny).toBeDefined()
     expect(build).toBeDefined()
     expect(research).toBeDefined()
+    expect(chat).toBeDefined()
+    expect(finny?.mode).toBe("primary")
+    expect(finny?.native).toBe(true)
+    expect(finny?.hidden).toBeUndefined()
     expect(build?.mode).toBe("primary")
     expect(build?.native).toBe(true)
-    expect(build?.hidden).toBeUndefined()
+    expect(build?.hidden).toBe(true)
     expect(research?.mode).toBe("primary")
     expect(research?.native).toBe(true)
-    expect(research?.hidden).toBe(false)
+    expect(research?.hidden).toBe(true)
+    expect(chat?.mode).toBe("primary")
+    expect(chat?.native).toBe(true)
+    expect(chat?.hidden).toBe(true)
     expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
-    expect(evalPerm(research, "finny_backtest_run")).toBe("deny")
+    expect(evalPerm(research, "finny_backtest")).toBe("deny")
     expect(evalPerm(research, "edit")).toBe("deny")
     expect(evalPerm(research, "bash")).toBe("deny")
   }),
@@ -192,6 +203,35 @@ it.instance("build agent can read Data Agent artifacts without write access", ()
     expect(Permission.evaluate("edit", nestedResearchFile, build!.permission).action).toBe("deny")
     expect(Permission.evaluate("write", dataFile, build!.permission).action).toBe("deny")
     expect(Permission.evaluate("read", missionFile, build!.permission).action).toBe("deny")
+  }),
+)
+
+it.instance("finny can read workspace files and only write control docs plus analysis scratch", () =>
+  Effect.gen(function* () {
+    const finny = yield* load((svc) => svc.get("finny"))
+    const workspace = path.join(algosRoot(), "qqq-1d-mean-reversion.abc12345")
+    const missionFile = path.join(workspace, "mission.md")
+    const todoFile = path.join(workspace, "todo.md")
+    const edgeFile = path.join(workspace, "edge_analysis.md")
+    const analysisFile = path.join(workspace, "analysis", "hypothesis_matrix.py")
+    const dataFile = path.join(workspace, "data", "stock", "QQQ.csv")
+    const strategyFile = path.join(workspace, "v01", "strategy.py")
+    const backtestFile = path.join(workspace, "v01", "backtest.json")
+
+    expect(Permission.evaluate("read", missionFile, finny!.permission).action).toBe("allow")
+    expect(Permission.evaluate("read", dataFile, finny!.permission).action).toBe("allow")
+    expect(Permission.evaluate("read", strategyFile, finny!.permission).action).toBe("allow")
+    expect(Permission.evaluate("external_directory", workspace, finny!.permission).action).toBe("allow")
+
+    for (const file of [missionFile, todoFile, edgeFile, analysisFile]) {
+      expect(Permission.evaluate("write", file, finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("edit", file, finny!.permission).action).toBe("allow")
+    }
+
+    for (const file of [dataFile, strategyFile, backtestFile]) {
+      expect(Permission.evaluate("write", file, finny!.permission).action).not.toBe("allow")
+      expect(Permission.evaluate("edit", file, finny!.permission).action).not.toBe("allow")
+    }
   }),
 )
 
@@ -504,8 +544,8 @@ it.instance(
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names[0]).toBe("chat")
-      expect(names.slice(1, 4)).toEqual(["build", "research", "portfolio_builder"])
-      expect(names.slice(4)).toEqual(names.slice(4).toSorted((a, b) => a.localeCompare(b)))
+      expect(names.slice(1, 5)).toEqual(["finny", "build", "research", "portfolio_builder"])
+      expect(names.slice(5)).toEqual(names.slice(5).toSorted((a, b) => a.localeCompare(b)))
     }),
   {
     config: {
@@ -711,17 +751,17 @@ it.instance(
   },
 )
 
-it.instance("defaultAgent returns build when no default_agent config", () =>
+it.instance("defaultAgent returns finny when no default_agent config", () =>
   Effect.gen(function* () {
     const agent = yield* load((svc) => svc.defaultAgent())
-    expect(agent).toBe("build")
+    expect(agent).toBe("finny")
   }),
 )
 
-it.instance("defaultInfo returns resolved build agent when no default_agent config", () =>
+it.instance("defaultInfo returns resolved finny agent when no default_agent config", () =>
   Effect.gen(function* () {
     const agent = yield* load((svc) => svc.defaultInfo())
-    expect(agent.name).toBe("build")
+    expect(agent.name).toBe("finny")
     expect(agent.mode).toBe("primary")
   }),
 )
@@ -741,7 +781,7 @@ it.instance(
 )
 
 it.instance(
-  "defaultAgent accepts hidden research compatibility alias from config",
+  "defaultAgent accepts hidden legacy strategy mode from config",
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
@@ -804,11 +844,11 @@ it.instance(
 )
 
 it.instance(
-  "defaultAgent returns chat when build is disabled and default_agent not set",
+  "defaultAgent returns finny when build is disabled and default_agent not set",
   () =>
     Effect.gen(function* () {
       const agent = yield* load((svc) => svc.defaultAgent())
-      expect(agent).toBe("chat")
+      expect(agent).toBe("finny")
     }),
   {
     config: {
@@ -826,6 +866,7 @@ it.instance(
     config: {
       agent: {
         build: { disable: true },
+        finny: { disable: true },
         research: { disable: true },
         chat: { disable: true },
         plan: { disable: true },

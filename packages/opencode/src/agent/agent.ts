@@ -15,6 +15,7 @@ import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
+import PROMPT_FINNY_RAW from "./prompt/finny.txt"
 import PROMPT_FINNY_BUILD_RAW from "./prompt/finny-build.txt"
 import PROMPT_FINNY_RESEARCH_RAW from "./prompt/finny-research.txt"
 import PROMPT_FINNY_CHAT_RAW from "./prompt/finny-chat.txt"
@@ -44,6 +45,7 @@ import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 
+const PROMPT_FINNY = renderPromptWithSymbols(PROMPT_FINNY_RAW)
 const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
 const PROMPT_FINNY_RESEARCH = renderPromptWithSymbols(PROMPT_FINNY_RESEARCH_RAW)
 const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
@@ -176,6 +178,9 @@ export const layer = Layer.effect(
           }
           return Permission.fromConfig(permission)
         }
+        const finnyPaperApprovalPrompt = Permission.fromConfig({
+          finny_paper_approve: "ask",
+        })
 
         const finnyBuildTools = [
           "question",
@@ -188,11 +193,34 @@ export const layer = Layer.effect(
           "finny_algorithm_versions",
           "finny_algorithm_export",
           "finny_algorithm_set_params",
-          "finny_backtest_run",
-          "finny_backtest_walkforward",
+          "finny_backtest",
           "finny_portfolio_backtest",
           "finny_get_quote",
           "webfetch",
+          "skill",
+        ]
+        const finnyModeTools = [
+          "question",
+          "task",
+          "bash",
+          "read",
+          "write",
+          "edit",
+          "todowrite",
+          "finny_workspace_prepare",
+          "finny_algorithm_scaffold",
+          "finny_algorithm_save",
+          "finny_algorithm_get",
+          "finny_algorithm_list",
+          "finny_algorithm_versions",
+          "finny_algorithm_export",
+          "finny_algorithm_set_params",
+          "finny_backtest",
+          "finny_portfolio_backtest",
+          "finny_get_quote",
+          "finny_get_history",
+          "webfetch",
+          "websearch",
           "skill",
         ]
         const finnyResearchTools = [
@@ -306,6 +334,40 @@ export const layer = Layer.effect(
           ]
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
+        function finnyUserAlgoWorkspaceReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const root = algosRoot()
+          const patterns = [
+            path.join(root, "*"),
+            path.join(root, "*/*"),
+            path.join(root, "*/*/*"),
+            path.join(root, "*/*/*/*"),
+            path.join(root, "*/*/*/*/*"),
+          ]
+          return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
+        }
+        function finnyUserAlgoWorkspaceWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const root = algosRoot()
+          const deny = [
+            path.join(root, "*"),
+            path.join(root, "*/*"),
+            path.join(root, "*/*/*"),
+            path.join(root, "*/*/*/*"),
+            path.join(root, "*/*/*/*/*"),
+          ]
+          const allow = [
+            path.join(root, "*/mission.md"),
+            path.join(root, "*/todo.md"),
+            path.join(root, "*/edge_analysis.md"),
+            path.join(root, "*/analysis"),
+            path.join(root, "*/analysis/*"),
+            path.join(root, "*/analysis/*/*"),
+            path.join(root, "*/analysis/*/*/*"),
+          ]
+          return {
+            ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
+            ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
+          }
+        }
         function finnyUserAlgoSecPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
           const root = algosRoot()
           const patterns = [path.join(root, "*/data/sec/*"), path.join(root, "*/data/sec")]
@@ -339,6 +401,12 @@ export const layer = Layer.effect(
           read: finnyUserAlgoDataPatterns(),
           external_directory: finnyUserAlgoDataPatterns(),
         })
+        const finnySessionWorkspaceAccess = Permission.fromConfig({
+          read: finnyUserAlgoWorkspaceReadPatterns(),
+          external_directory: finnyUserAlgoWorkspaceReadPatterns(),
+          write: finnyUserAlgoWorkspaceWritePatterns(),
+          edit: finnyUserAlgoWorkspaceWritePatterns(),
+        })
         const finnySessionNewsAccess = Permission.fromConfig({
           read: finnyUserAlgoNewsReadPatterns(),
           write: finnyUserAlgoNewsWritePatterns(),
@@ -370,6 +438,35 @@ export const layer = Layer.effect(
           },
         })
         const agents: Record<string, Info> = {
+          finny: {
+            name: "finny",
+            description:
+              "Finny strategy mode. Researches, builds, validates, backtests, and walk-forward tests trading strategies.",
+            color: "#f97316",
+            options: {},
+            prompt: PROMPT_FINNY,
+            permission: Permission.merge(
+              defaults,
+              finnyToolBundle(finnyModeTools, ["data_extractor", "news_agent", "sec_agent", "sentiment_agent"]),
+              Permission.fromConfig({
+                question: "allow",
+              }),
+              user,
+              finnyTemplateReadAccess,
+              finnySessionDataReadAccess,
+              finnySessionNewsAccess,
+              finnySessionSecAccess,
+              finnySessionSentimentAccess,
+              finnySessionWorkspaceAccess,
+              finnySecretReadDeny,
+              finnyPaperApprovalPrompt,
+              Permission.fromConfig({
+                apply_patch: "deny",
+              }),
+            ),
+            mode: "primary",
+            native: true,
+          },
           build: {
             name: "build",
             description: "Build mode. Generates trading algorithms immediately based on your specifications.",
@@ -392,9 +489,11 @@ export const layer = Layer.effect(
               user,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
+              finnyPaperApprovalPrompt,
             ),
             mode: "primary",
             native: true,
+            hidden: true,
           },
           research: {
             name: "research",
@@ -410,7 +509,7 @@ export const layer = Layer.effect(
             ),
             mode: "primary",
             native: true,
-            hidden: false,
+            hidden: true,
           },
           chat: {
             name: "chat",
@@ -426,6 +525,7 @@ export const layer = Layer.effect(
             ),
             mode: "primary",
             native: true,
+            hidden: true,
           },
           portfolio_builder: {
             name: "portfolio_builder",
@@ -531,7 +631,7 @@ export const layer = Layer.effect(
           researcher: {
             name: "researcher",
             description:
-              "Compatibility alias for news_agent. Prefer task(subagent_type=\"news_agent\") for current news/context work.",
+              'Compatibility alias for news_agent. Prefer task(subagent_type="news_agent") for current news/context work.',
             color: "#8b5cf6",
             options: {},
             prompt: PROMPT_FINNY_NEWS_AGENT,
@@ -690,10 +790,11 @@ export const layer = Layer.effect(
         })
 
         const primaryOrder = new Map([
-          ["build", 0],
-          ["research", 1],
-          ["chat", 2],
-          ["portfolio_builder", 3],
+          ["finny", 0],
+          ["build", 1],
+          ["research", 2],
+          ["chat", 3],
+          ["portfolio_builder", 4],
         ])
 
         const list = Effect.fnUntraced(function* () {
@@ -702,7 +803,7 @@ export const layer = Layer.effect(
             agents,
             values(),
             sortBy(
-              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
+              [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "finny"), "desc"],
               [(x) => primaryOrder.get(x.name) ?? 100, "asc"],
               [(x) => x.name, "asc"],
             ),
@@ -715,11 +816,11 @@ export const layer = Layer.effect(
             const agent = agents[c.default_agent]
             if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
             if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
-            if (agent.hidden === true && agent.name !== "research")
+            if (agent.hidden === true && !["build", "research", "chat"].includes(agent.name))
               throw new Error(`default agent "${c.default_agent}" is hidden`)
             return agent
           }
-          const visiblePreferred = ["build", "chat", "research"]
+          const visiblePreferred = ["finny", "build", "chat", "research"]
             .map((name) => agents[name])
             .find((a) => a && a.mode !== "subagent" && a.hidden !== true)
           if (visiblePreferred) return visiblePreferred

@@ -20,6 +20,7 @@ const ROOT_DOCS: Array<{ file: string; label: string }> = [
   { file: "prefs.md", label: "prefs.md" },
   { file: "decisions.md", label: "decisions.md" },
   { file: "memory.md", label: "memory.md" },
+  { file: "review.md", label: "review.md" },
 ]
 
 async function readOptional(path: string): Promise<string | undefined> {

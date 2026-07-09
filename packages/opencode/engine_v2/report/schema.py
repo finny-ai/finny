@@ -15,6 +15,7 @@ CHANGELOG:
          OOS, warm-up, and trial-count metadata.
   3.3.0  benchmark block adds same-window benchmark total return and strategy
          excess return for artifact-grounded comparison.
+  3.4.0  durability blocks add consistency and alpha-decay diagnostics.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "3.3.0"
+SCHEMA_VERSION = "3.4.0"
 
 
 @dataclass
@@ -193,6 +194,63 @@ class StabilityMetrics:
     rolling_sharpe_mean: float
     rolling_sharpe_min: float
     monthly_returns: Dict[str, Dict[str, float]]  # year -> month -> return
+
+
+@dataclass
+class ConsistencyMetrics:
+    equity_curve_r2: float
+    k_ratio: float
+    fold_icir: Optional[float]
+    rolling_sharpe_mean: Optional[float]
+    rolling_sharpe_min: Optional[float]
+    rolling_sharpe_max: Optional[float]
+    period_rule: Optional[str]
+    pct_positive_periods: Optional[float]
+    max_consecutive_losing_periods: Optional[int]
+    top_period_return_share: Optional[float]
+    n_periods: int
+    label: str
+    confidence: str
+    reasons: List[str] = field(default_factory=list)
+
+
+@dataclass
+class MannKendallMetrics:
+    trend: str
+    s: int
+    z: Optional[float]
+    p_value: Optional[float]
+    n: int
+    reason: Optional[str] = None
+
+
+@dataclass
+class FoldSlopeMetrics:
+    slope: float
+    r_squared: float
+    n: int
+
+
+@dataclass
+class BreakevenProjectionMetrics:
+    status: str
+    months: Optional[float]
+    slope: Optional[float]
+    latest_gross_expectancy: Optional[float]
+    per_trade_cost: Optional[float]
+    n_months: int
+    n_trades: int
+    reason: Optional[str] = None
+
+
+@dataclass
+class AlphaDecayMetrics:
+    mann_kendall: MannKendallMetrics
+    fold_slope: Optional[FoldSlopeMetrics]
+    breakeven: BreakevenProjectionMetrics
+    label: str
+    confidence: str
+    reasons: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -405,6 +463,8 @@ class Results:
     benchmark: Optional[BenchmarkMetrics] = None
     monte_carlo: Optional[MonteCarloSummary] = None
     walk_forward: Optional[WalkForwardSummary] = None
+    consistency: Optional[ConsistencyMetrics] = None
+    alpha_decay: Optional[AlphaDecayMetrics] = None
     regimes: Optional[List[RegimeBreakdown]] = None
     execution_config: Optional[Dict[str, Any]] = None
     diagnostics: Optional[Dict[str, Any]] = None

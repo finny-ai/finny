@@ -58,7 +58,7 @@ describe("sec_agent subagent", () => {
       expect(Permission.evaluate("read", "algos/_template/README.md", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("read", ".env", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("finny_algorithm_save", "", info!.permission).action).toBe("deny")
-      expect(Permission.evaluate("finny_backtest_run", "", info!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_backtest", "", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "", info!.permission).action).toBe("deny")
     }),
   )
@@ -89,7 +89,7 @@ describe("sec_agent prompt contract", () => {
 
   test("forbids strategy building and legal advice", () => {
     expect(PROMPT_SEC_AGENT).toContain("NOT a strategy builder")
-    expect(PROMPT_SEC_AGENT).not.toContain("finny_backtest_run")
+    expect(PROMPT_SEC_AGENT).not.toContain("finny_backtest")
     expect(PROMPT_SEC_AGENT).not.toContain("finny_algorithm_save")
     expect(PROMPT_SEC_AGENT).toContain("legal or compliance advice")
   })

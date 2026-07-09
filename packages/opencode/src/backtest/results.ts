@@ -169,6 +169,58 @@ export namespace EngineV2 {
     monthly_returns: Record<string, Record<string, number>>
   }
 
+  export interface ConsistencyMetrics {
+    equity_curve_r2: number
+    k_ratio: number
+    fold_icir: number | null
+    rolling_sharpe_mean: number | null
+    rolling_sharpe_min: number | null
+    rolling_sharpe_max: number | null
+    period_rule: string | null
+    pct_positive_periods: number | null
+    max_consecutive_losing_periods: number | null
+    top_period_return_share: number | null
+    n_periods: number
+    label: "insufficient" | "streak_dependent" | "consistent" | "lumpy"
+    confidence: "high" | "medium" | "low"
+    reasons?: string[]
+  }
+
+  export interface MannKendallMetrics {
+    trend: "increasing" | "decreasing" | "no_trend" | "insufficient"
+    s: number
+    z: number | null
+    p_value: number | null
+    n: number
+    reason?: string | null
+  }
+
+  export interface FoldSlopeMetrics {
+    slope: number
+    r_squared: number
+    n: number
+  }
+
+  export interface BreakevenProjectionMetrics {
+    status: "insufficient_history" | "projected" | "no_measured_decay"
+    months: number | null
+    slope: number | null
+    latest_gross_expectancy: number | null
+    per_trade_cost: number | null
+    n_months: number
+    n_trades: number
+    reason?: string | null
+  }
+
+  export interface AlphaDecayMetrics {
+    mann_kendall: MannKendallMetrics
+    fold_slope: FoldSlopeMetrics | null
+    breakeven: BreakevenProjectionMetrics
+    label: "insufficient" | "decaying" | "mild_decay" | "stable"
+    confidence: "high" | "medium" | "low" | "insufficient"
+    reasons?: string[]
+  }
+
   export interface MonteCarloSummary {
     n_paths: number
     method: "trade_shuffle" | "block_bootstrap"
@@ -393,6 +445,8 @@ export namespace EngineV2 {
     benchmark?: BenchmarkMetrics | null
     monte_carlo?: MonteCarloSummary | null
     walk_forward?: WalkForwardSummary | null
+    consistency?: ConsistencyMetrics | null
+    alpha_decay?: AlphaDecayMetrics | null
     regimes?: RegimeBreakdown[] | null
     execution_config?: ExecutionConfig | null
     diagnostics?: Record<string, unknown> | null

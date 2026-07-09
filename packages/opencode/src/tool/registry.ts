@@ -23,9 +23,10 @@ import { AlgorithmScaffoldTool } from "./algorithm-scaffold"
 import { AlgorithmVersionsTool } from "./algorithm-versions"
 import { AlgorithmExportTool } from "./algorithm-export"
 import { BrokerageSwitchTool } from "./brokerage-switch"
-import { BacktestRunTool } from "./backtest-run"
+import { WorkspacePrepareTool } from "./workspace-prepare"
+import { BacktestTool } from "./backtest"
 import { BacktestHistoryTool } from "./backtest-history"
-import { BacktestWalkforwardTool } from "./backtest-walkforward"
+import { PaperApproveTool } from "./paper-approve"
 import { BacktestSweepTool } from "./backtest-sweep"
 import { MonitorSnapshotTool } from "./monitor-snapshot"
 import { ScheduleSubagentTool } from "./schedule-subagent"
@@ -140,9 +141,10 @@ export const layer = Layer.effect(
     const algorithmVersions = yield* AlgorithmVersionsTool
     const algorithmExport = yield* AlgorithmExportTool
     const brokerageSwitch = yield* BrokerageSwitchTool
-    const backtestRun = yield* BacktestRunTool
+    const workspacePrepare = yield* WorkspacePrepareTool
+    const backtest = yield* BacktestTool
     const backtestHistory = yield* BacktestHistoryTool
-    const backtestWalkforward = yield* BacktestWalkforwardTool
+    const paperApprove = yield* PaperApproveTool
     const backtestSweep = yield* BacktestSweepTool
     const monitorSnapshot = yield* MonitorSnapshotTool
     const scheduleSubagent = yield* ScheduleSubagentTool
@@ -270,9 +272,10 @@ export const layer = Layer.effect(
           algorithmVersions: Tool.init(algorithmVersions),
           algorithmExport: Tool.init(algorithmExport),
           brokerageSwitch: Tool.init(brokerageSwitch),
-          backtestRun: Tool.init(backtestRun),
+          workspacePrepare: Tool.init(workspacePrepare),
+          backtest: Tool.init(backtest),
           backtestHistory: Tool.init(backtestHistory),
-          backtestWalkforward: Tool.init(backtestWalkforward),
+          paperApprove: Tool.init(paperApprove),
           backtestSweep: Tool.init(backtestSweep),
           monitorSnapshot: Tool.init(monitorSnapshot),
           scheduleSubagent: Tool.init(scheduleSubagent),
@@ -312,9 +315,10 @@ export const layer = Layer.effect(
             tool.algorithmVersions,
             tool.algorithmExport,
             tool.brokerageSwitch,
-            tool.backtestRun,
+            tool.workspacePrepare,
+            tool.backtest,
             tool.backtestHistory,
-            tool.backtestWalkforward,
+            tool.paperApprove,
             tool.backtestSweep,
             tool.monitorSnapshot,
             tool.scheduleSubagent,

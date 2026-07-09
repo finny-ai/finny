@@ -23,7 +23,7 @@ type ScaffoldMetadata = {
 }
 
 export function scaffoldValidationOptions(templateType: z.infer<typeof parameters>["template_type"]) {
-  return { skipSmokeTest: templateType === "custom" || templateType === "golden-cross" }
+  return { skipSmokeTest: new Set<string>(["custom", "dca", "golden-cross"]).has(templateType) }
 }
 
 export const AlgorithmScaffoldTool = Tool.define(

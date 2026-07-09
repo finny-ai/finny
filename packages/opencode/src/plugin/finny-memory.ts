@@ -72,6 +72,7 @@ function progressStepForTool(part: any): string | null {
     }
     case "finny_algorithm_save":
       return version ? `Saved strategy ${version}` : "Saved strategy"
+    case "finny_backtest":
     case "finny_backtest_run":
       return version ? `Backtested ${version}` : "Ran backtest"
     default:

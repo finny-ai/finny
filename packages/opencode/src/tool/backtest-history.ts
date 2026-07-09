@@ -81,8 +81,8 @@ export const BacktestHistoryTool = Tool.define(
 
         if (entries.length === 0) {
           const msg = params.algorithmName
-            ? `No backtest history found for "${params.algorithmName}". Run a backtest first with finny_backtest_run.`
-            : "No backtest history found. Run a backtest first with finny_backtest_run."
+            ? `No backtest history found for "${params.algorithmName}". Run a backtest first with finny_backtest.`
+            : "No backtest history found. Run a backtest first with finny_backtest."
           return {
             title: "No backtest history",
             output: msg,

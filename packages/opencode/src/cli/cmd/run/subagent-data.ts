@@ -379,6 +379,9 @@ function syncTaskTab(data: SubagentData, part: ToolPart, children?: Set<string>)
   }
 
   const batchChanged = syncBatchTaskTabs(data, part, children)
+  if (Array.isArray(objectValue(part.state.input).tasks)) {
+    return batchChanged
+  }
   if (Array.isArray(metadata(part, "subagents"))) {
     return batchChanged
   }

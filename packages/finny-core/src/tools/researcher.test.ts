@@ -373,7 +373,7 @@ describe("main agent prompts reference researcher", () => {
     expect(content).toContain("You are Finny Build: the implementation agent for trading strategies.")
     expect(content).toContain("Mandatory Pre-Build Subagents")
     expect(content).toContain("Save with `finny_algorithm_save`")
-    expect(content).toContain("Run `finny_backtest_run`")
+    expect(content).toContain("Run `finny_backtest`")
   })
 
   test("Research prompt plans strategies without saving or backtesting", async () => {

@@ -27,7 +27,7 @@ const parameters = z.object({
     .string()
     .regex(/^\d+[dwmy]$/i)
     .default("3m")
-    .describe("Backtest period for each combo. Same format as finny_backtest_run."),
+    .describe("Backtest period for each combo. Same format as finny_backtest."),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
     .default("1h")

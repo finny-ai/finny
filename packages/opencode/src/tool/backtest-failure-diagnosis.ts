@@ -491,8 +491,10 @@ export function priorBacktestsHadMetrics(
   return [...messages].reverse().some((msg) => [...(msg.parts ?? [])].reverse().some(backtestPartHasMetrics))
 }
 
+const BACKTEST_TOOL_IDS = new Set(["finny_backtest", "finny_backtest_run"])
+
 function isCompletedBacktestRun(part: NonNullable<BacktestMessageLike["parts"]>[number]): boolean {
-  return part.type === "tool" && part.tool === "finny_backtest_run" && part.state?.status === "completed"
+  return part.type === "tool" && BACKTEST_TOOL_IDS.has(String(part.tool)) && part.state?.status === "completed"
 }
 
 function backtestPartHasMetrics(part: NonNullable<BacktestMessageLike["parts"]>[number]): boolean {

@@ -6,7 +6,7 @@ import {
   parseDataQualityFailure,
   repairOutliersBlockMessage,
   strictDataQualityNextSteps,
-} from "../../src/tool/backtest-run"
+} from "../../src/tool/backtest"
 import { classifyConceptExhaustedFailure } from "../../src/tool/backtest-failure-diagnosis"
 
 function backtestPart(algorithmName: string, output: string) {
@@ -14,7 +14,7 @@ function backtestPart(algorithmName: string, output: string) {
     parts: [
       {
         type: "tool",
-        tool: "finny_backtest_run",
+        tool: "finny_backtest",
         state: {
           status: "completed",
           input: { algorithmName },
@@ -77,7 +77,7 @@ describe("backtest failure budget", () => {
       parts: [
         {
           type: "tool",
-          tool: "finny_backtest_run",
+          tool: "finny_backtest",
           state: {
             status: "completed",
             input: { algorithmName, interval },

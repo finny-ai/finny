@@ -1807,8 +1807,7 @@ if __name__ == "__main__":
     const exec = results.v2?.execution_config as any
     if (spec?.assetClass === "crypto_perp" && (!exec?.funding_enabled || !exec?.liquidation_enabled)) return "backtested"
     const quality = evaluateBacktestQuality(results)
-    if (quality.label === "paper_eligible") return "paper_eligible"
-    if (quality.label === "candidate") return "robustness_passed"
+    if (quality.label === "paper_eligible" || quality.label === "candidate") return "robustness_passed"
     return "backtested"
   }
 
@@ -1882,6 +1881,8 @@ if __name__ == "__main__":
 
     await copyIfExists(path.join(input.tmpDir, "results.json"), path.join(base, "results.json"))
     await copyIfExists(path.join(input.tmpDir, "equity.csv"), path.join(base, "equity.csv"))
+    await copyIfExists(path.join(input.tmpDir, "finny_evidence_equity.csv"), path.join(base, "finny_evidence_equity.csv"))
+    await copyIfExists(path.join(input.tmpDir, "rolling_sharpe.csv"), path.join(base, "rolling_sharpe.csv"))
     await copyIfExists(path.join(input.tmpDir, PROCESSED_OHLCV_CSV), path.join(base, PROCESSED_OHLCV_CSV))
     await copyIfExists(path.join(input.tmpDir, "trades.csv"), path.join(base, "trades.csv"))
     await copyIfExists(path.join(input.tmpDir, "diagnostics.csv"), path.join(base, "diagnostics.csv"))
@@ -2252,18 +2253,6 @@ if __name__ == "__main__":
           assumptions,
           calendar: assetSpec.calendar,
         })
-        await persistStrictRunArtifacts({
-          tmpDir,
-          runId,
-          algorithm,
-          config,
-          validation,
-          results,
-          duration,
-          interval,
-          capital,
-          seed: effectiveSeed,
-        })
         await persistBacktestEvidenceOrReport({
           tmpDir,
           runId,
@@ -2278,6 +2267,18 @@ if __name__ == "__main__":
           source,
           benchmark,
           calendar: assetSpec.calendar,
+        })
+        await persistStrictRunArtifacts({
+          tmpDir,
+          runId,
+          algorithm,
+          config,
+          validation,
+          results,
+          duration,
+          interval,
+          capital,
+          seed: effectiveSeed,
         })
 
         emit({

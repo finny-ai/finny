@@ -78,7 +78,7 @@ describe("sentiment_agent subagent", () => {
       expect(Permission.evaluate("read", "algos/_template/README.md", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("read", ".env", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("finny_algorithm_save", "", info!.permission).action).toBe("deny")
-      expect(Permission.evaluate("finny_backtest_run", "", info!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_backtest", "", info!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "", info!.permission).action).toBe("deny")
     }),
   )

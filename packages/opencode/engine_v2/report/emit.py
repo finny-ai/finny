@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -16,6 +16,7 @@ import pandas as pd
 from ..core.arrays import MarketSnapshot
 from ..execution.fills import Fill
 from ..metrics import benchmark as M_benchmark
+from ..metrics import consistency as M_consistency
 from ..metrics import drawdown as M_dd
 from ..metrics import exposure as M_exposure
 from ..metrics import ratios as M_ratios
@@ -23,6 +24,7 @@ from ..metrics import returns as M_returns
 from ..metrics import risk as M_risk
 from ..metrics import stability as M_stability
 from ..metrics import trade as M_trade
+from ..robustness import decay as M_decay
 from ..portfolio.attribution import per_symbol
 from ..portfolio.positions import ClosedTrade
 from ..runtime.broker import PortfolioBroker
@@ -64,6 +66,55 @@ def _gross_exposure_history(broker: PortfolioBroker, snap: MarketSnapshot, equit
     # Best available proxy: 1 when in any position at end of run, scaled.
     return np.where(equity > 0, 1.0, 0.0) * 0.0  # zero placeholder; replaced below
     # NOTE: filled in by callers that track exposure during run.
+
+
+@dataclass(frozen=True)
+class DurabilityBlockInput:
+    equity: np.ndarray
+    ts_ns: np.ndarray
+    returns: np.ndarray
+    bars_per_year: float
+    walk_forward: Optional[Any]
+    rolling_sharpe_series: np.ndarray
+    trades: List[ClosedTrade]
+    exposure: S.ExposureMetrics
+
+
+def _build_consistency_block(input: DurabilityBlockInput) -> Optional[S.ConsistencyMetrics]:
+    metrics = M_consistency.compute_consistency(
+        M_consistency.ConsistencyInput(
+            equity=input.equity,
+            ts_ns=input.ts_ns,
+            returns=input.returns,
+            bars_per_year=input.bars_per_year,
+            walk_forward=input.walk_forward,
+            rolling_sharpe=input.rolling_sharpe_series,
+        )
+    )
+    return S.ConsistencyMetrics(**metrics) if metrics is not None else None
+
+
+def _build_decay_block(input: DurabilityBlockInput) -> Optional[S.AlphaDecayMetrics]:
+    metrics = M_decay.compute_alpha_decay(
+        M_decay.AlphaDecayInput(
+            rolling_sharpe=input.rolling_sharpe_series,
+            ts_ns=input.ts_ns,
+            walk_forward=input.walk_forward,
+            trades=input.trades,
+            exposure=input.exposure,
+            window=90,
+        )
+    )
+    if metrics is None:
+        return None
+    return S.AlphaDecayMetrics(
+        mann_kendall=S.MannKendallMetrics(**metrics["mann_kendall"]),
+        fold_slope=S.FoldSlopeMetrics(**metrics["fold_slope"]) if metrics.get("fold_slope") else None,
+        breakeven=S.BreakevenProjectionMetrics(**metrics["breakeven"]),
+        label=metrics["label"],
+        confidence=metrics["confidence"],
+        reasons=metrics.get("reasons", []),
+    )
 
 
 def assemble(
@@ -166,7 +217,13 @@ def assemble(
     ex_block = S.ExposureMetrics(**ex)
 
     # Stability
-    rsh_mean, rsh_min, _ = M_stability.rolling_sharpe(returns, bars_per_year, window=90)
+    rolling_sharpe_series = M_stability.rolling_sharpe_series(returns, bars_per_year, window=90)
+    if rolling_sharpe_series.size:
+        rsh_mean = float(rolling_sharpe_series.mean())
+        rsh_min = float(rolling_sharpe_series.min())
+    else:
+        rsh_mean = 0.0
+        rsh_min = 0.0
     stab_block = S.StabilityMetrics(
         equity_curve_r2=M_stability.equity_r2(equity),
         rolling_sharpe_window=90,
@@ -307,6 +364,18 @@ def assemble(
     regimes_block = None
     if regimes is not None:
         regimes_block = [S.RegimeBreakdown(**asdict(r)) for r in regimes]
+    durability_input = DurabilityBlockInput(
+        equity=equity,
+        ts_ns=ts_ns,
+        returns=returns,
+        bars_per_year=bars_per_year,
+        walk_forward=walk_forward,
+        rolling_sharpe_series=rolling_sharpe_series,
+        trades=trades,
+        exposure=ex_block,
+    )
+    consistency_block = _build_consistency_block(durability_input)
+    decay_block = _build_decay_block(durability_input)
     asset_spec_block = None
     if run_metadata and isinstance(run_metadata.get("asset_spec"), dict):
         asset_spec_block = S.AssetSpecReport(**{
@@ -373,7 +442,8 @@ def assemble(
         drawdown=dd_block, trade=trade_block, exposure=ex_block, stability=stab_block,
         trades=trades_rows, open_trades=open_trade_rows, per_symbol=attrib_rows, data_quality=data_quality,
         benchmark=bench_block, monte_carlo=mc_block,
-        walk_forward=wf_block, regimes=regimes_block,
+        walk_forward=wf_block, consistency=consistency_block,
+        alpha_decay=decay_block, regimes=regimes_block,
         execution_config=execution_config,
         diagnostics={
             **broker.diagnostics(),
@@ -419,6 +489,7 @@ def assemble(
 def write_artifacts(
     out_dir: Path, results: S.Results, equity: np.ndarray, ts_ns: np.ndarray,
     diagnostics: List[Dict[str, Any]], broker: Optional[PortfolioBroker] = None,
+    bars_per_year: Optional[float] = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     results_dict = results.to_dict()
@@ -432,6 +503,20 @@ def write_artifacts(
     (out_dir / "results.json").write_text(json.dumps(sanitized, indent=2, default=str, allow_nan=False))
     eq_df = pd.DataFrame({"ts": pd.to_datetime(ts_ns, unit="ns", utc=True), "equity": equity})
     eq_df.to_csv(out_dir / "equity.csv", index=False)
+    returns = M_returns.bar_returns(equity)
+    rolling = M_stability.rolling_sharpe_series(
+        returns,
+        float(bars_per_year) if bars_per_year is not None else 252.0,
+        window=results.stability.rolling_sharpe_window,
+    )
+    if rolling.size and ts_ns.size >= results.stability.rolling_sharpe_window + rolling.size:
+        rolling_ts = ts_ns[results.stability.rolling_sharpe_window:results.stability.rolling_sharpe_window + rolling.size]
+        pd.DataFrame({
+            "ts": pd.to_datetime(rolling_ts, unit="ns", utc=True),
+            "rolling_sharpe": rolling,
+        }).to_csv(out_dir / "rolling_sharpe.csv", index=False)
+    else:
+        pd.DataFrame(columns=["ts", "rolling_sharpe"]).to_csv(out_dir / "rolling_sharpe.csv", index=False)
     trades_df = pd.DataFrame([asdict(t) for t in results.trades]) if results.trades else pd.DataFrame()
     trades_df.to_csv(out_dir / "trades.csv", index=False)
     fills_df = pd.DataFrame([asdict(f) for f in broker.fills_log]) if broker is not None and broker.fills_log else pd.DataFrame()

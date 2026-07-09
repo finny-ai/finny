@@ -240,7 +240,7 @@ function evidenceRequiredBlock(reason: string, workspaceSlug?: string): RequireV
       context.trimEnd(),
       `reason: ${reason}`,
       "Run the mandatory data_extractor subagent with concrete symbol, interval, asset class, start date, and end date.",
-      "Do not call finny_algorithm_scaffold, finny_algorithm_save, finny_algorithm_validate, or finny_backtest_run until a matching <data-extractor-manifest> has usable_for_parent: yes.",
+      "Do not call finny_algorithm_scaffold, finny_algorithm_save, finny_algorithm_validate, or finny_backtest until a matching <data-extractor-manifest> has usable_for_parent: yes.",
       "No strategy artifact or performance metrics produced.",
     ]
       .filter(Boolean)

@@ -235,7 +235,7 @@ describe("priorBacktestsHadMetrics", () => {
         parts: [
           {
             type: "tool",
-            tool: "finny_backtest_run",
+            tool: "finny_backtest",
             state: {
               status: "completed",
               input: { algorithmName: "btc-daily-rsi-v1" },

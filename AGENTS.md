@@ -19,14 +19,14 @@ default commit/PR templates.
    confirm the correct constructor, method signature, and broker API.
 
 2. **No success claim without a run.** Only claim a strategy is backtested
-   when `finny_backtest_run` returned `ok: true` with actual metrics.
+   when `finny_backtest` returned `ok: true` with actual metrics.
    Never write "Status: Backtested" or "shows edge" without tool output.
 
 3. **No live-deployment recommendation without metrics.** Cite Sharpe ratio
    and max drawdown from actual backtest output before recommending any
    strategy for paper or live trading.
 
-4. **Stop after two backtest failures.** If `finny_backtest_run` fails twice
+4. **Stop after two backtest failures.** If `finny_backtest` fails twice
    consecutively, stop and re-read the loader contract and strategy template.
    Do not keep reshaping the strategy class from error messages alone.
 

@@ -1010,7 +1010,7 @@ def main() -> None:
             "data_quality_blocking_reasons": blocking_quality,
         },
     )
-    emit.write_artifacts(Path(args.out), results, equity, ba.ts, result.diagnostics, broker=broker)
+    emit.write_artifacts(Path(args.out), results, equity, ba.ts, result.diagnostics, broker=broker, bars_per_year=bars_per_year)
 
     def _stdout_metric(value: Any) -> Any:
         return "nan" if value is None else value

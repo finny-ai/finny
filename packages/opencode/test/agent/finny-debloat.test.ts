@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { Effect, Layer } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
+import PROMPT_FINNY from "../../src/agent/prompt/finny.txt"
 import PROMPT_BUILD from "../../src/agent/prompt/finny-build.txt"
 import PROMPT_RESEARCH from "../../src/agent/prompt/finny-research.txt"
 import PROMPT_CHAT from "../../src/agent/prompt/finny-chat.txt"
@@ -49,9 +50,10 @@ const ALL_TOOL_IDS = [
   "finny_algorithm_versions",
   "finny_algorithm_export",
   "finny_brokerage_switch",
-  "finny_backtest_run",
+  "finny_workspace_prepare",
+  "finny_backtest",
   "finny_backtest_history",
-  "finny_backtest_walkforward",
+  "finny_paper_approve",
   "finny_backtest_sweep",
   "finny_monitor_snapshot",
   "schedule_subagent",
@@ -64,6 +66,32 @@ const ALL_TOOL_IDS = [
 ]
 
 const EXPECTED_TOOLS = {
+  finny: [
+    "apply_patch",
+    "bash",
+    "edit",
+    "finny_algorithm_export",
+    "finny_algorithm_get",
+    "finny_algorithm_list",
+    "finny_algorithm_save",
+    "finny_algorithm_scaffold",
+    "finny_algorithm_set_params",
+    "finny_algorithm_versions",
+    "finny_backtest",
+    "finny_get_history",
+    "finny_get_quote",
+    "finny_paper_approve",
+    "finny_portfolio_backtest",
+    "finny_workspace_prepare",
+    "question",
+    "read",
+    "skill",
+    "task",
+    "todowrite",
+    "webfetch",
+    "websearch",
+    "write",
+  ],
   build: [
     "finny_algorithm_export",
     "finny_algorithm_get",
@@ -73,9 +101,9 @@ const EXPECTED_TOOLS = {
     "finny_algorithm_set_params",
     "finny_algorithm_validate",
     "finny_algorithm_versions",
-    "finny_backtest_run",
-    "finny_backtest_walkforward",
+    "finny_backtest",
     "finny_get_quote",
+    "finny_paper_approve",
     "finny_portfolio_backtest",
     "question",
     "read",
@@ -148,6 +176,7 @@ afterEach(async () => {
 
 describe("Finny debloat", () => {
   test("primary prompt budgets stay under target", () => {
+    expect(lineCount(PROMPT_FINNY)).toBeLessThanOrEqual(170)
     expect(lineCount(PROMPT_BUILD)).toBeLessThanOrEqual(275)
     expect(lineCount(PROMPT_RESEARCH)).toBeLessThanOrEqual(120)
     expect(lineCount(PROMPT_CHAT)).toBeLessThanOrEqual(100)
@@ -160,13 +189,14 @@ describe("Finny debloat", () => {
   })
 
   test("primary prompts do not reference removed research dispatch tool", () => {
-    const combined = [PROMPT_BUILD, PROMPT_RESEARCH, PROMPT_CHAT].join("\n")
+    const combined = [PROMPT_FINNY, PROMPT_BUILD, PROMPT_RESEARCH, PROMPT_CHAT].join("\n")
     expect(combined).not.toContain(["finny", "research", "dispatch"].join("_"))
     expect(combined).not.toContain("research" + "dispatch")
     expect(combined).not.toContain("Research" + "Dispatch" + "Tool")
   })
 
   test("primary prompts do not duplicate workflow headings", () => {
+    expect(duplicatedSections(PROMPT_FINNY)).toEqual([])
     expect(duplicatedSections(PROMPT_BUILD)).toEqual([])
     expect(duplicatedSections(PROMPT_RESEARCH)).toEqual([])
     expect(duplicatedSections(PROMPT_CHAT)).toEqual([])
@@ -183,6 +213,17 @@ describe("Finny debloat", () => {
     }),
   )
 
+  it.instance("paper approval remains human-confirmed in Finny agents", () =>
+    Effect.gen(function* () {
+      const agentService = yield* Agent.Service
+      for (const name of ["finny", "build"]) {
+        const agent = yield* agentService.get(name)
+        expect(agent, `missing agent ${name}`).toBeDefined()
+        expect(Permission.evaluate("finny_paper_approve", "*", agent!.permission).action).toBe("ask")
+      }
+    }),
+  )
+
   it.instance("Finny primary agents deny generic coding tools", () =>
     Effect.gen(function* () {
       const agentService = yield* Agent.Service
@@ -194,6 +235,10 @@ describe("Finny debloat", () => {
           name === "build" ? GENERIC_CODING_TOOLS.filter((tool) => tool !== "read") : GENERIC_CODING_TOOLS
         expect([...disabled].sort()).toEqual(expectedDisabled.toSorted())
       }
+      const finny = yield* agentService.get("finny")
+      expect(finny, "missing agent finny").toBeDefined()
+      const finnyDisabled = Permission.disabled(GENERIC_CODING_TOOLS, finny!.permission)
+      expect([...finnyDisabled].sort()).toEqual(["codesearch", "glob", "grep", "lsp"].toSorted())
     }),
   )
 
@@ -219,9 +264,17 @@ describe("Finny debloat", () => {
   it.instance("task delegation is limited to the intended subagents", () =>
     Effect.gen(function* () {
       const agentService = yield* Agent.Service
+      const finny = yield* agentService.get("finny")
       const build = yield* agentService.get("build")
       const research = yield* agentService.get("research")
       const chat = yield* agentService.get("chat")
+
+      expect(Permission.evaluate("task", "data_extractor", finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("task", "news_agent", finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("task", "sec_agent", finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("task", "sentiment_agent", finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("task", "general", finny!.permission).action).toBe("deny")
+      expect(Permission.evaluate("task", "explore", finny!.permission).action).toBe("deny")
 
       expect(Permission.evaluate("task", "data_extractor", build!.permission).action).toBe("allow")
       expect(Permission.evaluate("task", "news_agent", build!.permission).action).toBe("allow")
@@ -241,6 +294,24 @@ describe("Finny debloat", () => {
   )
 
   test("prompt policy covers the critical transcript routes", () => {
+    expect(PROMPT_FINNY).toContain("expert trading-strategy research and implementation agent")
+    expect(PROMPT_FINNY).toContain("todowrite")
+    expect(PROMPT_FINNY).toContain("Do not silently assume horizon")
+    expect(PROMPT_FINNY).toContain("launch at least two evidence subagents before strategy synthesis")
+    expect(PROMPT_FINNY).toContain("data_extractor` plus one context agent")
+    expect(PROMPT_FINNY).toContain("The visible todo list must include this hard gate")
+    expect(PROMPT_FINNY).toContain("until both required evidence agents have returned or blocked")
+    expect(PROMPT_FINNY).toContain("finny_workspace_prepare")
+    expect(PROMPT_FINNY).toContain("The session-bound workspace is the source of truth")
+    expect(PROMPT_FINNY).toContain("finny_algorithm_save`")
+    expect(PROMPT_FINNY).toContain("validates the strategy and config in the same call")
+    expect(PROMPT_FINNY).toContain("research_exception")
+    expect(PROMPT_FINNY).toContain("paper_watchlist")
+    expect(PROMPT_FINNY).toContain("live_eligible")
+    expect(PROMPT_FINNY).toContain('bar["open"]')
+    expect(PROMPT_FINNY).toContain("Strategy-build data evidence should come from `data_extractor`")
+    expect(PROMPT_FINNY).not.toContain("finny_discord_read")
+
     expect(PROMPT_BUILD).toContain("Conceptual/explainer question")
     expect(PROMPT_BUILD).toContain("ask one concise round with `question`")
     expect(PROMPT_BUILD).toContain("do not print a plain-text questionnaire")
@@ -291,7 +362,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("Do not save a QQQ/SPY strategy under a BTC/crypto name")
     expect(PROMPT_BUILD).toContain("Positive MTM return, but")
     expect(PROMPT_BUILD).toContain("Save with `finny_algorithm_save`")
-    expect(PROMPT_BUILD).toContain("Run `finny_backtest_run`")
+    expect(PROMPT_BUILD).toContain("Run `finny_backtest`")
 
     expect(PROMPT_BUILD).toContain("Context Integrity")
     expect(PROMPT_BUILD).toContain("`BLOCKED: context mismatch`")
@@ -322,8 +393,8 @@ describe("Finny debloat", () => {
     // Regime mismatch: build the requested concept first, diagnose after.
     expect(PROMPT_BUILD).toContain("Do not ask to pivot away from the requested strategy type")
     // Walk-forward honesty + failure-budget rename loophole.
-    expect(PROMPT_BUILD).toContain("if it says FAILED, the strategy failed walk-forward")
-    expect(PROMPT_BUILD).toContain('call it "validated" or "robust"')
+    expect(PROMPT_BUILD).toContain("If the unified verdict is `recommended_for_paper`")
+    expect(PROMPT_BUILD).toContain("Do not call the run positive")
     expect(PROMPT_BUILD).toContain("does NOT reset the failure budget")
     expect(PROMPT_BUILD).toContain("`userApproved: true`")
     expect(PROMPT_BUILD).toContain("After 3 failed save/validation attempts, stop")
