@@ -519,7 +519,6 @@ function manifestDigestMismatches(
     ["requested_end", digest.requested_end, "date"],
     ["actual_start", digest.actual_start, undefined],
     ["actual_end", digest.actual_end, undefined],
-    ["run_id", digest.run_id, undefined],
   ]
   return pairs.flatMap(([key, digestValue, kind]) => {
     const manifestValue = manifest[key]
@@ -551,7 +550,7 @@ function effectiveDigestFromManifest(
     actual_start: digest.actual_start ?? manifest.actual_start,
     actual_end: digest.actual_end ?? manifest.actual_end,
     artifact_paths: artifactPaths ?? digest.artifact_paths,
-    run_id: digest.run_id ?? manifest.run_id,
+    run_id: manifest.run_id ?? digest.run_id,
     usable_for_parent: normalizeUsableForParent(
       digest.usable_for_parent ??
         manifest.usable_for_parent ??

@@ -8,6 +8,7 @@ import {
   REQUIRED_DIGEST_FIELDS,
   requireVerifiedDataExtractorEvidenceForSession,
   validateDataExtractorTaskText,
+  validateExistingDataExtractorEvidence,
 } from "../../src/data/data-extractor-evidence"
 import { classifyText, gradeSessions } from "../../script/phoenix-trace-grader"
 
@@ -431,6 +432,124 @@ describe("validateDataExtractorTaskText", () => {
     const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
     expect(result.ok).toBe(true)
     expect(REQUIRED_DIGEST_FIELDS.every((field) => digest.includes(`${field}:`))).toBe(true)
+  })
+
+  test("accepts valid artifact evidence when a retry changes only run_id", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-retry-run-id-"))
+    const slug = "btc-15m-strategy"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "crypto/BTC_15m_2025-07-09_2026-07-08.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-07-09T00:00:00Z,100,101,99,100.5,10\n2025-07-09T00:15:00Z,100.5,102,100,101,12\n",
+    )
+    await fs.writeFile(
+      path.join(root, "finny", "algos", slug, "data", manifestRel),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          source: "binance",
+          requested_symbol: "BTC",
+          actual_symbol: "BTC",
+          requested_interval: "15m",
+          actual_interval: "15m",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2025-07-09",
+          requested_end: "2026-07-09",
+          actual_start: "2025-07-09T00:00:00Z",
+          actual_end: "2025-07-09T00:15:00Z",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "20260709T043814Z-binance-btc-15m",
+          coverage: "complete",
+          usable_for_parent: "yes",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const digest = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: BTC",
+      "actual_symbol: BTC",
+      "requested_interval: 15m",
+      "actual_interval: 15m",
+      "requested_asset_class: crypto",
+      "actual_asset_class: crypto",
+      "requested_start: 2025-07-09",
+      "requested_end: 2026-07-09",
+      "actual_start: 2025-07-09T00:00:00Z",
+      "actual_end: 2025-07-09T00:15:00Z",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: 20260709T003814Z-binance-btc-15m",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text: digest, workspaceSlug: slug })
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain("run_id: 20260709T043814Z-binance-btc-15m")
+  })
+
+  test("reuses existing BTC evidence when actual_symbol has a provider annotation", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-btc-annotated-existing-"))
+    const slug = "btc-15m-strategy"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "crypto/BTC_15m_2025-07-09_2026-07-08.csv"
+    const csvPath = path.join(root, "finny", "algos", slug, "data", csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.writeFile(
+      csvPath,
+      "timestamp,open,high,low,close,volume\n2025-07-09T00:00:00Z,100,101,99,100.5,10\n2025-07-09T00:15:00Z,100.5,102,100,101,12\n",
+    )
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify(
+        {
+          schema_version: 1,
+          source: "binance",
+          requested_symbol: "BTC",
+          actual_symbol: "BTC (BTCUSDT spot)",
+          requested_interval: "15m",
+          actual_interval: "15m",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2025-07-09",
+          requested_end: "2026-07-09",
+          actual_start: "2025-07-09T00:00:00Z",
+          actual_end: "2025-07-09T00:15:00Z",
+          output_path: csvRel,
+          rows: 2,
+          run_id: "20260709T043814Z-binance-btc-15m",
+          coverage: "complete",
+          usable_for_parent: "yes",
+        },
+        null,
+        2,
+      ),
+    )
+
+    const existing = await validateExistingDataExtractorEvidence({
+      workspaceSlug: slug,
+      context: {
+        request_id: "ses_btc",
+        requested_symbol: "BTC",
+        requested_interval: "15m",
+        requested_asset_class: "crypto",
+        requested_algorithm_name: slug,
+        requested_start: "2025-07-09",
+        requested_end: "2026-07-09",
+      },
+    })
+    expect(existing.found).toBe(true)
+    expect(existing.result?.ok).toBe(true)
   })
 
   test("blocks internally consistent evidence when symbol is outside runtime universe", async () => {

@@ -61,9 +61,13 @@ export interface VerifyResult {
 export function normalizeSymbol(input?: string): string | undefined {
   if (!input) return undefined
   let s = input.trim().toUpperCase()
+  // Data-provider manifests and summaries sometimes annotate the tradeable
+  // symbol, e.g. "BTC (BTCUSDT spot)". The identity comparison should use the
+  // tradeable token, not the explanatory suffix.
+  s = s.replace(/\s+\([^)]*\)\s*$/, "")
   // Strip common quote-currency suffixes and pair separators.
   s = s.replace(/[\s_]+/g, "")
-  s = s.replace(/[\/\-]?(USDT|USDC|USD|PERP)$/i, "")
+  s = s.replace(/[./\-]?(USDT|USDC|USD|PERP)$/i, "")
   s = s.replace(/[\/\-]+$/g, "")
   return s || undefined
 }
