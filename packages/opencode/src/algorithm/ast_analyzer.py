@@ -13,6 +13,7 @@ Diagnostic codes:
   RMS_NOT_STDDEV            (warning) sqrt(sum(x**2 ...)/N) with no mean subtraction
   POPULATION_VARIANCE       (warning) sum((p - mean)**2 ...) / N instead of /(N-1)
   MISSING_POSITION_SIZING   (warning) self.position only set to 0/1 with no sizing arithmetic
+  STOP_PARAM_NOT_ENFORCED   (warning) stop-named param feeds sizing but no comparison enforces a stop exit
   POSITION_SIZE_UNCAPPED    (warning) qty sized from risk/stop with no cap against equity
   FRACTIONAL_SHARES_EQUITY  (warning) symbol looks like an equity ticker but qty is a float
   FUTURES_FRACTIONAL_QTY    (warning) futures contracts require whole-number qty
@@ -821,6 +822,105 @@ def check_missing_position_sizing(cls):
         "fix": "Size positions from equity and stop distance (e.g. qty = (equity * risk_pct) / stop_distance).",
     })
     return diagnostics
+
+
+def _assignment_target_names(node):
+    """Assignment target names (self attributes or locals) for nodes that carry a value."""
+    if isinstance(node, ast.Assign):
+        targets = node.targets
+    elif isinstance(node, (ast.AugAssign, ast.AnnAssign)) and node.value is not None:
+        targets = [node.target]
+    else:
+        return []
+    names = []
+    for target in targets:
+        if isinstance(target, ast.Attribute) and isinstance(target.value, ast.Name) and target.value.id == "self":
+            names.append(target.attr)
+        elif isinstance(target, ast.Name):
+            names.append(target.id)
+    return names
+
+
+def _stop_expr_names(expr):
+    """All bare names and self-attribute names referenced in an expression."""
+    names = set()
+    for n in ast.walk(expr):
+        if isinstance(n, ast.Name):
+            names.add(n.id)
+        elif isinstance(n, ast.Attribute) and isinstance(n.value, ast.Name) and n.value.id == "self":
+            names.add(n.attr)
+    return names
+
+
+def _collect_assignments(cls):
+    """Every (name, value_expr, lineno) assignment to a self attribute or local in the class."""
+    out = []
+    for node in ast.walk(cls):
+        for name in _assignment_target_names(node):
+            out.append((name, node.value, node.lineno))
+    return out
+
+
+def _stop_level_names(assignments):
+    """Stop-named identifiers, plus one-hop derivations such as exit_level = f(stop_pct).
+
+    Deeper propagation is intentionally skipped so sizing chains like
+    qty = risk / stop_dist followed by `qty > 0` do not read as enforcement.
+    """
+    direct = {name for name, _value, _line in assignments if "stop" in name.lower()}
+    tainted = set(direct)
+    for name, value, _line in assignments:
+        if name not in tainted and _stop_expr_names(value) & direct:
+            tainted.add(name)
+    return direct, tainted
+
+
+def _is_trivial_constant(node):
+    return isinstance(node, ast.Constant) and (node.value is None or node.value in (0, 1, -1, True, False))
+
+
+def _compare_enforces_stop(compare, tainted):
+    """True when a comparison uses a stop level against something non-trivial."""
+    operands = [compare.left] + list(compare.comparators)
+    stop_side = [op for op in operands if _stop_expr_names(op) & tainted]
+    if not stop_side:
+        return False
+    others = [op for op in operands if op not in stop_side]
+    # `stop_dist > 0` / `qty > 0` style guards are sizing checks, not stop exits.
+    return not (others and all(_is_trivial_constant(op) for op in others))
+
+
+def check_stop_param_not_enforced(cls):
+    """A stop-named parameter feeds position sizing but is never compared as an exit level.
+
+    Catches the "documented stop that does not exist": config declares stop_pct,
+    __init__ stores it, sizing divides by it, and no comparison ever triggers a
+    stop exit — so losing trades ride until the signal exit.
+    """
+    assignments = _collect_assignments(cls)
+    direct, tainted = _stop_level_names(assignments)
+    if not direct:
+        return []
+
+    for node in ast.walk(cls):
+        if isinstance(node, ast.Compare) and _compare_enforces_stop(node, tainted):
+            return []
+
+    param = sorted(direct)[0]
+    first_line = min(line for name, _value, line in assignments if name in direct)
+    return [{
+        "code": "STOP_PARAM_NOT_ENFORCED",
+        "severity": "warning",
+        "message": (
+            f"Stop parameter `{param}` only feeds position sizing — no comparison ever "
+            "triggers a stop exit, so losing trades ride until the signal exit."
+        ),
+        "line": first_line,
+        "fix": (
+            "Track the entry price, derive the stop level from the parameter, and sell/close "
+            "when the bar crosses it; add a time-based exit for intraday strategies."
+        ),
+    }]
 
 
 def _refs_bar(expr):
@@ -1705,6 +1805,7 @@ def analyze(code, symbol=None):
     diagnostics += check_strict_security(tree, cls)
     diagnostics += check_gains_losses_asymmetry(cls)
     diagnostics += check_missing_position_sizing(cls)
+    diagnostics += check_stop_param_not_enforced(cls)
     diagnostics += check_equity_never_updated(cls)
     diagnostics += check_crypto_qty_floor(cls, symbol)
     diagnostics += check_division_no_zero_guard(cls)

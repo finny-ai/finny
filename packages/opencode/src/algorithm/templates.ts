@@ -103,6 +103,7 @@ class Strategy:
         self.gains = deque(maxlen=self.period)
         self.losses = deque(maxlen=self.period)
         self.prev_close = None
+        self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -147,8 +148,12 @@ class Strategy:
             qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
-        elif pos > 0 and rsi > self.overbought:
-            self.broker.sell(symbol, qty=pos)
+                self.entry_px = open_px
+        elif pos > 0:
+            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+            if rsi > self.overbought or stop_hit:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
 
         # State update — AFTER the trade decision
         if self.prev_close is not None:
@@ -175,6 +180,7 @@ class Strategy:
         self.risk_pct = float(p.get("risk_pct", 0.02))
         self.stop_pct = float(p.get("stop_pct", 0.02))
         self.prices = deque(maxlen=self.period)
+        self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -219,8 +225,12 @@ class Strategy:
             qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
-        elif pos > 0 and open_px >= upper:
-            self.broker.sell(symbol, qty=pos)
+                self.entry_px = open_px
+        elif pos > 0:
+            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+            if open_px >= upper or stop_hit:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
 
         self.prices.append(close_px)
 `
@@ -237,6 +247,7 @@ class Strategy:
         self.stop_pct = float(p.get("stop_pct", 0.03))
         self.highs = deque(maxlen=self.period)
         self.lows = deque(maxlen=self.period)
+        self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -269,8 +280,12 @@ class Strategy:
             qty = int(min(by_risk, by_cash))
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
-        elif pos > 0 and open_px < lower_channel:
-            self.broker.sell(symbol, qty=pos)
+                self.entry_px = open_px
+        elif pos > 0:
+            stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+            if open_px < lower_channel or stop_hit:
+                self.broker.sell(symbol, qty=pos)
+                self.entry_px = 0.0
 
         self.highs.append(bar_high)
         self.lows.append(bar_low)
@@ -289,6 +304,7 @@ class Strategy:
         self.stop_pct = float(p.get("stop_pct", 0.05))
         self.prices = deque(maxlen=self.slow_period)
         self.prev_fast_above = None
+        self.entry_px = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -322,9 +338,13 @@ class Strategy:
                 qty = int(min(by_risk, by_cash))
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
-            # Death cross
-            elif pos > 0 and not fast_above and self.prev_fast_above:
-                self.broker.sell(symbol, qty=pos)
+                    self.entry_px = open_px
+            # Death cross or hard stop
+            elif pos > 0:
+                stop_hit = self.entry_px > 0 and open_px < self.entry_px * (1 - self.stop_pct)
+                if (not fast_above and self.prev_fast_above) or stop_hit:
+                    self.broker.sell(symbol, qty=pos)
+                    self.entry_px = 0.0
 
         self.prev_fast_above = fast_above
         self.prices.append(close_px)
@@ -708,6 +728,7 @@ class Strategy:
         self.true_ranges = deque(maxlen=self.atr_period)
         self.prev_close = None
         self.entry_px = 0.0
+        self.stop_px = 0.0
 
     def _ema(self, data, period):
         if period <= 0:
@@ -764,11 +785,14 @@ class Strategy:
             if qty > 0:
                 self.broker.buy(symbol, qty=qty)
                 self.entry_px = open_px
-        # Exit: price drops back to EMA or below lower band
+                self.stop_px = open_px - stop_dist
+        # Exit: price drops back to EMA, below lower band, or through the hard stop
         elif pos > 0:
-            if open_px <= ema or open_px <= lower:
+            stop_hit = self.stop_px > 0 and open_px <= self.stop_px
+            if open_px <= ema or open_px <= lower or stop_hit:
                 self.broker.sell(symbol, qty=pos)
                 self.entry_px = 0.0
+                self.stop_px = 0.0
         self.true_ranges.append(tr)
         self.closes.append(prev_close)
         self.prev_close = prev_close
@@ -896,6 +920,7 @@ class Strategy:
         self.atr = None
         self.ready = False
         self.entry_px = 0.0
+        self.stop_px = 0.0
 
     def on_bar(self, symbol, bar):
         open_px = bar["open"]
@@ -920,9 +945,13 @@ class Strategy:
                 if qty > 0:
                     self.broker.buy(symbol, qty=qty)
                     self.entry_px = open_px
-            elif pos > 0 and not self.trend_up:
-                self.broker.sell(symbol, qty=pos)
-                self.entry_px = 0.0
+                    self.stop_px = open_px - stop_dist
+            elif pos > 0:
+                stop_hit = self.stop_px > 0 and open_px <= self.stop_px
+                if (not self.trend_up) or stop_hit:
+                    self.broker.sell(symbol, qty=pos)
+                    self.entry_px = 0.0
+                    self.stop_px = 0.0
 
         # True range from completed bars only
         if self.prev_close_v is not None:
