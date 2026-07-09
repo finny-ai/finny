@@ -14,6 +14,7 @@ import { FormatError, FormatUnknownError } from "../error"
 import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
+const DEFAULT_SESSION_MODE = "finny"
 
 function print(value: unknown) {
   console.log(JSON.stringify(value, null, 2))
@@ -129,7 +130,7 @@ export const SessionCurrentCommand = effectCmd({
 
 export const SessionShowCommand = effectCmd({
   command: "show <sessionID>",
-  describe: "show session metadata and current status",
+  describe: "show session metadata",
   builder: (yargs) =>
     yargs
       .positional("sessionID", {
@@ -145,19 +146,16 @@ export const SessionShowCommand = effectCmd({
   handler: Effect.fn("Cli.session.show")(function* (args) {
     const sdk = createLocalSdk(process.cwd())
     const includeMessages = Boolean(args["include-messages"])
-    const [sessionResult, statusResult, messagesResult] = yield* Effect.all([
+    const [sessionResult, messagesResult] = yield* Effect.all([
       Effect.promise(() => sdk.session.get({ sessionID: args.sessionID })),
-      Effect.promise(() => sdk.session.status()),
       includeMessages
         ? Effect.promise(() => sdk.session.messages({ sessionID: args.sessionID }))
         : Effect.succeed({ data: undefined, error: undefined } as const),
     ])
     if (sessionResult.error) return yield* fail(formatSdkError(sessionResult.error))
-    if (statusResult.error) return yield* fail(formatSdkError(statusResult.error))
     if (messagesResult.error) return yield* fail(formatSdkError(messagesResult.error))
     print({
       session: sessionResult.data,
-      status: statusResult.data?.[args.sessionID] ?? null,
       ...(includeMessages ? { messages: messagesResult.data ?? [] } : {}),
     })
   }),
@@ -212,7 +210,7 @@ export const SessionSendCommand = effectCmd({
       })
       .option("mode", {
         type: "string",
-        default: "build",
+        default: DEFAULT_SESSION_MODE,
         describe: "agent mode to run the prompt under",
       })
       .option("no-reply", {
@@ -230,7 +228,7 @@ export const SessionSendCommand = effectCmd({
       const result = yield* Effect.promise(() =>
         sdk.session.prompt({
           sessionID: args.sessionID,
-          agent: args.mode ?? "build",
+          agent: args.mode ?? DEFAULT_SESSION_MODE,
           parts: [{ type: "text", text: args.message }],
           noReply: Boolean(args["no-reply"]),
           ...(args.model ? { model: parseModel(args.model) } : {}),
@@ -324,23 +322,52 @@ export const SessionListCommand = effectCmd({
         type: "string",
         choices: ["table", "json"],
         default: "table",
+      })
+      .option("mode", {
+        type: "string",
+        describe: "filter sessions by agent mode",
       }),
   handler: Effect.fn("Cli.session.list")(function* (args) {
     const maxCount = typeof args["max-count"] === "number" ? args["max-count"] : undefined
     const format = args.format === "json" ? "json" : "table"
-    const sessions = yield* Session.Service.use((svc) => svc.list({ roots: true, limit: maxCount }))
+    const modeFilter = typeof args.mode === "string" && args.mode.length > 0 ? args.mode : undefined
+    const sdk = createLocalSdk(process.cwd())
+    const sessionsResult = yield* Effect.promise(() => sdk.session.list({ roots: true, limit: maxCount }))
+    if (sessionsResult.error) return yield* fail(formatSdkError(sessionsResult.error))
 
-    if (sessions.length === 0) return
+    const filtered = filterSessionEntries(sessionsResult.data ?? [], { mode: modeFilter })
 
-    const output = format === "json" ? formatSessionJSON(sessions) : formatSessionTable(sessions)
+    if (filtered.length === 0) return
+
+    const output = format === "json" ? formatSessionJSON(filtered) : formatSessionTable(filtered)
     console.log(output)
   }),
 })
 
-function formatSessionInfo(session: Session.Info) {
+type SessionListRow = {
+  id: string
+  title: string
+  agent?: string
+  projectID: string
+  directory: string
+  time: {
+    created: number
+    updated: number
+  }
+}
+
+export function filterSessionEntries(
+  entries: SessionListRow[],
+  filters: { mode?: string },
+) {
+  return entries.filter((entry) => (filters.mode ? entry.agent === filters.mode : true))
+}
+
+function formatSessionInfo(session: SessionListRow) {
   return {
     id: session.id,
     title: session.title,
+    agent: session.agent,
     updated: session.time.updated,
     created: session.time.created,
     projectId: session.projectID,
@@ -348,25 +375,27 @@ function formatSessionInfo(session: Session.Info) {
   }
 }
 
-function formatSessionTable(sessions: Session.Info[]): string {
+function formatSessionTable(entries: SessionListRow[]): string {
   const lines: string[] = []
 
-  const maxIdWidth = Math.max(20, ...sessions.map((s) => s.id.length))
-  const maxTitleWidth = Math.max(25, ...sessions.map((s) => s.title.length))
+  const maxIdWidth = Math.max(20, ...entries.map((session) => session.id.length))
+  const maxTitleWidth = Math.max(25, ...entries.map((session) => session.title.length))
+  const maxModeWidth = Math.max(8, ...entries.map((session) => (session.agent ?? "-").length))
 
-  const header = `Session ID${" ".repeat(maxIdWidth - 10)}  Title${" ".repeat(maxTitleWidth - 5)}  Updated`
+  const header = `Session ID${" ".repeat(maxIdWidth - 10)}  Title${" ".repeat(maxTitleWidth - 5)}  Mode${" ".repeat(maxModeWidth - 4)}  Updated`
   lines.push(header)
   lines.push("─".repeat(header.length))
-  for (const session of sessions) {
+  for (const session of entries) {
     const truncatedTitle = Locale.truncate(session.title, maxTitleWidth)
     const timeStr = Locale.todayTimeOrDateTime(session.time.updated)
-    const line = `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${timeStr}`
+    const mode = (session.agent ?? "-").padEnd(maxModeWidth)
+    const line = `${session.id.padEnd(maxIdWidth)}  ${truncatedTitle.padEnd(maxTitleWidth)}  ${mode}  ${timeStr}`
     lines.push(line)
   }
 
   return lines.join(EOL)
 }
 
-function formatSessionJSON(sessions: Session.Info[]): string {
-  return JSON.stringify(sessions.map(formatSessionInfo), null, 2)
+function formatSessionJSON(entries: SessionListRow[]): string {
+  return JSON.stringify(entries.map(formatSessionInfo), null, 2)
 }

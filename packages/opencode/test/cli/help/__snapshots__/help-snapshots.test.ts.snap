@@ -400,7 +400,7 @@ manage sessions
 Commands:
   finny session list                               list sessions
   finny session current                            show the most recently updated root session
-  finny session show <sessionID>                   show session metadata and current status
+  finny session show <sessionID>                   show session metadata
   finny session messages <sessionID>               list messages for a session
   finny session create                             create a new session
   finny session send <sessionID> <message>         send a message into an existing session
@@ -488,6 +488,25 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 "finny commands
 
 list available slash and project commands
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode task --help 1`] = `
+"finny task
+
+manage background subagent tasks
+
+Commands:
+  finny task list <sessionID>  list background tasks launched from a session
+  finny task show <taskID>     show the lifecycle status and latest summary for a task
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -721,7 +740,8 @@ Options:
       --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
                                                                                             [string]
   -n, --max-count    limit to N most recent sessions                                        [number]
-      --format       output format            [string] [choices: "table", "json"] [default: "table"]"
+      --format       output format            [string] [choices: "table", "json"] [default: "table"]
+      --mode         filter sessions by agent mode                                          [string]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session current --help 1`] = `
@@ -742,7 +762,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session show --help 1`] = `
 "finny session show <sessionID>
 
-show session metadata and current status
+show session metadata
 
 Positionals:
   sessionID  session ID                                                          [string] [required]
@@ -795,7 +815,7 @@ Options:
       --pure         run without external plugins                                          [boolean]
       --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
                                                                                             [string]
-      --mode         agent mode to run the prompt under                  [string] [default: "build"]
+      --mode         agent mode to run the prompt under                  [string] [default: "finny"]
       --no-reply     queue the prompt without waiting for a model reply   [boolean] [default: false]
       --model        optional provider/model override                                       [string]"
 `;
@@ -1069,6 +1089,42 @@ show a saved backtest run manifest
 
 Positionals:
   runID  backtest run ID                                                         [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode task list --help 1`] = `
+"finny task list <sessionID>
+
+list background tasks launched from a session
+
+Positionals:
+  sessionID  parent session ID                                                   [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode task show --help 1`] = `
+"finny task show <taskID>
+
+show the lifecycle status and latest summary for a task
+
+Positionals:
+  taskID  background task ID                                                     [string] [required]
 
 Options:
   -h, --help         show help                                                             [boolean]

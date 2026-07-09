@@ -31,6 +31,7 @@ import { AlgoCommand } from "./cli/cmd/algo"
 import { BacktestCommand } from "./cli/cmd/backtest"
 import { CommandsCommand } from "./cli/cmd/commands"
 import { DbCommand } from "./cli/cmd/db"
+import { TaskCommand } from "./cli/cmd/task"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
@@ -116,6 +117,7 @@ const cli = yargs(args)
   .command(AlgoCommand)
   .command(BacktestCommand)
   .command(CommandsCommand)
+  .command(TaskCommand)
   .command(PluginCommand)
   .command(DbCommand)
   .fail((msg, err) => {

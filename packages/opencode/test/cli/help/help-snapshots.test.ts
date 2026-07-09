@@ -66,6 +66,7 @@ const TOP_LEVEL = [
   "algo",
   "backtest",
   "commands",
+  "task",
   "plugin",
   "db",
 ] as const
@@ -102,6 +103,8 @@ const SUBCOMMANDS = [
   ["algo", "backtest"],
   ["backtest", "list"],
   ["backtest", "show"],
+  ["task", "list"],
+  ["task", "show"],
   ["github", "install"],
   ["github", "run"],
   ["db", "path"],

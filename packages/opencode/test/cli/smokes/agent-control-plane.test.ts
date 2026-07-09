@@ -18,6 +18,14 @@ describe("agent-friendly CLI control plane (smoke)", () => {
         const listed = yield* opencode.spawn(["session", "list"])
         opencode.expectExit(listed, 0, "session list")
 
+        const finnyListed = yield* opencode.spawn(["session", "list", "--format", "json", "--mode", "finny"])
+        opencode.expectExit(finnyListed, 0, "session list --mode finny")
+        expect(finnyListed.stdout === "" || finnyListed.stdout.trim().startsWith("[")).toBe(true)
+
+        const tasks = yield* opencode.spawn(["task", "list", session.id])
+        opencode.expectExit(tasks, 0, "task list")
+        expect(JSON.parse(tasks.stdout)).toEqual([])
+
         const modes = yield* opencode.spawn(["session", "modes"])
         opencode.expectExit(modes, 0, "session modes")
         const modeRows = JSON.parse(modes.stdout) as Array<{ name?: string }>
