@@ -30,6 +30,36 @@ const PUBLISH_NAME = process.env.FINNY_PUBLISH_NAME?.trim() || "@finny-ai/finny-
 // Filesystem-safe slug for a scoped package name (dist dirs cannot contain `/`).
 const toDistSlug = (name: string) => name.replace(/^@/, "").replace(/\//g, "-")
 
+function migrationTimestamp(name: string) {
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(name)
+  if (!match) return 0
+  return Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
+  )
+}
+
+const migrationEntries = fs
+  .readdirSync(path.join(dir, "migration"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => {
+    const file = path.join(dir, "migration", entry.name, "migration.sql")
+    if (!fs.existsSync(file)) return
+    return {
+      sql: fs.readFileSync(file, "utf8"),
+      timestamp: migrationTimestamp(entry.name),
+      name: entry.name,
+    }
+  })
+  .filter((entry): entry is { sql: string; timestamp: number; name: string } => Boolean(entry))
+  .sort((a, b) => a.timestamp - b.timestamp)
+
+console.log(`Loaded ${migrationEntries.length} SQLite migrations`)
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -208,6 +238,7 @@ for (const item of targets) {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${finnyVersion}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
+      OPENCODE_MIGRATIONS: JSON.stringify(migrationEntries),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
