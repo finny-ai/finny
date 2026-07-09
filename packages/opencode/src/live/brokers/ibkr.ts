@@ -100,6 +100,11 @@ function parseClientId(secret: string): string | undefined {
   return /^\d+$/.test(trimmed) ? trimmed : undefined
 }
 
+function canonicalEndpoint(endpoint: string, fallbackPort = "7497"): string {
+  const { host, port } = parseHostPort(endpoint, fallbackPort)
+  return `${host.toLowerCase()}:${port}`
+}
+
 export const ibkrSpec: BrokerSpec = {
   kind: "ibkr",
   displayName: "IBKR",
@@ -189,8 +194,11 @@ export const ibkrSpec: BrokerSpec = {
     // If the user toggled mode after saving, fall back to the canonical
     // host:port for the active mode rather than silently using the wrong port.
     const opposite = ibkrEndpointForMode(mode === "live" ? "paper" : "live", { connection })
-    const endpoint = creds.endpoint && creds.endpoint !== opposite ? creds.endpoint : canonical
-    const { host, port } = parseHostPort(endpoint, endpointPort(canonical))
+    const fallbackPort = endpointPort(canonical)
+    const savedEndpointMatchesOppositeMode =
+      creds.endpoint && canonicalEndpoint(creds.endpoint, fallbackPort) === canonicalEndpoint(opposite, fallbackPort)
+    const endpoint = creds.endpoint && !savedEndpointMatchesOppositeMode ? creds.endpoint : canonical
+    const { host, port } = parseHostPort(endpoint, fallbackPort)
     const clientId = parseClientId(creds.secret)
     return {
       IBKR_ACCOUNT_ID: creds.keyId,

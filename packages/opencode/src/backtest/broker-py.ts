@@ -26,7 +26,7 @@ import json
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 
 def emit(obj: Dict[str, Any]) -> None:
@@ -1378,18 +1378,44 @@ class IBKRBroker(Broker):
 
     # --- account state ---
 
-    def _account_summary(self) -> Dict[str, float]:
-        out: Dict[str, float] = {}
+    def _account_summary_with_currency(self) -> Dict[str, Tuple[float, str]]:
+        out: Dict[str, Tuple[float, str]] = {}
+
+        def ingest(values, require_account: bool = False) -> None:
+            for v in values:
+                if require_account and getattr(v, "account", None) != self._account:
+                    continue
+                tag = getattr(v, "tag", None)
+                if tag not in (self._CASH_TAG, self._EQUITY_TAG):
+                    continue
+                try:
+                    value = float(getattr(v, "value"))
+                except (TypeError, ValueError):
+                    continue
+                out[tag] = (value, str(getattr(v, "currency", "") or ""))
+
         try:
-            for v in self._ib.accountSummary(self._account):
-                if v.currency in ("", "USD") and v.tag in (self._CASH_TAG, self._EQUITY_TAG):
-                    try:
-                        out[v.tag] = float(v.value)
-                    except (TypeError, ValueError):
-                        pass
+            # Do not filter by currency for display: IBKR paper accounts can
+            # report CAD, EUR, etc. depending on account base currency.
+            ingest(self._ib.accountSummary(self._account))
+            if not out:
+                ingest(self._ib.accountValues(), require_account=True)
         except Exception as e:
             log_err(f"[IBKRBroker._account_summary] {e}")
         return out
+
+    def _account_summary(self) -> Dict[str, float]:
+        return {tag: value for tag, (value, _currency) in self._account_summary_with_currency().items()}
+
+    def _cash_for_default_buy(self) -> Tuple[Optional[float], Optional[str]]:
+        cash, currency = self._account_summary_with_currency().get(self._CASH_TAG, (0.0, ""))
+        currency = currency.upper()
+        if currency and currency != "USD":
+            return None, (
+                f"default cash sizing requires USD cash, account cash is {currency}; "
+                "pass explicit qty or notional"
+            )
+        return cash, None
 
     def cash(self) -> float:
         return self._account_summary().get(self._CASH_TAG, 0.0)
@@ -1481,8 +1507,14 @@ class IBKRBroker(Broker):
                     order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
                     status="rejected: no price", ts=datetime.now(timezone.utc).isoformat(), reason=reason, features=features,
                 )
+            cash, reject_reason = self._cash_for_default_buy()
+            if reject_reason:
+                return OrderRecord(
+                    order_id="rejected", symbol=symbol, side="buy", qty=0, price=0.0,
+                    status=f"rejected: {reject_reason}", ts=datetime.now(timezone.utc).isoformat(),
+                )
             per_unit = self._per_unit_cost(symbol, px)
-            qty = self.cash() / per_unit if per_unit > 0 else 0
+            qty = (cash or 0.0) / per_unit if per_unit > 0 else 0
         elif qty is None:
             px = self.price(symbol) or 0.0
             if px <= 0:
