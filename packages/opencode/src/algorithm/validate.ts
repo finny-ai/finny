@@ -1,6 +1,10 @@
 import path from "path"
+import fs from "fs"
+import os from "os"
 import { Process } from "../util/process"
 import { resolveAssetSpec } from "../backtest/asset-spec"
+
+declare const OPENCODE_VALIDATOR_SCRIPTS: Record<string, string> | undefined
 
 export namespace Validate {
   export type ErrorCode =
@@ -318,6 +322,9 @@ export namespace Validate {
   }
 
   function scriptPath(name: string): string {
+    const bundled = bundledScriptPath(name)
+    if (bundled) return bundled
+
     // `import.meta.dir` works in Bun and is the directory of this .ts file.
     // The Python scripts are co-located.
     // Fall back to process.cwd() if import.meta.dir is not available (e.g. Jest).
@@ -326,6 +333,26 @@ export namespace Validate {
       ? (import.meta as any).dir
       : path.join(process.cwd(), "packages/opencode/src/algorithm")
     return path.join(dir, name)
+  }
+
+  function bundledScriptPath(name: string): string | undefined {
+    if (typeof OPENCODE_VALIDATOR_SCRIPTS === "undefined") return undefined
+    const source = OPENCODE_VALIDATOR_SCRIPTS[name]
+    if (!source) return undefined
+
+    const base =
+      process.env.OPENCODE_VALIDATOR_SCRIPT_DIR ||
+      path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "opencode", "validator-scripts")
+    fs.mkdirSync(base, { recursive: true })
+    const file = path.join(base, name)
+    try {
+      if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== source) {
+        fs.writeFileSync(file, source, "utf8")
+      }
+      return file
+    } catch (e: any) {
+      throw new Error(`failed to materialize bundled validator script ${name}: ${e?.message ?? String(e)}`)
+    }
   }
 
   async function checkAST(code: string, symbol?: string): Promise<Diagnostic[]> {

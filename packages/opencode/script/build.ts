@@ -60,6 +60,15 @@ const migrationEntries = fs
 
 console.log(`Loaded ${migrationEntries.length} SQLite migrations`)
 
+const validatorScripts = Object.fromEntries(
+  ["ast_analyzer.py", "smoke_test.py"].map((name) => [
+    name,
+    fs.readFileSync(path.join(dir, "src", "algorithm", name), "utf8"),
+  ]),
+)
+
+console.log(`Loaded ${Object.keys(validatorScripts).length} Python validator scripts`)
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -239,6 +248,7 @@ for (const item of targets) {
       OPENCODE_VERSION: `'${finnyVersion}'`,
       OPENCODE_MODELS_DEV: generated.modelsData,
       OPENCODE_MIGRATIONS: JSON.stringify(migrationEntries),
+      OPENCODE_VALIDATOR_SCRIPTS: JSON.stringify(validatorScripts),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
