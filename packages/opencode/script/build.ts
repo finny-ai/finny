@@ -69,6 +69,14 @@ const validatorScripts = Object.fromEntries(
 
 console.log(`Loaded ${Object.keys(validatorScripts).length} Python validator scripts`)
 
+const engineV2Files = Object.fromEntries(
+  (await Array.fromAsync(new Bun.Glob("engine_v2/**/*.py").scan({ cwd: dir })))
+    .sort()
+    .map((file) => [file.replace(/^engine_v2\//, ""), fs.readFileSync(path.join(dir, file), "utf8")]),
+)
+
+console.log(`Loaded ${Object.keys(engineV2Files).length} engine_v2 Python files`)
+
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
@@ -249,6 +257,7 @@ for (const item of targets) {
       OPENCODE_MODELS_DEV: generated.modelsData,
       OPENCODE_MIGRATIONS: JSON.stringify(migrationEntries),
       OPENCODE_VALIDATOR_SCRIPTS: JSON.stringify(validatorScripts),
+      OPENCODE_ENGINE_V2_FILES: JSON.stringify(engineV2Files),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,

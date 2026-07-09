@@ -18,6 +18,8 @@ import { evaluateBacktestQuality } from "./evaluation"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { BacktestStore } from "./store"
 
+declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
+
 export namespace BacktestRunner {
   export interface Params {
     algorithm: Algorithm.Info
@@ -154,6 +156,24 @@ export namespace BacktestRunner {
      * instead of the legacy flat fields above.
      */
     v2?: EngineV2.Results
+  }
+
+  async function materializeBundledEngineV2(destination: string): Promise<boolean> {
+    if (typeof OPENCODE_ENGINE_V2_FILES === "undefined") return false
+    const entries = Object.entries(OPENCODE_ENGINE_V2_FILES)
+    if (entries.length === 0) return false
+
+    await fs.rm(destination, { recursive: true, force: true })
+    for (const [relative, source] of entries) {
+      const normalized = relative.replaceAll("\\", "/")
+      if (normalized.startsWith("../") || path.isAbsolute(normalized)) {
+        throw new Error(`invalid bundled engine_v2 path: ${relative}`)
+      }
+      const file = path.join(destination, normalized)
+      await fs.mkdir(path.dirname(file), { recursive: true })
+      await fs.writeFile(file, source, "utf8")
+    }
+    return true
   }
 
   /** Stable error codes surfaced from {@link run}. UI/telemetry can branch on these. */
@@ -2059,7 +2079,7 @@ if __name__ == "__main__":
         await fs.cp(ENGINE_V2_SRC, path.join(tmpDir, "engine_v2"), { recursive: true })
         engineV2Ready = true
       } catch {
-        // Non-fatal: default backtest shim doesn't need engine_v2
+        engineV2Ready = await materializeBundledEngineV2(path.join(tmpDir, "engine_v2"))
       }
       if (engineMode === "strict_v2" && !engineV2Ready) {
         return {
