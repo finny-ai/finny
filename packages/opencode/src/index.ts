@@ -26,6 +26,10 @@ import { EOL } from "os"
 import { WebCommand } from "./cli/cmd/web"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
+import { InboxCommand } from "./cli/cmd/inbox"
+import { AlgoCommand } from "./cli/cmd/algo"
+import { BacktestCommand } from "./cli/cmd/backtest"
+import { CommandsCommand } from "./cli/cmd/commands"
 import { DbCommand } from "./cli/cmd/db"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
@@ -108,6 +112,10 @@ const cli = yargs(args)
   .command(GithubCommand)
   .command(PrCommand)
   .command(SessionCommand)
+  .command(InboxCommand)
+  .command(AlgoCommand)
+  .command(BacktestCommand)
+  .command(CommandsCommand)
   .command(PluginCommand)
   .command(DbCommand)
   .fail((msg, err) => {

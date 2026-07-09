@@ -250,7 +250,9 @@ Options:
                                                                           [boolean] [default: false]
       --mdns-domain  custom domain name for mDNS service (default: finny.local)
                                                                    [string] [default: "finny.local"]
-      --cors         additional domains to allow for CORS                      [array] [default: []]"
+      --cors         additional domains to allow for CORS                      [array] [default: []]
+      --daemon       publish a discovery file so the TUI can auto-attach; cleaned up on exit
+                                                                          [boolean] [default: false]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode web --help 1`] = `
@@ -396,8 +398,96 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 manage sessions
 
 Commands:
-  finny session list                list sessions
-  finny session delete <sessionID>  delete a session
+  finny session list                               list sessions
+  finny session current                            show the most recently updated root session
+  finny session show <sessionID>                   show session metadata and current status
+  finny session messages <sessionID>               list messages for a session
+  finny session create                             create a new session
+  finny session send <sessionID> <message>         send a message into an existing session
+  finny session modes                              list available session modes/agents
+  finny session mode <sessionID> <mode> <message>  send a message using an explicit mode/agent
+  finny session abort <sessionID>                  abort a running session
+  finny session delete <sessionID>                 delete a session
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode inbox --help 1`] = `
+"finny inbox
+
+manage pending questions and permissions
+
+Commands:
+  finny inbox list                 list all pending inbox items
+  finny inbox questions            list pending questions
+  finny inbox permissions          list pending permissions
+  finny inbox answer <requestID>   answer a pending question with JSON answers
+  finny inbox approve <requestID>  approve a pending permission request
+  finny inbox deny <requestID>     deny a pending permission request
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo --help 1`] = `
+"finny algo
+
+manage algorithms and their versions
+
+Commands:
+  finny algo list                  list saved algorithms
+  finny algo show <algorithm>      show a saved algorithm
+  finny algo versions <algorithm>  list all saved versions for an algorithm
+  finny algo add                   add a new algorithm or save a new version
+  finny algo validate <algorithm>  validate a saved algorithm version
+  finny algo backtest <algorithm>  run a backtest for a saved algorithm version
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode backtest --help 1`] = `
+"finny backtest
+
+inspect saved backtest runs
+
+Commands:
+  finny backtest list          list saved backtest runs
+  finny backtest show <runID>  show a saved backtest run manifest
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode commands --help 1`] = `
+"finny commands
+
+list available slash and project commands
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -634,6 +724,137 @@ Options:
       --format       output format            [string] [choices: "table", "json"] [default: "table"]"
 `;
 
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session current --help 1`] = `
+"finny session current
+
+show the most recently updated root session
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session show --help 1`] = `
+"finny session show <sessionID>
+
+show session metadata and current status
+
+Positionals:
+  sessionID  session ID                                                          [string] [required]
+
+Options:
+  -h, --help              show help                                                        [boolean]
+  -v, --version           show version number                                              [boolean]
+      --print-logs        print logs to stderr                                             [boolean]
+      --log-level         log level             [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure              run without external plugins                                     [boolean]
+      --license-key       Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --include-messages  include session messages inline                 [boolean] [default: false]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session messages --help 1`] = `
+"finny session messages <sessionID>
+
+list messages for a session
+
+Positionals:
+  sessionID  session ID                                                          [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --limit        max messages to return                                                 [number]
+      --before       cursor/message id for pagination                                       [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session send --help 1`] = `
+"finny session send <sessionID> <message>
+
+send a message into an existing session
+
+Positionals:
+  sessionID  session ID                                                          [string] [required]
+  message    message text                                                        [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --mode         agent mode to run the prompt under                  [string] [default: "build"]
+      --no-reply     queue the prompt without waiting for a model reply   [boolean] [default: false]
+      --model        optional provider/model override                                       [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session modes --help 1`] = `
+"finny session modes
+
+list available session modes/agents
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session mode --help 1`] = `
+"finny session mode <sessionID> <mode> <message>
+
+send a message using an explicit mode/agent
+
+Positionals:
+  sessionID  session ID                                                          [string] [required]
+  mode       mode/agent name                                                     [string] [required]
+  message    message text                                                        [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --no-reply     queue the prompt without waiting for a model reply   [boolean] [default: false]
+      --model        optional provider/model override                                       [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session abort --help 1`] = `
+"finny session abort <sessionID>
+
+abort a running session
+
+Positionals:
+  sessionID  session ID to abort                                                 [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode session delete --help 1`] = `
 "finny session delete <sessionID>
 
@@ -641,6 +862,213 @@ delete a session
 
 Positionals:
   sessionID  session ID to delete                                                [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode inbox list --help 1`] = `
+"finny inbox list
+
+list all pending inbox items
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode inbox answer --help 1`] = `
+"finny inbox answer <requestID>
+
+answer a pending question with JSON answers
+
+Positionals:
+  requestID  question request ID                                                 [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --answers      JSON array of string arrays, e.g. [["1h"],["risk-off"]]     [string] [required]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo list --help 1`] = `
+"finny algo list
+
+list saved algorithms
+
+Options:
+  -h, --help          show help                                                            [boolean]
+  -v, --version       show version number                                                  [boolean]
+      --print-logs    print logs to stderr                                                 [boolean]
+      --log-level     log level                 [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure          run without external plugins                                         [boolean]
+      --license-key   Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --all-versions  include every saved version instead of latest only  [boolean] [default: false]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo show --help 1`] = `
+"finny algo show <algorithm>
+
+show a saved algorithm
+
+Positionals:
+  algorithm  algorithm name or ID                                                [string] [required]
+
+Options:
+  -h, --help          show help                                                            [boolean]
+  -v, --version       show version number                                                  [boolean]
+      --print-logs    print logs to stderr                                                 [boolean]
+      --log-level     log level                 [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure          run without external plugins                                         [boolean]
+      --license-key   Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --algo-version  specific version to load                                              [number]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo versions --help 1`] = `
+"finny algo versions <algorithm>
+
+list all saved versions for an algorithm
+
+Positionals:
+  algorithm  algorithm name or ID                                                [string] [required]
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo add --help 1`] = `
+"finny algo add
+
+add a new algorithm or save a new version
+
+Options:
+  -h, --help               show help                                                       [boolean]
+  -v, --version            show version number                                             [boolean]
+      --print-logs         print logs to stderr                                            [boolean]
+      --log-level          log level            [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure               run without external plugins                                    [boolean]
+      --license-key        Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --name               algorithm name                                        [string] [required]
+      --code               inline strategy source code                                      [string]
+      --file               path to strategy source file                                     [string]
+      --config             inline config JSON                                               [string]
+      --config-file        path to config JSON file                                         [string]
+      --description        algorithm description                                            [string]
+      --save-mode          create a new algorithm or bump an existing version
+                                               [string] [choices: "new", "version"] [default: "new"]
+      --language           strategy language                            [string] [default: "python"]
+      --reasoning          inline reasoning markdown                                        [string]
+      --reasoning-file     path to reasoning markdown                                       [string]
+      --mission-file       path to mission.md                                               [string]
+      --prefs-file         path to prefs.md                                                 [string]
+      --decisions-file     path to decisions.md                                             [string]
+      --target-brokerage   optional target brokerage metadata
+                                                     [string] [choices: "alpaca", "binance", "ibkr"]
+      --validate           validate immediately after saving              [boolean] [default: false]
+      --backtest           run a backtest immediately after saving        [boolean] [default: false]
+      --duration           backtest duration when --backtest is used        [string] [default: "3m"]
+      --interval           backtest interval when --backtest is used        [string] [default: "1h"]
+      --capital            backtest capital when --backtest is used      [string] [default: "10000"]
+      --start-date         exact backtest start date YYYY-MM-DD                             [string]
+      --end-date           exact backtest end date YYYY-MM-DD                               [string]
+      --data-quality-mode  backtest data quality mode when --backtest is used
+                                 [string] [choices: "strict", "repair_outliers"] [default: "strict"]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo validate --help 1`] = `
+"finny algo validate <algorithm>
+
+validate a saved algorithm version
+
+Positionals:
+  algorithm  algorithm name or ID                                                [string] [required]
+
+Options:
+  -h, --help          show help                                                            [boolean]
+  -v, --version       show version number                                                  [boolean]
+      --print-logs    print logs to stderr                                                 [boolean]
+      --log-level     log level                 [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure          run without external plugins                                         [boolean]
+      --license-key   Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --algo-version  specific version to validate                                          [number]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode algo backtest --help 1`] = `
+"finny algo backtest <algorithm>
+
+run a backtest for a saved algorithm version
+
+Positionals:
+  algorithm  algorithm name or ID                                                [string] [required]
+
+Options:
+  -h, --help               show help                                                       [boolean]
+  -v, --version            show version number                                             [boolean]
+      --print-logs         print logs to stderr                                            [boolean]
+      --log-level          log level            [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure               run without external plugins                                    [boolean]
+      --license-key        Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --algo-version       specific version to backtest                                     [number]
+      --duration           backtest duration                                [string] [default: "3m"]
+      --interval           backtest interval                                [string] [default: "1h"]
+      --capital            starting capital                              [string] [default: "10000"]
+      --start-date         exact backtest start date YYYY-MM-DD                             [string]
+      --end-date           exact backtest end date YYYY-MM-DD                               [string]
+      --data-quality-mode  data quality mode
+                                 [string] [choices: "strict", "repair_outliers"] [default: "strict"]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode backtest list --help 1`] = `
+"finny backtest list
+
+list saved backtest runs
+
+Options:
+  -h, --help         show help                                                             [boolean]
+  -v, --version      show version number                                                   [boolean]
+      --print-logs   print logs to stderr                                                  [boolean]
+      --log-level    log level                  [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure         run without external plugins                                          [boolean]
+      --license-key  Finny license key for this startup (also available via FINNY_LICENSE_KEY)
+                                                                                            [string]
+      --algorithm    filter by algorithm name or ID                                         [string]
+      --limit        max runs to return                                       [number] [default: 50]"
+`;
+
+exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode backtest show --help 1`] = `
+"finny backtest show <runID>
+
+show a saved backtest run manifest
+
+Positionals:
+  runID  backtest run ID                                                         [string] [required]
 
 Options:
   -h, --help         show help                                                             [boolean]

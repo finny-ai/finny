@@ -621,7 +621,7 @@ describe("HttpApi SDK", () => {
         const sessionID = String(record(session.data).id)
         const seeded = yield* seedMessage(directory, sessionID)
         const list = yield* capture(() => sdk.session.messages({ sessionID }))
-        const page = yield* capture(() => sdk.session.messages({ sessionID, limit: 1 }))
+        const page = yield* call(() => sdk.session.messages({ sessionID, limit: 1 }))
         const message = yield* capture(() => sdk.session.message({ sessionID, messageID: seeded.message.id }))
         const partUpdate = yield* capture(() =>
           sdk.part.update({
@@ -647,7 +647,7 @@ describe("HttpApi SDK", () => {
           statuses: statuses({
             session,
             list,
-            page,
+            page: { status: page.response.status, data: page.data, error: page.error },
             message,
             partUpdate,
             updated,
@@ -658,6 +658,7 @@ describe("HttpApi SDK", () => {
           }),
           listCount: array(list.data).length,
           pageCount: array(page.data).length,
+          pageNextCursor: page.response.headers.get("X-Next-Cursor"),
           initialText: firstPartText(message.data),
           updatedText: firstPartText(updated.data),
           partCountAfterDelete: array(record(withoutPart.data).parts).length,

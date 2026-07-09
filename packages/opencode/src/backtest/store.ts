@@ -271,7 +271,7 @@ export async function save(input: SaveInput): Promise<{ dir: string; manifest: M
   return { dir, manifest }
 }
 
-export async function list(input: ListInput = {}): Promise<Manifest[]> {
+async function durableManifests(): Promise<Manifest[]> {
   const roots: string[] = []
   try {
     const algoDirs = await fs.readdir(ROOT, { withFileTypes: true })
@@ -299,9 +299,20 @@ export async function list(input: ListInput = {}): Promise<Manifest[]> {
       manifests.push(manifest)
     }
   }
+  return manifests
+}
 
+export async function get(id: string): Promise<Manifest | null> {
+  const durable = await durableManifests()
+  const found = durable.find((entry) => entry.id === id)
+  if (found) return found
+  const legacy = await readLegacyBacktestHistory()
+  return legacy.find((entry) => entry.id === id) ?? null
+}
+
+export async function list(input: ListInput = {}): Promise<Manifest[]> {
   return mergeBacktestHistoryEntries({
-    durable: manifests,
+    durable: await durableManifests(),
     legacy: await readLegacyBacktestHistory(),
     algorithmName: input.algorithmName,
     algorithmId: input.algorithmId,

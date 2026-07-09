@@ -50,9 +50,7 @@ describe("formatBacktestHistoryEntries", () => {
   })
 
   test("treats pre-migration entries without runKind as legacy", () => {
-    const output = formatBacktestHistoryEntries([
-      { ...base, results: results({}) },
-    ])
+    const output = formatBacktestHistoryEntries([{ ...base, results: results({}) }])
 
     expect(output).toContain("== Legacy runs ==")
     expect(output).not.toContain("== Crucible 2.0 runs ==")
@@ -75,5 +73,29 @@ describe("formatBacktestHistoryEntries", () => {
 
     const filteredById = mergeBacktestHistoryEntries({ durable: [durable], legacy, algorithmId: "a", limit: 10 })
     expect(filteredById.map((entry) => entry.id)).toEqual(["legacy-only", "shared"])
+  })
+
+  test("name filtering keeps legacy runs that do not have an algorithm id", () => {
+    const durable: Manifest = {
+      ...base,
+      id: "durable-by-name",
+      algorithmId: "algo-123",
+      algorithmName: "trend-follow",
+      results: results({ productLabel: "Crucible 2.0", runKind: "crucible_2_0" }),
+      timestamp: 2000,
+    }
+    const legacy: Manifest[] = [
+      {
+        ...base,
+        id: "legacy-name-only",
+        algorithmId: "",
+        algorithmName: "trend-follow",
+        results: results({ productLabel: "Legacy backtest", runKind: "legacy" }),
+        timestamp: 3000,
+      },
+    ]
+
+    const filtered = mergeBacktestHistoryEntries({ durable: [durable], legacy, algorithmName: "trend-follow", limit: 10 })
+    expect(filtered.map((entry) => entry.id)).toEqual(["legacy-name-only", "durable-by-name"])
   })
 })

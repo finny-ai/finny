@@ -6,45 +6,59 @@ import { Session } from "@/session/session"
 import { SessionID } from "../../session/schema"
 import { UI } from "../ui"
 import { Locale } from "@/util/locale"
-import { Flag } from "@opencode-ai/core/flag/flag"
-import { Filesystem } from "@/util/filesystem"
-import { Process } from "@/util/process"
 import { NotFoundError } from "@/storage/storage"
 import { EOL } from "os"
-import path from "path"
-import { which } from "@opencode-ai/core/util/which"
+import { createLocalSdk } from "../local-sdk"
+import { Agent } from "@/agent/agent"
+import { FormatError, FormatUnknownError } from "../error"
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2"
 
-function pagerCmd(): string[] {
-  const lessOptions = ["-R", "-S"]
-  if (process.platform !== "win32") {
-    return ["less", ...lessOptions]
+type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
+
+function print(value: unknown) {
+  console.log(JSON.stringify(value, null, 2))
+}
+
+function formatSdkError(error: unknown) {
+  return FormatError(error) ?? FormatUnknownError(error)
+}
+
+export function sessionMessagesPage(result: {
+  data?: unknown[]
+  response: { headers: Pick<Headers, "get"> }
+}) {
+  return {
+    messages: result.data ?? [],
+    nextCursor: result.response.headers.get("X-Next-Cursor"),
   }
+}
 
-  // user could have less installed via other options
-  const lessOnPath = which("less")
-  if (lessOnPath) {
-    if (Filesystem.stat(lessOnPath)?.size) return [lessOnPath, ...lessOptions]
+function parseModel(value: string | undefined): ModelInput | undefined {
+  if (!value) return undefined
+  const [providerID, ...rest] = value.split("/")
+  const modelID = rest.join("/")
+  if (!providerID.length || !modelID.length) {
+    throw new Error(`Invalid model ${value}. Model must be in the format "provider/model".`)
   }
-
-  if (Flag.OPENCODE_GIT_BASH_PATH) {
-    const less = path.join(Flag.OPENCODE_GIT_BASH_PATH, "..", "..", "usr", "bin", "less.exe")
-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
-  }
-
-  const git = which("git")
-  if (git) {
-    const less = path.join(git, "..", "..", "usr", "bin", "less.exe")
-    if (Filesystem.stat(less)?.size) return [less, ...lessOptions]
-  }
-
-  // Fall back to Windows built-in more (via cmd.exe)
-  return ["cmd", "/c", "more"]
+  return { providerID, modelID } as ModelInput
 }
 
 export const SessionCommand = cmd({
   command: "session",
   describe: "manage sessions",
-  builder: (yargs: Argv) => yargs.command(SessionListCommand).command(SessionDeleteCommand).demandCommand(),
+  builder: (yargs: Argv) =>
+    yargs
+      .command(SessionListCommand)
+      .command(SessionCurrentCommand)
+      .command(SessionShowCommand)
+      .command(SessionMessagesCommand)
+      .command(SessionCreateCommand)
+      .command(SessionSendCommand)
+      .command(SessionModesCommand)
+      .command(SessionModeCommand)
+      .command(SessionAbortCommand)
+      .command(SessionDeleteCommand)
+      .demandCommand(),
   async handler() {},
 })
 
@@ -67,6 +81,234 @@ export const SessionDeleteCommand = effectCmd({
   }),
 })
 
+export const SessionAbortCommand = effectCmd({
+  command: "abort <sessionID>",
+  describe: "abort a running session",
+  builder: (yargs) =>
+    yargs.positional("sessionID", {
+      describe: "session ID to abort",
+      type: "string",
+      demandOption: true,
+    }),
+  handler: Effect.fn("Cli.session.abort")(function* (args) {
+    const sdk = createLocalSdk(process.cwd())
+    const result = yield* Effect.promise(() => sdk.session.abort({ sessionID: args.sessionID }))
+    if (result.error) return yield* fail(formatSdkError(result.error))
+    print({ ok: true, sessionID: args.sessionID })
+  }),
+})
+
+export const SessionCreateCommand = effectCmd({
+  command: "create",
+  describe: "create a new session",
+  builder: (yargs) =>
+    yargs.option("title", {
+      type: "string",
+      describe: "optional session title",
+    }),
+  handler: Effect.fn("Cli.session.create")(function* (args) {
+    const sdk = createLocalSdk(process.cwd())
+    const result = yield* Effect.promise(() => sdk.session.create(args.title ? { title: args.title } : {}))
+    if (result.error) return yield* fail(formatSdkError(result.error))
+    print(result.data)
+  }),
+})
+
+export const SessionCurrentCommand = effectCmd({
+  command: "current",
+  describe: "show the most recently updated root session",
+  handler: Effect.fn("Cli.session.current")(function* () {
+    const sdk = createLocalSdk(process.cwd())
+    const result = yield* Effect.promise(() => sdk.session.list({ roots: true, limit: 1 }))
+    if (result.error) return yield* fail(formatSdkError(result.error))
+    const session = result.data?.[0]
+    if (!session) return yield* fail("No sessions found")
+    print(session)
+  }),
+})
+
+export const SessionShowCommand = effectCmd({
+  command: "show <sessionID>",
+  describe: "show session metadata and current status",
+  builder: (yargs) =>
+    yargs
+      .positional("sessionID", {
+        describe: "session ID",
+        type: "string",
+        demandOption: true,
+      })
+      .option("include-messages", {
+        type: "boolean",
+        default: false,
+        describe: "include session messages inline",
+      }),
+  handler: Effect.fn("Cli.session.show")(function* (args) {
+    const sdk = createLocalSdk(process.cwd())
+    const includeMessages = Boolean(args["include-messages"])
+    const [sessionResult, statusResult, messagesResult] = yield* Effect.all([
+      Effect.promise(() => sdk.session.get({ sessionID: args.sessionID })),
+      Effect.promise(() => sdk.session.status()),
+      includeMessages
+        ? Effect.promise(() => sdk.session.messages({ sessionID: args.sessionID }))
+        : Effect.succeed({ data: undefined, error: undefined } as const),
+    ])
+    if (sessionResult.error) return yield* fail(formatSdkError(sessionResult.error))
+    if (statusResult.error) return yield* fail(formatSdkError(statusResult.error))
+    if (messagesResult.error) return yield* fail(formatSdkError(messagesResult.error))
+    print({
+      session: sessionResult.data,
+      status: statusResult.data?.[args.sessionID] ?? null,
+      ...(includeMessages ? { messages: messagesResult.data ?? [] } : {}),
+    })
+  }),
+})
+
+export const SessionMessagesCommand = effectCmd({
+  command: "messages <sessionID>",
+  describe: "list messages for a session",
+  builder: (yargs) =>
+    yargs
+      .positional("sessionID", {
+        describe: "session ID",
+        type: "string",
+        demandOption: true,
+      })
+      .option("limit", {
+        type: "number",
+        describe: "max messages to return",
+      })
+      .option("before", {
+        type: "string",
+        describe: "cursor/message id for pagination",
+      }),
+  handler: Effect.fn("Cli.session.messages")(function* (args) {
+    const sdk = createLocalSdk(process.cwd())
+    const result = yield* Effect.promise(() =>
+      sdk.session.messages({
+        sessionID: args.sessionID,
+        ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+        ...(args.before ? { before: args.before } : {}),
+      }),
+    )
+    if (result.error) return yield* fail(formatSdkError(result.error))
+    print(sessionMessagesPage(result))
+  }),
+})
+
+export const SessionSendCommand = effectCmd({
+  command: "send <sessionID> <message>",
+  describe: "send a message into an existing session",
+  builder: (yargs) =>
+    yargs
+      .positional("sessionID", {
+        describe: "session ID",
+        type: "string",
+        demandOption: true,
+      })
+      .positional("message", {
+        describe: "message text",
+        type: "string",
+        demandOption: true,
+      })
+      .option("mode", {
+        type: "string",
+        default: "build",
+        describe: "agent mode to run the prompt under",
+      })
+      .option("no-reply", {
+        type: "boolean",
+        default: false,
+        describe: "queue the prompt without waiting for a model reply",
+      })
+      .option("model", {
+        type: "string",
+        describe: "optional provider/model override",
+      }),
+  handler: Effect.fn("Cli.session.send")(function* (args) {
+    try {
+      const sdk = createLocalSdk(process.cwd())
+      const result = yield* Effect.promise(() =>
+        sdk.session.prompt({
+          sessionID: args.sessionID,
+          agent: args.mode ?? "build",
+          parts: [{ type: "text", text: args.message }],
+          noReply: Boolean(args["no-reply"]),
+          ...(args.model ? { model: parseModel(args.model) } : {}),
+        }),
+      )
+      if (result.error) return yield* fail(formatSdkError(result.error))
+      print(result.data)
+    } catch (error) {
+      return yield* fail(error instanceof Error ? error.message : String(error))
+    }
+  }),
+})
+
+export const SessionModesCommand = effectCmd({
+  command: "modes",
+  describe: "list available session modes/agents",
+  handler: Effect.fn("Cli.session.modes")(function* () {
+    const agents = yield* Agent.Service.use((svc) => svc.list())
+    print(
+      agents.map((agent) => ({
+        name: agent.name,
+        description: agent.description,
+        hidden: agent.hidden,
+        mode: agent.mode,
+      })),
+    )
+  }),
+})
+
+export const SessionModeCommand = effectCmd({
+  command: "mode <sessionID> <mode> <message>",
+  describe: "send a message using an explicit mode/agent",
+  builder: (yargs) =>
+    yargs
+      .positional("sessionID", {
+        describe: "session ID",
+        type: "string",
+        demandOption: true,
+      })
+      .positional("mode", {
+        describe: "mode/agent name",
+        type: "string",
+        demandOption: true,
+      })
+      .positional("message", {
+        describe: "message text",
+        type: "string",
+        demandOption: true,
+      })
+      .option("no-reply", {
+        type: "boolean",
+        default: false,
+        describe: "queue the prompt without waiting for a model reply",
+      })
+      .option("model", {
+        type: "string",
+        describe: "optional provider/model override",
+      }),
+  handler: Effect.fn("Cli.session.mode")(function* (args) {
+    try {
+      const sdk = createLocalSdk(process.cwd())
+      const result = yield* Effect.promise(() =>
+        sdk.session.prompt({
+          sessionID: args.sessionID,
+          agent: args.mode,
+          parts: [{ type: "text", text: args.message }],
+          noReply: Boolean(args["no-reply"]),
+          ...(args.model ? { model: parseModel(args.model) } : {}),
+        }),
+      )
+      if (result.error) return yield* fail(formatSdkError(result.error))
+      print(result.data)
+    } catch (error) {
+      return yield* fail(error instanceof Error ? error.message : String(error))
+    }
+  }),
+})
+
 export const SessionListCommand = effectCmd({
   command: "list",
   describe: "list sessions",
@@ -84,36 +326,27 @@ export const SessionListCommand = effectCmd({
         default: "table",
       }),
   handler: Effect.fn("Cli.session.list")(function* (args) {
-    const sessions = yield* Session.Service.use((svc) => svc.list({ roots: true, limit: args.maxCount }))
+    const maxCount = typeof args["max-count"] === "number" ? args["max-count"] : undefined
+    const format = args.format === "json" ? "json" : "table"
+    const sessions = yield* Session.Service.use((svc) => svc.list({ roots: true, limit: maxCount }))
 
     if (sessions.length === 0) return
 
-    const output = args.format === "json" ? formatSessionJSON(sessions) : formatSessionTable(sessions)
-
-    const shouldPaginate = process.stdout.isTTY && !args.maxCount && args.format === "table"
-
-    if (shouldPaginate) {
-      yield* Effect.promise(async () => {
-        const proc = Process.spawn(pagerCmd(), {
-          stdin: "pipe",
-          stdout: "inherit",
-          stderr: "inherit",
-        })
-
-        if (!proc.stdin) {
-          console.log(output)
-          return
-        }
-
-        proc.stdin.write(output)
-        proc.stdin.end()
-        await proc.exited
-      })
-    } else {
-      console.log(output)
-    }
+    const output = format === "json" ? formatSessionJSON(sessions) : formatSessionTable(sessions)
+    console.log(output)
   }),
 })
+
+function formatSessionInfo(session: Session.Info) {
+  return {
+    id: session.id,
+    title: session.title,
+    updated: session.time.updated,
+    created: session.time.created,
+    projectId: session.projectID,
+    directory: session.directory,
+  }
+}
 
 function formatSessionTable(sessions: Session.Info[]): string {
   const lines: string[] = []
@@ -135,13 +368,5 @@ function formatSessionTable(sessions: Session.Info[]): string {
 }
 
 function formatSessionJSON(sessions: Session.Info[]): string {
-  const jsonData = sessions.map((session) => ({
-    id: session.id,
-    title: session.title,
-    updated: session.time.updated,
-    created: session.time.created,
-    projectId: session.projectID,
-    directory: session.directory,
-  }))
-  return JSON.stringify(jsonData, null, 2)
+  return JSON.stringify(sessions.map(formatSessionInfo), null, 2)
 }
