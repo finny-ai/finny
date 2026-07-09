@@ -35,7 +35,9 @@ import {
 } from "@/agent/finny-workspace-context"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
 import { validateDataExtractorTaskText, validateExistingDataExtractorEvidence } from "@/data/data-extractor-evidence"
+import { validateNewsAgentTaskText } from "@/data/news-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
+import { renderSubagentArtifactPointer } from "@/agent/subagent-artifact"
 import { TaskState } from "@/task/state"
 
 /**
@@ -392,8 +394,24 @@ function withFinnySubagentContext(
   workspace: string | null,
   context?: WorkspaceRequestContext,
 ) {
-  if (!workspace) return prompt
   if (!finnySubagentType(params.subagent_type)) return prompt
+  // News agents still need a wall-clock retrieval anchor when no workspace is bound,
+  // so sourced_fact retrieved_at does not rely on the model inventing a timestamp.
+  if (!workspace) {
+    if (params.subagent_type !== "news_agent" && params.subagent_type !== "researcher") return prompt
+    const retrievalTimeUtc = new Date().toISOString()
+    return [
+      "<finny-subagent-context>",
+      "Authoritative runtime context. It overrides conflicting task wording.",
+      field("retrieval_time_utc", retrievalTimeUtc),
+      "",
+      "Use retrieval_time_utc as retrieved_at on sourced_fact claims. Never set published_at after retrieved_at.",
+      "Future event_time is allowed for scheduled catalysts when published_at is valid.",
+      "</finny-subagent-context>",
+      "",
+      prompt,
+    ].join("\n")
+  }
 
   const workspacePath = algoDir(workspace)
   const dataDir = path.join(workspacePath, "data")
@@ -513,6 +531,7 @@ function withFinnySubagentContext(
     ].join("\n")
   }
 
+  const retrievalTimeUtc = new Date().toISOString()
   return [
     "<finny-subagent-context>",
     "Authoritative runtime context. It overrides conflicting task wording.",
@@ -523,10 +542,16 @@ function withFinnySubagentContext(
     field("requested_interval", interval),
     field("requested_asset_class", assetClass),
     field("workspace_news_dir", newsDir),
+    field("retrieval_time_utc", retrievalTimeUtc),
     "",
     "Write at most one compact news/execution/provenance/risk markdown note directly under `workspace_news_dir`. Do not create nested `body/` or `headlines/` folders.",
     "Do not write to `algos/_template/data/news` or any repo-local `algos/*/data/news` path.",
     "Return artifact_paths that point to files under `workspace_news_dir`.",
+    "Every written note and the returned brief MUST include a fenced finny.news.claims.v1 JSON claims block.",
+    "Only sourced_fact and market_data_fact with complete provenance count as evidence. model_hypothesis is never evidence.",
+    "If no source class yields a sourced fact, return NO_SOURCED_CONTEXT with attempted sources and failure reasons — do not synthesize a market-context brief from general knowledge.",
+    "Use retrieval_time_utc as retrieved_at on sourced_fact claims. Never set published_at after retrieved_at (temporal leakage).",
+    "Future event_time is allowed for scheduled catalysts (earnings, FOMC, rebalances) when published_at is at or before retrieved_at.",
     "</finny-subagent-context>",
     "",
     prompt,
@@ -911,6 +936,22 @@ export const TaskTool = Tool.define(
           parts,
         })
         const text = finalTaskText(result.parts)
+        if (params.subagent_type === "news_agent" || params.subagent_type === "researcher") {
+          const validated = validateNewsAgentTaskText({
+            text,
+            workspaceSlug: workspace,
+            context: workspaceContext,
+          }).text
+          if (!workspace) return validated
+          const pointer = yield* Effect.promise(() =>
+            renderSubagentArtifactPointer(params.subagent_type, workspace),
+          )
+          return pointer ? `${validated}\n\n${pointer}` : validated
+        }
+        if (params.subagent_type === "sec_agent" && workspace) {
+          const pointer = yield* Effect.promise(() => renderSubagentArtifactPointer("sec_agent", workspace))
+          return pointer ? `${text}\n\n${pointer}` : text
+        }
         if (params.subagent_type !== "data_extractor") return text
         const validated = yield* Effect.promise(() =>
           validateDataExtractorTaskText({

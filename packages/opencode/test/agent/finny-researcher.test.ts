@@ -94,6 +94,9 @@ describe("news_agent prompt contract", () => {
     expect(PROMPT_NEWS_AGENT).toContain("at most three high-signal sources")
     expect(PROMPT_NEWS_AGENT).toContain("`BLOCKED: source cap insufficient`")
     expect(PROMPT_NEWS_AGENT).toContain("Prefer primary or high-signal sources")
+    expect(PROMPT_NEWS_AGENT).toContain("finny.news.claims.v1")
+    expect(PROMPT_NEWS_AGENT).toContain("sourced_fact")
+    expect(PROMPT_NEWS_AGENT).toContain("NO_SOURCED_CONTEXT")
   })
 
   test("requires cited evidence, implications, and gaps", () => {
@@ -103,7 +106,8 @@ describe("news_agent prompt contract", () => {
     expect(PROMPT_NEWS_AGENT).toContain("Risk Regime")
     expect(PROMPT_NEWS_AGENT).toContain("Strategy Implications")
     expect(PROMPT_NEWS_AGENT).toContain("Gaps / Caveats")
-    expect(PROMPT_NEWS_AGENT).toContain("no material current context found")
+    expect(PROMPT_NEWS_AGENT).toContain("NO_SOURCED_CONTEXT")
+    expect(PROMPT_NEWS_AGENT).toContain("model_hypothesis")
   })
 
   test("writes durable notes only under workspace news and treats unavailable sources as gaps", () => {
@@ -112,6 +116,7 @@ describe("news_agent prompt contract", () => {
     expect(PROMPT_NEWS_AGENT).toContain("Files written")
     expect(PROMPT_NEWS_AGENT).toContain("If search or a source is unavailable")
     expect(PROMPT_NEWS_AGENT).toContain("Gaps / Caveats")
+    expect(PROMPT_NEWS_AGENT).toContain("unavailable")
   })
 
   test("forbids unsupported trading labels and invented citations", () => {

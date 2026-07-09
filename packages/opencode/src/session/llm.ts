@@ -276,7 +276,7 @@ const live: Layer.Layer<
       })
       // Default runtime path: AI SDK owns provider execution and tool dispatch;
       // LLMAISDK.toLLMEvents below normalizes fullStream parts for the processor.
-      const tryRepairQuestionSchema = (toolCall: { toolName: string; input: unknown }) => {
+      const tryRepairQuestionSchema = <T extends { toolName: string; input: unknown }>(toolCall: T): T | undefined => {
         if (toolCall.toolName.toLowerCase() !== "question") return undefined
         const r = repairQuestionToolInput(toolCall.input)
         if (r === undefined) return undefined

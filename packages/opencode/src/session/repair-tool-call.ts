@@ -180,6 +180,7 @@ export function repairQuestionToolInput(input: unknown): string | undefined {
     return undefined
   }
 
+  if (!obj) return undefined
   const questions = obj["questions"]
   if (!Array.isArray(questions)) return undefined
 

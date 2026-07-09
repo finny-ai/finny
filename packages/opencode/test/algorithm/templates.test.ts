@@ -18,7 +18,6 @@ describe("algorithm templates", () => {
 
   test("scaffold validation skips smoke only for intentional no-edge templates", async () => {
     expect(scaffoldValidationOptions("custom")).toEqual({ skipSmokeTest: true })
-    expect(scaffoldValidationOptions("dca")).toEqual({ skipSmokeTest: true })
     expect(scaffoldValidationOptions("golden-cross")).toEqual({ skipSmokeTest: true })
     expect(scaffoldValidationOptions("breakout")).toEqual({ skipSmokeTest: false })
   })
