@@ -31,6 +31,13 @@ describe("finny workspace context helpers", () => {
     expect(window).toEqual({ start: "2024-07-10", end: "2026-07-10" })
   })
 
+  test("accepts a hyphenated two-year window", () => {
+    expect(inferBacktestWindow("Use a 2-year backtest window.", new Date("2026-07-10T15:00:00Z"))).toEqual({
+      start: "2024-07-10",
+      end: "2026-07-10",
+    })
+  })
+
   test("derives algorithm name from workspace slug prefix", () => {
     expect(algorithmNameFromWorkspaceSlug("aapl-5m-strategy.16.6.15.09.ce37659c")).toBe("aapl-5m-strategy")
   })

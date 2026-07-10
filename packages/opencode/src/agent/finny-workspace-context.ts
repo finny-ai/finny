@@ -101,7 +101,7 @@ export function inferBacktestWindow(prompt: string, now = new Date()): DateWindo
   // Agent starts; otherwise its required context is missing on the first run.
   // Keep the older, deliberately fixed-day shortcuts above unchanged.
   if (!days) {
-    const yearMatch = /\b(\d+)\s*(?:y|yr|yrs|year|years)\b/.exec(lower)
+    const yearMatch = /\b(\d+)\s*[- ]?\s*(?:y|yr|yrs|year|years)\b/.exec(lower)
     const wordYears: Array<[RegExp, number]> = [
       [/\btwo\s+years?\b/, 2],
       [/\bthree\s+years?\b/, 3],

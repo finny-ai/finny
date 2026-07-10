@@ -430,11 +430,17 @@ def _run_regime(StrategyCls, prices):
                 # covers a short or a sell that closes a long is risk-reducing
                 # and must not count toward requested-qty leverage.
                 opens_exposure = (side == "buy" and pos_before >= 0) or (side == "sell" and pos_before <= 0)
-                if opens_exposure and isinstance(req_qty, (int, float)) and req_qty > 0:
+                # A broker order may intentionally omit qty/notional and use
+                # the documented default sizing. Infer the resulting opening
+                # quantity so default-sized entries participate in the guard.
+                effective_qty = req_qty
+                if effective_qty is None and opens_exposure:
+                    effective_qty = abs(broker.position(_sym) - pos_before)
+                if opens_exposure and isinstance(effective_qty, (int, float)) and effective_qty > 0:
                     requested_qty_events.append({
                         "tick": i,
                         "side": side,
-                        "requested_qty": float(req_qty),
+                        "requested_qty": float(effective_qty),
                         "price": float(price),
                         "equity": float(equity_before),
                     })

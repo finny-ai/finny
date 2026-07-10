@@ -43,8 +43,7 @@ function latestUserText(messages: Tool.Context["messages"]): string {
   return ""
 }
 
-function promptFromParams(params: z.infer<typeof parameters>, fallback: string): string {
-  if (params.requestSummary?.trim()) return params.requestSummary.trim()
+export function promptFromParams(params: z.infer<typeof parameters>, fallback: string): string {
   const fields: Array<[string, string | undefined]> = [
     ["algorithm", params.algorithmName],
     ["symbol", params.symbol],
@@ -56,6 +55,17 @@ function promptFromParams(params: z.infer<typeof parameters>, fallback: string):
     ["strategy intent", params.strategyIntent],
   ]
   const lines = fields.flatMap(([label, value]) => value ? [`${label} ${value}`] : [])
+  if (params.requestSummary?.trim()) {
+    // Preserve structured fields even when the caller supplies a summary. In
+    // particular, approved start/end dates must reach bootstrapWorkspace on
+    // the first call so the Data Agent never starts without its date context.
+    const summary = params.requestSummary.trim()
+    const dateWindow = params.startDate && params.endDate ? `${params.startDate} to ${params.endDate}` : undefined
+    // Put the structured window first: extractDateWindow intentionally uses
+    // the first valid ascending pair, so summary prose must not override it.
+    if (dateWindow && !summary.includes(dateWindow)) return `date window ${dateWindow}; ${summary}`
+    return summary
+  }
   if (lines.length) return lines.join("; ")
   return fallback
 }
