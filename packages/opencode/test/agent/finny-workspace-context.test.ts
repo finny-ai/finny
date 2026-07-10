@@ -23,6 +23,14 @@ describe("finny workspace context helpers", () => {
     expect(window.end).toBe("2026-03-01")
   })
 
+  test("materializes an approved two-year shorthand into an exact date window", () => {
+    const window = inferBacktestWindow(
+      "Build an SPY 15m strategy using a 2y backtest window.",
+      new Date("2026-07-10T15:00:00Z"),
+    )
+    expect(window).toEqual({ start: "2024-07-10", end: "2026-07-10" })
+  })
+
   test("derives algorithm name from workspace slug prefix", () => {
     expect(algorithmNameFromWorkspaceSlug("aapl-5m-strategy.16.6.15.09.ce37659c")).toBe("aapl-5m-strategy")
   })

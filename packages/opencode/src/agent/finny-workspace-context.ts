@@ -86,6 +86,7 @@ export function inferBacktestWindow(prompt: string, now = new Date()): DateWindo
 
   const lower = prompt.toLowerCase()
   let days: number | undefined
+  let calendarYears: number | undefined
   if (/\b(?:three|3)\s*[- ]?\s*months?\b/.test(lower) || /\b3m\s+backtest\b/.test(lower)) days = 90
   else if (/\b(?:six|6)\s*[- ]?\s*months?\b/.test(lower)) days = 180
   else if (/\b(?:one|1)\s*[- ]?\s*months?\b/.test(lower)) days = 30
@@ -94,11 +95,27 @@ export function inferBacktestWindow(prompt: string, now = new Date()): DateWindo
     const match = /\b(\d{2,3})\s*[- ]?\s*days?\b/.exec(lower)
     if (match) days = Number(match[1])
   }
-  if (!days) return explicit
+
+  // `finny_workspace_prepare` receives an approved relative duration such as
+  // `2y`.  Preserve that approval as concrete request dates before the Data
+  // Agent starts; otherwise its required context is missing on the first run.
+  // Keep the older, deliberately fixed-day shortcuts above unchanged.
+  if (!days) {
+    const yearMatch = /\b(\d+)\s*(?:y|yr|yrs|year|years)\b/.exec(lower)
+    const wordYears: Array<[RegExp, number]> = [
+      [/\btwo\s+years?\b/, 2],
+      [/\bthree\s+years?\b/, 3],
+      [/\bfour\s+years?\b/, 4],
+      [/\bfive\s+years?\b/, 5],
+    ]
+    calendarYears = yearMatch ? Number(yearMatch[1]) : wordYears.find(([pattern]) => pattern.test(lower))?.[1]
+  }
+  if (!days && !calendarYears) return explicit
 
   const end = isoUtcDate(now)
   const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
-  startDate.setUTCDate(startDate.getUTCDate() - days)
+  if (calendarYears) startDate.setUTCFullYear(startDate.getUTCFullYear() - calendarYears)
+  else startDate.setUTCDate(startDate.getUTCDate() - days!)
   return { start: isoUtcDate(startDate), end, ...explicit }
 }
 

@@ -35,7 +35,7 @@ Validate a trading algorithm's Python code without saving it. Finny's validator 
 - `POSITION_SIZE_UNCAPPED`: `qty = risk / stop_distance` without capping against `self.equity / price`. Implicit leverage.
 - `FRACTIONAL_SHARES_EQUITY`: config symbol looks like a stock/ETF but submitted order qty may be fractional. Convert to whole shares before `broker.buy(..., qty=qty)` with `int(qty)` or `math.floor(qty)`.
 - `NEAR_ZERO_DIVISION`: an RSI-shaped denominator is guarded only by `!= 0` / `> 0` — near-zero values still produce unstable indicators. Use `> 1e-10`.
-- `GUARD_NEVER_BINDING` (smoke test): strategy produced zero BUYs across the random-walk regime — likely a threshold mis-scaling.
+- `GUARD_NEVER_BINDING` (smoke test): strategy produced zero opening orders across short and long random-walk regimes — likely a threshold mis-scaling.
 - `CONFIG_KEY_VALUE_MATCH`: a config key's name isn't in the code but its value is, as a literal. Rename the attribute to match for self-documentation.
 - `INVARIANT_DIRECTIONAL_SANITY`: mean-reversion-style BUYs firing on a rising market suggest inverted logic.
 - `CONFIG_KEY_UNDECLARED`: magic number in code that looks like it should be a config key.

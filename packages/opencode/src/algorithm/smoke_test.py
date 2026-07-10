@@ -17,7 +17,7 @@ Diagnostic codes:
   INVARIANT_DIRECTIONAL_SANITY    (warning) mean-reversion-shaped BUY fired on a monotone-up series
   EQUITY_STATIC                   (error)   trades fired but self.equity (or similar) never changed
   LEVERAGE_VIOLATION              (error)   position_qty * price > self.equity at some tick
-  GUARD_NEVER_BINDING             (warning) strategy produced zero trades on the random-walk regime
+  GUARD_NEVER_BINDING             (warning) strategy produced zero entry orders across random-walk regimes
 
 Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emits
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
@@ -706,22 +706,29 @@ def analyze(source, symbol=None):
             if any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
                 break
 
-    # GUARD_NEVER_BINDING: strategy produced zero trades on the random-walk regime.
-    # Conservative: only warns when the random regime saw zero BUYs AND the strategy has
-    # threshold-like scalar attributes (suggesting a tunable guard exists). Monotone-up /
-    # -down regimes can legitimately produce no mean-reversion trades.
-    rw_buys = sum(1 for r in results["random"]["returns"] if r == "BUY")
-    if rw_buys == 0:
+    # GUARD_NEVER_BINDING: a strategy with tunable guards that never opens
+    # exposure across the short and long random walks is likely mis-scaled.
+    # Count opening broker intents, not BUY return labels: a valid short-only
+    # strategy enters with `sell`, and close orders must not make a dead entry
+    # predicate look healthy. The longer walk also prevents a legitimate
+    # session-bound or low-frequency strategy from being rejected solely for a
+    # sparse 200-bar sample.
+    rw_entries = sum(
+        len(results[regime_name].get("requested_qty_events", []))
+        for regime_name in ("random", "long_random")
+    )
+    if rw_entries == 0:
         has_threshold = any(
             re.search(r"threshold|min_|max_|oversold|overbought|num_std|stop_|risk_|period|lookback|entry_|exit_|lower|upper|band|level|cutoff", name, re.IGNORECASE)
-            for name in results["random"]["initial_scalars"]
+            for regime_name in ("random", "long_random")
+            for name in results[regime_name]["initial_scalars"]
         )
         if has_threshold:
             diagnostics.append({
                 "code": "GUARD_NEVER_BINDING",
                 "severity": "warning",
                 "message": (
-                    "Strategy produced zero BUYs across 200 ticks of random-walk prices. "
+                    "Strategy produced zero entry orders across 700 ticks of random-walk prices. "
                     "A guard threshold (e.g. volatility/rsi cutoff) is likely too strict — the "
                     "strategy will rarely trade in real markets."
                 ),
