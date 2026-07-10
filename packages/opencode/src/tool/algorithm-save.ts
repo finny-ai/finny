@@ -16,6 +16,12 @@ import {
   unsupportedNewSaveConfigReasons,
 } from "../algorithm/strategy-params"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
+import { Database } from "@opencode-ai/core/database/database"
+import {
+  ensureWorkflowCandidate,
+  pendingEvidenceRequirements,
+  recordVerifiedMarketData,
+} from "@/algorithm/build-workflow/lifecycle"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
 // replies to `python`/`python3` with a nonzero exit and a misleading message
@@ -266,6 +272,9 @@ export const AlgorithmSaveTool = Tool.define(
   "finny_algorithm_save",
   Effect.gen(function* () {
     const bus = yield* Bus.Service
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
 
     return {
       description: DESCRIPTION,
@@ -293,6 +302,27 @@ export const AlgorithmSaveTool = Tool.define(
                     evidenceRequired: true,
                     workspaceSlug: evidence.workspaceSlug,
                     issues: evidence.issues,
+                  },
+                },
+              }
+            }
+
+            let workflow = await runWorkflow(
+              recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
+            )
+            const pendingEvidence = workflow ? pendingEvidenceRequirements(workflow) : []
+            if (pendingEvidence.length > 0) {
+              return {
+                result: {
+                  title: "Save blocked by workflow evidence policy",
+                  output:
+                    "The exact market-data artifact was recorded, but the controller still requires: " +
+                    pendingEvidence.join(" | "),
+                  metadata: {
+                    blocked: true,
+                    retry: false,
+                    workflowId: workflow?.workflowId,
+                    pendingEvidence,
                   },
                 },
               }
@@ -497,6 +527,27 @@ export const AlgorithmSaveTool = Tool.define(
               version: algo.version,
             }).catch(() => undefined)
 
+            if (workflow) {
+              const config = (() => {
+                try {
+                  return normalizedConfig ? JSON.parse(normalizedConfig) : {}
+                } catch {
+                  return {}
+                }
+              })()
+              const candidate = await runWorkflow(
+                ensureWorkflowCandidate({
+                  workflow,
+                  algorithm: algo,
+                  dataset: evidence.dataset,
+                  interval: String(config.interval ?? workflow.identity.interval?.value ?? "1d"),
+                  start: workflow.identity.window?.value.start,
+                  end: workflow.identity.window?.value.end,
+                }),
+              )
+              workflow = candidate.workflow
+            }
+
             if (validation.warnings.length > 0) {
               parts.push("", Validate.format({ valid: true, errors: [], warnings: validation.warnings }))
             }
@@ -518,6 +569,13 @@ export const AlgorithmSaveTool = Tool.define(
                   version: algo.version,
                   warningCount: validation.warnings.length + (brokerageMismatch ? 1 : 0),
                   validationAttempts: validation.attempts,
+                  ...(workflow
+                    ? {
+                        workflowId: workflow.workflowId,
+                        workflowStage: workflow.stage,
+                        conceptId: workflow.candidate?.conceptId,
+                      }
+                    : {}),
                   ...(params.targetBrokerage ? { targetBrokerage: params.targetBrokerage } : {}),
                   ...(brokerageMismatch ? { brokerageMismatch: true } : {}),
                 },

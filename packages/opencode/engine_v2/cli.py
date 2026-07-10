@@ -719,6 +719,10 @@ def main() -> None:
                     help="If >0, run N rolling walk-forward folds")
     ap.add_argument("--param-grid-json", default=None,
                     help="JSON parameter grid for true fold-local walk-forward optimization")
+    ap.add_argument("--prior-selection-trials", type=int, default=0,
+                    help="Unique metric-producing strategy selections completed before this run")
+    ap.add_argument("--current-selection-trials", type=int, default=None,
+                    help="New selections represented by this run; use zero for an exact replay")
     ap.add_argument("--data-quality-mode", choices=["strict", "repair_outliers"], default="strict")
     ap.add_argument("--regimes", action="store_true")
     ap.add_argument("--start-date", default=None)
@@ -727,6 +731,10 @@ def main() -> None:
     args = ap.parse_args()
     if not np.isfinite(args.capital) or args.capital <= 0:
         raise SystemExit(f"capital must be a positive finite number, got {args.capital!r}")
+    if args.prior_selection_trials < 0:
+        raise SystemExit("--prior-selection-trials must be non-negative")
+    if args.current_selection_trials is not None and args.current_selection_trials < 0:
+        raise SystemExit("--current-selection-trials must be non-negative")
 
     cfg = json.loads(Path(args.config).read_text())
     cfg.setdefault("risk", {})["starting_equity_usd"] = float(args.capital)
@@ -958,6 +966,8 @@ def main() -> None:
             required_history_bars=required_history_bars,
             param_grid=param_grid,
             bars_per_year=bars_per_year,
+            prior_selection_trials=int(args.prior_selection_trials),
+            current_selection_trials=args.current_selection_trials,
         )
 
     # Monte-Carlo

@@ -1,5 +1,7 @@
 import z from "zod"
+import crypto from "node:crypto"
 import { Effect } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
@@ -24,6 +26,25 @@ import {
 } from "./backtest-failure-diagnosis"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import {
+  approvalScopeHash,
+  makeApprovalChallenge,
+  paperTradingApprovalScope,
+} from "@/algorithm/build-workflow/state"
+import {
+  experimentAttemptForRun,
+  type ExperimentRunContext,
+} from "@/algorithm/build-workflow/experiment"
+import type { ApprovalKind, ApprovalScope, BuildWorkflowState } from "@/algorithm/build-workflow/types"
+import {
+  completeWorkflowBacktest,
+  ensureWorkflowCandidate,
+  failWorkflowBacktest,
+  pendingEvidenceRequirements,
+  recordVerifiedMarketData,
+  startWorkflowBacktest,
+} from "@/algorithm/build-workflow/lifecycle"
 
 export const MAX_CONSECUTIVE_FAILED_BACKTESTS = 5
 export const BACKTEST_TOOL_IDS = new Set(["finny_backtest", "finny_backtest_run"])
@@ -143,18 +164,18 @@ const parameters = z.object({
   dataQualityMode: z
     .enum(["strict", "repair_outliers"])
     .default("strict")
-    .describe("Strict by default. Use repair_outliers only when repairOutliersApproved is true after explicit user approval."),
+    .describe("Strict by default. repair_outliers requires an exact controller-backed workflow approval."),
   repairOutliersApproved: z
     .boolean()
     .optional()
     .describe(
-      "Set true ONLY after the user explicitly approved a repair_outliers research rerun. Do not reuse interval-pivot or failure-budget approval.",
+      "Deprecated compatibility hint. It never grants repair approval; a scoped workflow approval record is required.",
     ),
   userApproved: z
     .boolean()
     .optional()
     .describe(
-      `Set true ONLY after the user explicitly approved continuing past ${MAX_CONSECUTIVE_FAILED_BACKTESTS} consecutive failed backtests for this symbol/interval. Renaming the algorithm does not reset the failure budget.`,
+      `Deprecated compatibility hint. It never bypasses the ${MAX_CONSECUTIVE_FAILED_BACKTESTS}-trial budget; use finny_workflow_request_approval for the controller-created scope.`,
     ),
 })
 
@@ -252,11 +273,28 @@ export function repairOutliersBlockMessage(input: {
   dataQualityMode: "strict" | "repair_outliers"
   repairOutliersApproved?: boolean
 }) {
-  if (input.dataQualityMode !== "repair_outliers" || input.repairOutliersApproved === true) return undefined
+  if (input.dataQualityMode !== "repair_outliers") return undefined
   return (
-    "Backtest blocked: repair_outliers mode requires explicit user approval for a research-only repaired-data rerun.\n\n" +
+    "Backtest blocked: repair_outliers mode requires a scoped workflow approval record for a research-only repaired-data rerun. " +
+    "The deprecated repairOutliersApproved boolean cannot grant approval.\n\n" +
     "Run strict mode first. If strict data quality fails, stop and report the exact timestamp(s) and reason; do not repair automatically."
   )
+}
+
+export function paperApprovalRequestForWorkflow(
+  state: Pick<BuildWorkflowState, "stage" | "backtest"> | undefined,
+) {
+  if (
+    state?.stage !== "reviewable" ||
+    state.backtest?.verdict !== "recommended_for_paper"
+  ) {
+    return undefined
+  }
+  return {
+    kind: "paper_trading" as const,
+    scope: paperTradingApprovalScope(state.backtest),
+    reason: "Approve this exact hash-complete reviewed run for paper trading.",
+  }
 }
 
 export function strictDataQualityNextSteps() {
@@ -398,9 +436,14 @@ async function mergeRunJson(input: {
 
 export const BacktestTool = Tool.define(
   "finny_backtest",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
+
+    return {
     description:
-      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, durability report, and review packet. This never grants paper eligibility; use finny_paper_approve after human review.",
+      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, durability report, and review packet. A recommended run creates a controller challenge; use finny_workflow_request_approval for that exact scope.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
@@ -411,18 +454,99 @@ export const BacktestTool = Tool.define(
           metadata: {},
         })
 
+        let workflow = (await runWorkflow(BuildWorkflowStore.listBySession(ctx.sessionID))).find(
+          (item) => item.status === "active" || item.status === "blocked",
+        )
+        let experiment: ExperimentRunContext | undefined
+        let paperApprovalChallengeId: string | undefined
+
+        const exactApproval = (state: BuildWorkflowState | undefined, kind: ApprovalKind, scope: ApprovalScope) => {
+          if (!state) return false
+          const hash = approvalScopeHash(kind, scope)
+          return state.approvals.some((record) => record.kind === kind && record.scopeHash === hash)
+        }
+
+        const ensureChallenge = async (kind: ApprovalKind, scope: ApprovalScope, reason: string) => {
+          if (!workflow) return undefined
+          const scopeHash = approvalScopeHash(kind, scope)
+          const existing = workflow.approvalChallenges.find(
+            (item) => item.kind === kind && item.scopeHash === scopeHash && item.status === "pending",
+          )
+          if (existing) return existing.id
+          const challenge = makeApprovalChallenge({
+            id: `approval_${crypto.randomUUID()}`,
+            kind,
+            scope,
+            reason,
+          })
+          const result = await runWorkflow(
+            BuildWorkflowStore.append({
+              workflowId: workflow.workflowId,
+              expectedRevision: workflow.revision,
+              event: {
+                id: `evt_${crypto.randomUUID()}`,
+                type: "approval.requested",
+                occurredAt: challenge.createdAt,
+                source: { actor: "tool" },
+                challenge,
+              },
+            }),
+          )
+          if (result.kind === "applied") {
+            workflow = result.decision.state
+            return challenge.id
+          }
+          return undefined
+        }
+
+        const recordExperiment = async (outcome: "metrics" | "setup_failure" | "engine_failure", runId?: string) => {
+          if (!experiment) return undefined
+          const result = await runWorkflow(
+            BuildWorkflowStore.append({
+              workflowId: experiment.workflow.workflowId,
+              event: {
+                id: `evt_experiment_${crypto.randomUUID()}`,
+                type: "experiment.recorded",
+                occurredAt: Date.now(),
+                source: { actor: "tool" },
+                attempt: experimentAttemptForRun({
+                  context: experiment,
+                  id: `attempt_${crypto.randomUUID()}`,
+                  outcome,
+                  runId,
+                }),
+              },
+            }),
+          )
+          if (result.kind === "applied") workflow = result.decision.state
+          return result
+        }
+
         const emptyMeta = {
           algorithmName: undefined as string | undefined,
           params: undefined as { duration: string; interval: string; capital: string } | undefined,
           results: undefined as BacktestRunner.Results | undefined,
         }
 
-        const repairBlock = repairOutliersBlockMessage(params)
-        if (repairBlock) {
+        const repairScope: ApprovalScope = {
+          algorithmName: params.algorithmName,
+          dataQualityMode: "repair_outliers",
+        }
+        if (params.dataQualityMode === "repair_outliers" && !exactApproval(workflow, "repair_outliers", repairScope)) {
+          const challengeId = await ensureChallenge(
+            "repair_outliers",
+            repairScope,
+            "Approve a research-only rerun that repairs isolated market-data outliers.",
+          )
           return {
             title: "Backtest blocked by repair approval",
-            output: repairBlock,
-            metadata: { ...emptyMeta, repair_outliers_allowed: false },
+            output:
+              "Backtest blocked: repair_outliers mode requires a scoped workflow approval record. " +
+              "The deprecated repairOutliersApproved boolean cannot grant approval." +
+              (challengeId
+                ? ` Call finny_workflow_request_approval with challengeId=${challengeId}.`
+                : " No authoritative workflow challenge is available in this legacy session."),
+            metadata: { ...emptyMeta, repair_outliers_allowed: false, approvalChallengeId: challengeId },
           }
         }
 
@@ -440,6 +564,23 @@ export const BacktestTool = Tool.define(
             },
           }
         }
+        const evidencedWorkflow = await runWorkflow(
+          recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
+        )
+        if (evidencedWorkflow) workflow = evidencedWorkflow
+        const pendingEvidence = workflow ? pendingEvidenceRequirements(workflow) : []
+        if (pendingEvidence.length > 0) {
+          return {
+            title: "Backtest blocked by workflow evidence policy",
+            output: `The controller still requires: ${pendingEvidence.join(" | ")}`,
+            metadata: {
+              ...emptyMeta,
+              blocked: true,
+              workflowId: workflow?.workflowId,
+              pendingEvidence,
+            },
+          }
+        }
 
         const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
@@ -447,40 +588,6 @@ export const BacktestTool = Tool.define(
             title: "Backtest failed",
             output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
             metadata: { ...emptyMeta },
-          }
-        }
-
-        // Failure budget is scoped to symbol+interval, not just the algorithm
-        // name, so re-saving the same concept under a fresh name cannot reset
-        // it. Only an explicit user approval (userApproved: true) continues
-        // past the block.
-        if (params.userApproved !== true) {
-          const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName, {
-            symbol: (algo.config as any)?.symbol,
-            interval: params.interval,
-          })
-          if (consecutiveFailures >= MAX_CONSECUTIVE_FAILED_BACKTESTS) {
-            const hadMetrics = priorBacktestsHadMetrics(ctx.messages, {
-              symbol: (algo.config as any)?.symbol,
-              interval: params.interval,
-            })
-            const failureDiagnosis = classifyConceptExhaustedFailure({
-              consecutiveFailures,
-              algorithmName: params.algorithmName,
-              priorRunsHadMetrics: hadMetrics,
-            })
-            const diagnosisLines = formatFailureDiagnosisBlock(failureDiagnosis)
-            return {
-              title: "Backtest blocked by failure budget",
-              output:
-                `Backtest blocked: this symbol/interval already has ${consecutiveFailures} consecutive failed backtests in this session (latest: "${params.algorithmName}").\n\n` +
-                `${failureDiagnosis.summary}\n` +
-                `Likely cause: ${failureDiagnosis.likelyCause === "strategy_code" ? "strategy code/design" : failureDiagnosis.likelyCause === "backtest_data" ? "backtest/data" : "concept weakness"}.\n` +
-                `Renaming the algorithm does not reset this budget. Stop and summarize the blocker with classification.\n` +
-                `If the user explicitly approves continuing (new concept, asset, timeframe, or venue), rerun with userApproved: true.` +
-                diagnosisLines.join("\n"),
-              metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
-            }
           }
         }
 
@@ -524,6 +631,76 @@ export const BacktestTool = Tool.define(
         const savedBacktestDates = inferSavedBacktestDates(algo.config)
         const effectiveStartDate = params.startDate ?? savedBacktestDates.startDate
         const effectiveEndDate = params.endDate ?? savedBacktestDates.endDate
+        if (workflow) {
+          const candidate = await runWorkflow(ensureWorkflowCandidate({
+            workflow,
+            algorithm: algo,
+            dataset: evidence.dataset,
+            interval: params.interval,
+            start: effectiveStartDate,
+            end: effectiveEndDate,
+          }))
+          workflow = candidate.workflow
+          experiment = candidate.experiment
+        }
+        let configSymbol: string | undefined
+        try {
+          const parsed = algo.config ? JSON.parse(algo.config) : {}
+          configSymbol = typeof parsed.symbol === "string" ? parsed.symbol : undefined
+        } catch {}
+        const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName, {
+          symbol: configSymbol,
+          interval: params.interval,
+        })
+        const budgetReached = Boolean(experiment?.trials.budgetExceeded) || consecutiveFailures >= MAX_CONSECUTIVE_FAILED_BACKTESTS
+        const priorTrials = Math.max(experiment?.trials.priorUniqueTrials ?? 0, consecutiveFailures)
+        const budgetScope: ApprovalScope | undefined = experiment
+          ? {
+              conceptId: experiment.conceptId,
+              priorUniqueTrials: priorTrials,
+              currentGridTrials: experiment.trials.currentGridTrials,
+            }
+          : undefined
+        const budgetApproved = Boolean(
+          budgetScope && exactApproval(workflow, "failure_budget_override", budgetScope),
+        )
+        if (budgetReached && !budgetApproved) {
+          const challengeId = budgetScope
+            ? await ensureChallenge(
+                "failure_budget_override",
+                budgetScope,
+                "Continue this exact strategy concept after five unique metric-producing selections.",
+              )
+            : undefined
+          const hadMetrics = priorBacktestsHadMetrics(ctx.messages, {
+            symbol: configSymbol,
+            interval: params.interval,
+          })
+          const failureDiagnosis = classifyConceptExhaustedFailure({
+            consecutiveFailures: priorTrials,
+            algorithmName: params.algorithmName,
+            priorRunsHadMetrics: hadMetrics || (experiment?.trials.priorUniqueTrials ?? 0) > 0,
+          })
+          const diagnosisLines = formatFailureDiagnosisBlock(failureDiagnosis)
+          return {
+            title: "Backtest blocked by failure budget",
+            output:
+              `Backtest blocked: this concept already has ${priorTrials} unique metric-producing trials.\n\n` +
+              `${failureDiagnosis.summary}\n` +
+              `Renaming or versioning the algorithm does not reset this budget. ` +
+              `The deprecated userApproved boolean cannot grant approval.` +
+              (challengeId
+                ? ` Call finny_workflow_request_approval with challengeId=${challengeId}.\n`
+                : " This legacy session has no authoritative workflow challenge.\n") +
+              diagnosisLines.join("\n"),
+            metadata: {
+              ...emptyMeta,
+              failure_diagnosis: failureDiagnosis,
+              approvalChallengeId: challengeId,
+              experiment: experiment?.trials,
+            },
+          }
+        }
         const totalDays = BacktestRunner.parseDurationDays(params.duration)
         if (!totalDays || totalDays < 14) {
           const failureDiagnosis = classifyEngineFailedFailure("window too short for >=2 folds")
@@ -535,6 +712,10 @@ export const BacktestTool = Tool.define(
             metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
+        if (workflow && experiment) {
+          workflow = await runWorkflow(startWorkflowBacktest(workflow))
+          experiment = { ...experiment, workflow }
+        }
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
@@ -543,11 +724,24 @@ export const BacktestTool = Tool.define(
           startDate: effectiveStartDate,
           endDate: effectiveEndDate,
           dataQualityMode: params.dataQualityMode,
-          robustness: { monteCarloPaths: 500, regimes: true, walkForwardFolds: 5 },
+          robustness: {
+            monteCarloPaths: 500,
+            regimes: true,
+            walkForwardFolds: 5,
+            priorSelectionTrials: experiment?.trials.priorUniqueTrials ?? 0,
+            currentSelectionTrials: experiment?.trials.currentGridTrials ?? 1,
+          },
           sessionID: ctx.sessionID,
+          dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
         })
 
         if (!result.ok) {
+          if (workflow?.stage === "backtest_running") {
+            workflow = await runWorkflow(
+              failWorkflowBacktest({ workflowId: workflow.workflowId, reason: result.error }),
+            )
+          }
+          await recordExperiment("engine_failure")
           const dataQualityFailure = parseDataQualityFailure(result.error, {
             algorithmName: params.algorithmName,
             duration: params.duration,
@@ -592,8 +786,39 @@ export const BacktestTool = Tool.define(
         }
 
         const r = result.results
+        const ledgerResult = await recordExperiment("metrics", r.runId)
+        if (ledgerResult?.kind === "rejected") {
+          if (workflow?.stage === "backtest_running") {
+            workflow = await runWorkflow(
+              failWorkflowBacktest({
+                workflowId: workflow.workflowId,
+                reason: `experiment ledger rejected result: ${ledgerResult.decision.code}`,
+              }),
+            )
+          }
+          return {
+            title: "Backtest completed but experiment ledger rejected it",
+            output:
+              `The engine completed, but the authoritative experiment ledger rejected the result (${ledgerResult.decision.code}). ` +
+              "The run cannot establish eligibility or reset the selection budget.",
+            metadata: {
+              ...emptyMeta,
+              results: { ...r, v2: undefined },
+              experiment: experiment?.trials,
+              ledgerTransitionCode: ledgerResult.decision.code,
+            },
+          }
+        }
         const walkForward = r.v2?.walk_forward
         if (!walkForward || walkForward.n_folds < 2) {
+          if (workflow?.stage === "backtest_running") {
+            workflow = await runWorkflow(
+              failWorkflowBacktest({
+                workflowId: workflow.workflowId,
+                reason: "strict engine did not produce enough walk-forward folds",
+              }),
+            )
+          }
           const failureDiagnosis = classifyEngineFailedFailure("not enough walk-forward folds")
           return {
             title: "Backtest failed",
@@ -612,6 +837,32 @@ export const BacktestTool = Tool.define(
           consistency: r.v2?.consistency,
           decay: r.v2?.alpha_decay,
         })
+        if (workflow && experiment) {
+          const controllerVerdict =
+            unified.verdict === "recommended_for_paper" ||
+            unified.verdict === "candidate" ||
+            unified.verdict === "failed"
+              ? unified.verdict
+              : "research_only"
+          workflow = await runWorkflow(
+            completeWorkflowBacktest({
+              workflow,
+              experiment,
+              results: r,
+              verdict: controllerVerdict,
+            }),
+          )
+          experiment = { ...experiment, workflow }
+          const paperApproval = paperApprovalRequestForWorkflow(workflow)
+          if (paperApproval) {
+            paperApprovalChallengeId = await ensureChallenge(
+              paperApproval.kind,
+              paperApproval.scope,
+              paperApproval.reason,
+            )
+            if (workflow) experiment = { ...experiment, workflow }
+          }
+        }
         await mergeRunJson({
           artifactDir: r.artifactDir,
           unifiedVerdict: unified.verdict,
@@ -824,7 +1075,12 @@ export const BacktestTool = Tool.define(
         lines.push(
           ``,
           `── UNIFIED VERDICT ─────────────────────────────────`,
-          `Verdict: ${unified.verdict}` + (unified.verdict === "recommended_for_paper" ? " — awaiting user approval via finny_paper_approve" : ""),
+          `Verdict: ${unified.verdict}` +
+            (unified.verdict === "recommended_for_paper"
+              ? paperApprovalChallengeId
+                ? ` — awaiting user approval via finny_workflow_request_approval (challengeId=${paperApprovalChallengeId})`
+                : " — controller approval challenge unavailable; promotion remains blocked"
+              : ""),
           `Reasons: ${unified.reasons.join("; ")}`,
         )
         if (reviewPacket.reviewDir) lines.push(`Review packet: ${reviewPacket.reviewDir}/review.md and review.html`)
@@ -984,9 +1240,28 @@ export const BacktestTool = Tool.define(
             consistencyLabel: r.v2?.consistency?.label,
             decayLabel: r.v2?.alpha_decay?.label,
             reviewPacket,
+            ...(paperApprovalChallengeId
+              ? {
+                  approvalChallengeId: paperApprovalChallengeId,
+                  paperApprovalChallengeId,
+                }
+              : {}),
+            ...(experiment
+              ? {
+                  experiment: {
+                    ...experiment.trials,
+                    experimentId: experiment.workflow.workflowId,
+                    conceptId: experiment.conceptId,
+                    replayKey: experiment.replayKey,
+                    workflowStage: workflow?.stage,
+                    runIdentityHash: workflow?.backtest?.identityHash,
+                  },
+                }
+              : {}),
             ...(failureDiagnosis ? { failure_diagnosis: failureDiagnosis } : {}),
           },
         }
       }),
+    }
   }),
 )

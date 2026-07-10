@@ -5,6 +5,48 @@ export default {
   up(tx) {
     return Effect.gen(function* () {
       yield* tx.run(`
+        CREATE TABLE \`algorithm_build_approval_challenge\` (
+          \`id\` text PRIMARY KEY,
+          \`workflow_id\` text NOT NULL,
+          \`kind\` text NOT NULL,
+          \`scope_hash\` text NOT NULL,
+          \`scope\` text NOT NULL,
+          \`status\` text NOT NULL,
+          \`reason\` text NOT NULL,
+          \`source_message_id\` text,
+          \`resolved_at\` integer,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_algorithm_build_approval_challenge_workflow_id_algorithm_build_workflow_id_fk\` FOREIGN KEY (\`workflow_id\`) REFERENCES \`algorithm_build_workflow\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`algorithm_build_workflow_event\` (
+          \`id\` text PRIMARY KEY,
+          \`workflow_id\` text NOT NULL,
+          \`seq\` integer NOT NULL,
+          \`type\` text NOT NULL,
+          \`payload\` text NOT NULL,
+          \`source_kind\` text NOT NULL,
+          \`source_message_id\` text,
+          \`time_created\` integer NOT NULL,
+          CONSTRAINT \`fk_algorithm_build_workflow_event_workflow_id_algorithm_build_workflow_id_fk\` FOREIGN KEY (\`workflow_id\`) REFERENCES \`algorithm_build_workflow\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
+      yield* tx.run(`
+        CREATE TABLE \`algorithm_build_workflow\` (
+          \`id\` text PRIMARY KEY,
+          \`session_id\` text NOT NULL,
+          \`workspace_slug\` text NOT NULL,
+          \`stage\` text NOT NULL,
+          \`status\` text NOT NULL,
+          \`revision\` integer NOT NULL,
+          \`state\` text NOT NULL,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`workspace\` (
           \`id\` text PRIMARY KEY,
           \`type\` text NOT NULL,
@@ -239,34 +281,24 @@ export default {
           CONSTRAINT \`fk_session_share_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
+      yield* tx.run(`CREATE INDEX \`algorithm_build_approval_workflow_status_idx\` ON \`algorithm_build_approval_challenge\` (\`workflow_id\`,\`status\`);`)
+      yield* tx.run(`CREATE INDEX \`algorithm_build_approval_scope_idx\` ON \`algorithm_build_approval_challenge\` (\`workflow_id\`,\`kind\`,\`scope_hash\`);`)
+      yield* tx.run(`CREATE UNIQUE INDEX \`algorithm_build_workflow_event_seq_idx\` ON \`algorithm_build_workflow_event\` (\`workflow_id\`,\`seq\`);`)
+      yield* tx.run(`CREATE INDEX \`algorithm_build_workflow_event_type_idx\` ON \`algorithm_build_workflow_event\` (\`workflow_id\`,\`type\`,\`seq\`);`)
+      yield* tx.run(`CREATE INDEX \`algorithm_build_workflow_session_idx\` ON \`algorithm_build_workflow\` (\`session_id\`);`)
+      yield* tx.run(`CREATE INDEX \`algorithm_build_workflow_workspace_idx\` ON \`algorithm_build_workflow\` (\`workspace_slug\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`event_aggregate_seq_idx\` ON \`event\` (\`aggregate_id\`,\`seq\`);`)
       yield* tx.run(`CREATE INDEX \`event_aggregate_type_seq_idx\` ON \`event\` (\`aggregate_id\`,\`type\`,\`seq\`);`)
-      yield* tx.run(
-        `CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`,
-      )
-      yield* tx.run(
-        `CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`,
-      )
+      yield* tx.run(`CREATE UNIQUE INDEX \`permission_project_action_resource_idx\` ON \`permission\` (\`project_id\`,\`action\`,\`resource\`);`)
+      yield* tx.run(`CREATE INDEX \`message_session_time_created_id_idx\` ON \`message\` (\`session_id\`,\`time_created\`,\`id\`);`)
       yield* tx.run(`CREATE INDEX \`part_message_id_id_idx\` ON \`part\` (\`message_id\`,\`id\`);`)
       yield* tx.run(`CREATE INDEX \`part_session_idx\` ON \`part\` (\`session_id\`);`)
-      yield* tx.run(
-        `CREATE INDEX \`session_input_session_pending_delivery_seq_idx\` ON \`session_input\` (\`session_id\`,\`promoted_seq\`,\`delivery\`,\`admitted_seq\`);`,
-      )
-      yield* tx.run(
-        `CREATE UNIQUE INDEX \`session_input_session_admitted_seq_idx\` ON \`session_input\` (\`session_id\`,\`admitted_seq\`);`,
-      )
-      yield* tx.run(
-        `CREATE UNIQUE INDEX \`session_input_session_promoted_seq_idx\` ON \`session_input\` (\`session_id\`,\`promoted_seq\`);`,
-      )
-      yield* tx.run(
-        `CREATE UNIQUE INDEX \`session_message_session_seq_idx\` ON \`session_message\` (\`session_id\`,\`seq\`);`,
-      )
-      yield* tx.run(
-        `CREATE INDEX \`session_message_session_type_seq_idx\` ON \`session_message\` (\`session_id\`,\`type\`,\`seq\`);`,
-      )
-      yield* tx.run(
-        `CREATE INDEX \`session_message_session_time_created_id_idx\` ON \`session_message\` (\`session_id\`,\`time_created\`,\`id\`);`,
-      )
+      yield* tx.run(`CREATE INDEX \`session_input_session_pending_delivery_seq_idx\` ON \`session_input\` (\`session_id\`,\`promoted_seq\`,\`delivery\`,\`admitted_seq\`);`)
+      yield* tx.run(`CREATE UNIQUE INDEX \`session_input_session_admitted_seq_idx\` ON \`session_input\` (\`session_id\`,\`admitted_seq\`);`)
+      yield* tx.run(`CREATE UNIQUE INDEX \`session_input_session_promoted_seq_idx\` ON \`session_input\` (\`session_id\`,\`promoted_seq\`);`)
+      yield* tx.run(`CREATE UNIQUE INDEX \`session_message_session_seq_idx\` ON \`session_message\` (\`session_id\`,\`seq\`);`)
+      yield* tx.run(`CREATE INDEX \`session_message_session_type_seq_idx\` ON \`session_message\` (\`session_id\`,\`type\`,\`seq\`);`)
+      yield* tx.run(`CREATE INDEX \`session_message_session_time_created_id_idx\` ON \`session_message\` (\`session_id\`,\`time_created\`,\`id\`);`)
       yield* tx.run(`CREATE INDEX \`session_message_time_created_idx\` ON \`session_message\` (\`time_created\`);`)
       yield* tx.run(`CREATE INDEX \`session_project_idx\` ON \`session\` (\`project_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_workspace_idx\` ON \`session\` (\`workspace_id\`);`)

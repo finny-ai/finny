@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import crypto from "crypto"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol, type RequestFacts } from "@/agent/request-identity"
@@ -96,11 +97,61 @@ export interface ValidateDataExtractorResult {
 export interface ExistingDataExtractorEvidenceResult {
   found: boolean
   result?: ValidateDataExtractorResult
+  dataset?: VerifiedDatasetRef
 }
 
-export interface RequireVerifiedEvidenceResult extends ValidateDataExtractorResult {
-  workspaceSlug?: string
+export interface VerifiedDatasetIdentity {
+  readonly schemaVersion?: number
+  readonly source?: string
+  readonly runId: string
+  readonly requestedAlgorithmName: string
+  readonly requestedSymbol: string
+  readonly actualSymbol: string
+  readonly requestedInterval: string
+  readonly actualInterval: string
+  readonly requestedAssetClass: string
+  readonly actualAssetClass: string
+  readonly requestedStart: string
+  readonly requestedEnd: string
+  readonly actualStart: string
+  readonly actualEnd: string
+  readonly rows?: number
 }
+
+const VERIFIED_DATASET_REF = Symbol("finny.verified-dataset-ref")
+
+/**
+ * Immutable-by-hash reference to the exact data_extractor artifacts that
+ * satisfied the active session's evidence gate.
+ *
+ * Paths locate the source artifacts; SHA-256 values bind downstream consumers
+ * to the bytes that were verified. Consumers must re-hash before use so a file
+ * changed after this gate cannot silently become backtest input.
+ */
+export interface VerifiedDatasetRef {
+  readonly [VERIFIED_DATASET_REF]: true
+  readonly manifestPath: string
+  readonly manifestSha256: string
+  readonly csvPath: string
+  readonly csvSha256: string
+  readonly identity: VerifiedDatasetIdentity
+}
+
+export function isVerifiedDatasetRef(value: unknown): value is VerifiedDatasetRef {
+  return typeof value === "object" && value !== null && (value as VerifiedDatasetRef)[VERIFIED_DATASET_REF] === true
+}
+
+export type RequireVerifiedEvidenceResult =
+  | (ValidateDataExtractorResult & {
+      ok: true
+      workspaceSlug: string
+      dataset: VerifiedDatasetRef
+    })
+  | (ValidateDataExtractorResult & {
+      ok: false
+      workspaceSlug?: string
+      dataset?: never
+    })
 
 function fieldValue(text: string, name: string): string | undefined {
   const patterns = [
@@ -182,6 +233,74 @@ async function fileExists(file: string): Promise<boolean> {
 function csvPathFromManifest(manifest: DataExtractorManifest, dataRoot: string): string | undefined {
   if (!manifest.output_path) return undefined
   return path.isAbsolute(manifest.output_path) ? manifest.output_path : path.join(dataRoot, manifest.output_path)
+}
+
+function requiredManifestString(manifest: DataExtractorManifest, field: keyof DataExtractorManifest): string {
+  const value = manifest[field]
+  if (typeof value !== "string" || value.trim().length === 0) {
+    throw new Error(`verified manifest missing ${String(field)}`)
+  }
+  return value
+}
+
+interface VerifiedDatasetSnapshot {
+  manifestPath: string
+  manifestBytes: Buffer
+  manifest: DataExtractorManifest
+  csvPath: string
+  csvBytes: Buffer
+  csvInspection: CsvInspection
+}
+
+async function readVerifiedDatasetSnapshot(input: {
+  manifestFile: string
+  dataRoot: string
+}): Promise<VerifiedDatasetSnapshot> {
+  const manifestPath = await fs.realpath(input.manifestFile)
+  const manifestBytes = await fs.readFile(manifestPath)
+  const manifest = JSON.parse(manifestBytes.toString("utf8")) as DataExtractorManifest
+  const csvFile = csvPathFromManifest(manifest, input.dataRoot)
+  if (!csvFile) throw new Error("verified manifest missing output_path for CSV")
+
+  const csvPath = await fs.realpath(csvFile)
+  const csvBytes = await fs.readFile(csvPath)
+  return {
+    manifestPath,
+    manifestBytes,
+    manifest,
+    csvPath,
+    csvBytes,
+    csvInspection: inspectCsvEvidenceText(csvBytes.toString("utf8"), manifest),
+  }
+}
+
+function buildVerifiedDatasetRef(snapshot: VerifiedDatasetSnapshot): VerifiedDatasetRef {
+  const manifest = snapshot.manifest
+  const identity: VerifiedDatasetIdentity = Object.freeze({
+    schemaVersion: manifest.schema_version,
+    source: manifest.source,
+    runId: requiredManifestString(manifest, "run_id"),
+    requestedAlgorithmName: requiredManifestString(manifest, "requested_algorithm_name"),
+    requestedSymbol: requiredManifestString(manifest, "requested_symbol"),
+    actualSymbol: requiredManifestString(manifest, "actual_symbol"),
+    requestedInterval: requiredManifestString(manifest, "requested_interval"),
+    actualInterval: requiredManifestString(manifest, "actual_interval"),
+    requestedAssetClass: requiredManifestString(manifest, "requested_asset_class"),
+    actualAssetClass: requiredManifestString(manifest, "actual_asset_class"),
+    requestedStart: requiredManifestString(manifest, "requested_start"),
+    requestedEnd: requiredManifestString(manifest, "requested_end"),
+    actualStart: requiredManifestString(manifest, "actual_start"),
+    actualEnd: requiredManifestString(manifest, "actual_end"),
+    rows: manifest.rows,
+  })
+  return Object.freeze({
+    [VERIFIED_DATASET_REF]: true as const,
+    manifestPath: snapshot.manifestPath,
+    manifestSha256: crypto.createHash("sha256").update(snapshot.manifestBytes).digest("hex"),
+    csvPath: snapshot.csvPath,
+    csvSha256: crypto.createHash("sha256").update(snapshot.csvBytes).digest("hex"),
+    identity,
+  })
 }
 
 async function findManifestCandidates(root: string): Promise<string[]> {
@@ -380,8 +499,7 @@ function csvBoundaryIssue(
   return `manifest ${label}=${value} but CSV ${verb} at ${timestamp.raw}`
 }
 
-async function inspectCsvEvidence(csvPath: string, manifest: DataExtractorManifest): Promise<CsvInspection> {
-  const text = await fs.readFile(csvPath, "utf8")
+function inspectCsvEvidenceText(text: string, manifest: DataExtractorManifest): CsvInspection {
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
   if (lines.length === 0) return { rows: 0, issues: ["CSV is empty"] }
 
@@ -417,6 +535,10 @@ async function inspectCsvEvidence(csvPath: string, manifest: DataExtractorManife
     lastTimestamp: last?.raw,
     issues,
   }
+}
+
+async function inspectCsvEvidence(csvPath: string, manifest: DataExtractorManifest): Promise<CsvInspection> {
+  return inspectCsvEvidenceText(await fs.readFile(csvPath, "utf8"), manifest)
 }
 
 function normalizeAssetClass(value?: string): string | undefined {
@@ -755,15 +877,18 @@ async function csvEvidenceIssues(manifest: DataExtractorManifest, dataRoot: stri
   const csvFile = csvPathFromManifest(manifest, dataRoot)
   if (!csvFile) return ["manifest missing output_path for CSV"]
   try {
-    const inspection = await inspectCsvEvidence(csvFile, manifest)
-    const issues = [...inspection.issues]
-    if (typeof manifest.rows === "number" && manifest.rows !== inspection.rows) {
-      issues.push(`manifest rows=${manifest.rows} but CSV has ${inspection.rows} data rows`)
-    }
-    return issues
+    return csvInspectionIssues(manifest, await inspectCsvEvidence(csvFile, manifest))
   } catch (err: any) {
     return [`CSV unreadable at ${csvFile}: ${err?.message ?? String(err)}`]
   }
+}
+
+function csvInspectionIssues(manifest: DataExtractorManifest, inspection: CsvInspection): string[] {
+  const issues = [...inspection.issues]
+  if (typeof manifest.rows === "number" && manifest.rows !== inspection.rows) {
+    issues.push(`manifest rows=${manifest.rows} but CSV has ${inspection.rows} data rows`)
+  }
+  return issues
 }
 
 function canonicalArtifacts(manifestFile: string, manifest: DataExtractorManifest, dataRoot: string): string[] {
@@ -906,6 +1031,7 @@ async function validateLoadedEvidence(input: {
   artifacts: string[]
   preamble: Exclude<DigestPreamble, { result: ValidateDataExtractorResult }>
   context?: WorkspaceRequestContext
+  csvIssues?: string[]
 }): Promise<ValidateDataExtractorResult> {
   const { manifest, artifacts, preamble } = input
   const { text, textUsable, workspaceSlug, dataRoot, digest, issues } = preamble
@@ -918,7 +1044,10 @@ async function validateLoadedEvidence(input: {
 
   const unusable = usabilityBlocker(textUsable, effectiveDigest, isOpenCurrentCandlePartial(manifest, effectiveDigest))
   if (unusable) return unusable
-  issues.push(...(await csvEvidenceIssues(manifest, dataRoot)), ...digestContextIssues(digest, input.context))
+  issues.push(
+    ...(input.csvIssues ?? (await csvEvidenceIssues(manifest, dataRoot))),
+    ...digestContextIssues(digest, input.context),
+  )
   return issues.length > 0
     ? blocked(issues)
     : { ok: true, text: `${text}\n\n${renderManifestBlock(manifest, effectiveDigest)}`, issues: [] }
@@ -981,10 +1110,17 @@ export async function validateExistingDataExtractorEvidence(input: {
   }
 
   const manifestFile = matches[0]
-  const loaded = await readManifestFile(manifestFile, [], dataRoot, [])
-  if (loaded.result) return { found: true, result: loaded.result }
+  let snapshot: VerifiedDatasetSnapshot
+  try {
+    snapshot = await readVerifiedDatasetSnapshot({ manifestFile, dataRoot })
+  } catch (error: any) {
+    return {
+      found: true,
+      result: blocked([`failed to snapshot verified data artifacts: ${error?.message ?? String(error)}`]),
+    }
+  }
 
-  const manifest = loaded.manifest!
+  const manifest = snapshot.manifest
   const artifacts = canonicalArtifacts(manifestFile, manifest, dataRoot)
   const preamble = {
     text: [
@@ -998,9 +1134,26 @@ export async function validateExistingDataExtractorEvidence(input: {
     issues: [],
   }
 
-  return {
-    found: true,
-    result: await validateLoadedEvidence({ manifest, artifacts, preamble, context: input.context }),
+  const result = await validateLoadedEvidence({
+    manifest,
+    artifacts,
+    preamble,
+    context: input.context,
+    csvIssues: csvInspectionIssues(manifest, snapshot.csvInspection),
+  })
+  if (!result.ok) return { found: true, result }
+
+  try {
+    return {
+      found: true,
+      result,
+      dataset: buildVerifiedDatasetRef(snapshot),
+    }
+  } catch (error: any) {
+    return {
+      found: true,
+      result: blocked([`failed to bind verified data artifacts: ${error?.message ?? String(error)}`]),
+    }
   }
 }
 
@@ -1029,8 +1182,14 @@ export async function requireVerifiedDataExtractorEvidenceForSession(
   let blockedText: string | undefined
   for (const dataRoot of roots) {
     const existing = await validateExistingDataExtractorEvidence({ workspaceSlug, context, dataRoot })
-    if (existing.found && existing.result?.ok) {
-      return { ...existing.result, workspaceSlug }
+    if (existing.found && existing.result?.ok && existing.dataset) {
+      return {
+        ok: true,
+        text: existing.result.text,
+        issues: existing.result.issues,
+        workspaceSlug,
+        dataset: existing.dataset,
+      }
     }
     if (existing.found && existing.result) blockedText ??= existing.result.text
   }

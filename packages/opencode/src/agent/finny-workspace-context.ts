@@ -9,6 +9,8 @@ import {
   type MissionFrontmatter,
 } from "@finny-ai/core/algo"
 import { assetClassForSymbol, parseRequestFacts, type RequestFacts } from "./request-identity"
+import { requestJsonProjection } from "@/algorithm/build-workflow/state"
+import type { BuildWorkflowState, RequestJsonProjection } from "@/algorithm/build-workflow/types"
 
 const ISO_DATE_RE = /(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)/g
 const MONTHS: Record<string, string> = {
@@ -207,6 +209,35 @@ async function readExistingRequestContext(dir: string): Promise<Partial<Workspac
   }
 }
 
+async function readWorkflowRequestProjection(dir: string): Promise<RequestJsonProjection | undefined> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(dir, "request.json"), "utf8"))
+    if (
+      parsed?.source_of_truth !== "algorithm_build_workflow" ||
+      typeof parsed.workflow_id !== "string" ||
+      typeof parsed.workflow_revision !== "number"
+    ) {
+      return undefined
+    }
+    return parsed as RequestJsonProjection
+  } catch {
+    return undefined
+  }
+}
+
+function contextFromWorkflowProjection(projection: RequestJsonProjection): WorkspaceRequestContext {
+  return {
+    requested_symbol: projection.requested_symbol,
+    requested_symbols: projection.requested_symbols,
+    requested_interval: projection.requested_interval,
+    requested_asset_class: projection.requested_asset_class,
+    requested_algorithm_name: projection.requested_algorithm_name,
+    requested_start: projection.requested_start,
+    requested_end: projection.requested_end,
+    request_id: projection.request_id,
+  }
+}
+
 async function updatePlaceholderMission(dir: string, context: WorkspaceRequestContext): Promise<boolean> {
   const missionPath = path.join(dir, MISSION_FILE)
   let mission: ReturnType<typeof parseMission>
@@ -245,6 +276,8 @@ export async function syncWorkspaceRequestContext(input: {
 }): Promise<WorkspaceRequestContext> {
   const ensured = await ensureAlgoWorkspace(input.slug)
   const dir = ensured.dir
+  const workflowProjection = await readWorkflowRequestProjection(dir)
+  if (workflowProjection) return contextFromWorkflowProjection(workflowProjection)
   const next = workspaceRequestContext(input.sessionID, input.prompt, input.facts)
   const existing = await readExistingRequestContext(dir)
   const requestedSymbols = input.preserveExisting
@@ -289,4 +322,16 @@ export async function syncWorkspaceRequestContext(input: {
   await updatePlaceholderMission(dir, context)
 
   return context
+}
+
+/**
+ * Materialize the controller-owned compatibility view consumed by existing
+ * evidence tools. Once present, prompt/subagent context syncs will not mutate it.
+ */
+export async function writeWorkflowRequestProjection(state: BuildWorkflowState): Promise<RequestJsonProjection> {
+  const ensured = await ensureAlgoWorkspace(state.workspaceSlug)
+  const projection = requestJsonProjection(state)
+  await fs.writeFile(path.join(ensured.dir, "request.json"), `${JSON.stringify(projection, null, 2)}\n`, "utf8")
+  await updatePlaceholderMission(ensured.dir, contextFromWorkflowProjection(projection))
+  return projection
 }

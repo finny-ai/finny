@@ -212,6 +212,8 @@ def run_walk_forward(
     required_history_bars: int = 0,
     param_grid: Optional[List[Dict[str, Any]]] = None,
     bars_per_year: float = 252.0,
+    prior_selection_trials: int = 0,
+    current_selection_trials: Optional[int] = None,
 ) -> WalkForwardResult:
     """Run rolling out-of-sample validation.
 
@@ -285,7 +287,8 @@ def run_walk_forward(
     stitched_ret = float(np.prod(1.0 + stitched) - 1.0) if stitched.size else 0.0
     from ..metrics import ratios as RAT
     stitched_sharpe = RAT.sharpe(stitched, bars_per_year=bars_per_year) if stitched.size else 0.0
-    trials = max(1, len(tested_params))
+    current_trials = len(tested_params) if current_selection_trials is None else current_selection_trials
+    trials = max(1, prior_selection_trials + current_trials)
     ds, ps = _stitched_dsr_psr(stitched, trials)
     stitched_oos_bars = sum(fold.oos_bars for fold in folds)
 

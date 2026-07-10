@@ -17,10 +17,19 @@ import { BrokerRegistry } from "@/live/brokers"
 import { evaluateBacktestQuality } from "./evaluation"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { BacktestStore } from "./store"
+import { isVerifiedDatasetRef, type VerifiedDatasetRef } from "@/data/data-extractor-evidence"
+import {
+  normalizeInterval as normalizeRequestInterval,
+  normalizeSymbol as normalizeRequestSymbol,
+} from "@/agent/request-identity"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
 export namespace BacktestRunner {
+  export type BacktestDataSource =
+    | { kind: "verified_artifact"; dataset: VerifiedDatasetRef }
+    | { kind: "provider_fetch" }
+
   export interface Params {
     algorithm: Algorithm.Info
     duration: string // "1w" | "1m" | "3m" | "6m" | "1y"
@@ -48,8 +57,18 @@ export namespace BacktestRunner {
       regimes?: boolean
       walkForwardFolds?: number
       parameterGrid?: Record<string, Array<number | string | boolean>> | Array<Record<string, number | string | boolean>>
+      /** Unique metric-producing selections completed before this run. */
+      priorSelectionTrials?: number
+      /** New grid selections in this run; zero for an exact deterministic replay. */
+      currentSelectionTrials?: number
     }
     sessionID?: string
+    /**
+     * Product/session strict runs must use the exact verified data_extractor
+     * artifact. Provider fetch remains available only to non-session internal
+     * callers and explicitly enabled legacy migration paths.
+     */
+    dataSource?: BacktestDataSource
   }
 
   export interface Assumptions {
@@ -183,6 +202,7 @@ export namespace BacktestRunner {
     | "network"
     | "auth"
     | "python_env"
+    | "data_evidence"
     | "config_invalid"
     | "validation_failed"
     | "unsafe_custom_runner"
@@ -397,6 +417,248 @@ with open("_data_provider.txt", "w") as f:
 `
   }
 
+  const VERIFIED_MANIFEST_ARTIFACT = "data_extractor.manifest.json"
+  const RAW_OHLCV_ARTIFACT = "ohlcv.csv"
+
+  type BacktestDataProvenance =
+    | {
+        mode: "verified_artifact"
+        extractor_run_id: string
+        raw_manifest: {
+          sha256: string
+          bytes: number
+          artifact: typeof VERIFIED_MANIFEST_ARTIFACT
+        }
+        raw_csv: {
+          sha256: string
+          bytes: number
+          artifact: typeof RAW_OHLCV_ARTIFACT
+        }
+        identity: {
+          schema_version?: number
+          source?: string
+          requested_algorithm_name: string
+          requested_symbol: string
+          actual_symbol: string
+          requested_interval: string
+          actual_interval: string
+          requested_asset_class: string
+          actual_asset_class: string
+          requested_start: string
+          requested_end: string
+          actual_start: string
+          actual_end: string
+          rows?: number
+        }
+      }
+    | { mode: "provider_fetch"; provider?: string }
+
+  interface PreparedBacktestData {
+    providerUsed: string
+    provenance: BacktestDataProvenance
+  }
+
+  class BacktestDataPreparationError extends Error {
+    constructor(
+      message: string,
+      readonly kind: ErrorKind,
+      readonly suggestions?: string[],
+    ) {
+      super(message)
+      this.name = "BacktestDataPreparationError"
+    }
+  }
+
+  function sha256Bytes(bytes: Uint8Array): string {
+    return crypto.createHash("sha256").update(bytes).digest("hex")
+  }
+
+  function expectedSha256(value: string, label: string): string {
+    const normalized = value.trim().toLowerCase()
+    if (!/^[a-f0-9]{64}$/.test(normalized)) {
+      throw new Error(`verified ${label} reference has an invalid SHA-256`)
+    }
+    return normalized
+  }
+
+  async function rehashAndCopyExact(input: {
+    source: string
+    destination: string
+    expected: string
+    label: "manifest" | "CSV"
+  }): Promise<number> {
+    const expected = expectedSha256(input.expected, input.label)
+    const bytes = await fs.readFile(input.source)
+    const actual = sha256Bytes(bytes)
+    if (actual !== expected) {
+      throw new Error(`verified data ${input.label} SHA-256 mismatch (expected ${expected}, got ${actual})`)
+    }
+    // Write the same bytes that were hashed. Do not hash and then copy by path:
+    // that would leave a TOCTOU window where the source could change in between.
+    await fs.writeFile(input.destination, bytes)
+    return bytes.byteLength
+  }
+
+  function assertManifestIdentityMatchesRef(dataset: VerifiedDatasetRef, manifest: Record<string, unknown>): void {
+    const identity = dataset.identity
+    const fields: Array<[string, unknown, unknown]> = [
+      ["schema_version", manifest.schema_version, identity.schemaVersion],
+      ["source", manifest.source, identity.source],
+      ["run_id", manifest.run_id, identity.runId],
+      ["requested_algorithm_name", manifest.requested_algorithm_name, identity.requestedAlgorithmName],
+      ["requested_symbol", manifest.requested_symbol, identity.requestedSymbol],
+      ["actual_symbol", manifest.actual_symbol, identity.actualSymbol],
+      ["requested_interval", manifest.requested_interval, identity.requestedInterval],
+      ["actual_interval", manifest.actual_interval, identity.actualInterval],
+      ["requested_asset_class", manifest.requested_asset_class, identity.requestedAssetClass],
+      ["actual_asset_class", manifest.actual_asset_class, identity.actualAssetClass],
+      ["requested_start", manifest.requested_start, identity.requestedStart],
+      ["requested_end", manifest.requested_end, identity.requestedEnd],
+      ["actual_start", manifest.actual_start, identity.actualStart],
+      ["actual_end", manifest.actual_end, identity.actualEnd],
+      ["rows", manifest.rows, identity.rows],
+    ]
+    const mismatch = fields.find(([, manifestValue, refValue]) => manifestValue !== refValue)
+    if (mismatch) {
+      const [field, manifestValue, refValue] = mismatch
+      throw new Error(
+        `verified data reference identity mismatch for ${field} ` +
+          `(manifest=${String(manifestValue)}, reference=${String(refValue)})`,
+      )
+    }
+  }
+
+  async function prepareBacktestData(input: {
+    dataSource: BacktestDataSource
+    tmpDir: string
+    fetchProvider?: () => Promise<PreparedBacktestData>
+  }): Promise<PreparedBacktestData> {
+    if (input.dataSource.kind === "provider_fetch") {
+      if (!input.fetchProvider) throw new Error("provider fetch callback is required")
+      return input.fetchProvider()
+    }
+
+    const dataset = input.dataSource.dataset
+    if (!isVerifiedDatasetRef(dataset)) {
+      throw new Error("verified data reference was not issued by the data_extractor evidence gate")
+    }
+    const manifestSize = await rehashAndCopyExact({
+      source: dataset.manifestPath,
+      destination: path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
+      expected: dataset.manifestSha256,
+      label: "manifest",
+    })
+    let manifest: Record<string, unknown>
+    try {
+      manifest = JSON.parse(await fs.readFile(path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT), "utf8")) as Record<
+        string,
+        unknown
+      >
+    } catch (error: any) {
+      throw new Error(`verified data manifest is not valid JSON: ${error?.message ?? String(error)}`)
+    }
+    assertManifestIdentityMatchesRef(dataset, manifest)
+    const csvSize = await rehashAndCopyExact({
+      source: dataset.csvPath,
+      destination: path.join(input.tmpDir, RAW_OHLCV_ARTIFACT),
+      expected: dataset.csvSha256,
+      label: "CSV",
+    })
+    const identity = dataset.identity
+    return {
+      providerUsed: identity.source ?? "verified_data_extractor",
+      provenance: {
+        mode: "verified_artifact",
+        extractor_run_id: identity.runId,
+        raw_manifest: {
+          sha256: dataset.manifestSha256.toLowerCase(),
+          bytes: manifestSize,
+          artifact: VERIFIED_MANIFEST_ARTIFACT,
+        },
+        raw_csv: {
+          sha256: dataset.csvSha256.toLowerCase(),
+          bytes: csvSize,
+          artifact: RAW_OHLCV_ARTIFACT,
+        },
+        identity: {
+          schema_version: identity.schemaVersion,
+          source: identity.source,
+          requested_algorithm_name: identity.requestedAlgorithmName,
+          requested_symbol: identity.requestedSymbol,
+          actual_symbol: identity.actualSymbol,
+          requested_interval: identity.requestedInterval,
+          actual_interval: identity.actualInterval,
+          requested_asset_class: identity.requestedAssetClass,
+          actual_asset_class: identity.actualAssetClass,
+          requested_start: identity.requestedStart,
+          requested_end: identity.requestedEnd,
+          actual_start: identity.actualStart,
+          actual_end: identity.actualEnd,
+          rows: identity.rows,
+        },
+      },
+    }
+  }
+
+  function dataPreparationFailure(error: unknown, dataSource: BacktestDataSource): Extract<RunResult, { ok: false }> {
+    if (error instanceof BacktestDataPreparationError) {
+      return { ok: false, error: error.message, kind: error.kind, suggestions: error.suggestions }
+    }
+    const detail = error instanceof Error ? error.message : String(error)
+    return {
+      ok: false,
+      error:
+        dataSource.kind === "verified_artifact"
+          ? `Verified data artifact could not be staged: ${detail}`
+          : `Backtest data preparation failed: ${detail}`,
+      kind: dataSource.kind === "verified_artifact" ? "data_evidence" : "internal",
+    }
+  }
+
+  function attachDataSourceProvenance(results: Results, provenance: BacktestDataProvenance): void {
+    if (!results.v2) return
+    results.v2.run_metadata = {
+      ...(results.v2.run_metadata ?? {}),
+      data_source_mode: provenance.mode,
+      raw_data_provenance: provenance,
+    }
+  }
+
+  function normalizedEvidenceAssetClass(value: string): string {
+    const normalized = value.trim().toLowerCase()
+    if (["crypto", "cryptocurrency", "crypto_spot"].includes(normalized)) return "crypto_spot"
+    if (["equity", "equities", "stock", "stocks"].includes(normalized)) return "equity"
+    return normalized
+  }
+
+  function verifiedDatasetIdentityIssue(input: {
+    dataset: VerifiedDatasetRef
+    symbol: string
+    interval: string
+    assetClass: string
+  }): string | undefined {
+    const identity = input.dataset.identity
+    const expectedSymbol = normalizeRequestSymbol(input.symbol)
+    const actualSymbol = normalizeRequestSymbol(identity.actualSymbol)
+    if (actualSymbol !== expectedSymbol) {
+      return `verified data symbol mismatch (artifact=${identity.actualSymbol}, backtest=${input.symbol})`
+    }
+
+    const expectedInterval = normalizeRequestInterval(input.interval) ?? input.interval.trim().toLowerCase()
+    const actualInterval =
+      normalizeRequestInterval(identity.actualInterval) ?? identity.actualInterval.trim().toLowerCase()
+    if (actualInterval !== expectedInterval) {
+      return `verified data interval mismatch (artifact=${identity.actualInterval}, backtest=${input.interval})`
+    }
+
+    const expectedAssetClass = normalizedEvidenceAssetClass(input.assetClass)
+    const actualAssetClass = normalizedEvidenceAssetClass(identity.actualAssetClass)
+    if (actualAssetClass !== expectedAssetClass) {
+      return `verified data asset class mismatch (artifact=${identity.actualAssetClass}, backtest=${input.assetClass})`
+    }
+    return undefined
+  }
+
   /**
    * Test-only entry point for parseResults. Exposed so unit tests can verify
    * the line-format parser handles nan/inf, assumptions, kill switch, etc.
@@ -406,8 +668,17 @@ with open("_data_provider.txt", "w") as f:
     parseResults: (stdout: string, tmpDir: string) => parseResults(stdout, tmpDir),
     calendarBarsPerYear,
     computeBuyHoldBenchmark,
-    ENGINE_VERSION: "",  // populated below once ENGINE_VERSION is in scope
-  } as { parseResults: typeof parseResults; calendarBarsPerYear: typeof calendarBarsPerYear; computeBuyHoldBenchmark: typeof computeBuyHoldBenchmark; ENGINE_VERSION: string }
+    prepareBacktestData,
+    attachDataSourceProvenance,
+    ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
+  } as {
+    parseResults: typeof parseResults
+    calendarBarsPerYear: typeof calendarBarsPerYear
+    computeBuyHoldBenchmark: typeof computeBuyHoldBenchmark
+    prepareBacktestData: typeof prepareBacktestData
+    attachDataSourceProvenance: typeof attachDataSourceProvenance
+    ENGINE_VERSION: string
+  }
 
   function assumptionsFromV2(v2: EngineV2.Results): Assumptions {
     const cfg = (v2 as any).execution_config ?? {}
@@ -1880,6 +2151,8 @@ if __name__ == "__main__":
       strategyHash: String(metadata.strategy_hash ?? sha256Text(input.algorithm.code)),
       configHash: String(metadata.config_hash ?? sha256Text(stableStringify(input.config))),
       dataHash: String(metadata.data_hash ?? ""),
+      dataSourceMode: metadata.data_source_mode ?? "provider_fetch",
+      rawDataProvenance: metadata.raw_data_provenance ?? null,
       engineVersion: input.results.engineVersion ?? input.results.v2?.engine_version ?? "engine_v2",
       engineHash: String(metadata.engine_hash ?? sha256Text(String(input.results.engineVersion ?? "engine_v2"))),
       assetSpecHash: sha256Text(stableStringify(assetSpec)),
@@ -1903,6 +2176,11 @@ if __name__ == "__main__":
     await copyIfExists(path.join(input.tmpDir, "equity.csv"), path.join(base, "equity.csv"))
     await copyIfExists(path.join(input.tmpDir, "finny_evidence_equity.csv"), path.join(base, "finny_evidence_equity.csv"))
     await copyIfExists(path.join(input.tmpDir, "rolling_sharpe.csv"), path.join(base, "rolling_sharpe.csv"))
+    await copyIfExists(path.join(input.tmpDir, RAW_OHLCV_ARTIFACT), path.join(base, RAW_OHLCV_ARTIFACT))
+    await copyIfExists(
+      path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
+      path.join(base, VERIFIED_MANIFEST_ARTIFACT),
+    )
     await copyIfExists(path.join(input.tmpDir, PROCESSED_OHLCV_CSV), path.join(base, PROCESSED_OHLCV_CSV))
     await copyIfExists(path.join(input.tmpDir, "trades.csv"), path.join(base, "trades.csv"))
     await copyIfExists(path.join(input.tmpDir, "diagnostics.csv"), path.join(base, "diagnostics.csv"))
@@ -1950,6 +2228,7 @@ if __name__ == "__main__":
       source = "run",
       robustness = {},
       sessionID,
+      dataSource = { kind: "provider_fetch" },
     } = params
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
     if (!sweepDone) { sweepDone = true; void sweepStaleTmpdirs() }
@@ -1969,6 +2248,15 @@ if __name__ == "__main__":
         ok: false,
         error: "This algorithm has custom backtestCode, which is disabled in strict_v2 mode because custom runners can forge metrics. Migrate the strategy to engine_v2 or explicitly use legacy_unsafe from an internal/dev caller.",
         kind: "unsafe_custom_runner",
+      }
+    }
+    if (engineMode === "strict_v2" && sessionID && dataSource.kind !== "verified_artifact") {
+      return {
+        ok: false,
+        error:
+          "Session-backed strict backtests require the exact verified data_extractor artifact. " +
+          "Pass dataSource.kind=verified_artifact from the session evidence gate; provider_fetch is internal-only.",
+        kind: "data_evidence",
       }
     }
 
@@ -2042,6 +2330,25 @@ if __name__ == "__main__":
     effectiveConfig.asset_class = assetSpec.assetClass
     effectiveConfig.asset_spec = assetSpec
 
+    if (dataSource.kind === "verified_artifact") {
+      let issue: string | undefined
+      if (!isVerifiedDatasetRef(dataSource.dataset)) {
+        issue = "verified data reference was not issued by the data_extractor evidence gate"
+      } else {
+        try {
+          issue = verifiedDatasetIdentityIssue({
+            dataset: dataSource.dataset,
+            symbol: effectiveConfig.symbol,
+            interval,
+            assetClass: assetSpec.assetClass,
+          })
+        } catch (error: any) {
+          issue = `verified data identity is invalid: ${error?.message ?? String(error)}`
+        }
+      }
+      if (issue) return { ok: false, error: issue, kind: "data_evidence" }
+    }
+
     const validation = await Validate.run(algorithm.code, { config: effectiveConfig })
     if (!validation.valid) {
       return {
@@ -2113,9 +2420,17 @@ if __name__ == "__main__":
         stableStringify(config.execution ?? {}),
       )
 
-      // Write and run fetch data script
-      const fetchScript = makeFetchDataScript(symbol, assetClass, start, end, providerInterval, csvPath)
-      await fs.writeFile(path.join(tmpDir, "_fetch_data.py"), fetchScript)
+      // Bind and copy verified bytes before any Python environment work. A
+      // stale/tampered artifact fails without installing packages or spawning
+      // a subprocess.
+      let preparedData: PreparedBacktestData | undefined
+      if (dataSource.kind === "verified_artifact") {
+        try {
+          preparedData = await prepareBacktestData({ dataSource, tmpDir })
+        } catch (error) {
+          return dataPreparationFailure(error, dataSource)
+        }
+      }
 
       // Use the managed venv. Data-provider packages are installed once, lazily, on first use.
       let pythonCmd: string
@@ -2139,42 +2454,62 @@ if __name__ == "__main__":
         }
       }
 
-      // Fetch market data — wall-clock cap so a stalled provider pull can't
-      // hang the tool executor indefinitely. 2 minutes is generous for a
-      // single fetch; healthy ones complete in under 5 seconds.
-      const dataEnv = await alpacaDataEnv()
-      const fetchResult = await Process.run([pythonCmd, "_fetch_data.py"], {
-        cwd: tmpDir,
-        env: dataEnv,
-        nothrow: true,
-        timeout: 120_000,
-      })
+      if (!preparedData) {
+        try {
+          preparedData = await prepareBacktestData({
+            dataSource,
+            tmpDir,
+            fetchProvider: async () => {
+              // Provider fetching is deliberately confined to this branch. A
+              // verified_artifact run never writes or executes _fetch_data.py.
+              const fetchScript = makeFetchDataScript(symbol, assetClass, start, end, providerInterval, csvPath)
+              await fs.writeFile(path.join(tmpDir!, "_fetch_data.py"), fetchScript)
+              const dataEnv = await alpacaDataEnv()
+              const fetchResult = await Process.run([pythonCmd, "_fetch_data.py"], {
+                cwd: tmpDir,
+                env: dataEnv,
+                nothrow: true,
+                timeout: 120_000,
+              })
 
-      if (fetchResult.code !== 0) {
-        const stderr = fetchResult.stderr.toString().trim()
-        const { kind, detail } = classifyFetchError(stderr)
-        const human =
-          kind === "unknown_symbol"
-            ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
-              `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
-            : kind === "empty_window"
-              ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
-              : kind === "network"
-                ? `Backtest failed (network): could not reach the market data provider. ${detail}`
-                : kind === "auth"
-                  ? `Backtest failed (auth): Alpaca credentials/feed access were rejected. ${detail}`
-                : kind === "python_env"
-                  ? `Backtest failed (python_env): ${detail}`
-                  : `Backtest failed: ${detail || "unknown error"}`
-        return {
-          ok: false,
-          error: human,
-          kind,
-          suggestions: kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
+              if (fetchResult.code !== 0) {
+                const stderr = fetchResult.stderr.toString().trim()
+                const { kind, detail } = classifyFetchError(stderr)
+                const human =
+                  kind === "unknown_symbol"
+                    ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
+                      `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
+                    : kind === "empty_window"
+                      ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
+                      : kind === "network"
+                        ? `Backtest failed (network): could not reach the market data provider. ${detail}`
+                        : kind === "auth"
+                          ? `Backtest failed (auth): Alpaca credentials/feed access were rejected. ${detail}`
+                          : kind === "python_env"
+                            ? `Backtest failed (python_env): ${detail}`
+                            : `Backtest failed: ${detail || "unknown error"}`
+                throw new BacktestDataPreparationError(
+                  human,
+                  kind,
+                  kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
+                )
+              }
+
+              const providerUsed = (
+                await fs.readFile(path.join(tmpDir!, "_data_provider.txt"), "utf8").catch(() => "")
+              ).trim()
+              return {
+                providerUsed,
+                provenance: { mode: "provider_fetch", provider: providerUsed || undefined },
+              }
+            },
+          })
+        } catch (error) {
+          return dataPreparationFailure(error, dataSource)
         }
       }
 
-      const providerUsed = (await fs.readFile(path.join(tmpDir, "_data_provider.txt"), "utf8").catch(() => "")).trim()
+      const providerUsed = preparedData.providerUsed
       if (providerUsed) {
         config.data_provider = providerUsed
         if (config.asset_spec && typeof config.asset_spec === "object") {
@@ -2217,6 +2552,10 @@ if __name__ == "__main__":
         if (robustness.regimes ?? true) engineArgs.push("--regimes")
         if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {
           engineArgs.push("--wf-folds", String(robustness.walkForwardFolds))
+          engineArgs.push("--prior-selection-trials", String(Math.max(0, robustness.priorSelectionTrials ?? 0)))
+          if (robustness.currentSelectionTrials !== undefined) {
+            engineArgs.push("--current-selection-trials", String(Math.max(0, robustness.currentSelectionTrials)))
+          }
         }
         if (robustness.parameterGrid) {
           engineArgs.push("--param-grid-json", JSON.stringify(robustness.parameterGrid))
@@ -2262,6 +2601,11 @@ if __name__ == "__main__":
           })
           return { ok: false, error: "Strict engine did not produce a valid engine_v2 results.json.", kind: "results_unparseable" }
         }
+        attachDataSourceProvenance(results, preparedData.provenance)
+        // Keep the engine-native artifact aligned with the enriched in-memory
+        // result and metrics.json; provenance must not disappear when a
+        // consumer reads results.json directly.
+        await fs.writeFile(path.join(tmpDir, "results.json"), JSON.stringify(results.v2, null, 2))
         const assumptions = benchmarkAssumptions(results)
         const benchmark = await attachBuyHoldBenchmark({
           tmpDir,

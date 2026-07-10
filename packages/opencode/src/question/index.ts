@@ -112,6 +112,11 @@ interface State {
 // Service
 
 export interface Interface {
+  readonly askWithId: (input: {
+    sessionID: SessionID
+    questions: ReadonlyArray<Info>
+    tool?: Tool
+  }) => Effect.Effect<{ requestID: QuestionID; answers: ReadonlyArray<Answer> }, RejectedError>
   readonly ask: (input: {
     sessionID: SessionID
     questions: ReadonlyArray<Info>
@@ -150,7 +155,7 @@ export const layer = Layer.effect(
       }),
     )
 
-    const ask = Effect.fn("Question.ask")(function* (input: {
+    const askWithId = Effect.fn("Question.askWithId")(function* (input: {
       sessionID: SessionID
       questions: ReadonlyArray<Info>
       tool?: Tool
@@ -169,12 +174,17 @@ export const layer = Layer.effect(
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
 
-      return yield* Effect.ensuring(
+      const answers = yield* Effect.ensuring(
         Deferred.await(deferred),
         Effect.sync(() => {
           pending.delete(id)
         }),
       )
+      return { requestID: id, answers }
+    })
+
+    const ask: Interface["ask"] = Effect.fn("Question.ask")(function* (input) {
+      return (yield* askWithId(input)).answers
     })
 
     const reply = Effect.fn("Question.reply")(function* (input: {
@@ -218,7 +228,7 @@ export const layer = Layer.effect(
       return Array.from(pending.values(), (x) => x.info)
     })
 
-    return Service.of({ ask, reply, reject, list })
+    return Service.of({ askWithId, ask, reply, reject, list })
   }),
 )
 

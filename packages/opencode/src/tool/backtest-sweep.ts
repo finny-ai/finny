@@ -4,6 +4,7 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 const MAX_COMBOS = 27
 
@@ -88,6 +89,20 @@ export const BacktestSweepTool = Tool.define(
           metadata: {},
         })
 
+        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+        if (!evidence.ok) {
+          return {
+            title: "Sweep blocked by missing evidence",
+            output: evidence.text,
+            metadata: {
+              blocked: true,
+              evidenceRequired: true,
+              workspaceSlug: evidence.workspaceSlug,
+              issues: evidence.issues,
+            } as Record<string, unknown>,
+          }
+        }
+
         const algo = await Algorithm.get(input.algorithmName)
         if (!algo) {
           return {
@@ -156,6 +171,8 @@ export const BacktestSweepTool = Tool.define(
             configOverrides: { params: combo },
             source: "sweep",
             robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
+            sessionID: ctx.sessionID,
+            dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
           })
           if (r.ok) results.push({ params: combo, ok: true, metrics: r.results })
           else results.push({ params: combo, ok: false, error: r.error })

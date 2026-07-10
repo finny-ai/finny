@@ -142,6 +142,41 @@ def test_walk_forward_grid_counts_combinations_not_folds_as_trials():
     assert all(f.selected_params == {"period": 20} for f in wf.folds)
 
 
+def test_walk_forward_includes_prior_unique_selections_and_deduplicated_replay():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        bars = max(0, end - eval_start - 1)
+        return {
+            "sharpe": 1.0,
+            "total_return": 0.1,
+            "returns": np.full(bars, 0.001) if bars else np.zeros(0),
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 100.0,
+        }
+
+    selected = run_walk_forward(
+        runner,
+        n_bars=500,
+        ts_ns=ts,
+        n_folds=5,
+        prior_selection_trials=4,
+        current_selection_trials=1,
+    )
+    assert selected.multiple_testing_trials == 5
+
+    replay = run_walk_forward(
+        runner,
+        n_bars=500,
+        ts_ns=ts,
+        n_folds=5,
+        prior_selection_trials=4,
+        current_selection_trials=0,
+    )
+    assert replay.multiple_testing_trials == 4
+
+
 def test_walk_forward_negative_is_sharpe_reports_absolute_change():
     ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
 

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import crypto from "crypto"
 import { Mission } from "../../src/algorithm/mission"
 import { bindSessionWorkspace, clearSessionWorkspace } from "@finny-ai/core/algo"
 import {
@@ -163,6 +164,28 @@ describe("validateDataExtractorTaskText", () => {
       const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
       expect(result.ok).toBe(true)
       expect(result.text).toContain("usable_for_parent: yes")
+      if (!result.ok) throw new Error(result.text)
+      expect(result.dataset.identity).toMatchObject({
+        runId: "clamped-end-run",
+        actualSymbol: "QQQ",
+        actualInterval: "15m",
+        actualAssetClass: "equity",
+        rows: 2,
+      })
+      expect(result.dataset.manifestPath).toBe(await fs.realpath(path.join(workspaceDir, "data", manifestRel)))
+      expect(result.dataset.csvPath).toBe(await fs.realpath(path.join(workspaceDir, "data", csvRel)))
+      expect(result.dataset.manifestSha256).toBe(
+        crypto
+          .createHash("sha256")
+          .update(await fs.readFile(result.dataset.manifestPath))
+          .digest("hex"),
+      )
+      expect(result.dataset.csvSha256).toBe(
+        crypto
+          .createHash("sha256")
+          .update(await fs.readFile(result.dataset.csvPath))
+          .digest("hex"),
+      )
     } finally {
       await clearSessionWorkspace(sessionID)
     }

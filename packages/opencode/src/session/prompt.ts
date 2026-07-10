@@ -63,6 +63,7 @@ import { createStructuredOutputTool, STRUCTURED_OUTPUT_SYSTEM_PROMPT } from "./s
 import { decodeMessageInfo, decodeMessagePart, isOrphanedInterruptedTool } from "./prompt-decode"
 import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
+import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1109,6 +1110,23 @@ export const layer = Layer.effect(
             yield* status.set(input.sessionID, { type: "idle" })
           }),
       })
+      yield* ensurePrimaryBuildWorkflow({
+        sessionID: input.sessionID,
+        messageID: message.info.id,
+        agent: message.info.agent,
+        parentSessionID: session.parentID,
+      }).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.tapError((error) =>
+          events.publish(Session.Event.Error, {
+            sessionID: input.sessionID,
+            error: new NamedError.Unknown({
+              message: `Finny workflow controller failed: ${error instanceof Error ? error.message : String(error)}`,
+            }).toObject(),
+          }),
+        ),
+        Effect.orDie,
+      )
       yield* sessions.touch(input.sessionID)
 
       const permissions: PermissionV1.Rule[] = []

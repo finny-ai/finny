@@ -24,7 +24,12 @@ import {
   FinnyWorkspacePlugin,
 } from "../../src/plugin/finny-workspace"
 import { parseRequestFacts } from "../../src/agent/request-identity"
-import { extractDateWindow } from "../../src/agent/finny-workspace-context"
+import {
+  extractDateWindow,
+  syncWorkspaceRequestContext,
+  writeWorkflowRequestProjection,
+} from "../../src/agent/finny-workspace-context"
+import { createBuildWorkflow } from "../../src/algorithm/build-workflow/state"
 
 const SPY_PROMPT =
   "Build a new SPY 15-minute mean reversion strategy with $10,000 over 3 months. Keep it clean and validate/backtest it in strict mode."
@@ -122,6 +127,45 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     expect(mission.frontmatter.scope.asset_class).toBe("equities")
     expect(mission.frontmatter.scope.horizon).toBe("intraday")
     expect(mission.frontmatter.hypothesis).toContain("SPY 15m")
+  })
+
+  test("workflow-owned request projections cannot be overwritten by later prompt context", async () => {
+    const result = await bootstrapWorkspace("ses_workflow_projection", SPY_PROMPT)
+    const source = { kind: "user_message" as const, messageId: "msg_workflow_projection" }
+    const state = createBuildWorkflow({
+      workflowId: "wf_projection",
+      sessionId: "ses_workflow_projection",
+      workspaceSlug: result!.slug,
+      intent: "build",
+      identity: {
+        symbols: { value: ["SPY"], source },
+        interval: { value: "15m", source },
+        assetClass: { value: "equity", source },
+        algorithmName: { value: "spy-15m-mean-reversion", source },
+        window: { value: { start: "2026-04-01", end: "2026-07-01" }, source },
+      },
+      now: 1_000,
+    })
+    await writeWorkflowRequestProjection(state)
+
+    const context = await syncWorkspaceRequestContext({
+      sessionID: "ses_workflow_projection",
+      slug: result!.slug,
+      prompt: "Switch to QQQ 5-minute momentum from 2025-01-01 to 2026-07-01.",
+    })
+    expect(context).toMatchObject({
+      requested_symbol: "SPY",
+      requested_interval: "15m",
+      requested_start: "2026-04-01",
+      requested_end: "2026-07-01",
+    })
+    const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
+    expect(request).toMatchObject({
+      source_of_truth: "algorithm_build_workflow",
+      workflow_id: "wf_projection",
+      requested_symbol: "SPY",
+      requested_interval: "15m",
+    })
   })
 
   test("compact strategy slug provisions and binds a workspace", async () => {

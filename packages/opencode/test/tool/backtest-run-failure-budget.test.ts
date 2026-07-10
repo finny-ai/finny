@@ -3,6 +3,7 @@ import {
   countConsecutiveFailedBacktests,
   inferSavedBacktestDates,
   MAX_CONSECUTIVE_FAILED_BACKTESTS,
+  paperApprovalRequestForWorkflow,
   parseDataQualityFailure,
   repairOutliersBlockMessage,
   strictDataQualityNextSteps,
@@ -130,13 +131,67 @@ describe("backtest failure budget", () => {
   })
 })
 
+describe("backtest paper approval challenge", () => {
+  const hashes = {
+    strategyHash: "strategy_hash",
+    savedConfigHash: "config_hash",
+    effectiveConfigHash: "effective_config_hash",
+    dataHash: "data_hash",
+    manifestHash: "manifest_hash",
+    engineHash: "engine_hash",
+    windowHash: "window_hash",
+  }
+
+  test("binds the controller challenge to the exact full-hash run identity", () => {
+    const request = paperApprovalRequestForWorkflow({
+      stage: "reviewable",
+      backtest: {
+        runId: "run_1",
+        strategyHash: "strategy_hash",
+        configHash: "config_hash",
+        dataHash: "data_hash",
+        engineHash: "engine_hash",
+        hashes,
+        identityHash: "identity_hash",
+        verdict: "recommended_for_paper",
+      },
+    })
+    expect(request).toMatchObject({
+      kind: "paper_trading",
+      scope: {
+        runId: "run_1",
+        hashes,
+        identityHash: "identity_hash",
+      },
+    })
+  })
+
+  test("does not request paper approval for a non-recommended run", () => {
+    expect(
+      paperApprovalRequestForWorkflow({
+        stage: "backtested",
+        backtest: {
+          runId: "run_1",
+          strategyHash: "strategy_hash",
+          configHash: "config_hash",
+          dataHash: "data_hash",
+          engineHash: "engine_hash",
+          hashes,
+          identityHash: "identity_hash",
+          verdict: "candidate",
+        },
+      }),
+    ).toBeUndefined()
+  })
+})
+
 describe("backtest repair approval", () => {
   test("blocks repair_outliers unless explicitly approved", () => {
     expect(
       repairOutliersBlockMessage({
         dataQualityMode: "repair_outliers",
       }),
-    ).toContain("requires explicit user approval")
+    ).toContain("requires a scoped workflow approval record")
   })
 
   test("does not treat failure-budget approval as repair approval", () => {
@@ -145,17 +200,17 @@ describe("backtest repair approval", () => {
         dataQualityMode: "repair_outliers",
         userApproved: true,
       } as any),
-    ).toContain("requires explicit user approval")
+    ).toContain("requires a scoped workflow approval record")
   })
 
-  test("allows strict mode and explicitly approved repaired-data research reruns", () => {
+  test("allows strict mode but deprecated repair booleans cannot bypass the controller", () => {
     expect(repairOutliersBlockMessage({ dataQualityMode: "strict" })).toBeUndefined()
     expect(
       repairOutliersBlockMessage({
         dataQualityMode: "repair_outliers",
         repairOutliersApproved: true,
       }),
-    ).toBeUndefined()
+    ).toContain("deprecated repairOutliersApproved boolean cannot grant approval")
   })
 })
 
