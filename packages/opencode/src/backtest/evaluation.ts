@@ -1,4 +1,5 @@
 import type { BacktestRunner } from "./runner"
+import type { ExperimentPhase, ExperimentQualityGates } from "./experiment"
 
 export type BacktestQualityLabel = "failed" | "inconclusive" | "weak_positive" | "candidate" | "paper_eligible"
 
@@ -33,9 +34,11 @@ export function dynamicMinTrades(results: BacktestRunner.Results): number {
   return Math.max(3, Math.min(30, Math.floor(bars * 0.01)))
 }
 
-export function evaluateBacktestQuality(results: BacktestRunner.Results): BacktestQuality {
+export type BacktestQualityPolicy = ExperimentQualityGates & { phase: ExperimentPhase }
+
+export function evaluateBacktestQuality(results: BacktestRunner.Results, policy?: BacktestQualityPolicy): BacktestQuality {
   const reasons: string[] = []
-  const minTrades = dynamicMinTrades(results)
+  const minTrades = Math.max(dynamicMinTrades(results), policy?.minTrades ?? 0)
   const repaired = results.v2?.data_quality?.repair_applied === true
   const wf = results.v2?.walk_forward
   const mc = results.v2?.monte_carlo
@@ -110,10 +113,22 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
     if (finite(wf.stitched_oos_return, -Infinity) <= 0) reasons.push("stitched OOS return <= 0")
     if (finite(wf.stitched_oos_sharpe ?? wf.oos_sharpe_mean, -Infinity) <= 0) reasons.push("stitched OOS Sharpe <= 0")
     if (oosTrades < minTrades) reasons.push(`stitched OOS trade count low (${oosTrades} trades)`)
-    if (oosCoverage < 0.95) reasons.push(`stitched OOS coverage < 95% (${(oosCoverage * 100).toFixed(1)}%)`)
+    const minimumCoverage = policy?.minOosCoverage ?? 0.95
+    if (oosCoverage < minimumCoverage) reasons.push(`stitched OOS coverage < ${(minimumCoverage * 100).toFixed(0)}% (${(oosCoverage * 100).toFixed(1)}%)`)
     if (finite(wf.ruined_folds, 0) > 0) reasons.push("one or more OOS folds were ruined")
+    if (policy && finite(wf.deflated_sharpe, -Infinity) < policy.minDeflatedSharpe) {
+      reasons.push(`deflated Sharpe probability < ${policy.minDeflatedSharpe.toFixed(2)}`)
+    }
+    if (policy && finite(wf.probabilistic_sharpe, -Infinity) < policy.minProbabilisticSharpe) {
+      reasons.push(`probabilistic Sharpe probability < ${policy.minProbabilisticSharpe.toFixed(2)}`)
+    }
   }
   if (mc && finite(mc.max_dd_p99, 0) <= -0.5) reasons.push("stressed profile breaches 50% drawdown ceiling")
+  if (policy?.requireCostSensitivity) {
+    const costSensitivity = results.sensitivityOutcomes?.find((item) => /cost|fee|slippage/i.test(item.name))
+    if (!costSensitivity || costSensitivity.status !== "pass") reasons.push("configured cost sensitivity did not pass")
+  }
+  if (policy && policy.phase !== "confirmatory") reasons.push(`experiment phase is ${policy.phase}, not confirmatory`)
 
   if (reasons.length > 0) {
     return { label: "weak_positive", paperEligible: false, reasons, minTrades }

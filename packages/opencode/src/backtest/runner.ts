@@ -15,6 +15,7 @@ import { emit } from "@/analytics/emit"
 import { resolveAssetSpec } from "./asset-spec"
 import { BrokerRegistry } from "@/live/brokers"
 import { evaluateBacktestQuality } from "./evaluation"
+import type { ExperimentReference } from "./experiment"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { BacktestStore } from "./store"
 import { isVerifiedDatasetRef, type VerifiedDatasetRef } from "@/data/data-extractor-evidence"
@@ -64,6 +65,7 @@ export namespace BacktestRunner {
       /** New grid selections in this run; zero for an exact deterministic replay. */
       currentSelectionTrials?: number
     }
+    experiment?: ExperimentReference
     sessionID?: string
     /**
      * Product/session strict runs must use the exact verified data_extractor
@@ -165,6 +167,7 @@ export namespace BacktestRunner {
     eligibilityStatus?: "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
     productLabel?: string
     runKind?: "crucible_2_0" | "legacy"
+    experiment?: ExperimentReference
     navSummary?: EngineV2.NavSummary | null
     costAttribution?: EngineV2.CostAttributionSummary | null
     profileIdentity?: EngineV2.ProfileIdentity | null
@@ -2261,6 +2264,7 @@ if __name__ == "__main__":
       dataQualityMode = "strict",
       source = "run",
       robustness = {},
+      experiment,
       sessionID,
       dataSource = { kind: "provider_fetch" },
     } = params
@@ -2674,6 +2678,7 @@ if __name__ == "__main__":
           return { ok: false, error: "Strict engine did not produce a valid engine_v2 results.json.", kind: "results_unparseable" }
         }
         attachDataSourceProvenance(results, preparedData.provenance)
+        results.experiment = experiment
         // Keep the engine-native artifact aligned with the enriched in-memory
         // result and metrics.json; provenance must not disappear when a
         // consumer reads results.json directly.

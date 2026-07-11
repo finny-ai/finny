@@ -169,6 +169,53 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.paperEligible).toBe(true)
   })
 
+  test("applies configured DSR, PSR, sample, and confirmatory phase gates", () => {
+    const robust = result({
+      totalTrades: 40,
+      v2: {
+        walk_forward: {
+          n_folds: 5, is_sharpe_mean: 1.4, oos_sharpe_mean: 1.1, oos_decay: 0.78,
+          flag_threshold: 0.7, flagged: false, deflated_sharpe: 0.8, probabilistic_sharpe: 0.9,
+          stitched_oos_return: 0.08, stitched_oos_sharpe: 1.1, stitched_oos_trades: 40,
+          stitched_oos_coverage: 1, ruined_folds: 0, folds: [],
+        },
+      } as any,
+    })
+    const quality = evaluateBacktestQuality(robust, {
+      minDeflatedSharpe: 0.95,
+      minProbabilisticSharpe: 0.95,
+      minOosCoverage: 0.95,
+      minTrades: 30,
+      requireCostSensitivity: false,
+      phase: "validation",
+    })
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("deflated Sharpe probability < 0.95")
+    expect(quality.reasons).toContain("probabilistic Sharpe probability < 0.95")
+    expect(quality.reasons).toContain("experiment phase is validation, not confirmatory")
+
+    const confirmatory = evaluateBacktestQuality({
+      ...result({}),
+      totalTrades: 40,
+      sensitivityOutcomes: [{ name: "Cost/slippage stress", status: "pass", value: 0.02, explanation: "" }],
+      v2: {
+        walk_forward: {
+          ...(robust.v2 as any).walk_forward,
+          deflated_sharpe: 0.99,
+          probabilistic_sharpe: 0.99,
+        },
+      } as any,
+    }, {
+      minDeflatedSharpe: 0.95,
+      minProbabilisticSharpe: 0.95,
+      minOosCoverage: 0.95,
+      minTrades: 30,
+      requireCostSensitivity: true,
+      phase: "confirmatory",
+    })
+    expect(confirmatory.label).toBe("paper_eligible")
+  })
+
   test("requires positive stitched OOS return and enough OOS trades", () => {
     const quality = evaluateBacktestQuality(result({
       benchmarkReturn: 0.02,

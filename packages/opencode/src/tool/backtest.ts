@@ -45,6 +45,7 @@ import {
   recordVerifiedMarketData,
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
+import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
 
 export const MAX_CONSECUTIVE_FAILED_BACKTESTS = 5
 export const BACKTEST_TOOL_IDS = new Set(["finny_backtest", "finny_backtest_run"])
@@ -132,6 +133,18 @@ export function formatWalkForwardLines(input: {
   ].filter((line): line is string => line !== null)
 }
 
+const experimentDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "experiment boundary must be YYYY-MM-DD")
+const experimentParameters = z.object({
+  experimentId: z.string().optional(), parentExperimentId: z.string().optional(), hypothesis: z.string().optional(),
+  falsificationCriteria: z.string().optional(), dataSnapshot: z.string().optional(), corporateActionPolicy: z.string().optional(),
+  costs: z.string().optional(), featureTiming: z.string().optional(), executionSemantics: z.string().optional(),
+  boundaries: z.object({ trainStart: experimentDate, trainEnd: experimentDate, validationEnd: experimentDate, testEnd: experimentDate }).optional(),
+  permittedSearchSpace: z.string().optional(), optimizationBudget: z.number().int().positive().max(10000).optional(),
+  primaryMetric: z.string().optional(), riskConstraints: z.string().optional(), benchmark: z.string().optional(),
+  qualityGates: z.object({ minDeflatedSharpe: z.number().min(0).max(1).optional(), minProbabilisticSharpe: z.number().min(0).max(1).optional(), minOosCoverage: z.number().min(0).max(1).optional(), minTrades: z.number().int().positive().optional(), requireCostSensitivity: z.boolean().optional() }).optional(),
+  phase: z.enum(["exploratory", "validation", "confirmatory"]).optional(), holdoutApproved: z.boolean().optional(), approvalReason: z.string().optional(),
+})
+
 const parameters = z.object({
   algorithmName: z
     .string()
@@ -178,6 +191,7 @@ const parameters = z.object({
     .describe(
       `Deprecated compatibility hint. It never bypasses the ${MAX_CONSECUTIVE_FAILED_BACKTESTS}-trial budget; use finny_workflow_request_approval for the controller-created scope.`,
     ),
+  experiment: experimentParameters.optional().describe("Durable scientific experiment contract; boundaries are required for validation or confirmatory holdout access."),
 })
 
 type BacktestMessageLike = {
@@ -713,6 +727,14 @@ export const BacktestTool = Tool.define(
             metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
+        let trial: Awaited<ReturnType<typeof beginTrial>>
+        try {
+          trial = await beginTrial({ algorithm: algo, interval: params.interval, startDate: effectiveStartDate, endDate: effectiveEndDate, sessionId: ctx.sessionID, experiment: params.experiment as ExperimentInput | undefined })
+        } catch (error) {
+          const message = error instanceof ExperimentContractError ? error.message : `experiment ledger unavailable: ${String(error)}`
+          return { title: "Backtest blocked by experiment contract", output: `Backtest blocked: ${message}`, metadata: { ...emptyMeta, blocked: true, experimentContract: true } }
+        }
+        const finishTrial = (outcome: "passed" | "failed" | "blocked", details: string, result?: BacktestRunner.Results) => completeTrial({ reference: trial.reference, sessionId: ctx.sessionID, algorithm: algo, outcome, details, runId: result?.runId, actualDataHash: typeof result?.v2?.run_metadata?.data_hash === "string" ? result.v2.run_metadata.data_hash : undefined })
         if (workflow && experiment) {
           workflow = await runWorkflow(startWorkflowBacktest(workflow))
           experiment = { ...experiment, workflow }
@@ -732,11 +754,13 @@ export const BacktestTool = Tool.define(
             priorSelectionTrials: experiment?.trials.priorUniqueTrials ?? 0,
             currentSelectionTrials: experiment?.trials.currentGridTrials ?? 1,
           },
+          experiment: trial.reference,
           sessionID: ctx.sessionID,
           dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
         })
 
         if (!result.ok) {
+          await finishTrial("failed", result.error)
           if (workflow?.stage === "backtest_running") {
             workflow = await runWorkflow(
               failWorkflowBacktest({ workflowId: workflow.workflowId, reason: result.error }),
@@ -812,6 +836,7 @@ export const BacktestTool = Tool.define(
         }
         const walkForward = r.v2?.walk_forward
         if (!walkForward || walkForward.n_folds < 2) {
+          await finishTrial("failed", "strict engine produced fewer than two walk-forward folds", r)
           if (workflow?.stage === "backtest_running") {
             workflow = await runWorkflow(
               failWorkflowBacktest({
@@ -838,6 +863,7 @@ export const BacktestTool = Tool.define(
           consistency: r.v2?.consistency,
           decay: r.v2?.alpha_decay,
         })
+        await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)
         if (workflow && experiment) {
           const controllerVerdict =
             unified.verdict === "recommended_for_paper" ||
@@ -1259,6 +1285,7 @@ export const BacktestTool = Tool.define(
                   },
                 }
               : {}),
+            experimentLedger: trial.reference,
             ...(failureDiagnosis ? { failure_diagnosis: failureDiagnosis } : {}),
           },
         }

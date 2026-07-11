@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { Global } from "../global"
+import type { ExperimentReference } from "./experiment"
 
 export type Source = "run" | "walkforward" | "sweep"
 
@@ -61,6 +62,7 @@ export interface Manifest {
   alpha: number | null
   artifacts: Artifacts
   timestamp: number
+  experiment?: ExperimentReference
 }
 
 export interface SaveInput {

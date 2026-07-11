@@ -112,6 +112,7 @@ export function buildDurabilityReport(input: {
     runId: input.results.runId,
     algorithmId: input.algorithm.algorithmId,
     algorithmVersion: input.algorithm.version,
+    experiment: input.results.experiment ?? null,
     window: {
       start: at(v2, "start_ts"),
       end: at(v2, "end_ts"),
@@ -146,6 +147,9 @@ export function renderReviewMarkdown(data: {
     ``,
     `Verdict: ${data.verdict}`,
     `Reasons: ${data.reasons.join("; ")}`,
+    data.results.experiment
+      ? `Experiment: ${data.results.experiment.experimentId} | Trial ${data.results.experiment.trialNumber} | Phase: ${data.results.experiment.phase}`
+      : `Experiment: legacy/untracked`,
     ``,
     `## Base Metrics`,
     `| Metric | Value |`,
