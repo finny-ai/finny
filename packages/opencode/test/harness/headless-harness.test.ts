@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { createBundleWriter, publishBundle, writeBundleText } from "../../script/headless/artifacts"
-import { runHeadlessHarness } from "../../script/headless/orchestrator"
+import { runHeadlessHarness, semanticHash } from "../../script/headless/orchestrator"
 import { canonicalScenarioJson, scenarioSha256 } from "../../script/headless/scenario"
 import { classifyOutcome, observeRun } from "../../script/headless/semantic-verdict"
 import type { HeadlessScenarioV1, RunManifestV1 } from "../../script/headless/types"
@@ -121,6 +121,29 @@ describe("headless semantic verdict", () => {
       outputDir: "/not-evaluated",
     })
     expect(Effect.isEffect(value)).toBe(true)
+  })
+
+  test("semantic event hashes ignore checkout snapshots and generated workspace slugs only", () => {
+    const event = (snapshot: string, workspace: string, symbol = "SPY") => [
+      {
+        type: "tool_use",
+        part: {
+          snapshot,
+          tool: "finny_workspace_prepare",
+          state: {
+            input: { symbol, interval: "5m", strategyIntent: "sma-crossover" },
+            output: `workspace_slug: ${workspace}\nworkspace_path: /tmp/${workspace}/mission.md`,
+          },
+        },
+      },
+    ]
+    const left = event("f478dbd65679d8aa116828644cce447e29a4a10a", "spy-5m-strategy.10.7.04.26.4147d1a6")
+    const right = event("f5b7bed6a4f7ecd2c22350b88248eca2a7f0a61d", "spy-5m-strategy.10.7.04.27.8697a6c5")
+
+    expect(semanticHash(left)).toBe(semanticHash(right))
+    expect(semanticHash(left)).not.toBe(
+      semanticHash(event("another-snapshot", "spy-5m-strategy.10.7.04.28.abcdef12", "QQQ")),
+    )
   })
 
   test("negative strategy performance is valid completion when the contract is followed", () => {
@@ -303,6 +326,32 @@ describe("headless semantic verdict", () => {
     ).toEqual({ status: "evidence_invalid", exitCode: 5 })
   })
 
+  test("runtime failure takes precedence over induced observability gaps", () => {
+    const observed = observeRun([], scenario)
+    expect(
+      classifyOutcome({
+        childExitCode: 1,
+        timedOut: true,
+        observabilityErrors: ["telemetry flush was not_run"],
+        observation: observed,
+      }),
+    ).toEqual({ status: "timed_out", exitCode: 4 })
+    expect(
+      classifyOutcome({
+        childExitCode: 1,
+        observabilityErrors: ["completion span missing"],
+        observation: observed,
+      }),
+    ).toEqual({ status: "execution_failed", exitCode: 4 })
+    expect(
+      classifyOutcome({
+        childExitCode: 0,
+        observabilityErrors: ["completion span missing"],
+        observation: observed,
+      }),
+    ).toEqual({ status: "evidence_invalid", exitCode: 5 })
+  })
+
   test("completed stages with missing structured identity fields fail closed", () => {
     const events = [
       tool("finny_workspace_prepare", requestInput(), "Prepared"),
@@ -337,6 +386,10 @@ describe("headless semantic verdict", () => {
       status: "execution_failed",
       exitCode: 4,
     })
+    expect(classifyOutcome({ integrityErrors: ["observability invalid"], observation: observed })).toEqual({
+      status: "evidence_invalid",
+      exitCode: 5,
+    })
   })
 })
 
@@ -345,8 +398,8 @@ describe("atomic bundle publication", () => {
   test("publishes a schema-valid manifest and checksum bundle with one rename", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-headless-bundle-"))
     roots.push(root)
-    const writer = await createBundleWriter({ outputDir: root, runId: "run-1" })
-    await writeBundleText({ writer: writer, relative: "raw/stdout.log", content: "ok\n" })
+    const writer = await createBundleWriter(root, "run-1")
+    await writeBundleText(writer, "raw/stdout.log", "ok\n")
     const now = new Date().toISOString()
     const base: Omit<RunManifestV1, "artifacts" | "integrity"> = {
       schemaVersion: "1.0.0",

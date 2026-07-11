@@ -179,7 +179,7 @@ export namespace BacktestRunner {
     v2?: EngineV2.Results
   }
 
-  async function materializeBundledEngineV2(destination: string): Promise<boolean> {
+  export async function materializeBundledEngineV2(destination: string): Promise<boolean> {
     if (typeof OPENCODE_ENGINE_V2_FILES === "undefined") return false
     const entries = Object.entries(OPENCODE_ENGINE_V2_FILES)
     if (entries.length === 0) return false

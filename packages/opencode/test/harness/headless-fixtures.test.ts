@@ -133,6 +133,27 @@ describe("headless-only fixture boundaries", () => {
     )
   })
 
+  test("live Alpaca credentials cross the isolation boundary under provider-native names", async () => {
+    const priorKey = process.env.ALPACA_API_KEY_ID
+    const priorSecret = process.env.ALPACA_API_SECRET_KEY
+    process.env.ALPACA_API_KEY_ID = "harness-key-id"
+    process.env.ALPACA_API_SECRET_KEY = "harness-secret-key"
+    try {
+      const isolation = await createIsolation("alpaca-env-test")
+      cleanup.push(() => fs.rm(isolation.root, { recursive: true, force: true }))
+      expect(isolation.env.ALPACA_API_KEY_ID).toBe("harness-key-id")
+      expect(isolation.env.ALPACA_API_SECRET_KEY).toBe("harness-secret-key")
+      expect(isolation.credentialPresence.map((item) => item.name)).toEqual(
+        expect.arrayContaining(["ALPACA_API_KEY_ID", "ALPACA_API_SECRET_KEY"]),
+      )
+    } finally {
+      if (priorKey === undefined) delete process.env.ALPACA_API_KEY_ID
+      else process.env.ALPACA_API_KEY_ID = priorKey
+      if (priorSecret === undefined) delete process.env.ALPACA_API_SECRET_KEY
+      else process.env.ALPACA_API_SECRET_KEY = priorSecret
+    }
+  })
+
   test("missing dependencies fail before a fixture model request and bundles redact secrets", async () => {
     const output = await fs.mkdtemp(path.join(os.tmpdir(), "finny-headless-preflight-"))
     cleanup.push(() => fs.rm(output, { recursive: true, force: true }))
@@ -226,7 +247,7 @@ describe("headless-only fixture boundaries", () => {
       }),
     )
 
-    const writer = await createBundleWriter({ outputDir: output, runId: "integrity-test" })
+    const writer = await createBundleWriter(output, "integrity-test")
     const collected = await collectFinnyArtifacts({ writer, finnyHome, secretValues: [] })
     const retained = collected.index.find((entry) => entry.source.endsWith(path.join("malformed", "run.json")))
     expect(retained).toBeDefined()
@@ -291,16 +312,16 @@ describe("headless-only fixture boundaries", () => {
     await fs.writeFile(path.join(run, "node_modules", "pkg", "index.js"), "runtime")
     await fs.writeFile(path.join(run, "__pycache__", "strategy.pyc"), "runtime")
 
-    expect(artifactCaptureDecision({ relative: path.join("algorithms", "algo-1", "v01", "runs", "run-1", ".venv", "x") })).toEqual({
+    expect(artifactCaptureDecision(path.join("algorithms", "algo-1", "v01", "runs", "run-1", ".venv", "x"))).toEqual({
       include: false,
       reason: "runtime_directory",
     })
-    expect(artifactCaptureDecision({ relative: path.join("algorithms", "algo-1", "v01", "runs", "run-1", "engine.so") })).toEqual({
+    expect(artifactCaptureDecision(path.join("algorithms", "algo-1", "v01", "runs", "run-1", "engine.so"))).toEqual({
       include: false,
       reason: "compiled_runtime",
     })
 
-    const writer = await createBundleWriter({ outputDir: output, runId: "policy-test" })
+    const writer = await createBundleWriter(output, "policy-test")
     const collected = await collectFinnyArtifacts({ writer, finnyHome, secretValues: [] })
     expect(collected.index.map((entry) => entry.source).sort()).toEqual([
       path.join("algorithms", "algo-1", "v01", "config.json"),
@@ -310,7 +331,7 @@ describe("headless-only fixture boundaries", () => {
     expect(collected.capture.excluded.runtime_directory.entries).toBe(3)
     expect(collected.capture.includedBytes).toBeLessThan(1024)
 
-    const cappedWriter = await createBundleWriter({ outputDir: output, runId: "policy-cap-test" })
+    const cappedWriter = await createBundleWriter(output, "policy-cap-test")
     const capped = await collectFinnyArtifacts({
       writer: cappedWriter,
       finnyHome,

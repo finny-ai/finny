@@ -1,4 +1,4 @@
-import { flushWithTimeout, otelProvider } from "./instrumentation"
+import { emitHarnessTelemetry, recordRunCompletion, shutdownAppRuntime, shutdownTelemetry } from "./instrumentation"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
@@ -35,6 +35,7 @@ import { TaskCommand } from "./cli/cmd/task"
 import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
+import { CliError } from "./cli/effect-cmd"
 
 const args = hideBin(process.argv)
 const cliName = "finny"
@@ -128,9 +129,10 @@ const cli = yargs(args)
     ) {
       if (err) throw err
       cli.showHelp(show)
+      throw new CliError({ message: "", exitCode: 1 })
     }
     if (err) throw err
-    process.exit(1)
+    throw new CliError({ message: msg ?? "CLI argument parsing failed", exitCode: 1 })
   })
   .strict()
 
@@ -157,6 +159,10 @@ try {
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
-  if (otelProvider) await flushWithTimeout(otelProvider, 5_000).catch(() => {})
-  process.exit(process.exitCode ?? 0)
+  const exitCode = typeof process.exitCode === "number" ? process.exitCode : 0
+  recordRunCompletion(exitCode)
+  const appRuntime = await shutdownAppRuntime(5_000)
+  const manualTelemetry = await shutdownTelemetry(5_000)
+  await emitHarnessTelemetry(appRuntime, manualTelemetry)
+  process.exit(exitCode)
 }

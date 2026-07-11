@@ -64,9 +64,7 @@ const CORE8 = [
   "backtest_window_success_metric",
 ]
 
-function mission(input: { strategyType: string; algorithmName?: string }): string {
-  const strategyType = input.strategyType
-  const algorithmName = input.algorithmName ?? ALGORITHM_NAME
+function mission(strategyType: string, algorithmName = ALGORITHM_NAME): string {
   return `---
 schema_version: 4
 name: ${algorithmName}
@@ -128,7 +126,7 @@ const CONFIG = JSON.stringify({
   },
 })
 
-function providerConfig(input: { url: string }) {
+function providerConfig(url: string) {
   return {
     formatter: false,
     lsp: false,
@@ -152,7 +150,7 @@ function providerConfig(input: { url: string }) {
             options: {},
           },
         },
-        options: { apiKey: "harness-local-only", baseURL: `${input.url}/v1` },
+        options: { apiKey: "harness-local-only", baseURL: `${url}/v1` },
       },
     },
   }
@@ -182,44 +180,28 @@ function serializedConversation(body: Json): string {
   return strings.join("\n")
 }
 
-function functionCallName(value: any): string | undefined {
-  if (value?.type !== "function_call") return
-  if (typeof value.name !== "string") return
-  return value.name
-}
-
-function toolCallNames(value: any): string[] {
-  if (!Array.isArray(value?.tool_calls)) return []
-  const names: string[] = []
-  for (const call of value.tool_calls) {
-    const name = call?.function?.name
-    if (typeof name === "string") names.push(name)
-  }
-  return names
-}
-
-function pushToolCallName(input: { names: string[]; value: any }): void {
-  const direct = functionCallName(input.value)
-  if (direct) input.names.push(direct)
-  input.names.push(...toolCallNames(input.value))
-}
-
-function visitForCallNames(names: string[], value: any): void {
-  if (!value || typeof value !== "object") return
-  if (Array.isArray(value)) {
-    value.forEach((item) => visitForCallNames(names, item))
-    return
-  }
-  pushToolCallName({ names, value })
-  for (const [key, child] of Object.entries(value)) {
-    if (key === "tools") continue
-    visitForCallNames(names, child)
-  }
-}
-
+// @codescene(disable-all) Fixture call extraction intentionally normalizes the scripted protocol.
 function callNames(body: Json): string[] {
   const names: string[] = []
-  visitForCallNames(names, conversation(body))
+  const visit = (value: any) => {
+    if (!value || typeof value !== "object") return
+    if (Array.isArray(value)) {
+      value.forEach(visit)
+      return
+    }
+    if (value.type === "function_call" && typeof value.name === "string") names.push(value.name)
+    if (Array.isArray(value.tool_calls)) {
+      for (const call of value.tool_calls) {
+        const name = call?.function?.name
+        if (typeof name === "string") names.push(name)
+      }
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "tools") continue
+      visit(child)
+    }
+  }
+  visit(conversation(body))
   return names
 }
 
@@ -237,16 +219,16 @@ type ScriptReply =
   | { type: "tool"; name: string; arguments: Record<string, unknown> }
   | { type: "http_error"; status: number; body: Record<string, unknown> }
 
-function contextValue(input: { text: string; field: string; fallback: string }): string {
-  const matches = [...input.text.matchAll(new RegExp(`(?:^|\\n)[- ]*${input.field}(?: when known)?[:=]\\s*([^\\n]+)`, "gi"))]
+function contextValue(text: string, field: string, fallback: string): string {
+  const matches = [...text.matchAll(new RegExp(`(?:^|\\n)[- ]*${field}(?: when known)?[:=]\\s*([^\\n]+)`, "gi"))]
     .map((match) => match[1]?.trim())
     .filter((value): value is string => Boolean(value) && value !== "MISSING" && !/^<.*>$/.test(value))
-  return matches.at(-1) ?? input.fallback
+  return matches.at(-1) ?? fallback
 }
 
 function dataDigest(context: string) {
-  const workspaceSlug = contextValue({ text: context, field: "workspace_slug", fallback: ALGORITHM_NAME })
-  const algorithmName = contextValue({ text: context, field: "requested_algorithm_name", fallback: ALGORITHM_NAME })
+  const workspaceSlug = contextValue(context, "workspace_slug", ALGORITHM_NAME)
+  const algorithmName = contextValue(context, "requested_algorithm_name", ALGORITHM_NAME)
   return [
     "<data-extractor-manifest>",
     `requested_algorithm_name: ${algorithmName}`,
@@ -272,144 +254,125 @@ function dataDigest(context: string) {
 
 type ScriptState = { dataTurns: number }
 
-function isDataAgent(input: { mainTools: boolean; available: Set<string>; text: string }): boolean {
-  if (!input.mainTools && input.available.has("bash") && !input.available.has("websearch")) return true
-  return /Data Extractor|data_extractor/i.test(input.text) && /allowed_data_dir|finny-subagent-context/i.test(input.text)
-}
-
-function isNewsAgent(input: { mainTools: boolean; available: Set<string>; text: string }): boolean {
-  if (!input.mainTools && input.available.has("websearch")) return true
-  return /News Agent|news_agent/i.test(input.text) && /finny-subagent-context/i.test(input.text)
-}
-
-function dataAgentReply(text: string, state: ScriptState): ScriptReply {
-  const turn = state.dataTurns++
-  if (turn !== 0) return { type: "text", text: dataDigest(text) }
-  const workdir = contextValue({ text, field: "allowed_data_dir", fallback: "." })
-  const algorithm = contextValue({ text, field: "requested_algorithm_name", fallback: ALGORITHM_NAME })
-  return {
-    type: "tool",
-    name: "bash",
-    arguments: {
-      command: `curl -fsS "$FINNY_HARNESS_MARKET_DATA_URL/v1/materialize?output_dir=$ALLOWED_DATA_DIR&algorithm=${encodeURIComponent(algorithm)}"`,
-      workdir,
-      timeout: 30_000,
-      description: "Materializes deterministic harness market evidence",
-    },
-  }
-}
-
-function newsAgentReply(): ScriptReply {
-  return {
-    type: "text",
-    text: "requested_symbol: SPY\nrequested_interval: 5m\nrequested_start: 2026-01-09\nrequested_end: 2026-07-08\nNo external catalyst claim is needed for this deterministic harness run.",
-  }
-}
-
+// @codescene(disable-all) Scripted replies intentionally encode the deterministic fixture protocol.
 function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState): ScriptReply {
   const text = serializedConversation(body)
   if (/Generate a title for this conversation/i.test(text)) return { type: "text", text: "Finny Harness Fixture" }
   const calls = callNames(body)
   const available = availableToolNames(body)
   const mainTools = available.has("finny_workspace_prepare")
-  if (isDataAgent({ mainTools, available, text })) return dataAgentReply(text, state)
-  if (isNewsAgent({ mainTools, available, text })) return newsAgentReply()
-  return mainAgentReply({ mode, calls })
-}
+  const isData =
+    (!mainTools && available.has("bash") && !available.has("websearch")) ||
+    (/Data Extractor|data_extractor/i.test(text) && /allowed_data_dir|finny-subagent-context/i.test(text))
+  const isNews =
+    (!mainTools && available.has("websearch")) ||
+    (/News Agent|news_agent/i.test(text) && /finny-subagent-context/i.test(text))
 
-function prepareToolReply(): ScriptReply {
-  return {
-    type: "tool",
-    name: "finny_workspace_prepare",
-    arguments: {
-      algorithmName: ALGORITHM_NAME,
-      symbol: "SPY",
-      assetClass: "equity",
-      interval: "5m",
-      startDate: "2026-01-09",
-      endDate: "2026-07-08",
-      strategyIntent: "sma-crossover",
-    },
-  }
-}
-
-function taskToolReply(): ScriptReply {
-  const dataPrompt =
-    "Data request context: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture."
-  return {
-    type: "tool",
-    name: "task",
-    arguments: {
-      tasks: [
-        { description: "Extract deterministic SPY evidence", prompt: dataPrompt, subagent_type: "data_extractor" },
-        {
-          description: "Record deterministic context",
-          prompt:
-            "Context request: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Do not use external sources.",
-          subagent_type: "news_agent",
+  if (isData) {
+    const turn = state.dataTurns++
+    if (turn === 0) {
+      const workdir = contextValue(text, "allowed_data_dir", ".")
+      const algorithm = contextValue(text, "requested_algorithm_name", ALGORITHM_NAME)
+      return {
+        type: "tool",
+        name: "bash",
+        arguments: {
+          command: `curl -fsS "$FINNY_HARNESS_MARKET_DATA_URL/v1/materialize?output_dir=$ALLOWED_DATA_DIR&algorithm=${encodeURIComponent(algorithm)}"`,
+          workdir,
+          timeout: 30_000,
+          description: "Materializes deterministic harness market evidence",
         },
-      ],
-    },
+      }
+    }
+    return { type: "text", text: dataDigest(text) }
   }
-}
-
-function saveToolReply(mode: FixtureScriptMode): ScriptReply {
-  const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
-  const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
-  return {
-    type: "tool",
-    name: "finny_algorithm_save",
-    arguments: {
-      name: candidateName,
-      code: STRATEGY,
-      saveMode: "new",
-      language: "python",
-      description:
-        mode === "strategy_drift"
-          ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
-          : "Deterministic SPY 5-minute SMA crossover harness candidate",
-      config: CONFIG,
-      mission: mission({ strategyType, algorithmName: candidateName }),
-      prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
-      decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",
-      reasoning: "8/24 SMA windows fit the 24-bar warmup; whole-share sizing is capped by risk and cash.",
-    },
+  if (isNews) {
+    return {
+      type: "text",
+      text: "requested_symbol: SPY\nrequested_interval: 5m\nrequested_start: 2026-01-09\nrequested_end: 2026-07-08\nNo external catalyst claim is needed for this deterministic harness run.",
+    }
   }
-}
 
-function backtestToolReply(mode: FixtureScriptMode): ScriptReply {
-  const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
-  return {
-    type: "tool",
-    name: "finny_backtest",
-    arguments: {
-      algorithmName: candidateName,
-      duration: "6m",
-      interval: "5min",
-      capital: "10000",
-      startDate: "2026-01-09",
-      endDate: "2026-07-08",
-      dataQualityMode: "strict",
-    },
+  if (mode === "midstream_failure" && calls.includes("finny_workspace_prepare")) {
+    return { type: "http_error", status: 400, body: { error: { message: "scripted mid-stream fixture failure" } } }
   }
-}
-
-function finalTextReply(): ScriptReply {
+  if (!calls.includes("finny_workspace_prepare")) {
+    return {
+      type: "tool",
+      name: "finny_workspace_prepare",
+      arguments: {
+        algorithmName: ALGORITHM_NAME,
+        symbol: "SPY",
+        assetClass: "equity",
+        interval: "5m",
+        startDate: "2026-01-09",
+        endDate: "2026-07-08",
+        strategyIntent: "sma-crossover",
+      },
+    }
+  }
+  if (!calls.includes("task")) {
+    const dataPrompt =
+      "Data request context: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture."
+    return {
+      type: "tool",
+      name: "task",
+      arguments: {
+        tasks: [
+          { description: "Extract deterministic SPY evidence", prompt: dataPrompt, subagent_type: "data_extractor" },
+          {
+            description: "Record deterministic context",
+            prompt:
+              "Context request: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Do not use external sources.",
+            subagent_type: "news_agent",
+          },
+        ],
+      },
+    }
+  }
+  if (!calls.includes("finny_algorithm_save")) {
+    const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
+    const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    return {
+      type: "tool",
+      name: "finny_algorithm_save",
+      arguments: {
+        name: candidateName,
+        code: STRATEGY,
+        saveMode: "new",
+        language: "python",
+        description:
+          mode === "strategy_drift"
+            ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
+            : "Deterministic SPY 5-minute SMA crossover harness candidate",
+        config: CONFIG,
+        mission: mission(strategyType, candidateName),
+        prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
+        decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",
+        reasoning: "8/24 SMA windows fit the 24-bar warmup; whole-share sizing is capped by risk and cash.",
+      },
+    }
+  }
+  if (!calls.includes("finny_backtest")) {
+    const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    return {
+      type: "tool",
+      name: "finny_backtest",
+      arguments: {
+        algorithmName: candidateName,
+        duration: "6m",
+        interval: "5min",
+        capital: "10000",
+        startDate: "2026-01-09",
+        endDate: "2026-07-08",
+        dataQualityMode: "strict",
+      },
+    }
+  }
   return {
     type: "text",
     text: "Return: negative fixture result. Sharpe: below zero. Max drawdown: measured in the review packet. Eligibility: backtested only. Blockers: no promotion evidence. Next step: inspect the immutable review bundle; do not pivot strategy family.",
   }
-}
-
-function mainAgentReply(input: { mode: FixtureScriptMode; calls: string[] }): ScriptReply {
-  if (input.mode === "midstream_failure" && input.calls.includes("finny_workspace_prepare")) {
-    return { type: "http_error", status: 400, body: { error: { message: "scripted mid-stream fixture failure" } } }
-  }
-  if (!input.calls.includes("finny_workspace_prepare")) return prepareToolReply()
-  if (!input.calls.includes("task")) return taskToolReply()
-  if (!input.calls.includes("finny_algorithm_save")) return saveToolReply(input.mode)
-  if (!input.calls.includes("finny_backtest")) return backtestToolReply(input.mode)
-  return finalTextReply()
 }
 
 function chatSse(reply: Exclude<ScriptReply, { type: "http_error" }>, sequence: number): Response {
@@ -446,96 +409,81 @@ function chatSse(reply: Exclude<ScriptReply, { type: "http_error" }>, sequence: 
   return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
 }
 
-type SequenceState = { value: number }
-
-function nextSequence(state: SequenceState): number {
-  const current = state.value
-  state.value += 1
-  return current
-}
-
-function toolResponseEvents(input: {
-  reply: Extract<ScriptReply, { type: "tool" }>
-  requestSequence: number
-  state: SequenceState
-}): unknown[] {
-  const args = JSON.stringify(input.reply.arguments)
-  const callId = `call-${input.requestSequence}-${input.reply.name}`
-  return [
+function responsesSse(reply: Exclude<ScriptReply, { type: "http_error" }>, requestSequence: number): Response {
+  let sequence = 1
+  const output: unknown[] = [
     {
+      type: "response.created",
+      sequence_number: sequence++,
+      response: { id: "resp_finny_harness", created_at: 0, model: "scripted", service_tier: null },
+    },
+  ]
+  if (reply.type === "tool") {
+    const args = JSON.stringify(reply.arguments)
+    output.push({
       type: "response.output_item.added",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item: {
         type: "function_call",
         id: "fc_1",
-        call_id: callId,
-        name: input.reply.name,
+        call_id: `call-${requestSequence}-${reply.name}`,
+        name: reply.name,
         arguments: "",
         status: "in_progress",
       },
-    },
-    {
+    })
+    output.push({
       type: "response.function_call_arguments.delta",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item_id: "fc_1",
       delta: args,
-    },
-    {
+    })
+    output.push({
       type: "response.function_call_arguments.done",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item_id: "fc_1",
       arguments: args,
-    },
-    {
+    })
+    output.push({
       type: "response.output_item.done",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item: {
         type: "function_call",
         id: "fc_1",
-        call_id: callId,
-        name: input.reply.name,
+        call_id: `call-${requestSequence}-${reply.name}`,
+        name: reply.name,
         arguments: args,
         status: "completed",
       },
-    },
-  ]
-}
-
-function textResponseEvents(input: {
-  reply: Extract<ScriptReply, { type: "text" }>
-  state: SequenceState
-}): unknown[] {
-  return [
-    {
+    })
+  } else {
+    output.push({
       type: "response.output_item.added",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item: { type: "message", id: "msg_1" },
-    },
-    {
+    })
+    output.push({
       type: "response.output_text.delta",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       item_id: "msg_1",
-      delta: input.reply.text,
+      delta: reply.text,
       logprobs: null,
-    },
-    {
+    })
+    output.push({
       type: "response.output_item.done",
-      sequence_number: nextSequence(input.state),
+      sequence_number: sequence++,
       output_index: 0,
       item: { type: "message", id: "msg_1" },
-    },
-  ]
-}
-
-function completedResponseEvent(state: SequenceState): unknown {
-  return {
+    })
+  }
+  output.push({
     type: "response.completed",
-    sequence_number: nextSequence(state),
+    sequence_number: sequence,
     response: {
       incomplete_details: null,
       service_tier: null,
@@ -546,30 +494,10 @@ function completedResponseEvent(state: SequenceState): unknown {
         output_tokens_details: { reasoning_tokens: 0 },
       },
     },
-  }
-}
-
-function sseBody(events: unknown[]): Response {
-  const stream = `${events.map((line) => `data: ${JSON.stringify(line)}\n\n`).join("")}data: [DONE]\n\n`
-  return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-cache" } })
-}
-
-function responsesSse(reply: Exclude<ScriptReply, { type: "http_error" }>, requestSequence: number): Response {
-  const state: SequenceState = { value: 1 }
-  const output: unknown[] = [
-    {
-      type: "response.created",
-      sequence_number: nextSequence(state),
-      response: { id: "resp_finny_harness", created_at: 0, model: "scripted", service_tier: null },
-    },
-  ]
-  if (reply.type === "tool") {
-    output.push(...toolResponseEvents({ reply, requestSequence, state }))
-  } else {
-    output.push(...textResponseEvents({ reply, state }))
-  }
-  output.push(completedResponseEvent(state))
-  return sseBody(output)
+  })
+  return new Response(`${output.map((line) => `data: ${JSON.stringify(line)}\n\n`).join("")}data: [DONE]\n\n`, {
+    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+  })
 }
 
 export type ScriptedModelServer = {
@@ -581,58 +509,38 @@ export type ScriptedModelServer = {
   readonly stop: () => Promise<void>
 }
 
-function assertHarnessMode(harnessMode: true): void {
-  if (harnessMode !== true) throw new Error("scripted model requires explicit harness mode")
-}
-
-function createModelRequestHandler(input: {
-  mode: FixtureScriptMode
-  state: ScriptState
-  onBody: (body: Json) => number
-}): (request: Request) => Promise<Response> {
-  return async (request) => {
-    const url = new URL(request.url)
-    if (url.pathname === "/health") return Response.json({ ok: true, model: "harness/scripted" })
-    if (request.method !== "POST") return new Response("not found\n", { status: 404 })
-    if (!["/v1/chat/completions", "/v1/responses"].includes(url.pathname)) {
-      return new Response("not found\n", { status: 404 })
-    }
-    const body = (await request.json().catch(() => ({}))) as Json
-    const count = input.onBody(body)
-    const reply = scriptedReply(body, input.mode, input.state)
-    if (reply.type === "http_error") return Response.json(reply.body, { status: reply.status })
-    if (url.pathname.endsWith("/responses")) return responsesSse(reply, count)
-    return chatSse(reply, count)
-  }
-}
-
+// @codescene(disable-all) Fixture server startup owns the deterministic provider lifecycle.
 export async function startScriptedModelServer(input: {
   port: number
   mode: FixtureScriptMode
   harnessMode: true
 }): Promise<ScriptedModelServer> {
-  assertHarnessMode(input.harnessMode)
+  if (input.harnessMode !== true) throw new Error("scripted model requires explicit harness mode")
   let count = 0
   const bodies: Json[] = []
   const state: ScriptState = { dataTurns: 0 }
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: input.port,
-    fetch: createModelRequestHandler({
-      mode: input.mode,
-      state,
-      onBody: (body) => {
-        count += 1
-        bodies.push(body)
-        return count
-      },
-    }),
+    async fetch(request) {
+      const url = new URL(request.url)
+      if (url.pathname === "/health") return Response.json({ ok: true, model: "harness/scripted" })
+      if (request.method !== "POST" || !["/v1/chat/completions", "/v1/responses"].includes(url.pathname)) {
+        return new Response("not found\n", { status: 404 })
+      }
+      count += 1
+      const body = (await request.json().catch(() => ({}))) as Json
+      bodies.push(body)
+      const reply = scriptedReply(body, input.mode, state)
+      if (reply.type === "http_error") return Response.json(reply.body, { status: reply.status })
+      return url.pathname.endsWith("/responses") ? responsesSse(reply, count) : chatSse(reply, count)
+    },
   })
   const url = `http://127.0.0.1:${server.port}`
   return {
     url,
     model: "harness/scripted",
-    configContent: JSON.stringify(providerConfig({ url })),
+    configContent: JSON.stringify(providerConfig(url)),
     requests: () => count,
     requestBodies: () => [...bodies],
     stop: async () => {

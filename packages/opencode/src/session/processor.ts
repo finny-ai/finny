@@ -31,6 +31,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ToolOutput, Usage, type LLMEvent } from "@opencode-ai/llm"
+import { runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
@@ -962,6 +963,12 @@ export const layer = Layer.effect(
       })
 
       const process = Effect.fn("SessionProcessor.process")(function* (streamInput: LLM.StreamInput) {
+        yield* Effect.annotateCurrentSpan({
+          ...sessionTelemetryAttributes(streamInput.sessionID, streamInput.parentSessionID),
+          ...runTelemetryAttributes(),
+          "finny.agent.name": streamInput.agent.name,
+          "finny.agent.mode": streamInput.agent.mode,
+        })
         yield* Effect.logInfo("process", {
           "session.id": input.sessionID,
           messageID: input.assistantMessage.id,

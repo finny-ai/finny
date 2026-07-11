@@ -17,13 +17,13 @@ import path from "path"
 import { pathToFileURL } from "url"
 import { Effect } from "effect"
 import { UI } from "../ui"
-import { effectCmd } from "../effect-cmd"
+import { CliError, effectCmd } from "../effect-cmd"
 import { EOL } from "os"
 import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
-import { SpanStatusCode, trace } from "@opentelemetry/api"
+import { recordRunCompletion } from "@/instrumentation"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -251,8 +251,7 @@ export const RunCommand = effectCmd({
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
       const thinking = args.interactive ? (args.thinking ?? true) : (args.thinking ?? false)
       const die = (message: string): never => {
-        UI.error(message)
-        process.exit(1)
+        throw new CliError({ message, exitCode: 1 })
       }
       const dieInteractive = (error: unknown): never => {
         if (error instanceof Error && error.message === INTERACTIVE_INPUT_ERROR) {
@@ -312,8 +311,7 @@ export const RunCommand = effectCmd({
           process.chdir(path.isAbsolute(args.dir) ? args.dir : path.join(root, args.dir))
           return process.cwd()
         } catch {
-          UI.error("Failed to change directory to " + args.dir)
-          process.exit(1)
+          die("Failed to change directory to " + args.dir)
         }
       })()
       const attachHeaders = args.attach
@@ -334,8 +332,7 @@ export const RunCommand = effectCmd({
         for (const filePath of list) {
           const resolvedPath = path.resolve(args.attach ? root : (directory ?? root), filePath)
           if (!(await Filesystem.exists(resolvedPath))) {
-            UI.error(`File not found: ${filePath}`)
-            process.exit(1)
+            die(`File not found: ${filePath}`)
           }
 
           const mime = (await Filesystem.isDir(resolvedPath)) ? "application/x-directory" : "text/plain"
@@ -354,13 +351,11 @@ export const RunCommand = effectCmd({
       const initialInput = resolveRunInput(rawMessage, piped)
 
       if (message.trim().length === 0 && !args.command && !args.interactive) {
-        UI.error("You must provide a message or a command")
-        process.exit(1)
+        die("You must provide a message or a command")
       }
 
       if (args.fork && !args.continue && !args.session) {
-        UI.error("--fork requires --continue or --session")
-        process.exit(1)
+        die("--fork requires --continue or --session")
       }
 
       const rules: PermissionV1.Ruleset = args.interactive
@@ -398,8 +393,7 @@ export const RunCommand = effectCmd({
             .catch(() => undefined)
 
           if (!current?.data) {
-            UI.error("Session not found")
-            process.exit(1)
+            return die("Session not found")
           }
 
           if (args.fork) {
@@ -524,8 +518,7 @@ export const RunCommand = effectCmd({
           return next
         }
 
-        UI.error("Failed to resolve remote directory")
-        process.exit(1)
+        return die("Failed to resolve remote directory")
       }
 
       async function localAgent() {
@@ -606,10 +599,10 @@ export const RunCommand = effectCmd({
       async function execute(sdk: OpencodeClient) {
         const sess = await session(sdk)
         if (!sess?.id) {
-          UI.error("Session not found")
-          process.exit(1)
+          return die("Session not found")
         }
         const sessionID = sess.id
+        if (process.env.FINNY_RUN_ID) process.env.FINNY_MAIN_SESSION_ID = sessionID
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -628,17 +621,7 @@ export const RunCommand = effectCmd({
 
         function completeHarnessRun() {
           if (process.env.FINNY_HARNESS_MODE !== "1") return
-          const attributes = {
-            "finny.run_id": process.env.FINNY_RUN_ID ?? "",
-            "git.commit": process.env.FINNY_GIT_COMMIT ?? "",
-            "openinference.project.name": process.env.PHOENIX_PROJECT ?? "",
-            "session.id": sessionID,
-            session_id: sessionID,
-            "finny.main_session_id": sessionID,
-          }
-          const span = trace.getTracer("finny-harness").startSpan("finny.run.completed", { attributes })
-          span.setStatus({ code: process.exitCode ? SpanStatusCode.ERROR : SpanStatusCode.OK })
-          span.end()
+          const { attributes } = recordRunCompletion(typeof process.exitCode === "number" ? process.exitCode : 0, sessionID)
           emit("harness_completion", { name: "finny.run.completed", attributes })
         }
 

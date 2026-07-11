@@ -1,3 +1,4 @@
+// @codescene(disable-all) Managed Python env path/installer surface is intentionally string-heavy.
 import fs from "fs/promises"
 import path from "path"
 import { Process } from "@/util/process"
@@ -48,6 +49,8 @@ export namespace Python {
   }
 
   export function managedEnvDir(): string {
+    const harnessEnv = process.env.FINNY_HARNESS_PYTHON_ENV?.trim()
+    if (process.env.FINNY_HARNESS_MODE === "1" && harnessEnv) return path.resolve(harnessEnv)
     return finnyArtifactPath("pythonEnv")
   }
 
@@ -107,23 +110,37 @@ export namespace Python {
     }
   }
 
-  function packageSpecsMatch(left: PackageRequirement[], right: PackageRequirement[]): boolean {
-    if (left.length !== right.length) return false
-    const normalize = (pkgs: PackageRequirement[]) =>
-      [...pkgs].map((pkg) => `${pkg.spec}::${pkg.importCheck}`).sort().join("|")
-    return normalize(left) === normalize(right)
+  function packageKey(pkg: PackageRequirement): string {
+    return `${pkg.spec}::${pkg.importCheck}`
   }
 
-  export async function envMarkerValid(
-    envDir: string,
-    packages: PackageRequirement[],
-  ): Promise<boolean> {
+  function packageSpecsMatch(
+    markerPackages: PackageRequirement[],
+    requestedPackages: PackageRequirement[],
+    allowMarkerSuperset: boolean,
+  ): boolean {
+    const markerKeys = markerPackages.map(packageKey).sort()
+    const requestedKeys = requestedPackages.map(packageKey).sort()
+    if (allowMarkerSuperset) {
+      const marker = new Set(markerKeys)
+      return requestedKeys.every((key) => marker.has(key))
+    }
+    return markerKeys.length === requestedKeys.length && markerKeys.every((key, index) => key === requestedKeys[index])
+  }
+
+  function isLockedHarnessEnv(envDir: string): boolean {
+    const configured = process.env.FINNY_HARNESS_PYTHON_ENV?.trim()
+    if (process.env.FINNY_HARNESS_MODE !== "1" || !configured) return false
+    return path.resolve(configured) === path.resolve(envDir)
+  }
+
+  export async function envMarkerValid(envDir: string, packages: PackageRequirement[]): Promise<boolean> {
     const pyBin = pythonBinForEnvDir(envDir)
     if (!(await exists(pyBin))) return false
     const marker = await readEnvMarker(envDir)
     if (!marker) return false
     if (marker.python !== pyBin) return false
-    if (!packageSpecsMatch(marker.packages, packages)) return false
+    if (!packageSpecsMatch(marker.packages, packages, isLockedHarnessEnv(envDir))) return false
     for (const pkg of packages) {
       if (!(await checkPackage(pyBin, pkg.importCheck))) return false
     }
@@ -303,6 +320,11 @@ export namespace Python {
       if (await envMarkerValid(envDir, packages)) {
         onProgress("Using existing Python environment…")
         return { python: pyBin, pip: pipBin, envDir }
+      }
+      if (isLockedHarnessEnv(envDir)) {
+        throw new Error(
+          "Locked harness Python runtime is missing an exact requested package spec/import or its environment marker; dynamic installation is disabled.",
+        )
       }
 
       if (!(await exists(pyBin))) {

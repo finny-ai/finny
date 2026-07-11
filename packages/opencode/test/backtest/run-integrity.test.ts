@@ -149,7 +149,15 @@ function identity(overrides: Record<string, unknown> = {}) {
 async function fixtureArtifacts(root: string) {
   const source = path.join(root, "source")
   await fs.mkdir(source)
-  for (const name of ["results.json", "data_extractor.manifest.json", "ohlcv.csv", "processed_ohlcv.csv", "orders.csv", "fills.csv", "rejections.csv"]) {
+  for (const name of [
+    "results.json",
+    "data_extractor.manifest.json",
+    "ohlcv.csv",
+    "processed_ohlcv.csv",
+    "orders.csv",
+    "fills.csv",
+    "rejections.csv",
+  ]) {
     await fs.writeFile(path.join(source, name), name.endsWith(".json") ? "{}\n" : "id\n")
   }
   return source
@@ -188,7 +196,6 @@ async function publishFixture(root: string, identityInput = identity(), recommen
 }
 
 describe("strict run integrity", () => {
-
   test("harness binding rejects a verifier-valid run substituted for another saved candidate or scenario", async () => {
     const root = await tempDir("finny-run-substitution-")
     const published = await publishFixture(
@@ -221,6 +228,7 @@ describe("strict run integrity", () => {
     expect(messages).toContain("asset symbol does not match")
     expect(messages).toContain("data manifest request does not match")
   })
+
   test("publishes atomically with a canonical identity and immutable recommendation", async () => {
     const root = await tempDir("finny-run-integrity-")
     const published = await publishFixture(root)
@@ -238,7 +246,10 @@ describe("strict run integrity", () => {
     const legacyRoot = await tempDir("finny-run-legacy-")
     const legacyDir = path.join(legacyRoot, "legacy-run")
     await fs.mkdir(legacyDir)
-    await fs.writeFile(path.join(legacyDir, "run.json"), JSON.stringify({ runId: "legacy-run", eligibilityStatus: "paper_eligible" }))
+    await fs.writeFile(
+      path.join(legacyDir, "run.json"),
+      JSON.stringify({ runId: "legacy-run", eligibilityStatus: "paper_eligible" }),
+    )
     const legacy = await verifyStrictRunDir(legacyDir)
     expect(legacy.ok).toBe(false)
     expect(legacy.errors.join(" ")).toContain("metadata")
@@ -246,31 +257,33 @@ describe("strict run integrity", () => {
     const missingRoot = await tempDir("finny-run-missing-")
     const missingSource = await fixtureArtifacts(missingRoot)
     const missingFinal = path.join(missingRoot, "runs", "run-1")
-    await expect(publishStrictRun({
-      finalDir: missingFinal,
-      runId: "run-1",
-      identity: identity() as any,
-      recommendation: { verdict: "weak", reasons: [] },
-      artifacts: [
-        { source: path.join(missingSource, "results.json"), path: "results.json" },
-        { source: path.join(missingSource, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
-        { source: path.join(missingSource, "ohlcv.csv"), path: "ohlcv.csv" },
-        { source: path.join(missingSource, "processed_ohlcv.csv"), path: "processed_ohlcv.csv" },
-        { source: path.join(missingSource, "fills.csv"), path: "fills.csv" },
-        { source: path.join(missingSource, "rejections.csv"), path: "rejections.csv" },
-      ],
-      jsonArtifacts: {
-        "validation.json": { valid: true },
-        "metrics.json": METRICS,
-        "data_quality.json": {},
-        "execution_assumptions.json": {},
-        "execution_profile.json": {},
-        "effective_config.json": {},
-        "engine_tree.json": ENGINE_TREE,
-        "asset_spec.json": {},
-      },
-      requiredArtifacts: [],
-    })).rejects.toThrow("orders.csv")
+    await expect(
+      publishStrictRun({
+        finalDir: missingFinal,
+        runId: "run-1",
+        identity: identity() as any,
+        recommendation: { verdict: "weak", reasons: [] },
+        artifacts: [
+          { source: path.join(missingSource, "results.json"), path: "results.json" },
+          { source: path.join(missingSource, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
+          { source: path.join(missingSource, "ohlcv.csv"), path: "ohlcv.csv" },
+          { source: path.join(missingSource, "processed_ohlcv.csv"), path: "processed_ohlcv.csv" },
+          { source: path.join(missingSource, "fills.csv"), path: "fills.csv" },
+          { source: path.join(missingSource, "rejections.csv"), path: "rejections.csv" },
+        ],
+        jsonArtifacts: {
+          "validation.json": { valid: true },
+          "metrics.json": METRICS,
+          "data_quality.json": {},
+          "execution_assumptions.json": {},
+          "execution_profile.json": {},
+          "effective_config.json": {},
+          "engine_tree.json": ENGINE_TREE,
+          "asset_spec.json": {},
+        },
+        requiredArtifacts: [],
+      }),
+    ).rejects.toThrow("orders.csv")
     await expect(fs.stat(missingFinal)).rejects.toThrow()
 
     const emptyRoot = await tempDir("finny-run-empty-hash-")
@@ -295,7 +308,7 @@ describe("strict run integrity", () => {
 
     const tamperedRoot = await tempDir("finny-run-tamper-")
     const published = await publishFixture(tamperedRoot)
-    await fs.writeFile(path.join(published.dir, "metrics.json"), "{\"totalReturn\":99}\n")
+    await fs.writeFile(path.join(published.dir, "metrics.json"), '{"totalReturn":99}\n')
     const tampered = await verifyStrictRunDir(published.dir)
     expect(tampered.ok).toBe(false)
     expect(tampered.errors.join(" ")).toContain("metrics.json")
@@ -381,19 +394,30 @@ async function preparePromotionFixture(home: string) {
       questionRequestId: "question-exact",
     }
     const first = await writePaperApproval({ dir, run: published.run, authority })
-    const second = await writePaperApproval({ dir, run: published.run, authority, approvedAt: "2026-07-10T00:00:00.000Z" })
+    const second = await writePaperApproval({
+      dir,
+      run: published.run,
+      authority,
+      approvedAt: "2026-07-10T00:00:00.000Z",
+    })
     expect(first.created).toBe(true)
     expect(second.created).toBe(false)
     expect(second.approval).toEqual(first.approval)
     expect(await fs.readFile(path.join(dir, "run.json"), "utf8")).toBe(runJsonBeforeApproval)
     expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper" })).ok).toBe(false)
-    expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok).toBe(true)
+    expect(
+      (await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok,
+    ).toBe(true)
     const approvalFile = path.join(dir, "approval.json")
     const approvalReceipt = await fs.readFile(approvalFile, "utf8")
     await fs.writeFile(approvalFile, approvalReceipt.replace(authority.challengeId, "handcrafted-challenge"))
-    expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok).toBe(false)
+    expect(
+      (await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok,
+    ).toBe(false)
     await fs.writeFile(approvalFile, approvalReceipt)
-    expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "live" })).errors.join(" ")).toContain("live_eligible")
+    expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "live" })).errors.join(" ")).toContain(
+      "live_eligible",
+    )
     await fs.writeFile(
       path.join(dir, "live-eligibility.json"),
       JSON.stringify({
@@ -409,8 +433,21 @@ async function preparePromotionFixture(home: string) {
     expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "live" })).ok).toBe(false)
 
     const wrongVersion = { ...algorithm, version: 2 }
-    expect((await verifyPromotion({ algorithm: wrongVersion, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok).toBe(false)
+    expect(
+      (
+        await verifyPromotion({
+          algorithm: wrongVersion,
+          runId: "run-exact",
+          mode: "paper",
+          controllerApproval: authority,
+        })
+      ).ok,
+    ).toBe(false)
     await fs.writeFile(path.join(versionRoot, "mission.md"), "changed mission")
-    expect((await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).errors.join(" ")).toContain("mission document changed")
+    expect(
+      (
+        await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })
+      ).errors.join(" "),
+    ).toContain("mission document changed")
   })
 })

@@ -20,6 +20,7 @@ import { PartID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -40,6 +41,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
+    parentSessionID: input.session.parentID,
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
@@ -134,12 +136,20 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
             return yield* Effect.promise(() => execute(args, opts))
           }).pipe(
+            withTelemetrySpan("finny.tool.execute", {
+              "tool.name": key,
+              "tool.call_id": opts.toolCallId,
+              ...sessionTelemetryAttributes(ctx.sessionID, ctx.parentSessionID),
+              "message.id": input.processor.message.id,
+              ...runTelemetryAttributes(),
+            }),
             Effect.withSpan("Tool.execute", {
               attributes: {
                 "tool.name": key,
                 "tool.call_id": opts.toolCallId,
-                "session.id": ctx.sessionID,
+                ...sessionTelemetryAttributes(ctx.sessionID, ctx.parentSessionID),
                 "message.id": input.processor.message.id,
+                ...runTelemetryAttributes(),
               },
             }),
           )

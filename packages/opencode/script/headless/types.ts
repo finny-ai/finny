@@ -91,6 +91,10 @@ export const RunManifestV1 = z.object({
     bunVersion: z.string(),
     pythonVersion: z.string().optional(),
     uvVersion: z.string().optional(),
+    pythonPackagesSha256: z.string().length(64).optional(),
+    pythonPackagesPreflightSha256: z.string().length(64).optional(),
+    pythonLockSha256: z.string().length(64).optional(),
+    pythonRuntimeManifestSha256: z.string().length(64).optional(),
   }),
   model: z.object({
     id: z.string(),

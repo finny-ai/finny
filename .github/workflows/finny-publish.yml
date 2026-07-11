@@ -7,8 +7,8 @@ run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
 # Publishes the compiled, signed CLI to npm as:
 #   wrapper:  @finny-ai/finny-pro
 #   platform: @finny-ai/finny-pro-<os>-<arch>[-baseline][-musl]
-# The wrapper ships only postinstall.mjs + bin/; the engine is NOT bundled
-# (see packages/opencode/script/build.ts strip plugin once Layer B lands).
+# The wrapper ships only postinstall.mjs + bin/; each platform binary embeds
+# the versioned engine_v2 tree that the packaged smoke verifies below.
 #
 # Required repo secrets:
 #   NPM_TOKEN                              npm automation token with publish rights to @finny-ai
@@ -76,6 +76,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-bun
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
       - name: Set version
         id: version
         run: |
@@ -87,11 +91,18 @@ jobs:
           fi
       - name: Install cross-platform native deps
         run: bun install --os="*" --cpu="*"
-      - name: Build CLI (all platforms, engine stripped)
+      - name: Build CLI (all platforms)
         run: ./packages/opencode/script/build.ts --skip-install
         env:
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_CHANNEL: latest
+      - name: Sync locked packaged-smoke runtime
+        run: uv sync --frozen --project packages/opencode/python --python 3.12
+      - name: Compare source and packaged Linux semantic hashes
+        run: >-
+          bun packages/opencode/script/verify-packaged-engine-smoke.ts
+          --python packages/opencode/python/.venv/bin/python
+          --binary packages/opencode/dist/finny-ai-finny-pro-linux-x64/bin/opencode
       - uses: actions/upload-artifact@v4
         with:
           name: finny-cli

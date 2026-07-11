@@ -75,6 +75,7 @@ import { Skill } from "../skill"
 import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { hasPerplexityApiKey } from "./perplexity-credentials"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -212,12 +213,20 @@ export const layer = Layer.effect(
                   },
                 }
               }).pipe(
+                withTelemetrySpan("finny.tool.execute", {
+                  "tool.name": id,
+                  ...sessionTelemetryAttributes(toolCtx.sessionID, toolCtx.parentSessionID),
+                  "message.id": toolCtx.messageID,
+                  ...(toolCtx.callID ? { "tool.call_id": toolCtx.callID } : {}),
+                  ...runTelemetryAttributes(),
+                }),
                 Effect.withSpan("Tool.execute", {
                   attributes: {
                     "tool.name": id,
-                    "session.id": toolCtx.sessionID,
+                    ...sessionTelemetryAttributes(toolCtx.sessionID, toolCtx.parentSessionID),
                     "message.id": toolCtx.messageID,
                     ...(toolCtx.callID ? { "tool.call_id": toolCtx.callID } : {}),
+                    ...runTelemetryAttributes(),
                   },
                 }),
               ),

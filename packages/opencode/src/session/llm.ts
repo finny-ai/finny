@@ -24,6 +24,7 @@ import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { acquireTelemetrySpan, runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
@@ -84,13 +85,20 @@ const live: Layer.Layer<
     const flags = yield* RuntimeFlags.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
+      yield* Effect.annotateCurrentSpan({
+        ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
+        ...runTelemetryAttributes(),
+        "finny.agent.name": input.agent.name,
+        "finny.agent.mode": input.agent.mode,
+      })
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
         modelID: input.model.id,
-        "session.id": input.sessionID,
+        ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
         small: (input.small ?? false).toString(),
         agent: input.agent.name,
         mode: input.agent.mode,
+        ...runTelemetryAttributes(),
       })
 
       const [language, cfg, item, info] = yield* Effect.all(
@@ -215,7 +223,12 @@ const live: Layer.Layer<
               if (prop !== "startSpan") return Reflect.get(target, prop, receiver)
               return (...args: Parameters<typeof target.startSpan>) => {
                 const span = target.startSpan(...args)
-                span.setAttribute("session.id", input.sessionID)
+                for (const [key, value] of Object.entries(
+                  sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
+                )) {
+                  span.setAttribute(key, value)
+                }
+                for (const [key, value] of Object.entries(runTelemetryAttributes())) span.setAttribute(key, value)
                 return span
               }
             },
@@ -379,6 +392,8 @@ const live: Layer.Layer<
             metadata: {
               userId: cfg.username ?? "unknown",
               sessionId: input.sessionID,
+              ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
+              ...runTelemetryAttributes(),
             },
           },
         }),
@@ -389,6 +404,12 @@ const live: Layer.Layer<
       Stream.scoped(
         Stream.unwrap(
           Effect.gen(function* () {
+            yield* acquireTelemetrySpan("finny.agent.run", {
+              ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
+              ...runTelemetryAttributes(),
+              "finny.agent.name": input.agent.name,
+              "finny.agent.mode": input.agent.mode,
+            })
             const ctrl = yield* Effect.acquireRelease(
               Effect.sync(() => new AbortController()),
               (ctrl) => Effect.sync(() => ctrl.abort()),

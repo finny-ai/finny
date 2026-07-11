@@ -8,6 +8,7 @@ import type { Permission } from "../permission"
 import type { SessionID, MessageID } from "../session/schema"
 import * as Truncate from "./truncate"
 import { Agent } from "@/agent/agent"
+import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 
 interface Metadata {
   [key: string]: any
@@ -44,6 +45,7 @@ export type ParameterType<Parameters extends ParameterSchema> =
 
 export type Context<M extends Metadata = Metadata> = {
   sessionID: SessionID
+  parentSessionID?: SessionID
   messageID: MessageID
   agent: string
   abort: AbortSignal
@@ -123,9 +125,10 @@ function wrap<Parameters extends ParameterSchema, Result extends Metadata>(
       toolInfo.execute = (args, ctx) => {
         const attrs = {
           "tool.name": id,
-          "session.id": ctx.sessionID,
+          ...sessionTelemetryAttributes(ctx.sessionID, ctx.parentSessionID),
           "message.id": ctx.messageID,
           ...(ctx.callID ? { "tool.call_id": ctx.callID } : {}),
+          ...runTelemetryAttributes(),
         }
         return Effect.gen(function* () {
           const decoded = yield* decode(args).pipe(
@@ -152,7 +155,11 @@ function wrap<Parameters extends ParameterSchema, Result extends Metadata>(
               ...(truncated.truncated && { outputPath: truncated.outputPath }),
             },
           }
-        }).pipe(Effect.orDie, Effect.withSpan("Tool.execute", { attributes: attrs }))
+        }).pipe(
+          Effect.orDie,
+          withTelemetrySpan("finny.tool.execute", attrs),
+          Effect.withSpan("Tool.execute", { attributes: attrs }),
+        )
       }
       return toolInfo
     })

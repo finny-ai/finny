@@ -58,6 +58,7 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
 import { LLMEvent } from "@opencode-ai/llm"
 import { createStructuredOutputTool, STRUCTURED_OUTPUT_SYSTEM_PROMPT } from "./structured-output-tool"
 import { decodeMessageInfo, decodeMessagePart, isOrphanedInterruptedTool } from "./prompt-decode"
@@ -1091,6 +1092,10 @@ export const layer = Layer.effect(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      yield* Effect.annotateCurrentSpan({
+        ...sessionTelemetryAttributes(input.sessionID, session.parentID),
+        ...runTelemetryAttributes(),
+      })
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
       yield* runSessionPreflight({

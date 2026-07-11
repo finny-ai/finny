@@ -18,6 +18,8 @@ export const SESSION_PREFLIGHT_PACKAGES: Python.PackageRequirement[] = [
 ]
 
 export function workspaceEnvDir(workspacePath: string): string {
+  const harnessEnv = process.env.FINNY_HARNESS_PYTHON_ENV?.trim()
+  if (process.env.FINNY_HARNESS_MODE === "1" && harnessEnv) return path.resolve(harnessEnv)
   return path.join(workspacePath, WORKSPACE_VENV)
 }
 

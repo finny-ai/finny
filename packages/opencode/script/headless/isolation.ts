@@ -9,8 +9,8 @@ const SECRET_ENV_ALLOWLIST = [
   "OPENROUTER_API_KEY",
   "GOOGLE_GENERATIVE_AI_API_KEY",
   "GEMINI_API_KEY",
-  "ALPACA_API_KEY",
-  "ALPACA_SECRET_KEY",
+  "ALPACA_API_KEY_ID",
+  "ALPACA_API_SECRET_KEY",
   "BINANCE_API_KEY",
   "BINANCE_SECRET_KEY",
   "FINNY_LICENSE_KEY",
@@ -74,6 +74,8 @@ export async function createIsolation(runId: string): Promise<HarnessIsolation> 
   const phoenixProject = `finny-headless-${runId}`
   const env: Record<string, string> = {
     HOME: home,
+    PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+    LANG: process.env.LANG ?? "C.UTF-8",
     OPENCODE_TEST_HOME: home,
     XDG_DATA_HOME: xdgData,
     XDG_STATE_HOME: xdgState,
@@ -128,4 +130,16 @@ export function configureCollector(env: Record<string, string>, raw?: string): v
   const normalized = url.toString().replace(/\/$/, "")
   env.PHOENIX_COLLECTOR_ENDPOINT = normalized
   env.OTEL_EXPORTER_OTLP_ENDPOINT = normalized
+}
+
+export function configureTelemetryIdentity(env: Record<string, string>): void {
+  const attributes = {
+    "finny.run_id": env.FINNY_RUN_ID,
+    "git.commit": env.FINNY_GIT_COMMIT,
+    "openinference.project.name": env.PHOENIX_PROJECT,
+  }
+  env.OTEL_RESOURCE_ATTRIBUTES = Object.entries(attributes)
+    .filter((entry): entry is [string, string] => Boolean(entry[1]))
+    .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
+    .join(",")
 }
