@@ -57,7 +57,7 @@
         "diff": "catalog:",
         "effect": "catalog:",
         "fuzzysort": "catalog:",
-        "ghostty-web": "github:anomalyco/ghostty-web#main",
+        "ghostty-web": "github:anomalyco/ghostty-web#20bd361",
         "luxon": "catalog:",
         "marked": "catalog:",
         "marked-shiki": "catalog:",

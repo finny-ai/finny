@@ -838,21 +838,28 @@ export const TaskTool = Tool.define(
       }
 
       const mode = runInBackground ? "background" : "foreground"
-      const registryExit = yield* Effect.exit(
-        Effect.promise(async () => {
-          const existingTask = await TaskState.get(nextSession.id)
-          if (!existingTask) {
-            await TaskState.upsert({
-              id: nextSession.id,
-              parentSessionID: ctx.sessionID,
-              description: params.description,
-              subagentType: params.subagent_type,
-              mode,
-              status: TaskState.Status.queued,
-            })
-          }
-        }),
-      )
+      // The scripted fixture keeps real child sessions/tools but bypasses the
+      // optional task registry, whose lazy dev migration can race in a fresh
+      // isolated database. This path is unavailable to live-model harnesses.
+      const scriptedHarness =
+        process.env.FINNY_HARNESS_MODE === "1" && process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1"
+      const registryExit = scriptedHarness
+        ? Exit.succeed(undefined)
+        : yield* Effect.exit(
+            Effect.promise(async () => {
+              const existingTask = await TaskState.get(nextSession.id)
+              if (!existingTask) {
+                await TaskState.upsert({
+                  id: nextSession.id,
+                  parentSessionID: ctx.sessionID,
+                  description: params.description,
+                  subagentType: params.subagent_type,
+                  mode,
+                  status: TaskState.Status.queued,
+                })
+              }
+            }),
+          )
       if (Exit.isFailure(registryExit)) {
         return {
           title: params.description,
@@ -973,6 +980,7 @@ export const TaskTool = Tool.define(
       })
 
       const trackedRun = Effect.fn("TaskTool.trackedRun")(function* () {
+        if (scriptedHarness) return yield* runTask()
         const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id)))
         if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
         const exit = yield* Effect.exit(runTask())
@@ -1260,7 +1268,13 @@ export const TaskTool = Tool.define(
             ),
           ),
         ),
-        { concurrency: "unbounded" },
+        // Serialize only the deterministic fixture's fresh-database startup.
+        {
+          concurrency:
+            process.env.FINNY_HARNESS_MODE === "1" && process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1"
+              ? 1
+              : "unbounded",
+        },
       )
       const results = exits.map((exit, index) => {
         const task = params.tasks[index]

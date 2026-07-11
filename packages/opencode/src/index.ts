@@ -1,4 +1,4 @@
-import "./instrumentation"
+import { flushWithTimeout, otelProvider } from "./instrumentation"
 import yargs from "yargs"
 import { hideBin } from "yargs/helpers"
 import { RunCommand } from "./cli/cmd/run"
@@ -157,5 +157,6 @@ try {
   // Most notably, some docker-container-based MCP servers don't handle such signals unless
   // run using `docker run --init`.
   // Explicitly exit to avoid any hanging subprocesses.
-  process.exit()
+  if (otelProvider) await flushWithTimeout(otelProvider, 5_000).catch(() => {})
+  process.exit(process.exitCode ?? 0)
 }

@@ -453,7 +453,7 @@ with open("_data_provider.txt", "w") as f:
           rows?: number
         }
       }
-    | { mode: "provider_fetch"; provider?: string }
+    | { mode: "provider_fetch"; provider?: string; fixture_sha256?: string }
 
   interface PreparedBacktestData {
     providerUsed: string
@@ -2442,17 +2442,34 @@ if __name__ == "__main__":
       const assetClass = String(config.asset_class ?? config.assetClass ?? assetSpec.assetClass)
       const providerInterval = INTERVAL_MAP[interval] ?? "1h"
       const csvPath = "ohlcv.csv"
-      const effectiveSeed = seed ?? hashSeed(
-        algorithm.algorithmId,
-        String((algorithm as any).version ?? ""),
-        duration,
-        interval,
-        start,
-        end,
-        capital,
-        stableStringify(configOverrides ?? {}),
-        stableStringify(config.execution ?? {}),
-      )
+
+      // Harness mode fixes the seed and may replace the provider-fetch branch
+      // with one rehashed local CSV. It never overrides a verified artifact,
+      // and both gates are required so it cannot become a production fallback.
+      const fixtureCsv =
+        process.env.FINNY_HARNESS_MODE === "1" && process.env.FINNY_HARNESS_FIXTURE_MARKET_DATA === "1"
+          ? process.env.FINNY_HARNESS_MARKET_DATA_CSV
+          : undefined
+      if (process.env.FINNY_HARNESS_FIXTURE_MARKET_DATA === "1" && process.env.FINNY_HARNESS_MODE !== "1") {
+        return {
+          ok: false,
+          error: "Harness fixture market data was configured outside FINNY_HARNESS_MODE.",
+          kind: "internal",
+        }
+      }
+      const effectiveSeed = fixtureCsv
+        ? 424242
+        : seed ?? hashSeed(
+            algorithm.algorithmId,
+            String((algorithm as any).version ?? ""),
+            duration,
+            interval,
+            start,
+            end,
+            capital,
+            stableStringify(configOverrides ?? {}),
+            stableStringify(config.execution ?? {}),
+          )
 
       // Bind and copy verified bytes before any Python environment work. A
       // stale/tampered artifact fails without installing packages or spawning
@@ -2494,6 +2511,27 @@ if __name__ == "__main__":
             dataSource,
             tmpDir,
             fetchProvider: async () => {
+              if (fixtureCsv) {
+                const bytes = await fs.readFile(fixtureCsv)
+                const actual = crypto.createHash("sha256").update(bytes).digest("hex")
+                const expected = process.env.FINNY_HARNESS_MARKET_DATA_SHA256?.toLowerCase()
+                if (!expected || actual !== expected) {
+                  throw new BacktestDataPreparationError(
+                    "Harness fixture market-data hash mismatch.",
+                    "data_evidence",
+                  )
+                }
+                await fs.writeFile(path.join(tmpDir!, csvPath), bytes)
+                await fs.writeFile(path.join(tmpDir!, "_data_provider.txt"), "finny-harness-fixture\n")
+                return {
+                  providerUsed: "finny-harness-fixture",
+                  provenance: {
+                    mode: "provider_fetch",
+                    provider: "finny-harness-fixture",
+                    fixture_sha256: actual,
+                  },
+                }
+              }
               // Provider fetching is deliberately confined to this branch. A
               // verified_artifact run never writes or executes _fetch_data.py.
               const fetchScript = makeFetchDataScript(symbol, assetClass, start, end, providerInterval, csvPath)

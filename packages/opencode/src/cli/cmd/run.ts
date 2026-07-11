@@ -23,6 +23,7 @@ import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import { SpanStatusCode, trace } from "@opentelemetry/api"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -625,6 +626,22 @@ export const RunCommand = effectCmd({
           return false
         }
 
+        function completeHarnessRun() {
+          if (process.env.FINNY_HARNESS_MODE !== "1") return
+          const attributes = {
+            "finny.run_id": process.env.FINNY_RUN_ID ?? "",
+            "git.commit": process.env.FINNY_GIT_COMMIT ?? "",
+            "openinference.project.name": process.env.PHOENIX_PROJECT ?? "",
+            "session.id": sessionID,
+            session_id: sessionID,
+            "finny.main_session_id": sessionID,
+          }
+          const span = trace.getTracer("finny-harness").startSpan("finny.run.completed", { attributes })
+          span.setStatus({ code: process.exitCode ? SpanStatusCode.ERROR : SpanStatusCode.OK })
+          span.end()
+          emit("harness_completion", { name: "finny.run.completed", attributes })
+        }
+
         // Consume one subscribed event stream for the active session and mirror it
         // to stdout/UI. `client` is passed explicitly because attach mode may
         // rebind the SDK to the session's directory after the subscription is
@@ -784,9 +801,11 @@ export const RunCommand = effectCmd({
             if (result.error) {
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
+              completeHarnessRun()
               return
             }
             await finish()
+            completeHarnessRun()
             return
           }
 
@@ -801,9 +820,11 @@ export const RunCommand = effectCmd({
           if (result.error) {
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
+            completeHarnessRun()
             return
           }
           await finish()
+          completeHarnessRun()
           return
         }
 

@@ -15,6 +15,7 @@ import {
   verifyStrictRunDir,
   writePaperApproval,
 } from "../../src/backtest/run-integrity"
+import { bindObservedStrictRuns, inspectStrategyResults } from "../../script/headless/run-artifacts"
 
 const cleanups: string[] = []
 const originalFinnyHome = process.env.FINNY_HOME
@@ -187,6 +188,39 @@ async function publishFixture(root: string, identityInput = identity(), recommen
 }
 
 describe("strict run integrity", () => {
+
+  test("harness binding rejects a verifier-valid run substituted for another saved candidate or scenario", async () => {
+    const root = await tempDir("finny-run-substitution-")
+    const published = await publishFixture(
+      root,
+      identity({
+        algorithmId: "substituted-algorithm",
+        dateWindow: { start: "2026-02-01", end: "2026-06-01", interval: "1h" },
+      }),
+    )
+    const inspected = await inspectStrategyResults(root)
+    expect(inspected.issues).toEqual([])
+    expect(inspected.runs).toHaveLength(1)
+
+    const issues = bindObservedStrictRuns({
+      finnyHome: root,
+      savedCandidates: [{ name: "spy-sma-crossover", algorithmId: "expected-algorithm", version: 1 }],
+      backtests: [{ algorithmName: "spy-sma-crossover", runId: "run-1", artifactDir: published.dir }],
+      runs: inspected.runs,
+      scenario: {
+        symbols: ["SPY"],
+        assetClass: "equity",
+        interval: "5m",
+        startDate: "2026-01-09",
+        endDate: "2026-07-08",
+      },
+    })
+    const messages = issues.map((issue) => issue.message).join("\n")
+    expect(messages).toContain("algorithmId does not match")
+    expect(messages).toContain("date window does not match")
+    expect(messages).toContain("asset symbol does not match")
+    expect(messages).toContain("data manifest request does not match")
+  })
   test("publishes atomically with a canonical identity and immutable recommendation", async () => {
     const root = await tempDir("finny-run-integrity-")
     const published = await publishFixture(root)
