@@ -311,12 +311,12 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
       },
     }
   }
-  if (!calls.includes("task")) {
+  if (!calls.includes("task_batch_run") && !calls.includes("task")) {
     const dataPrompt =
       "Data request context: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture."
     return {
       type: "tool",
-      name: "task",
+      name: "task_batch_run",
       arguments: {
         tasks: [
           { description: "Extract deterministic SPY evidence", prompt: dataPrompt, subagent_type: "data_extractor" },

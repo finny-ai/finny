@@ -70,13 +70,21 @@ export interface TaskPromptOps {
   prompt(input: SessionPrompt.PromptInput): Effect.Effect<SessionV1.WithParts>
 }
 
-const id = "task"
-const BACKGROUND_DESCRIPTION = [
-  "Background mode launches a subagent asynchronously and returns immediately.",
-  "Finny launches single subagent tasks in the background by default.",
-  "Use foreground only for independent batch work that must return all results before continuing.",
+const permission = "task"
+const TASK_START_DESCRIPTION = [
+  DESCRIPTION,
+  "Launch exactly one optional subagent asynchronously and return immediately.",
   "You will be notified automatically when it finishes.",
-].join(" ")
+].join("\n\n")
+const TASK_RUN_DESCRIPTION = [
+  DESCRIPTION,
+  "Run exactly one mandatory subagent in the foreground and return its result before continuing.",
+].join("\n\n")
+const TASK_BATCH_RUN_DESCRIPTION = [
+  DESCRIPTION,
+  "Run two to four mandatory, independent subagents in parallel and return every result before continuing.",
+  "Each task must use a distinct subagent type. Results include BLOCKED results.",
+].join("\n\n")
 const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
@@ -267,7 +275,11 @@ function workspaceMismatchIssues(workspace: string | null, facts: RequestFacts) 
   const issues: string[] = []
   const requestedSymbol = normalizeSymbol(facts.requested_symbol)
   const workspaceSymbolHint = workspaceSymbolHintFromSlug(workspace)
-  const workspaceFacts = parseRequestFacts(workspace)
+  // Only the human-authored base name may encode interval/symbol hints.
+  // Timestamp/hash suffixes must not be parsed as request facts — e.g. a slug
+  // ending in `6292a27d` would otherwise invent interval `27d` and false-block.
+  const workspaceBase = workspace.split(".")[0] ?? workspace
+  const workspaceFacts = parseRequestFacts(workspaceBase)
   const requestedInterval = normalizeInterval(facts.requested_interval)
   const workspaceInterval = normalizeInterval(workspaceFacts.requested_interval)
 
@@ -610,46 +622,51 @@ const BaseParameterFields = {
     description:
       "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
   }),
-  command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
 
-const SingleParameters = Schema.Struct({
+export const TaskStartParameters = Schema.Struct({
   ...BaseParameterFields,
-  background: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
-  }),
 })
+
+export const TaskRunParameters = Schema.Struct({ ...BaseParameterFields })
 
 const BatchTaskParameters = Schema.Struct({
   description: BaseParameterFields.description,
   prompt: BaseParameterFields.prompt,
   subagent_type: BaseParameterFields.subagent_type,
-  command: BaseParameterFields.command,
 })
 
-const BatchParameters = Schema.Struct({
-  tasks: Schema.Array(BatchTaskParameters).annotate({
+export const TaskBatchRunParameters = Schema.Struct({
+  tasks: Schema.Array(BatchTaskParameters).check(Schema.isLengthBetween(2, 4)).annotate({
     description:
-      "Two or three independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
+      "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
   }),
 })
 
-export const Parameters = Schema.Union([SingleParameters, BatchParameters])
+type TaskStartParameters = Schema.Schema.Type<typeof TaskStartParameters>
+type TaskRunParameters = Schema.Schema.Type<typeof TaskRunParameters>
+type SingleTaskParameters = TaskStartParameters | TaskRunParameters
+type TaskBatchRunParameters = Schema.Schema.Type<typeof TaskBatchRunParameters>
 
-type TaskParameters = Schema.Schema.Type<typeof Parameters>
-type SingleTaskParameters = Exclude<TaskParameters, { tasks: ReadonlyArray<unknown> }>
-
-function taskJsonSchema(): JSONSchema7 {
-  const single = ToolJsonSchema.fromSchema(SingleParameters)
-  const batch = ToolJsonSchema.fromSchema(BatchParameters)
+function closedJsonSchema(schema: Schema.Top, nestedArrayProperty?: string): JSONSchema7 {
+  const json = ToolJsonSchema.fromSchema(schema)
+  const property = nestedArrayProperty ? json.properties?.[nestedArrayProperty] : undefined
+  const array = property && typeof property === "object" && "items" in property ? property : undefined
+  const items = array?.items
   return {
-    type: "object",
-    properties: {
-      ...(single.properties ?? {}),
-      ...(batch.properties ?? {}),
-    },
-    anyOf: [{ required: ["description", "prompt", "subagent_type"] }, { required: ["tasks"] }],
+    ...json,
+    additionalProperties: false,
+    ...(array && items && !Array.isArray(items) && typeof items === "object"
+      ? {
+          properties: {
+            ...json.properties,
+            [nestedArrayProperty!]: {
+              ...array,
+              items: { ...items, additionalProperties: false },
+            },
+          },
+        }
+      : {}),
   }
 }
 
@@ -668,12 +685,6 @@ type TaskMetadata = {
     description: string
     state: "running" | "completed" | "error"
   }>
-}
-
-function isBatchParameters(
-  params: TaskParameters,
-): params is Extract<TaskParameters, { tasks: ReadonlyArray<unknown> }> {
-  return "tasks" in params
 }
 
 function renderOutput(input: {
@@ -733,9 +744,7 @@ export function taskRegistryErrorText(error: unknown) {
   ].join(" ")
 }
 
-export const TaskTool = Tool.define(
-  id,
-  Effect.gen(function* () {
+const taskExecutor = Effect.gen(function* () {
     const agent = yield* Agent.Service
     const background = yield* BackgroundJob.Service
     const config = yield* Config.Service
@@ -748,14 +757,14 @@ export const TaskTool = Tool.define(
     const runSingle = Effect.fn("TaskTool.executeSingle")(function* (
       params: SingleTaskParameters,
       ctx: Tool.Context,
-      options?: { forceForeground?: boolean },
+      options: { mode: "background" | "foreground" },
     ) {
       const cfg = yield* config.get()
-      const runInBackground = options?.forceForeground === true ? false : ctx.agent === "finny" || params.background === true
+      const runInBackground = options.mode === "background"
 
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
-          permission: id,
+          permission,
           patterns: [params.subagent_type],
           always: ["*"],
           metadata: {
@@ -782,9 +791,9 @@ export const TaskTool = Tool.define(
         ...(next.permission.some((rule) => rule.permission === "todowrite")
           ? []
           : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-        ...(next.permission.some((rule) => rule.permission === id)
+        ...(next.permission.some((rule) => rule.permission === permission)
           ? []
-          : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
+          : [{ permission, pattern: "*" as const, action: "deny" as const }]),
         ...(cfg.experimental?.primary_tools?.map((permission) => ({
           permission,
           pattern: "*" as const,
@@ -820,8 +829,8 @@ export const TaskTool = Tool.define(
           ? childSymbolWithinRequestUniverse(promptFacts.requested_symbol, parentFacts)
           : undefined
         const parentConflict = finnySubagentType(params.subagent_type) && parentFacts.requested_symbols?.length
-          ? promptConflictWithParentRequest(parentFacts, promptFacts)
-          : undefined
+            ? promptConflictWithParentRequest(parentFacts, promptFacts)
+            : undefined
         if (parentWorkspace && parentConflict) {
           return { slug: parentWorkspace, blocked: parentConflict }
         }
@@ -1207,7 +1216,7 @@ export const TaskTool = Tool.define(
 
       const info = yield* background.start({
         id: nextSession.id,
-        type: id,
+        type: permission,
         title: params.description,
         metadata,
         onPromote: Effect.all(
@@ -1289,12 +1298,7 @@ export const TaskTool = Tool.define(
       )
     })
 
-    const run = Effect.fn("TaskTool.execute")(function* (params: TaskParameters, ctx: Tool.Context) {
-      if (!isBatchParameters(params)) return yield* runSingle(params, ctx)
-
-      if (params.tasks.length < 2 || params.tasks.length > 4) {
-        return yield* Effect.fail(new Error("Task batch mode requires two to four foreground tasks"))
-      }
+    const runBatch = Effect.fn("TaskTool.executeBatch")(function* (params: TaskBatchRunParameters, ctx: Tool.Context) {
       const subagentTypes = params.tasks.map((task) => task.subagent_type)
       if (new Set(subagentTypes).size !== subagentTypes.length) {
         return yield* Effect.fail(new Error("Task batch mode requires distinct subagent types"))
@@ -1329,8 +1333,8 @@ export const TaskTool = Tool.define(
         subagentTypes,
         subagents,
       })
-      const updateRunningBatch = (task: Extract<TaskParameters, { tasks: ReadonlyArray<unknown> }>["tasks"][number]) =>
-        (val: { title?: string; metadata?: TaskMetadata }) =>
+      const updateRunningBatch =
+        (task: TaskBatchRunParameters["tasks"][number]) => (val: { title?: string; metadata?: TaskMetadata }) =>
           Effect.gen(function* () {
             const sessionId = val.metadata?.sessionId
             if (!sessionId) return
@@ -1355,7 +1359,7 @@ export const TaskTool = Tool.define(
                 ...ctx,
                 metadata: updateRunningBatch(task),
               },
-              { forceForeground: true },
+              { mode: "foreground" },
             ),
           ),
         ),
@@ -1411,11 +1415,52 @@ export const TaskTool = Tool.define(
       }
     })
 
+    return { runSingle, runBatch }
+})
+
+export const TaskStartTool = Tool.define(
+  "task_start",
+  Effect.gen(function* () {
+    const executor = yield* taskExecutor
     return {
-      description: [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n"),
-      parameters: Parameters,
-      jsonSchema: taskJsonSchema(),
-      execute: (params: TaskParameters, ctx: Tool.Context) => run(params, ctx).pipe(Effect.orDie),
+      description: TASK_START_DESCRIPTION,
+      parameters: TaskStartParameters,
+      jsonSchema: closedJsonSchema(TaskStartParameters),
+      parseOptions: { onExcessProperty: "error" },
+      execute: (params: TaskStartParameters, ctx: Tool.Context) =>
+        executor.runSingle(params, ctx, { mode: "background" }).pipe(Effect.orDie),
     }
   }),
 )
+
+export const TaskRunTool = Tool.define(
+  "task_run",
+  Effect.gen(function* () {
+    const executor = yield* taskExecutor
+    return {
+      description: TASK_RUN_DESCRIPTION,
+      parameters: TaskRunParameters,
+      jsonSchema: closedJsonSchema(TaskRunParameters),
+      parseOptions: { onExcessProperty: "error" },
+      execute: (params: TaskRunParameters, ctx: Tool.Context) =>
+        executor.runSingle(params, ctx, { mode: "foreground" }).pipe(Effect.orDie),
+    }
+  }),
+)
+
+export const TaskBatchRunTool = Tool.define(
+  "task_batch_run",
+  Effect.gen(function* () {
+    const executor = yield* taskExecutor
+    return {
+      description: TASK_BATCH_RUN_DESCRIPTION,
+      parameters: TaskBatchRunParameters,
+      jsonSchema: closedJsonSchema(TaskBatchRunParameters, "tasks"),
+      parseOptions: { onExcessProperty: "error" },
+      execute: (params: TaskBatchRunParameters, ctx: Tool.Context) => executor.runBatch(params, ctx).pipe(Effect.orDie),
+    }
+  }),
+)
+
+/** Internal subtask execution is synchronous and uses the same contract as task_run. */
+export const TaskTool = TaskRunTool

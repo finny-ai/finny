@@ -1,4 +1,5 @@
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { Permission } from "@/permission"
 // CLI entry point for `finny run`.
 //
 // Handles three modes:
@@ -667,7 +668,7 @@ export const RunCommand = effectCmd({
 
               if (
                 part.type === "tool" &&
-                part.tool === "task" &&
+                Permission.isTaskTool(part.tool) &&
                 part.state.status === "running" &&
                 args.format !== "json"
               ) {

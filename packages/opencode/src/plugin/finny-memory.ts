@@ -228,7 +228,14 @@ export async function FinnyMemoryPlugin(input: PluginInput): Promise<Hooks> {
      * the tool output the model sees next, so the model authors the TODO.
      */
     "tool.execute.after": async (event, output) => {
-      if (event.tool !== "task") return
+      if (
+        event.tool !== "task" &&
+        event.tool !== "task_start" &&
+        event.tool !== "task_run" &&
+        event.tool !== "task_batch_run"
+      ) {
+        return
+      }
       const subType = typeof event.args?.subagent_type === "string" ? event.args.subagent_type : undefined
       if (!subType) return
       const kind = subagentKind(subType)

@@ -20,7 +20,7 @@ import { Parameters as Question } from "../../src/tool/question"
 import { Parameters as Read } from "../../src/tool/read"
 import { Parameters as Shell } from "../../src/tool/shell"
 import { Parameters as Skill } from "../../src/tool/skill"
-import { Parameters as Task } from "../../src/tool/task"
+import { TaskBatchRunParameters, TaskRunParameters, TaskStartParameters } from "../../src/tool/task"
 import { Parameters as Todo } from "../../src/tool/todo"
 import { Parameters as WebFetch } from "../../src/tool/webfetch"
 import { Parameters as WebSearch } from "../../src/tool/websearch"
@@ -31,6 +31,9 @@ const parse = <S extends Schema.Decoder<unknown>>(schema: S, input: unknown): S[
 
 const accepts = (schema: Schema.Decoder<unknown>, input: unknown): boolean =>
   Result.isSuccess(Schema.decodeUnknownResult(schema)(input))
+
+const acceptsStrict = (schema: Schema.Decoder<unknown>, input: unknown): boolean =>
+  Result.isSuccess(Schema.decodeUnknownResult(schema, { onExcessProperty: "error" })(input))
 
 const toJsonSchema = ToolJsonSchema.fromSchema
 
@@ -47,7 +50,9 @@ describe("tool parameters", () => {
     test("question", () => expect(toJsonSchema(Question)).toMatchSnapshot())
     test("read", () => expect(toJsonSchema(Read)).toMatchSnapshot())
     test("skill", () => expect(toJsonSchema(Skill)).toMatchSnapshot())
-    test("task", () => expect(toJsonSchema(Task)).toMatchSnapshot())
+    test("task_start", () => expect(toJsonSchema(TaskStartParameters)).toMatchSnapshot())
+    test("task_run", () => expect(toJsonSchema(TaskRunParameters)).toMatchSnapshot())
+    test("task_batch_run", () => expect(toJsonSchema(TaskBatchRunParameters)).toMatchSnapshot())
     test("todo", () => expect(toJsonSchema(Todo)).toMatchSnapshot())
     test("webfetch", () => expect(toJsonSchema(WebFetch)).toMatchSnapshot())
     test("websearch", () => expect(toJsonSchema(WebSearch)).toMatchSnapshot())
@@ -237,26 +242,55 @@ describe("tool parameters", () => {
     })
   })
 
-  describe("task", () => {
-    test("accepts description + prompt + subagent_type", () => {
-      const parsed = parse(Task, { description: "d", prompt: "p", subagent_type: "general" })
+  describe("task modes", () => {
+    test("task_run accepts only one foreground task", () => {
+      const parsed = parse(TaskRunParameters, { description: "d", prompt: "p", subagent_type: "general" })
       expect("subagent_type" in parsed && parsed.subagent_type).toBe("general")
+      expect(
+        acceptsStrict(TaskRunParameters, { description: "d", prompt: "p", subagent_type: "general", tasks: [] }),
+      ).toBe(false)
     })
-    test("accepts optional background flag", () => {
-      const parsed = parse(Task, { description: "d", prompt: "p", subagent_type: "general", background: true })
-      expect("background" in parsed && parsed.background).toBe(true)
+    test("task_start accepts only one asynchronous task", () => {
+      const parsed = parse(TaskStartParameters, { description: "d", prompt: "p", subagent_type: "general" })
+      expect(parsed.subagent_type).toBe("general")
+      expect(
+        acceptsStrict(TaskStartParameters, { description: "d", prompt: "p", subagent_type: "general", tasks: [] }),
+      ).toBe(false)
     })
-    test("accepts a foreground task batch", () => {
-      const parsed = parse(Task, {
+    test("task_batch_run accepts two to four tasks", () => {
+      const parsed = parse(TaskBatchRunParameters, {
         tasks: [
           { description: "data", prompt: "extract", subagent_type: "data_extractor" },
           { description: "news", prompt: "research", subagent_type: "news_agent" },
         ],
       })
-      expect("tasks" in parsed && parsed.tasks.length).toBe(2)
+      expect(parsed.tasks.length).toBe(2)
+      expect(
+        acceptsStrict(TaskBatchRunParameters, {
+          tasks: [
+            { description: "data", prompt: "extract", subagent_type: "data_extractor" },
+            { description: "news", prompt: "research", subagent_type: "news_agent" },
+          ],
+          prompt: "not allowed",
+        }),
+      ).toBe(false)
+      expect(
+        accepts(TaskBatchRunParameters, {
+          tasks: [{ description: "data", prompt: "extract", subagent_type: "data_extractor" }],
+        }),
+      ).toBe(false)
+      expect(
+        accepts(TaskBatchRunParameters, {
+          tasks: Array.from({ length: 5 }, (_, i) => ({
+            description: `task ${i}`,
+            prompt: `prompt ${i}`,
+            subagent_type: `agent_${i}`,
+          })),
+        }),
+      ).toBe(false)
     })
     test("rejects missing prompt", () => {
-      expect(accepts(Task, { description: "d", subagent_type: "general" })).toBe(false)
+      expect(accepts(TaskRunParameters, { description: "d", subagent_type: "general" })).toBe(false)
     })
   })
 

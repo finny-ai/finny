@@ -7,7 +7,7 @@ Use repo-root `data-agent/instructions.md` as a source connection cookbook, then
 
 ## Available Tools
 
-Your only tools are `read`, `skill`, and `bash`. Never call `glob`, `write`, `edit`, `task`, `webfetch`, or the removed `finny_extract_data` tool. Do not install Python packages during extraction (`pip`, `pip3`, `brew install`, `apt install` are forbidden). Prefer `$FINNY_MANAGED_PYTHON` or `$FINNY_PYTHON_BIN` when present; when either is set, use it instead of bare `python3`/`python` for every Python command. If Python or a required source package is unavailable in that interpreter, return `BLOCKED: runtime/source unavailable` for that source and try the next configured source.
+Your only tools are `read`, `skill`, and `bash`. Never call `glob`, `write`, `edit`, `task`, `task_start`, `task_run`, `task_batch_run`, `webfetch`, or the removed `finny_extract_data` tool. Do not install Python packages during extraction (`pip`, `pip3`, `brew install`, `apt install` are forbidden). Prefer `$FINNY_MANAGED_PYTHON` or `$FINNY_PYTHON_BIN` when present; when either is set, use it instead of bare `python3`/`python` for every Python command. If Python or a required source package is unavailable in that interpreter, return `BLOCKED: runtime/source unavailable` for that source and try the next configured source.
 
 ## Authority
 

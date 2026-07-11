@@ -19,6 +19,9 @@ import {
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalTaskText,
   taskRegistryErrorText,
+  TaskBatchRunTool,
+  TaskRunTool,
+  TaskStartTool,
   TaskTool,
   type TaskPromptOps,
 } from "../../src/tool/task"
@@ -284,7 +287,7 @@ describe("tool.task", () => {
   it.instance("records foreground subagent lifecycle in TaskState", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -331,6 +334,51 @@ describe("tool.task", () => {
     expect(text).toContain("FOREIGN KEY constraint failed")
   })
 
+  it.instance("rejects cross-mode and one-item batch inputs before launching a subagent", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      let launched = false
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps({ onPrompt: () => (launched = true) }) },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+      const run = yield* TaskRunTool
+      const runDef = yield* run.init()
+      const batch = yield* TaskBatchRunTool
+      const batchDef = yield* batch.init()
+
+      const crossMode = yield* Effect.exit(
+        runDef.execute(
+          {
+            description: "Inspect data",
+            prompt: "Inspect the data",
+            subagent_type: "data_extractor",
+            tasks: [],
+          } as never,
+          context,
+        ),
+      )
+      const oneItemBatch = yield* Effect.exit(
+        batchDef.execute(
+          {
+            tasks: [{ description: "Inspect data", prompt: "Inspect the data", subagent_type: "data_extractor" }],
+          } as never,
+          context,
+        ),
+      )
+
+      expect(Exit.isFailure(crossMode)).toBe(true)
+      expect(Exit.isFailure(oneItemBatch)).toBe(true)
+      expect(launched).toBe(false)
+    }),
+  )
+
   it.live("injects authoritative workspace context for data_extractor tasks", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -341,7 +389,7 @@ describe("tool.task", () => {
           const slug = "spy-5m-strategy.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -407,7 +455,7 @@ describe("tool.task", () => {
           const { chat, assistant } = yield* seed()
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, "es-1d-momentum.1.1.00.00"))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -468,7 +516,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let prompted = false
           const promptOps = stubOps({ onPrompt: () => (prompted = true) })
@@ -522,7 +570,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -582,7 +630,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -641,7 +689,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let prompted = false
           const promptOps = stubOps({ onPrompt: () => (prompted = true) })
@@ -701,7 +749,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const taskTool = yield* TaskTool
+          const taskTool = yield* TaskRunTool
           const taskDef = yield* taskTool.init()
 
           const blocked = yield* taskDef.execute(
@@ -800,7 +848,7 @@ describe("tool.task", () => {
           yesterday.setUTCDate(yesterday.getUTCDate() - 1)
           const yesterdayIso = yesterday.toISOString().slice(0, 10)
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -893,7 +941,7 @@ describe("tool.task", () => {
             ),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let prompted = false
           const promptOps = stubOps({ onPrompt: () => (prompted = true) })
@@ -945,7 +993,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let prompted = false
           const promptOps = stubOps({ onPrompt: () => (prompted = true) })
@@ -998,7 +1046,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let prompted = false
           const promptOps = stubOps({ onPrompt: () => (prompted = true) })
@@ -1034,6 +1082,60 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("does not treat random workspace hash suffixes as interval facts", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          // Hash ends in `27d` which parseRequestFacts would invent as interval 27d
+          // if the full slug (not just the base name) is scanned.
+          const slug = "spy-strategy.11.7.01.04.6292a27d"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Extract SPY 5m equity data from 2026-01-09 to 2026-07-08.",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "Extract deterministic SPY evidence",
+              prompt:
+                "Data request context: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("workspace_interval=27d")
+          expect(result.output).not.toContain("BLOCKED: data request context mismatch")
+          expect(prompted).toBe(true)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("passes requested algorithm name separately from workspace slug", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -1044,7 +1146,7 @@ describe("tool.task", () => {
           const slug = "spy-5m-strategy.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1098,7 +1200,7 @@ describe("tool.task", () => {
             }),
           )
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1157,7 +1259,7 @@ describe("tool.task", () => {
           )
           const child = yield* sessions.create({ parentID: chat.id, title: "Resume data extractor" })
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1212,7 +1314,7 @@ describe("tool.task", () => {
           yield* Effect.promise(() => fs.mkdir(path.dirname(csv), { recursive: true }))
           yield* Effect.promise(() => fs.writeFile(csv, "timestamp,open,high,low,close,volume\n", "utf8"))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           const promptOps = stubOps({ text: `## Data Complete\nartifact_paths: ${csv}` })
 
@@ -1257,7 +1359,7 @@ describe("tool.task", () => {
           const seenAgents: string[] = []
           const metadataUpdates: Array<{ title?: string; metadata?: Record<string, any> }> = []
           const promptOps = stubOps({ onPrompt: (input) => seenAgents.push(input.agent ?? "") })
-          const tool = yield* TaskTool
+          const tool = yield* TaskBatchRunTool
           const def = yield* tool.init()
 
           const result = yield* def.execute(
@@ -1463,7 +1565,7 @@ describe("tool.task", () => {
           const promptOps = stubOps({
             text: (input) => (input.agent === "data_extractor" ? dataText : "no material current context found"),
           })
-          const tool = yield* TaskTool
+          const tool = yield* TaskBatchRunTool
           const def = yield* tool.init()
 
           const result = yield* def.execute(
@@ -1514,7 +1616,7 @@ describe("tool.task", () => {
           const slug = "spy-5m-strategy.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1563,7 +1665,7 @@ describe("tool.task", () => {
           const slug = "aapl-sentiment-breakout.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1622,7 +1724,7 @@ describe("tool.task", () => {
           const slug = "msft-insider.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1672,7 +1774,7 @@ describe("tool.task", () => {
           const { chat, assistant } = yield* seed()
           yield* Effect.promise(() => clearSessionWorkspace(chat.id).catch(() => {}))
 
-          const tool = yield* TaskTool
+          const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1720,7 +1822,7 @@ describe("tool.task", () => {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
       const child = yield* sessions.create({ parentID: chat.id, title: "Existing child" })
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
       let seen: SessionPrompt.PromptInput | undefined
       const promptOps = stubOps({ text: "resumed", onPrompt: (input) => (seen = input) })
@@ -1757,7 +1859,7 @@ describe("tool.task", () => {
   it.instance("execute asks by default and skips checks when bypassed", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
       const calls: unknown[] = []
       const promptOps = stubOps()
@@ -1803,7 +1905,7 @@ describe("tool.task", () => {
   it.instance("execute cancels child session when abort signal fires", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
       const ready = defer<SessionPrompt.PromptInput>()
       const cancelled = defer<SessionID>()
@@ -1854,7 +1956,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
       let seen: SessionPrompt.PromptInput | undefined
       const promptOps = stubOps({ text: "created", onPrompt: (input) => (seen = input) })
@@ -1893,7 +1995,7 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const sessions = yield* Session.Service
         const { chat, assistant } = yield* seed()
-        const tool = yield* TaskTool
+        const tool = yield* TaskRunTool
         const def = yield* tool.init()
         let seen: SessionPrompt.PromptInput | undefined
         const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
@@ -1955,10 +2057,10 @@ describe("tool.task", () => {
     },
   )
 
-  it.instance("allows background execution without an experiment flag", () =>
+  it.instance("task_start launches background execution without an experiment flag", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -1966,7 +2068,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -1989,7 +2090,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskRunTool
       const def = yield* tool.init()
       const ready = yield* Deferred.make<void>()
       const done = yield* Deferred.make<void>()
@@ -2055,7 +2156,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2063,7 +2164,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2093,7 +2193,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
       const first = defer<void>()
       const second = defer<void>()
@@ -2129,7 +2229,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         context,
       )
@@ -2167,7 +2266,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
       const injected = defer<SessionPrompt.PromptInput>()
       let parentAttempts = 0
@@ -2177,7 +2276,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2215,7 +2313,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2223,7 +2321,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2248,7 +2345,7 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2256,7 +2353,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2287,7 +2383,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2295,7 +2391,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2326,7 +2421,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2334,7 +2429,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,
@@ -2365,7 +2459,7 @@ describe("tool.task", () => {
       const jobs = yield* BackgroundJob.Service
       const runState = yield* SessionRunState.Service
       const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
+      const tool = yield* TaskStartTool
       const def = yield* tool.init()
 
       const result = yield* def.execute(
@@ -2373,7 +2467,6 @@ describe("tool.task", () => {
           description: "inspect bug",
           prompt: "look into the cache key path",
           subagent_type: "general",
-          background: true,
         },
         {
           sessionID: chat.id,

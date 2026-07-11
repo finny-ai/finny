@@ -268,7 +268,6 @@ export const layer = Layer.effect(
             prompt: task.prompt,
             description: task.description,
             subagent_type: task.agent,
-            command: task.command,
           },
           time: { start: Date.now() },
         },
@@ -277,7 +276,6 @@ export const layer = Layer.effect(
         prompt: task.prompt,
         description: task.description,
         subagent_type: task.agent,
-        command: task.command,
       }
       yield* plugin.trigger(
         "tool.execute.before",

@@ -62,6 +62,9 @@ export function toToolKind(toolName: string): ToolKind {
       return "read"
 
     case "task":
+    case "task_start":
+    case "task_run":
+    case "task_batch_run":
       return "think"
 
     default:

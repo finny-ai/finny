@@ -24,6 +24,9 @@ describe("acp tool conversion", () => {
     expect(toToolKind("context7_get_library_docs")).toBe("search")
     expect(toToolKind("read")).toBe("read")
     expect(toToolKind("task")).toBe("think")
+    expect(toToolKind("task_start")).toBe("think")
+    expect(toToolKind("task_run")).toBe("think")
+    expect(toToolKind("task_batch_run")).toBe("think")
     expect(toToolKind("custom_tool")).toBe("other")
   })
 

@@ -315,86 +315,6 @@ exports[`tool parameters JSON Schema (wire shape) skill 1`] = `
 }
 `;
 
-exports[`tool parameters JSON Schema (wire shape) task 1`] = `
-{
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "anyOf": [
-    {
-      "properties": {
-        "background": {
-          "description": "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
-          "type": "boolean",
-        },
-        "command": {
-          "description": "The command that triggered this task",
-          "type": "string",
-        },
-        "description": {
-          "description": "A short (3-5 words) description of the task",
-          "type": "string",
-        },
-        "prompt": {
-          "description": "The task for the agent to perform",
-          "type": "string",
-        },
-        "subagent_type": {
-          "description": "The type of specialized agent to use for this task",
-          "type": "string",
-        },
-        "task_id": {
-          "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
-          "type": "string",
-        },
-      },
-      "required": [
-        "description",
-        "prompt",
-        "subagent_type",
-      ],
-      "type": "object",
-    },
-    {
-      "properties": {
-        "tasks": {
-          "description": "Two or three independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
-          "items": {
-            "properties": {
-              "command": {
-                "description": "The command that triggered this task",
-                "type": "string",
-              },
-              "description": {
-                "description": "A short (3-5 words) description of the task",
-                "type": "string",
-              },
-              "prompt": {
-                "description": "The task for the agent to perform",
-                "type": "string",
-              },
-              "subagent_type": {
-                "description": "The type of specialized agent to use for this task",
-                "type": "string",
-              },
-            },
-            "required": [
-              "description",
-              "prompt",
-              "subagent_type",
-            ],
-            "type": "object",
-          },
-          "type": "array",
-        },
-      },
-      "required": [
-        "tasks",
-      ],
-      "type": "object",
-    },
-  ],
-}
-`;
-
 exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -520,6 +440,106 @@ exports[`tool parameters JSON Schema (wire shape) write 1`] = `
   "required": [
     "content",
     "filePath",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) task_start 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "A short (3-5 words) description of the task",
+      "type": "string",
+    },
+    "prompt": {
+      "description": "The task for the agent to perform",
+      "type": "string",
+    },
+    "subagent_type": {
+      "description": "The type of specialized agent to use for this task",
+      "type": "string",
+    },
+    "task_id": {
+      "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "type": "string",
+    },
+  },
+  "required": [
+    "description",
+    "prompt",
+    "subagent_type",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) task_run 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "description": {
+      "description": "A short (3-5 words) description of the task",
+      "type": "string",
+    },
+    "prompt": {
+      "description": "The task for the agent to perform",
+      "type": "string",
+    },
+    "subagent_type": {
+      "description": "The type of specialized agent to use for this task",
+      "type": "string",
+    },
+    "task_id": {
+      "description": "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
+      "type": "string",
+    },
+  },
+  "required": [
+    "description",
+    "prompt",
+    "subagent_type",
+  ],
+  "type": "object",
+}
+`;
+
+exports[`tool parameters JSON Schema (wire shape) task_batch_run 1`] = `
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "properties": {
+    "tasks": {
+      "description": "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
+      "items": {
+        "properties": {
+          "description": {
+            "description": "A short (3-5 words) description of the task",
+            "type": "string",
+          },
+          "prompt": {
+            "description": "The task for the agent to perform",
+            "type": "string",
+          },
+          "subagent_type": {
+            "description": "The type of specialized agent to use for this task",
+            "type": "string",
+          },
+        },
+        "required": [
+          "description",
+          "prompt",
+          "subagent_type",
+        ],
+        "type": "object",
+      },
+      "maxItems": 4,
+      "minItems": 2,
+      "type": "array",
+    },
+  },
+  "required": [
+    "tasks",
   ],
   "type": "object",
 }

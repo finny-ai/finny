@@ -1,5 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, SchemaAST } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import z from "zod"
@@ -71,6 +71,7 @@ export interface Def<
   description: string
   parameters: Parameters
   jsonSchema?: JSONSchema7
+  parseOptions?: SchemaAST.ParseOptions
   execute(args: ParameterType<Parameters>, ctx: Context): Effect.Effect<ExecuteResult<M>>
   formatValidationError?(error: unknown): string
 }
@@ -120,7 +121,7 @@ function wrap<Parameters extends ParameterSchema, Result extends Metadata>(
       // Compile the parser closure once per tool init; `decodeUnknownEffect`
       // allocates a new closure per call, so hoisting avoids re-closing it for
       // every LLM tool invocation.
-      const decode = decoder(toolInfo.parameters)
+      const decode = decoder(toolInfo.parameters, toolInfo.parseOptions)
       const execute = toolInfo.execute
       toolInfo.execute = (args, ctx) => {
         const attrs = {
@@ -197,14 +198,14 @@ export function init<P extends ParameterSchema, M extends Metadata>(
   })
 }
 
-function decoder<Parameters extends ParameterSchema>(schema: Parameters) {
+function decoder<Parameters extends ParameterSchema>(schema: Parameters, options?: SchemaAST.ParseOptions) {
   if (isZodType(schema)) {
     return (args: unknown) =>
       Effect.sync(() => schema.safeParse(args)).pipe(
         Effect.flatMap((result) => (result.success ? Effect.succeed(result.data as ParameterType<Parameters>) : Effect.fail(result.error))),
       )
   }
-  return Schema.decodeUnknownEffect(schema) as (args: unknown) => Effect.Effect<ParameterType<Parameters>, unknown>
+  return Schema.decodeUnknownEffect(schema, options) as (args: unknown) => Effect.Effect<ParameterType<Parameters>, unknown>
 }
 
 function formatValidationError(error: unknown) {

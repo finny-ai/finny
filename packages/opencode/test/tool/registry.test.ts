@@ -55,14 +55,6 @@ const replacements = [
 ]
 
 const it = testEffect(LayerNode.buildLayer(root, { replacements }))
-const withBackgroundSubagents = testEffect(
-  LayerNode.buildLayer(root, {
-    replacements: [
-      LayerNode.replace(Config.node, configLayer),
-      LayerNode.replace(RuntimeFlags.node, RuntimeFlags.layer({ experimentalBackgroundSubagents: true })),
-    ],
-  }),
-)
 const withBrokenPlugin = testEffect(
   LayerNode.buildLayer(root, {
     replacements: [...replacements, LayerNode.replace(Plugin.node, brokenPluginLayer)],
@@ -83,41 +75,40 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("hides task background parameter unless experimental background subagents are enabled", () =>
-    Effect.gen(function* () {
-      const registry = yield* ToolRegistry.Service
-      const agent = yield* Agent.Service
-      const build = yield* agent.get("build")
-      if (!build) throw new Error("build agent not found")
-      const task = (yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
-        modelID: ModelV2.ID.make("test"),
-        agent: build,
-      })).find((tool) => tool.id === "task")
+  it.instance(
+    "exposes closed, invariant-preserving task schemas to Gemini and OpenAI",
+    () =>
+      Effect.gen(function* () {
+        const registry = yield* ToolRegistry.Service
+        const agent = yield* Agent.Service
+        const build = yield* agent.get("build")
+        if (!build) throw new Error("build agent not found")
+        for (const providerID of [ProviderV2.ID.make("google"), ProviderV2.ID.openai]) {
+          const tools = yield* registry.tools({ providerID, modelID: ModelV2.ID.make("test"), agent: build })
+          expect(tools.some((tool) => tool.id === "task")).toBe(false)
+          const start = tools.find((tool) => tool.id === "task_start")?.jsonSchema
+          const run = tools.find((tool) => tool.id === "task_run")?.jsonSchema
+          const batch = tools.find((tool) => tool.id === "task_batch_run")?.jsonSchema
 
-      expect(task?.jsonSchema).toBeDefined()
-      expect(task?.jsonSchema?.type).toBe("object")
-      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeUndefined()
-    }),
-  )
-
-  withBackgroundSubagents.instance("exposes task background parameter with a provider-compatible root object schema", () =>
-    Effect.gen(function* () {
-      const registry = yield* ToolRegistry.Service
-      const agent = yield* Agent.Service
-      const build = yield* agent.get("build")
-      if (!build) throw new Error("build agent not found")
-      const task = (yield* registry.tools({
-        providerID: ProviderV2.ID.opencode,
-        modelID: ModelV2.ID.make("test"),
-        agent: build,
-      })).find((tool) => tool.id === "task")
-
-      expect(task?.jsonSchema).toBeDefined()
-      expect(task?.jsonSchema?.type).toBe("object")
-      expect((task?.jsonSchema?.properties as Record<string, unknown> | undefined)?.background).toBeDefined()
-      expect(Array.isArray(task?.jsonSchema?.anyOf)).toBe(true)
-    }),
+          for (const schema of [start, run, batch]) {
+            expect(schema).toMatchObject({ type: "object", additionalProperties: false })
+            expect(schema).not.toHaveProperty("anyOf")
+          }
+          expect(start?.required).toEqual(["description", "prompt", "subagent_type"])
+          expect(run?.required).toEqual(["description", "prompt", "subagent_type"])
+          expect(start?.properties).not.toHaveProperty("tasks")
+          expect(start?.properties).not.toHaveProperty("background")
+          expect(start?.properties).not.toHaveProperty("command")
+          expect(run?.properties).not.toHaveProperty("tasks")
+        expect(batch?.required).toEqual(["tasks"])
+        expect(batch?.properties).not.toHaveProperty("prompt")
+        expect(batch?.properties?.tasks).toMatchObject({ minItems: 2, maxItems: 4 })
+        expect((batch?.properties?.tasks as { items?: unknown } | undefined)?.items).toMatchObject({
+          additionalProperties: false,
+        })
+      }
+      }),
+    { timeout: 30_000 },
   )
 
   it.instance("loads tools from .opencode/tool (singular)", () =>

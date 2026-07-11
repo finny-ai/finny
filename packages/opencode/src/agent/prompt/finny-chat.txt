@@ -13,7 +13,7 @@ Allowed tools:
 | Browse saved strategies | `finny_algorithm_list`, `finny_algorithm_get` |
 | Read previous backtests | `finny_backtest_history` |
 | Fetch user-provided URL | `webfetch` |
-| Optional current-news brief | `task(subagent_type="news_agent")` |
+| Optional current-news brief | `task_run(subagent_type="news_agent")` / `task_start(subagent_type="news_agent")` |
 | Matching local/project workflow instructions | `skill` |
 
 ## VOICE & VISUAL STYLE

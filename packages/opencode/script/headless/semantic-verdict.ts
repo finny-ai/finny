@@ -255,7 +255,12 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         normalize,
       )
     }
-    if (part.tool === "task") {
+    if (
+      part.tool === "task" ||
+      part.tool === "task_start" ||
+      part.tool === "task_run" ||
+      part.tool === "task_batch_run"
+    ) {
       const declaredChildren = Array.isArray(metadata.subagents) ? metadata.subagents : []
       if (declaredChildren.length > 0) {
         for (const child of declaredChildren) {

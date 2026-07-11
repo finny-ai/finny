@@ -9,7 +9,7 @@ import { EditTool } from "./edit"
 import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
-import { TaskTool } from "./task"
+import { TaskBatchRunTool, TaskRunTool, TaskStartTool, TaskTool } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { ListTasksTool } from "./list-tasks"
 import { StopTaskTool } from "./stop-task"
@@ -121,7 +121,9 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
 
     const invalid = yield* InvalidTool
-    const task = yield* TaskTool
+    const taskStart = yield* TaskStartTool
+    const taskRun = yield* TaskRunTool
+    const taskBatchRun = yield* TaskBatchRunTool
     const listTasks = yield* ListTasksTool
     const stopTask = yield* StopTaskTool
     const read = yield* ReadTool
@@ -267,7 +269,9 @@ export const layer = Layer.effect(
           grep: Tool.init(greptool),
           edit: Tool.init(edit),
           write: Tool.init(writetool),
-          task: Tool.init(task),
+          taskStart: Tool.init(taskStart),
+          taskRun: Tool.init(taskRun),
+          taskBatchRun: Tool.init(taskBatchRun),
           listTasks: Tool.init(listTasks),
           stopTask: Tool.init(stopTask),
           fetch: Tool.init(webfetch),
@@ -314,7 +318,9 @@ export const layer = Layer.effect(
             tool.grep,
             tool.edit,
             tool.write,
-            tool.task,
+            tool.taskStart,
+            tool.taskRun,
+            tool.taskBatchRun,
             tool.listTasks,
             tool.stopTask,
             tool.fetch,
@@ -348,7 +354,7 @@ export const layer = Layer.effect(
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
-          task: tool.task,
+          task: tool.taskRun,
           read: tool.read,
         }
       }),
@@ -413,7 +419,12 @@ export const layer = Layer.effect(
               : undefined
           return {
             id: tool.id,
-            description: [output.description, tool.id === TaskTool.id ? yield* describeTask(input.agent) : undefined]
+            description: [
+              output.description,
+              new Set<string>([TaskStartTool.id, TaskRunTool.id, TaskBatchRunTool.id]).has(tool.id)
+                ? yield* describeTask(input.agent)
+                : undefined,
+            ]
               .filter(Boolean)
               .join("\n"),
             parameters: output.parameters,

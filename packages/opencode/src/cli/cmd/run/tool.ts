@@ -1283,11 +1283,12 @@ function key(name: string): name is ToolName {
 }
 
 function rule(name?: string): AnyToolRule | undefined {
-  if (!name || !key(name)) {
+  const normalized = name && ["task_start", "task_run", "task_batch_run"].includes(name) ? "task" : name
+  if (!normalized || !key(normalized)) {
     return undefined
   }
 
-  return TOOL_RULES[name]
+  return TOOL_RULES[normalized]
 }
 
 function frame(part: ToolPart): ToolFrame {

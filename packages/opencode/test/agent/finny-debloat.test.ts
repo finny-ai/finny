@@ -30,6 +30,9 @@ const ALL_TOOL_IDS = [
   "edit",
   "write",
   "task",
+  "task_start",
+  "task_run",
+  "task_batch_run",
   "webfetch",
   "todowrite",
   "list_tasks",
@@ -89,6 +92,9 @@ const EXPECTED_TOOLS = {
     "read",
     "skill",
     "task",
+    "task_batch_run",
+    "task_run",
+    "task_start",
     "todowrite",
     "webfetch",
     "websearch",
@@ -113,6 +119,9 @@ const EXPECTED_TOOLS = {
     "read",
     "skill",
     "task",
+    "task_batch_run",
+    "task_run",
+    "task_start",
     "webfetch",
   ],
   research: [
@@ -123,6 +132,9 @@ const EXPECTED_TOOLS = {
     "question",
     "skill",
     "task",
+    "task_batch_run",
+    "task_run",
+    "task_start",
     "webfetch",
   ],
   chat: [
@@ -134,6 +146,9 @@ const EXPECTED_TOOLS = {
     "question",
     "skill",
     "task",
+    "task_batch_run",
+    "task_run",
+    "task_start",
     "webfetch",
   ],
   data_extractor: ["bash", "read", "skill"],
@@ -336,7 +351,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("Do not use scaffold as a")
     expect(PROMPT_BUILD).toContain("BLOCKED: template read failed")
     expect(PROMPT_BUILD).toContain("never proceed without the template contract")
-    expect(PROMPT_BUILD).toContain('task({ tasks: [{subagent_type: "data_extractor"')
+    expect(PROMPT_BUILD).toContain('task_batch_run({ tasks: [{subagent_type: "data_extractor"')
     expect(PROMPT_BUILD).toContain('{subagent_type: "news_agent"')
     expect(PROMPT_BUILD).toContain("never prevent news_agent")
     expect(PROMPT_BUILD).toContain("Do not call `finny_algorithm_scaffold`")
@@ -413,7 +428,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("`finny_portfolio_backtest` or save")
     expect(PROMPT_BUILD).toContain("do not narrow to one ticker")
     expect(PROMPT_BUILD).toContain("Launch one concrete-symbol `data_extractor` task per portfolio ticker")
-    expect(PROMPT_BUILD).toContain("Do not put multiple `data_extractor` entries in one `task` batch")
+    expect(PROMPT_BUILD).toContain("Do not put multiple `data_extractor` entries in one `task_batch_run`")
     expect(PROMPT_BUILD).toContain("batch mode requires distinct subagent types")
     expect(PROMPT_BUILD).toContain("until every requested ticker has verified data evidence")
     // Low closed trade count is inconclusive, not a positive caveat.
@@ -471,7 +486,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_RESEARCH).toContain("It does not create strategy code, save algorithms, or run new backtests")
     expect(PROMPT_RESEARCH).toContain("Data request context")
     expect(PROMPT_RESEARCH).toContain("Historical date-range data")
-    expect(PROMPT_RESEARCH).toContain("`task(data_extractor)`")
+    expect(PROMPT_RESEARCH).toContain("`task_run(data_extractor)` / `task_start(data_extractor)`")
     expect(PROMPT_RESEARCH).toContain("Discovery First")
     expect(PROMPT_RESEARCH).toContain("Deep current-news scan requested")
 

@@ -1,4 +1,5 @@
 import type { Event, Message, Part, PermissionRequest, QuestionRequest, ToolPart } from "@opencode-ai/sdk/v2"
+import { Permission } from "@/permission"
 import * as Locale from "@/util/locale"
 import {
   bootstrapSessionData,
@@ -374,7 +375,7 @@ function syncBatchTaskTabs(data: SubagentData, part: ToolPart, children?: Set<st
 }
 
 function syncTaskTab(data: SubagentData, part: ToolPart, children?: Set<string>) {
-  if (part.tool !== "task") {
+  if (!Permission.isTaskTool(part.tool)) {
     return false
   }
 

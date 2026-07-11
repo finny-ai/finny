@@ -212,11 +212,20 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
   return rulesets.flat()
 }
 
+/** Tool IDs that share the edit permission surface. */
+const EDIT_TOOLS = new Set(["edit", "write", "apply_patch"])
+/** Tool IDs that share the task permission surface (subagent delegation). */
+const TASK_TOOLS = new Set(["task", "task_start", "task_run", "task_batch_run"])
+
+/** True when the catalog tool ID is one of the split task-delegation tools. */
+export function isTaskTool(toolID: string): boolean {
+  return TASK_TOOLS.has(toolID)
+}
+
 export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<string> {
-  const edits = ["edit", "write", "apply_patch"]
   return new Set(
     tools.filter((tool) => {
-      const permission = edits.includes(tool) ? "edit" : tool
+      const permission = EDIT_TOOLS.has(tool) ? "edit" : isTaskTool(tool) ? "task" : tool
       const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
       return rule?.pattern === "*" && rule.action === "deny"
     }),

@@ -140,6 +140,21 @@ describe("Permission.disabled for task tool", () => {
     // "task" permission has pattern "orchestrator-coder", not "*", so not disabled
     expect(disabled.has("task")).toBe(false)
   })
+
+  test("task_start/task_run/task_batch_run share the task permission surface", () => {
+    const allow = createRuleset({
+      "*": "deny",
+      data_extractor: "allow",
+    })
+    const deny = createRuleset({ "*": "deny" })
+    const ids = ["task_start", "task_run", "task_batch_run"] as const
+
+    for (const id of ids) {
+      expect(Permission.isTaskTool(id)).toBe(true)
+      expect(Permission.disabled([id], allow).has(id)).toBe(false)
+      expect(Permission.disabled([id], deny).has(id)).toBe(true)
+    }
+  })
 })
 
 // Integration tests that load permissions from real config files
