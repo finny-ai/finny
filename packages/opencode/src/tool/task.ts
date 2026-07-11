@@ -49,6 +49,7 @@ import {
 } from "@/data/data-provider-capabilities"
 import { resolveAlpacaMarketDataEnv } from "@/data/alpaca-market-data-env"
 import { Plugin } from "@/plugin"
+import { BuildWorkflow } from "@/task/build-workflow"
 
 /**
  * Substituted when a subagent's final turn produced no text. Uses the BLOCKED:
@@ -755,6 +756,7 @@ const taskExecutor = Effect.gen(function* () {
     const background = yield* BackgroundJob.Service
     const config = yield* Config.Service
     const sessions = yield* Session.Service
+    const workflow = yield* BuildWorkflow.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
     // Optional so unit tests that construct TaskTool without a full plugin stack still run.
@@ -766,23 +768,63 @@ const taskExecutor = Effect.gen(function* () {
       options: { mode: "background" | "foreground" },
     ) {
       const cfg = yield* config.get()
-      const runInBackground = options.mode === "background"
-
+      const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.orDie,
+      )
+      if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
+      const workflowRunID = msg.info.parentID
+      const mandatoryEvidence =
+        BuildWorkflow.isBuildAgent(ctx.agent) && BuildWorkflow.isMandatoryEvidenceRole(params.subagent_type)
+      const approvedWindow = mandatoryEvidence
+        ? yield* Effect.promise(async () => {
+            const window = await readWorkspaceDateWindow(String(ctx.sessionID))
+            return window.requested_start && window.requested_end
+              ? `${window.requested_start}:${window.requested_end}:${window.requested_interval ?? ""}`
+              : undefined
+          })
+        : undefined
+      const runInBackground = mandatoryEvidence ? false : options.mode === "background"
+      // Permission and agent resolution precede workflow registration so a
+      // denied or unknown task cannot create a running fingerprint.
       if (!ctx.extra?.bypassAgentCheck) {
         yield* ctx.ask({
           permission,
           patterns: [params.subagent_type],
           always: ["*"],
-          metadata: {
-            description: params.description,
-            subagent_type: params.subagent_type,
-          },
+          metadata: { description: params.description, subagent_type: params.subagent_type },
         })
       }
-
       const next = yield* agent.get(params.subagent_type)
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
+      }
+      const workflowStart = mandatoryEvidence
+        ? yield* workflow.beginEvidence({
+            sessionID: ctx.sessionID,
+            workflowRunID,
+            role: params.subagent_type,
+            prompt: params.prompt,
+            providerID: msg.info.providerID,
+            recoveryRevision: approvedWindow,
+          })
+        : undefined
+
+      if (workflowStart && !workflowStart.allowed) {
+        const sessionID = workflowStart.sessionID ? SessionID.make(workflowStart.sessionID) : ctx.sessionID
+        return {
+          title: params.description,
+          metadata: { parentSessionId: ctx.sessionID, sessionId: sessionID },
+          output: renderOutput({
+            sessionID,
+            state: "completed",
+            summary:
+              workflowStart.status === "completed"
+                ? "Mandatory evidence reused"
+                : "Mandatory evidence terminal blocker",
+            text: workflowStart.output,
+          }),
+        }
       }
 
       const session = params.task_id
@@ -823,6 +865,15 @@ const taskExecutor = Effect.gen(function* () {
             ),
           ],
         }))
+
+      if (workflowStart?.allowed) {
+        yield* workflow.attachSession({
+          sessionID: ctx.sessionID,
+          workflowRunID,
+          fingerprint: workflowStart.fingerprint,
+          taskSessionID: nextSession.id,
+        })
+      }
 
       // Subagents inherit the parent session's algo workspace binding so data
       // extraction and research notes land in the same per-request workspace.
@@ -886,11 +937,6 @@ const taskExecutor = Effect.gen(function* () {
       })
       const workspace = workspaceState.slug
 
-      const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
-        Effect.provideService(Database.Service, database),
-        Effect.orDie,
-      )
-      if (msg.info.role !== "assistant") return yield* Effect.fail(new Error("Not an assistant message"))
       const variant = msg.info.variant
 
       const model = next.model ?? {
@@ -931,6 +977,15 @@ const taskExecutor = Effect.gen(function* () {
             }),
           )
       if (Exit.isFailure(registryExit)) {
+        if (workflowStart?.allowed) {
+          yield* workflow.finishEvidence({
+            sessionID: ctx.sessionID,
+            workflowRunID,
+            fingerprint: workflowStart.fingerprint,
+            status: "failed",
+            output: taskRegistryErrorText(Cause.squash(registryExit.cause)),
+          })
+        }
         return {
           title: params.description,
           metadata,
@@ -951,13 +1006,60 @@ const taskExecutor = Effect.gen(function* () {
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
+      const cancelSiblingTasks = Effect.fn("TaskTool.cancelSiblingTasks")(function* () {
+        // Only cancel mandatory evidence workers attached to this Build workflow
+        // run — never unrelated background tasks from earlier turns.
+        const run = yield* workflow.get({ sessionID: ctx.sessionID, workflowRunID })
+        const siblingSessionIDs = new Set(
+          [...(run?.tasks.values() ?? [])]
+            .filter(
+              (record) =>
+                record.status === "running" &&
+                record.sessionID &&
+                record.sessionID !== nextSession.id &&
+                BuildWorkflow.isMandatoryEvidenceRole(record.role),
+            )
+            .map((record) => record.sessionID!),
+        )
+        if (siblingSessionIDs.size === 0) return
+        const active = (yield* Effect.promise(() => TaskState.listByParent(ctx.sessionID, database))).filter(
+          (task) => !TaskState.isTerminal(task.status) && siblingSessionIDs.has(task.id),
+        )
+        yield* Effect.forEach(
+          active,
+          (task) =>
+            Effect.all(
+              [
+                ops.cancel(task.id),
+                background.cancel(task.id),
+                Effect.promise(() => TaskState.cancel(task.id, database)).pipe(Effect.asVoid),
+                Effect.gen(function* () {
+                  const fingerprint = [...(run?.tasks.values() ?? [])].find(
+                    (record) => record.sessionID === task.id,
+                  )?.fingerprint
+                  if (!fingerprint) return
+                  yield* workflow.finishEvidence({
+                    sessionID: ctx.sessionID,
+                    workflowRunID,
+                    fingerprint,
+                    status: "cancelled",
+                    output: "Cancelled after sibling mandatory evidence terminalized",
+                  })
+                }),
+              ],
+              { discard: true },
+            ),
+          { concurrency: "unbounded", discard: true },
+        )
+      })
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         if (workspaceState.blocked) return workspaceState.blocked
         if (params.subagent_type === "data_extractor" && !workspace) {
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
         }
         if (params.subagent_type === "data_extractor") {
-          const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(ctx.sessionID))
+          const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(String(ctx.sessionID)))
           const dateBlock = unapprovedExtendedDataWindowBlock({
             prompt: params.prompt,
             workspace,
@@ -1109,12 +1211,13 @@ const taskExecutor = Effect.gen(function* () {
         const exit = yield* Effect.exit(runTask())
         if (Exit.isSuccess(exit)) {
           const text = exit.value
+          const status = taskResultStatus(text)
           const finalizeExit = yield* Effect.exit(
             Effect.promise(() =>
               TaskState.finalizeActive(
                 nextSession.id,
                 {
-                  status: taskResultStatus(text),
+                  status,
                   resultSummary: summarizeTaskResult(text),
                   lastError: null,
                 },
@@ -1123,15 +1226,26 @@ const taskExecutor = Effect.gen(function* () {
             ),
           )
           if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
+          if (workflowStart?.allowed) {
+            yield* workflow.finishEvidence({
+              sessionID: ctx.sessionID,
+              workflowRunID,
+              fingerprint: workflowStart.fingerprint,
+              status,
+              output: text,
+            })
+            if (status === TaskState.Status.blocked) yield* cancelSiblingTasks()
+          }
           return text
         }
         const error = Cause.squash(exit.cause)
+        const status = Cause.hasInterruptsOnly(exit.cause) ? TaskState.Status.cancelled : TaskState.Status.failed
         const finalizeExit = yield* Effect.exit(
           Effect.promise(() =>
             TaskState.finalizeActive(
               nextSession.id,
               {
-                status: Cause.hasInterruptsOnly(exit.cause) ? TaskState.Status.cancelled : TaskState.Status.failed,
+                status,
                 lastError: error instanceof Error ? error.message : String(error),
               },
               database,
@@ -1139,6 +1253,16 @@ const taskExecutor = Effect.gen(function* () {
           ),
         )
         if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
+        if (workflowStart?.allowed) {
+          yield* workflow.finishEvidence({
+            sessionID: ctx.sessionID,
+            workflowRunID,
+            fingerprint: workflowStart.fingerprint,
+            status,
+            output: error instanceof Error ? error.message : String(error),
+          })
+          yield* cancelSiblingTasks()
+        }
         return yield* Effect.failCause(exit.cause)
       })
 

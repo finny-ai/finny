@@ -80,6 +80,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { hasPerplexityApiKey } from "./perplexity-credentials"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Bus } from "@/bus"
+import { BuildWorkflow } from "@/task/build-workflow"
 
 export function webSearchEnabled(
   providerID: ProviderV2.ID,
@@ -464,6 +465,7 @@ export const defaultLayer = Layer.suspend(() =>
       Layer.provide(FSUtil.defaultLayer),
       Layer.provide(EventV2Bridge.defaultLayer),
       Layer.provide(Bus.defaultLayer),
+      Layer.provide(BuildWorkflow.defaultLayer),
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(Format.defaultLayer),
       Layer.provide(CrossSpawnSpawner.defaultLayer),
@@ -563,6 +565,7 @@ export const node = LayerNode.make(layer.pipe(Layer.provide(Ripgrep.defaultLayer
   FSUtil.node,
   EventV2Bridge.node,
   Bus.node,
+  BuildWorkflow.node,
   httpClient,
   CrossSpawnSpawner.node,
   Format.node,

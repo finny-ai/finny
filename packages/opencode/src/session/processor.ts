@@ -32,6 +32,7 @@ import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ToolOutput, Usage, type LLMEvent } from "@opencode-ai/llm"
 import { runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
+import { BuildWorkflow } from "@/task/build-workflow"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
@@ -107,6 +108,7 @@ export const layer = Layer.effect(
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
+    const workflow = yield* BuildWorkflow.Service
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -224,6 +226,13 @@ export const layer = Layer.effect(
             attachments: output.attachments,
           },
         })
+        if (BuildWorkflow.isBuildAgent(input.assistantMessage.agent)) {
+          yield* workflow.recordToolCompletion({
+            sessionID: ctx.sessionID,
+            workflowRunID: input.assistantMessage.parentID,
+            toolID: match.part.tool,
+          })
+        }
         yield* settleToolCall(toolCallID)
       })
 
@@ -993,6 +1002,14 @@ export const layer = Layer.effect(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
                 aborted = true
+                if (BuildWorkflow.isBuildAgent(input.assistantMessage.agent)) {
+                  yield* workflow.finishRun({
+                    sessionID: ctx.sessionID,
+                    workflowRunID: input.assistantMessage.parentID,
+                    state: BuildWorkflow.Terminal.interrupted,
+                    reason: "parent run interrupted",
+                  })
+                }
                 if (!ctx.assistantMessage.error) {
                   yield* halt(new DOMException("Aborted", "AbortError"))
                 }
@@ -1039,6 +1056,25 @@ export const layer = Layer.effect(
           )
 
           if (ctx.needsCompaction) return "compact"
+          if (BuildWorkflow.isBuildAgent(input.assistantMessage.agent)) {
+            if (ctx.assistantMessage.error) {
+              yield* workflow.finishRun({
+                sessionID: ctx.sessionID,
+                workflowRunID: input.assistantMessage.parentID,
+                state: BuildWorkflow.Terminal.failed,
+                reason: ctx.assistantMessage.error.name,
+              })
+            } else if (
+              ctx.assistantMessage.finish &&
+              !["tool-calls", "unknown"].includes(ctx.assistantMessage.finish)
+            ) {
+              yield* workflow.finishRun({
+                sessionID: ctx.sessionID,
+                workflowRunID: input.assistantMessage.parentID,
+                state: BuildWorkflow.Terminal.completed,
+              })
+            }
+          }
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
         })
@@ -1073,6 +1109,7 @@ export const defaultLayer = Layer.suspend(() =>
     Layer.provide(RuntimeFlags.defaultLayer),
     Layer.provide(Database.defaultLayer),
     Layer.provide(EventV2Bridge.defaultLayer),
+    Layer.provide(BuildWorkflow.defaultLayer),
   ),
 )
 
@@ -1090,6 +1127,7 @@ export const node = LayerNode.make(layer, [
   EventV2Bridge.node,
   RuntimeFlags.node,
   Database.node,
+  BuildWorkflow.node,
 ])
 
 export * as SessionProcessor from "./processor"

@@ -30,6 +30,7 @@ import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
+import { BuildWorkflow } from "@/task/build-workflow"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import path from "path"
 import fs from "fs/promises"
@@ -67,6 +68,7 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       SessionStatus.defaultLayer,
       Truncate.defaultLayer,
       ToolRegistry.defaultLayer,
+      BuildWorkflow.defaultLayer,
       Database.defaultLayer,
       RuntimeFlags.layer(flags),
     ).pipe(Layer.provide(Ripgrep.defaultLayer)),
