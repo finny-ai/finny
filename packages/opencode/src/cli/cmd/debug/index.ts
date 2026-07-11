@@ -1,4 +1,5 @@
 import { Global } from "@opencode-ai/core/global"
+import { Database } from "@opencode-ai/core/database/database"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { Flag } from "@opencode-ai/core/flag/flag"
 import os from "os"
@@ -85,5 +86,7 @@ const PathsCommand = cmd({
     for (const [key, value] of Object.entries(Global.Path)) {
       console.log(key.padEnd(10), value)
     }
+    console.log("database".padEnd(10), Database.path())
+    console.log("schema".padEnd(10), Database.schemaVersion)
   },
 })

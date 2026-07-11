@@ -9,6 +9,8 @@ import { isAbsolute, join } from "path"
 import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { LayerNode } from "../effect/layer-node"
+import { StorageRoot } from "./storage-root"
+import { migrations } from "./migration.gen"
 
 const makeDatabase = EffectDrizzleSqlite.makeWithDefaults()
 type DatabaseShape = Effect.Success<typeof makeDatabase>
@@ -19,8 +21,7 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/storage/Database") {}
 
-export const layer = Layer.effect(
-  Service,
+const makeService = (filename?: string) =>
   Effect.gen(function* () {
     const db = yield* makeDatabase
 
@@ -30,14 +31,19 @@ export const layer = Layer.effect(
     yield* db.run("PRAGMA cache_size = -64000")
     yield* db.run("PRAGMA foreign_keys = ON")
     yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
+    // Task-only Finny-root leftovers must be salvaged before apply() dies on
+    // "non-empty without session".
+    yield* StorageRoot.prepareTarget(db, filename ?? path())
     yield* DatabaseMigration.apply(db)
+    yield* StorageRoot.reconcile(db, filename ?? path())
 
     return { db }
-  }).pipe(Effect.orDie),
-)
+  }).pipe(Effect.orDie)
+
+export const layer = Layer.effect(Service, makeService())
 
 export function layerFromPath(filename: string) {
-  return layer.pipe(Layer.provide(sqliteLayer({ filename })))
+  return Layer.effect(Service, makeService(filename)).pipe(Layer.provide(sqliteLayer({ filename })))
 }
 
 export function path() {
@@ -53,6 +59,8 @@ export function path() {
     return join(Global.Path.data, "opencode.db")
   return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
 }
+
+export const schemaVersion = migrations.at(-1)?.id ?? "base"
 
 export const defaultLayer = Layer.unwrap(
   Effect.gen(function* () {

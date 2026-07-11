@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import { cmd } from "./cmd"
 import { effectCmd, fail } from "../effect-cmd"
 import { TaskState } from "@/task/state"
+import { Database } from "@opencode-ai/core/database/database"
 
 function print(value: unknown) {
   console.log(JSON.stringify(value, null, 2))
@@ -41,7 +42,8 @@ const TaskListCommand = effectCmd({
       describe: "parent session ID",
     }),
   handler: Effect.fn("Cli.task.list")(function* (args) {
-    const tasks = yield* Effect.promise(() => TaskState.listByParent(args.sessionID))
+    const database = yield* Database.Service
+    const tasks = yield* Effect.promise(() => TaskState.listByParent(args.sessionID, database))
     print(tasks.map(formatTask))
   }),
 })
@@ -56,7 +58,8 @@ const TaskShowCommand = effectCmd({
       describe: "background task ID",
     }),
   handler: Effect.fn("Cli.task.show")(function* (args) {
-    const task = yield* Effect.promise(() => TaskState.get(args.taskID))
+    const database = yield* Database.Service
+    const task = yield* Effect.promise(() => TaskState.get(args.taskID, database))
     if (!task) return yield* fail(`Task not found: ${args.taskID}`)
     print(formatTask(task))
   }),

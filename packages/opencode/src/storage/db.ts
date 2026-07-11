@@ -108,6 +108,10 @@ export namespace Database {
     if (!hasTable(db, "session")) {
       entries = entries.filter((item) => item.name !== "20260511173437_session-metadata")
     }
+    // Core owns unified task_run under the Finny storage root. Never re-run the
+    // legacy opencode task_run migrations against a core-managed DB — they fight
+    // CREATE TABLE / rebuild and can drop the FK-backed core table.
+    entries = entries.filter((item) => !item.name.includes("task_run"))
     if (entries.length > 0) {
       log.info("applying migrations", {
         count: entries.length,

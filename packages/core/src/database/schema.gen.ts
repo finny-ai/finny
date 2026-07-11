@@ -66,6 +66,16 @@ export default {
         );
       `)
       yield* tx.run(`
+        CREATE TABLE \`storage_root_migration\` (
+          \`id\` text PRIMARY KEY,
+          \`source_path\` text NOT NULL,
+          \`target_path\` text NOT NULL,
+          \`source_backup\` text NOT NULL,
+          \`target_backup\` text NOT NULL,
+          \`time_completed\` integer NOT NULL
+        );
+      `)
+      yield* tx.run(`
         CREATE TABLE \`account_state\` (
           \`id\` integer PRIMARY KEY,
           \`active_account_id\` text,
@@ -281,6 +291,24 @@ export default {
           CONSTRAINT \`fk_session_share_session_id_session_id_fk\` FOREIGN KEY (\`session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
         );
       `)
+      yield* tx.run(`
+        CREATE TABLE \`task_run\` (
+          \`id\` text PRIMARY KEY,
+          \`parent_session_id\` text NOT NULL,
+          \`description\` text NOT NULL,
+          \`subagent_type\` text NOT NULL,
+          \`mode\` text NOT NULL,
+          \`status\` text NOT NULL,
+          \`started_at\` integer,
+          \`finished_at\` integer,
+          \`result_summary\` text,
+          \`last_error\` text,
+          \`time_created\` integer NOT NULL,
+          \`time_updated\` integer NOT NULL,
+          CONSTRAINT \`fk_task_run_id_session_id_fk\` FOREIGN KEY (\`id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE,
+          CONSTRAINT \`fk_task_run_parent_session_id_session_id_fk\` FOREIGN KEY (\`parent_session_id\`) REFERENCES \`session\`(\`id\`) ON DELETE CASCADE
+        );
+      `)
       yield* tx.run(`CREATE INDEX \`algorithm_build_approval_workflow_status_idx\` ON \`algorithm_build_approval_challenge\` (\`workflow_id\`,\`status\`);`)
       yield* tx.run(`CREATE INDEX \`algorithm_build_approval_scope_idx\` ON \`algorithm_build_approval_challenge\` (\`workflow_id\`,\`kind\`,\`scope_hash\`);`)
       yield* tx.run(`CREATE UNIQUE INDEX \`algorithm_build_workflow_event_seq_idx\` ON \`algorithm_build_workflow_event\` (\`workflow_id\`,\`seq\`);`)
@@ -304,6 +332,8 @@ export default {
       yield* tx.run(`CREATE INDEX \`session_workspace_idx\` ON \`session\` (\`workspace_id\`);`)
       yield* tx.run(`CREATE INDEX \`session_parent_idx\` ON \`session\` (\`parent_id\`);`)
       yield* tx.run(`CREATE INDEX \`todo_session_idx\` ON \`todo\` (\`session_id\`);`)
+      yield* tx.run(`CREATE INDEX \`task_run_parent_idx\` ON \`task_run\` (\`parent_session_id\`);`)
+      yield* tx.run(`CREATE INDEX \`task_run_status_idx\` ON \`task_run\` (\`status\`);`)
     })
   },
 } satisfies Omit<DatabaseMigration.Migration, "id">

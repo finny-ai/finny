@@ -38,5 +38,7 @@ export const migrations = (
     import("./migration/20260611192811_lush_chimera"),
     import("./migration/20260612174303_project_dir_strategy"),
     import("./migration/20260709193631_algorithm_build_workflow"),
+    import("./migration/20260710183215_unify_finny_persistence_root"),
+    import("./migration/20260710183538_storage_root_marker"),
   ])
 ).map((module) => module.default) satisfies DatabaseMigration.Migration[]

@@ -1,0 +1,157 @@
+import fs from "fs/promises"
+import path from "path"
+import { describe, expect } from "bun:test"
+import { sql } from "drizzle-orm"
+import { Effect } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
+import { StorageRoot } from "@opencode-ai/core/database/storage-root"
+import { tmpdir } from "./fixture/tmpdir"
+import { it } from "./lib/effect"
+
+const parentID = "ses_parent"
+const childID = "ses_child"
+const FIXED_NOW = 1_720_000_000_000
+
+function seedLegacy(filename: string) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    const now = FIXED_NOW
+    yield* db.run(
+      sql.raw(`
+      INSERT INTO project (id, worktree, time_created, time_updated, sandboxes)
+      VALUES ('project', '/tmp/project', ${now}, ${now}, '[]')
+    `),
+    )
+    for (const [id, parent, title] of [
+      [parentID, null, "Parent"],
+      [childID, parentID, "Child"],
+    ] as const) {
+      yield* db.run(sql`
+        INSERT INTO session
+          (id, project_id, parent_id, slug, directory, title, version, time_created, time_updated)
+        VALUES
+          (${id}, 'project', ${parent}, ${id}, '/tmp/project', ${title}, 'test', ${now}, ${now})
+      `)
+    }
+    yield* db.run(sql`
+      INSERT INTO task_run
+        (id, parent_session_id, description, subagent_type, mode, status, time_created, time_updated)
+      VALUES
+        (${childID}, ${parentID}, 'legacy task', 'general', 'sync', 'running', ${now}, ${now})
+    `)
+  }).pipe(Effect.provide(Database.layerFromPath(filename)), Effect.scoped)
+}
+
+function seedTaskOnly(filename: string) {
+  // Write a raw task-only SQLite file without going through Database.layerFromPath,
+  // which would immediately prepare/wipe a task-only target.
+  return Effect.promise(async () => {
+    const { Database: BunDatabase } = await import("bun:sqlite")
+    const db = new BunDatabase(filename)
+    db.run(`
+      CREATE TABLE task_run (
+        id text PRIMARY KEY,
+        parent_session_id text NOT NULL,
+        description text NOT NULL,
+        subagent_type text NOT NULL,
+        mode text NOT NULL,
+        status text NOT NULL,
+        started_at integer,
+        finished_at integer,
+        result_summary text,
+        last_error text,
+        time_created integer NOT NULL,
+        time_updated integer NOT NULL
+      )
+    `)
+    db.run(
+      `INSERT INTO task_run
+        (id, parent_session_id, description, subagent_type, mode, status, time_created, time_updated)
+       VALUES (?, ?, 'legacy task', 'general', 'sync', 'running', ?, ?)`,
+      [childID, parentID, FIXED_NOW, FIXED_NOW],
+    )
+    db.close()
+  })
+}
+
+describe("Finny storage root", () => {
+  it.live("bootstraps past a task-only Finny-root DB and merges after session reconcile", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const data = path.join(tmp.path, "data")
+          const source = path.join(data, "opencode", "opencode-local.db")
+          const target = path.join(data, "finny", "opencode-local.db")
+          yield* Effect.promise(() => fs.mkdir(path.dirname(source), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }))
+          // Sessions live in the legacy opencode root; tasks already occupy the Finny path.
+          yield* seedLegacy(source)
+          yield* seedTaskOnly(target)
+
+          yield* Effect.gen(function* () {
+            const { db } = yield* Database.Service
+            expect(yield* db.get<{ found: number }>(sql.raw(`SELECT 1 AS found FROM session LIMIT 1`))).toBeDefined()
+            // The orphaned task cannot join sessions from the task-only backup alone unless
+            // the same parent/child ids were also present in the opencode source — seedLegacy
+            // uses the same ids, so the merge keeps the joinable task row.
+            const joined = yield* db.all<{ child: string }>(
+              sql.raw(`
+              SELECT child.id AS child
+              FROM task_run task
+              JOIN session child ON child.id = task.id
+            `),
+            )
+            expect(joined.length).toBeGreaterThanOrEqual(1)
+          }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+
+          expect(yield* Effect.promise(() => Bun.file(`${target}.pre-unify-task-only.bak`).exists())).toBe(true)
+        }),
+      ),
+    ),
+  )
+
+  it.live("migrates a legacy opencode trajectory once and keeps it joinable", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const data = path.join(tmp.path, "data")
+          const source = path.join(data, "opencode", "opencode-local.db")
+          const target = path.join(data, "finny", "opencode-local.db")
+          yield* Effect.promise(() => fs.mkdir(path.dirname(source), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }))
+          yield* seedLegacy(source)
+
+          yield* Effect.gen(function* () {
+            const { db } = yield* Database.Service
+            const joined = yield* db.all<{ parent: string; child: string; status: string }>(
+              sql.raw(`
+              SELECT parent.id AS parent, child.id AS child, task.status AS status
+              FROM task_run task
+              JOIN session parent ON parent.id = task.parent_session_id
+              JOIN session child ON child.id = task.id
+            `),
+            )
+            expect(joined).toEqual([{ parent: parentID, child: childID, status: "running" }])
+            expect(
+              yield* db.get(sql`SELECT id FROM storage_root_migration WHERE id = ${StorageRoot.migrationID}`),
+            ).toBeDefined()
+          }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+
+          expect(yield* Effect.promise(() => Bun.file(`${source}.pre-unify-opencode.bak`).exists())).toBe(true)
+          expect(yield* Effect.promise(() => Bun.file(`${target}.pre-unify-finny.bak`).exists())).toBe(true)
+
+          yield* Effect.gen(function* () {
+            const { db } = yield* Database.Service
+            expect((yield* db.get<{ count: number }>(sql`SELECT COUNT(*) AS count FROM task_run`))?.count).toBe(1)
+          }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+        }),
+      ),
+    ),
+  )
+})

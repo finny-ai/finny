@@ -308,7 +308,8 @@ describe("tool.task", () => {
         },
       )
 
-      const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id))
+      const database = yield* Database.Service
+      const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id, database))
       expect(tasks).toHaveLength(1)
       expect(tasks[0]).toEqual(
         expect.objectContaining({
@@ -318,7 +319,7 @@ describe("tool.task", () => {
           subagentType: "news_agent",
           mode: "foreground",
           status: TaskState.Status.completed,
-          resultSummary: "news complete",
+          resultSummary: expect.stringContaining("NO_SOURCED_CONTEXT"),
         }),
       )
       expect(tasks[0]?.startedAt).toBeNumber()
@@ -512,7 +513,8 @@ describe("tool.task", () => {
             syncWorkspaceRequestContext({
               sessionID: chat.id,
               slug,
-              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+              prompt:
+                "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
             }),
           )
 
@@ -566,7 +568,8 @@ describe("tool.task", () => {
             syncWorkspaceRequestContext({
               sessionID: chat.id,
               slug,
-              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+              prompt:
+                "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
             }),
           )
 
@@ -626,7 +629,8 @@ describe("tool.task", () => {
             syncWorkspaceRequestContext({
               sessionID: chat.id,
               slug,
-              prompt: "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
+              prompt:
+                "requested Trump-linked stock universe DJT,RUM,GEO,CXW on 1d equities from 2026-01-01 to 2026-06-29",
             }),
           )
 
@@ -1465,7 +1469,8 @@ describe("tool.task", () => {
               }),
             ]),
           )
-          const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id))
+          const database = yield* Database.Service
+          const tasks = yield* Effect.promise(() => TaskState.listByParent(chat.id, database))
           expect(tasks).toEqual(
             expect.arrayContaining([
               expect.objectContaining({
@@ -1597,7 +1602,7 @@ describe("tool.task", () => {
 
           expect(result.output).not.toContain("BLOCKED:")
           expect(result.output).toContain("usable_for_parent: yes")
-          expect(result.output).toContain("no material current context found")
+          expect(result.output).toContain("NO_SOURCED_CONTEXT")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

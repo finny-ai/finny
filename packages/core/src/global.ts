@@ -7,7 +7,10 @@ import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
 import { LayerNode } from "./effect/layer-node"
 
-const app = "opencode"
+// Finny owns the runtime storage root. Consumers which still use the
+// historical opencode module name import this same boundary rather than
+// compiling a second application name into their paths.
+const app = "finny"
 const data = path.join(xdgData!, app)
 const cache = path.join(xdgCache!, app)
 const config = path.join(xdgConfig!, app)

@@ -250,9 +250,12 @@ function unapprovedExtendedDataWindowBlock(input: {
 
 function describeRequestFacts(facts: RequestFacts) {
   const requestedSymbols = facts.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
-  const symbol = requestedSymbols?.length ? requestedSymbols.join(",") : (normalizeSymbol(facts.requested_symbol) ?? "?")
+  const symbol = requestedSymbols?.length
+    ? requestedSymbols.join(",")
+    : (normalizeSymbol(facts.requested_symbol) ?? "?")
   const interval = normalizeInterval(facts.requested_interval) ?? "?"
-  const assetClass = facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? requestedSymbols?.[0]) ?? "?"
+  const assetClass =
+    facts.requested_asset_class ?? assetClassForSymbol(facts.requested_symbol ?? requestedSymbols?.[0]) ?? "?"
   return `${symbol} ${interval} ${assetClass}`
 }
 
@@ -472,11 +475,14 @@ export function withFinnySubagentContext(
   const newsDir = path.join(dataDir, "news")
   const facts = parseRequestFacts(prompt)
   const childSymbol =
-    params.subagent_type === "data_extractor" ? childSymbolWithinContextUniverse(facts.requested_symbol, context) : undefined
+    params.subagent_type === "data_extractor"
+      ? childSymbolWithinContextUniverse(facts.requested_symbol, context)
+      : undefined
   const window = extractDateWindow(prompt)
   const inferred = inferBacktestWindow(prompt)
   const symbol = childSymbol ?? context?.requested_symbol ?? facts.requested_symbol
-  const symbolsOrUniverse = childSymbol ?? context?.requested_symbols?.join(", ") ?? facts.requested_symbols?.join(", ") ?? symbol
+  const symbolsOrUniverse =
+    childSymbol ?? context?.requested_symbols?.join(", ") ?? facts.requested_symbols?.join(", ") ?? symbol
   const interval = context?.requested_interval ?? facts.requested_interval
   const assetClass =
     context?.requested_asset_class ??
@@ -860,7 +866,10 @@ const taskExecutor = Effect.gen(function* () {
         const useParentContext = Boolean(
           parentWorkspace && workspace === parentWorkspace && requestHasIdentity(parentFacts),
         )
-        if (finnySubagentType(params.subagent_type) && (!workspace || (requestHasIdentity(promptFacts) && !useParentContext))) {
+        if (
+          finnySubagentType(params.subagent_type) &&
+          (!workspace || (requestHasIdentity(promptFacts) && !useParentContext))
+        ) {
           workspace = (await bootstrapWorkspace(ctx.sessionID, params.prompt).catch(() => undefined))?.slug ?? workspace
         }
         if (workspace) {
@@ -869,7 +878,9 @@ const taskExecutor = Effect.gen(function* () {
         }
         return {
           slug: workspace,
-          preserveExistingContext: Boolean(parentWorkspace && workspace === parentWorkspace && requestHasIdentity(parentFacts)),
+          preserveExistingContext: Boolean(
+            parentWorkspace && workspace === parentWorkspace && requestHasIdentity(parentFacts),
+          ),
         }
       })
       const workspace = workspaceState.slug
@@ -902,16 +913,19 @@ const taskExecutor = Effect.gen(function* () {
         ? Exit.succeed(undefined)
         : yield* Effect.exit(
             Effect.promise(async () => {
-              const existingTask = await TaskState.get(nextSession.id)
+              const existingTask = await TaskState.get(nextSession.id, database)
               if (!existingTask) {
-                await TaskState.upsert({
-                  id: nextSession.id,
-                  parentSessionID: ctx.sessionID,
-                  description: params.description,
-                  subagentType: params.subagent_type,
-                  mode,
-                  status: TaskState.Status.queued,
-                })
+                await TaskState.upsert(
+                  {
+                    id: nextSession.id,
+                    parentSessionID: ctx.sessionID,
+                    description: params.description,
+                    subagentType: params.subagent_type,
+                    mode,
+                    status: TaskState.Status.queued,
+                  },
+                  database,
+                )
               }
             }),
           )
@@ -973,7 +987,11 @@ const taskExecutor = Effect.gen(function* () {
             ? dataExtractorValidationContext(workspaceContext, parseRequestFacts(params.prompt))
             : workspaceContext
         if (params.subagent_type === "data_extractor") {
-          const mismatch = dataRequestContextMismatchBlock({ prompt: params.prompt, workspace, context: workspaceContext })
+          const mismatch = dataRequestContextMismatchBlock({
+            prompt: params.prompt,
+            workspace,
+            context: workspaceContext,
+          })
           if (mismatch) return mismatch
           const existing = yield* Effect.promise(() =>
             validateExistingDataExtractorEvidence({
@@ -1050,9 +1068,7 @@ const taskExecutor = Effect.gen(function* () {
             context: workspaceContext,
           }).text
           if (!workspace) return validated
-          const pointer = yield* Effect.promise(() =>
-            renderSubagentArtifactPointer(params.subagent_type, workspace),
-          )
+          const pointer = yield* Effect.promise(() => renderSubagentArtifactPointer(params.subagent_type, workspace))
           return pointer ? `${validated}\n\n${pointer}` : validated
         }
         if (params.subagent_type === "sec_agent" && workspace) {
@@ -1081,18 +1097,24 @@ const taskExecutor = Effect.gen(function* () {
 
       const trackedRun = Effect.fn("TaskTool.trackedRun")(function* () {
         if (scriptedHarness) return yield* runTask()
-        const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id)))
+        const markRunningExit = yield* Effect.exit(
+          Effect.promise(() => TaskState.markRunning(nextSession.id, database)),
+        )
         if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
         const exit = yield* Effect.exit(runTask())
         if (Exit.isSuccess(exit)) {
           const text = exit.value
           const finalizeExit = yield* Effect.exit(
             Effect.promise(() =>
-              TaskState.finalizeActive(nextSession.id, {
-                status: taskResultStatus(text),
-                resultSummary: summarizeTaskResult(text),
-                lastError: null,
-              }),
+              TaskState.finalizeActive(
+                nextSession.id,
+                {
+                  status: taskResultStatus(text),
+                  resultSummary: summarizeTaskResult(text),
+                  lastError: null,
+                },
+                database,
+              ),
             ),
           )
           if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
@@ -1101,10 +1123,14 @@ const taskExecutor = Effect.gen(function* () {
         const error = Cause.squash(exit.cause)
         const finalizeExit = yield* Effect.exit(
           Effect.promise(() =>
-            TaskState.finalizeActive(nextSession.id, {
-              status: Cause.hasInterruptsOnly(exit.cause) ? TaskState.Status.cancelled : TaskState.Status.failed,
-              lastError: error instanceof Error ? error.message : String(error),
-            }),
+            TaskState.finalizeActive(
+              nextSession.id,
+              {
+                status: Cause.hasInterruptsOnly(exit.cause) ? TaskState.Status.cancelled : TaskState.Status.failed,
+                lastError: error instanceof Error ? error.message : String(error),
+              },
+              database,
+            ),
           ),
         )
         if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
@@ -1161,18 +1187,19 @@ const taskExecutor = Effect.gen(function* () {
               const text = result.info.output ?? EMPTY_SUBAGENT_RESULT_MARKER
               return Effect.exit(
                 Effect.promise(() =>
-                  TaskState.finalizeActive(nextSession.id, {
-                    status: taskResultStatus(text),
-                    resultSummary: summarizeTaskResult(text),
-                    lastError: null,
-                  }),
+                  TaskState.finalizeActive(
+                    nextSession.id,
+                    {
+                      status: taskResultStatus(text),
+                      resultSummary: summarizeTaskResult(text),
+                      lastError: null,
+                    },
+                    database,
+                  ),
                 ),
               ).pipe(
                 Effect.flatMap((exit) =>
-                  inject(
-                    "completed",
-                    Exit.isFailure(exit) ? taskRegistryErrorText(Cause.squash(exit.cause)) : text,
-                  ),
+                  inject("completed", Exit.isFailure(exit) ? taskRegistryErrorText(Cause.squash(exit.cause)) : text),
                 ),
               )
             }
@@ -1180,10 +1207,14 @@ const taskExecutor = Effect.gen(function* () {
               const error = result.info.error ?? ""
               return Effect.exit(
                 Effect.promise(() =>
-                  TaskState.finalizeActive(nextSession.id, {
-                    status: TaskState.Status.failed,
-                    lastError: error,
-                  }),
+                  TaskState.finalizeActive(
+                    nextSession.id,
+                    {
+                      status: TaskState.Status.failed,
+                      lastError: error,
+                    },
+                    database,
+                  ),
                 ),
               ).pipe(
                 Effect.flatMap((exit) =>
@@ -1321,10 +1352,7 @@ const taskExecutor = Effect.gen(function* () {
         }
       }
 
-      const runningSubagents = new Map<
-        string,
-        NonNullable<TaskMetadata["subagents"]>[number]
-      >()
+      const runningSubagents = new Map<string, NonNullable<TaskMetadata["subagents"]>[number]>()
       const batchMetadata = (subagents: NonNullable<TaskMetadata["subagents"]>): TaskMetadata => ({
         parentSessionId: ctx.sessionID,
         sessionId: ctx.sessionID,
