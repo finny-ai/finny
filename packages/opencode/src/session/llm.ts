@@ -24,14 +24,16 @@ import { SessionID } from "@/session/schema"
 import { Auth } from "@/auth"
 import { EffectBridge } from "@/effect/bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { acquireTelemetrySpan, runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { repairQuestionToolInput, repairToolCallInput } from "./repair-tool-call"
-import { aiSdkTelemetryPrivacy } from "@/security/telemetry"
+import { modelTelemetry } from "./llm/telemetry"
+import { sessionTracer } from "@/otel-context"
+import { acquireTelemetrySpan, runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
+import { SpanStatusCode, trace } from "@opentelemetry/api"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -86,30 +88,39 @@ const live: Layer.Layer<
     const flags = yield* RuntimeFlags.Service
 
     const run = Effect.fn("LLM.run")(function* (input: StreamRequest) {
-      yield* Effect.annotateCurrentSpan({
-        ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
-        ...runTelemetryAttributes(),
-        "finny.agent.name": input.agent.name,
-        "finny.agent.mode": input.agent.mode,
-      })
       yield* Effect.logInfo("stream", {
         providerID: input.model.providerID,
         modelID: input.model.id,
-        ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
+        "session.id": input.sessionID,
         small: (input.small ?? false).toString(),
         agent: input.agent.name,
         mode: input.agent.mode,
-        ...runTelemetryAttributes(),
       })
 
-      const [language, cfg, item, info] = yield* Effect.all(
+      const cfg = yield* config.get()
+      const tracer = cfg.experimental?.openTelemetry
+        ? (Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer)) ??
+          trace.getTracer("finny.runtime"))
+        : undefined
+      const resolveSpan = tracer && process.env.FINNY_HARNESS_MODE !== "1"
+        ? sessionTracer(tracer, input.sessionID, input.parentSessionID).startSpan("finny.provider.resolve", {
+            attributes: {
+              "gen_ai.system": input.model.providerID,
+              "gen_ai.request.model": input.model.id,
+            },
+          })
+        : undefined
+      const [language, item, info] = yield* Effect.all(
         [
           provider.getLanguage(input.model),
-          config.get(),
           provider.getProvider(input.model.providerID),
           auth.get(input.model.providerID),
         ],
         { concurrency: "unbounded" },
+      ).pipe(
+        Effect.tap(() => Effect.sync(() => resolveSpan?.setStatus({ code: SpanStatusCode.OK }))),
+        Effect.tapError(() => Effect.sync(() => resolveSpan?.setStatus({ code: SpanStatusCode.ERROR }))),
+        Effect.ensuring(Effect.sync(() => resolveSpan?.end())),
       )
 
       const isWorkflow = language instanceof GitLabWorkflowLanguageModel
@@ -214,27 +225,6 @@ const live: Layer.Layer<
           }
         })
       }
-
-      const tracer = cfg.experimental?.openTelemetry
-        ? Option.getOrUndefined(yield* Effect.serviceOption(OtelTracer.OtelTracer))
-        : undefined
-      const telemetryTracer = tracer
-        ? new Proxy(tracer, {
-            get(target, prop, receiver) {
-              if (prop !== "startSpan") return Reflect.get(target, prop, receiver)
-              return (...args: Parameters<typeof target.startSpan>) => {
-                const span = target.startSpan(...args)
-                for (const [key, value] of Object.entries(
-                  sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
-                )) {
-                  span.setAttribute(key, value)
-                }
-                for (const [key, value] of Object.entries(runTelemetryAttributes())) span.setAttribute(key, value)
-                return span
-              }
-            },
-          })
-        : undefined
 
       // Runtime seam: native is an opt-in adapter over @opencode-ai/llm. It
       // either returns a ready LLMEvent stream or a concrete fallback reason.
@@ -386,21 +376,16 @@ const live: Layer.Layer<
               },
             ],
           }),
-          // Privacy contract (@/security/telemetry): no raw prompt/completion
-          // attributes. Optional debug payloads must go through
-          // sanitizeTelemetryPayload (see session/llm/telemetry modelTelemetry).
-          experimental_telemetry: {
-            isEnabled: cfg.experimental?.openTelemetry,
-            functionId: "session.llm",
-            tracer: telemetryTracer,
-            ...aiSdkTelemetryPrivacy,
-            metadata: {
-              userId: cfg.username ?? "unknown",
-              sessionId: input.sessionID,
-              ...sessionTelemetryAttributes(input.sessionID, input.parentSessionID),
-              ...runTelemetryAttributes(),
-            },
-          },
+          experimental_telemetry: modelTelemetry({
+            enabled: cfg.experimental?.openTelemetry,
+            tracer,
+            sessionID: input.sessionID,
+            parentSessionID: input.parentSessionID,
+            userID: cfg.username,
+            messages: prepared.messages,
+            tools: prepared.tools,
+            functionID: "session.llm",
+          }),
         }),
       }
     })

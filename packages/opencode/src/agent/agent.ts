@@ -37,6 +37,7 @@ import { Effect, Context, Layer, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import * as Option from "effect/Option"
 import * as OtelTracer from "@effect/opentelemetry/Tracer"
+import { modelTelemetry } from "@/session/llm/telemetry"
 import { AbsolutePath, type DeepMutable } from "@opencode-ai/core/schema"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -44,7 +45,6 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
-import { aiSdkTelemetryPrivacy } from "@/security/telemetry"
 
 const PROMPT_FINNY = renderPromptWithSymbols(PROMPT_FINNY_RAW)
 const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
@@ -893,33 +893,30 @@ export const layer = Layer.effect(
         const authInfo = yield* auth.get(model.providerID).pipe(Effect.orDie)
         const isOpenaiOauth = model.providerID === "openai" && authInfo?.type === "oauth"
 
-        // Privacy: aiSdkTelemetryPrivacy forces recordInputs/recordOutputs off.
-        // Issue #134 (and any span enrichment) must use sanitizeTelemetryPayload
-        // for optional debug attributes — never raw messages/tool transcripts.
-        const params = {
-          experimental_telemetry: {
-            isEnabled: cfg.experimental?.openTelemetry,
-            tracer,
-            ...aiSdkTelemetryPrivacy,
-            metadata: {
-              userId: cfg.username ?? "unknown",
-            },
+        const messages: ModelMessage[] = [
+          ...(isOpenaiOauth
+            ? []
+            : system.map(
+                (item): ModelMessage => ({
+                  role: "system",
+                  content: item,
+                }),
+              )),
+          {
+            role: "user",
+            content: `Create an agent configuration based on this request: "${input.description}".\n\nIMPORTANT: The following identifiers already exist and must NOT be used: ${existing.map((i) => i.name).join(", ")}\n  Return ONLY the JSON object, no other text, do not wrap in backticks`,
           },
+        ]
+        const params = {
+          experimental_telemetry: modelTelemetry({
+            enabled: cfg.experimental?.openTelemetry,
+            tracer,
+            userID: cfg.username,
+            messages,
+            functionID: "agent.generate",
+          }),
           temperature: 0.3,
-          messages: [
-            ...(isOpenaiOauth
-              ? []
-              : system.map(
-                  (item): ModelMessage => ({
-                    role: "system",
-                    content: item,
-                  }),
-                )),
-            {
-              role: "user",
-              content: `Create an agent configuration based on this request: "${input.description}".\n\nIMPORTANT: The following identifiers already exist and must NOT be used: ${existing.map((i) => i.name).join(", ")}\n  Return ONLY the JSON object, no other text, do not wrap in backticks`,
-            },
-          ],
+          messages,
           model: language,
           schema: Object.assign(
             Schema.toStandardSchemaV1(GeneratedAgent),

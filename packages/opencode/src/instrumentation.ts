@@ -1,8 +1,17 @@
-import { trace, diag, DiagLogLevel, SpanStatusCode, type Attributes, type DiagLogger } from "@opentelemetry/api"
+import {
+  context,
+  trace,
+  diag,
+  DiagLogLevel,
+  SpanStatusCode,
+  type Attributes,
+  type DiagLogger,
+} from "@opentelemetry/api"
 import { BasicTracerProvider, SimpleSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import { resourceFromAttributes } from "@opentelemetry/resources"
 import { Log } from "./util/log"
 import { runTelemetryAttributes } from "./telemetry/run-attributes"
+import { installAsyncContextManager, rootSpan } from "./otel-context"
 
 // Route OTel diagnostics through the file logger. Writing them to stderr via
 // console.error corrupts the interactive TUI, since it renders into the same
@@ -25,6 +34,10 @@ const langfuseSecretKey = process.env["LANGFUSE_SECRET_KEY"]
 // Use PHOENIX_COLLECTOR_ENDPOINT to avoid colliding with the Effect
 // Observability layer which also reads OTEL_EXPORTER_OTLP_ENDPOINT.
 const phoenixEndpoint = process.env["PHOENIX_COLLECTOR_ENDPOINT"]
+
+// Install the global context manager before any provider or AI SDK span is
+// created so nested async spans retain their active parent across awaits.
+installAsyncContextManager()
 
 function flushWithTimeout(provider: BasicTracerProvider, ms = 2_000) {
   return Promise.race([provider.forceFlush(), new Promise<void>((r) => setTimeout(r, ms))])
@@ -101,9 +114,13 @@ function recordRunCompletion(exitCode: number, explicitSessionId?: string): { at
   }
   if (completionRecorded) return { attributes, recorded: false }
   completionRecorded = true
-  const span = trace.getTracer("finny.lifecycle").startSpan("finny.run.completed", {
-    attributes,
-  })
+  const parent = rootSpan()
+  const parentContext = parent ? trace.setSpan(context.active(), parent) : context.active()
+  const span = trace.getTracer("finny.lifecycle").startSpan(
+    "finny.run.completed",
+    { attributes },
+    parentContext,
+  )
   span.setStatus({ code: exitCode === 0 ? SpanStatusCode.OK : SpanStatusCode.ERROR })
   span.end()
   return { attributes, recorded: true }

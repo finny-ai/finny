@@ -64,7 +64,7 @@ describe("headless-only fixture boundaries", () => {
     const env: Record<string, string> = {}
     configureCollector(env, "http://127.0.0.1:4318/")
     expect(env.PHOENIX_COLLECTOR_ENDPOINT).toBe("http://127.0.0.1:4318")
-    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBe("http://127.0.0.1:4318")
+    expect(env.OTEL_EXPORTER_OTLP_ENDPOINT).toBeUndefined()
     expect(() => configureCollector({}, "file:///tmp/traces")).toThrow("http or https")
     expect(() => configureCollector({}, "https://user:pass@example.test")).toThrow("must not contain credentials")
   })

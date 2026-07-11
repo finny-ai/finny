@@ -129,7 +129,6 @@ export function configureCollector(env: Record<string, string>, raw?: string): v
   if (url.username || url.password) throw new Error("collector endpoint must not contain credentials")
   const normalized = url.toString().replace(/\/$/, "")
   env.PHOENIX_COLLECTOR_ENDPOINT = normalized
-  env.OTEL_EXPORTER_OTLP_ENDPOINT = normalized
 }
 
 export function configureTelemetryIdentity(env: Record<string, string>): void {
