@@ -1,6 +1,16 @@
 import { Effect } from "effect"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
+import { parseRequestFacts } from "@/agent/request-identity"
+import {
+  ensureResearchBrief,
+  inspectResearchBrief,
+  readWorkspaceRequestIdentity,
+  researchBriefMatchesFacts,
+  restoreRequestIdentityFromBrief,
+  updateResearchBrief,
+} from "@/agent/research-brief"
+import { syncWorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import {
   isWorkspaceEnvReady,
   resolveWorkspacePythonEnv,
@@ -20,6 +30,7 @@ export interface PreflightResult {
   python: string
   pip: string
   envDir: string
+  researchOnly?: boolean
 }
 
 export interface PreflightInput {
@@ -37,9 +48,7 @@ function userPromptText(parts: { type: string; text?: string; synthetic?: boolea
     .trim()
 }
 
-export function extractPromptText(message: {
-  parts: { type: string; text?: string; synthetic?: boolean }[]
-}): string {
+export function extractPromptText(message: { parts: { type: string; text?: string; synthetic?: boolean }[] }): string {
   return userPromptText(message.parts)
 }
 
@@ -91,6 +100,68 @@ function bootstrapSessionWorkspace(input: PreflightInput) {
   })
 }
 
+function loadBoundResearchHandoff(input: PreflightInput) {
+  return Effect.tryPromise({
+    try: async () => {
+      const slug = await getSessionWorkspace(input.sessionID)
+      if (!slug) return undefined
+      const workspacePath = algoDir(slug)
+      const status = await inspectResearchBrief(workspacePath)
+      if (!status.exists) return undefined
+      const facts = parseRequestFacts(input.prompt)
+      // Build prompt that adds/changes identity vs an existing brief must fail closed —
+      // never silently reuse the workspace without an approved matching handoff.
+      if (status.brief && !researchBriefMatchesFacts(status.brief, facts)) {
+        throw new Error(
+          "Build blocked by ResearchBrief: request identity does not match the research handoff (re-run Research or restate the approved identity)",
+        )
+      }
+      if (status.brief?.transition === "approved" && status.buildReady) {
+        await restoreRequestIdentityFromBrief({ workspacePath, brief: status.brief })
+      }
+      return { slug, workspacePath, status: await inspectResearchBrief(workspacePath) }
+    },
+    catch: asError,
+  })
+}
+
+function bootstrapResearchWorkspace(input: PreflightInput) {
+  return Effect.tryPromise({
+    try: async () => {
+      const existingSlug = await getSessionWorkspace(input.sessionID)
+      if (existingSlug) {
+        const existingPath = algoDir(existingSlug)
+        const existingStatus = await inspectResearchBrief(existingPath)
+        if (existingStatus.exists && !existingStatus.brief) {
+          throw new Error(`ResearchBrief blocked: ${existingStatus.reason}`)
+        }
+        if (existingStatus.brief) {
+          const context = await syncWorkspaceRequestContext({
+            sessionID: input.sessionID,
+            slug: existingSlug,
+            prompt: input.prompt,
+            facts: parseRequestFacts(input.prompt),
+          })
+          await updateResearchBrief({
+            workspacePath: existingPath,
+            identity: {
+              request_id: context.request_id,
+              requested_symbol: context.requested_symbol,
+              requested_symbols: context.requested_symbols,
+              requested_interval: context.requested_interval,
+              requested_asset_class: context.requested_asset_class,
+              requested_algorithm_name: context.requested_algorithm_name,
+            },
+          })
+          return { slug: existingSlug, dir: existingPath, created: false, rebound: false }
+        }
+      }
+      return bootstrapWorkspace(input.sessionID, input.prompt)
+    },
+    catch: asError,
+  })
+}
+
 type PreflightPublish = ReturnType<typeof createPreflightPublisher>
 type BootstrappedWorkspace = NonNullable<Awaited<ReturnType<typeof bootstrapWorkspace>>>
 
@@ -128,8 +199,38 @@ export function runFinnyPreflight(input: PreflightInput) {
   return Effect.gen(function* () {
     if (!shouldRunPreflight(input.agent)) return undefined
 
+    if (input.agent === "research") {
+      const workspace = yield* bootstrapResearchWorkspace(input)
+      if (!workspace) return undefined
+      const identity = yield* Effect.tryPromise({
+        try: () => readWorkspaceRequestIdentity(workspace.dir),
+        catch: asError,
+      })
+      if (!identity) throw new Error("ResearchBrief blocked: workspace request identity is missing")
+      yield* Effect.tryPromise({
+        try: () => ensureResearchBrief(workspace.dir, identity),
+        catch: asError,
+      })
+      const publish = createPreflightPublisher(input)
+      yield* publish("workspace", "Research workspace ready; execution environment not provisioned", workspace.slug)
+      return {
+        workspaceSlug: workspace.slug,
+        workspacePath: workspace.dir,
+        python: "",
+        pip: "",
+        envDir: "",
+        researchOnly: true,
+      } satisfies PreflightResult
+    }
+
     const envReadyBefore = yield* loadEnvReadyBefore(input.sessionID)
-    const workspace = yield* bootstrapSessionWorkspace(input)
+    const handoff = yield* loadBoundResearchHandoff(input)
+    if (handoff && !handoff.status.buildReady) {
+      throw new Error(`Build blocked by ResearchBrief: ${handoff.status.reason ?? "handoff is not ready"}`)
+    }
+    const workspace = handoff
+      ? { slug: handoff.slug, dir: handoff.workspacePath, created: false, rebound: false }
+      : yield* bootstrapSessionWorkspace(input)
     if (!workspace) return undefined
 
     const reused = !workspace.created && !workspace.rebound

@@ -68,6 +68,8 @@ import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 import { ProviderPreflight } from "./provider-preflight"
 import { Auth } from "@/auth"
 import { buildCapabilityManifest, capabilityManifestSystemFragment } from "@/capability/manifest"
+import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
+import { inspectResearchBriefForBuildHandoff, renderResearchBriefHandoff } from "@/agent/research-brief"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1414,6 +1416,17 @@ export const layer = Layer.effect(
             )
             if (capabilityManifest.phase !== "internal") {
               system.push(capabilityManifestSystemFragment(capabilityManifest))
+            }
+            if (agent.name === "build") {
+              const workspace = yield* Effect.promise(() => getSessionWorkspace(sessionID))
+              if (workspace) {
+                // Use handoff-aware inspect so sparse Build prompts that rewrote
+                // request.json do not drop an already-approved ResearchBrief.
+                const handoff = yield* Effect.promise(() =>
+                  inspectResearchBriefForBuildHandoff(algoDir(workspace)),
+                )
+                if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
+              }
             }
             const activeBrokerKind = yield* Effect.promise(() => readActiveBrokerKind())
             if (activeBrokerKind) system.push(BrokerRegistry.getSpec(activeBrokerKind).promptFragment)

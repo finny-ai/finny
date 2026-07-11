@@ -108,6 +108,7 @@ const EXPECTED_TOOLS = {
     "finny_paper_approve",
     "finny_portfolio_backtest",
     "finny_workflow_request_approval",
+    "finny_workspace_prepare",
     "question",
     "read",
     "skill",
@@ -118,6 +119,7 @@ const EXPECTED_TOOLS = {
     "finny_algorithm_set_params",
     "finny_get_history",
     "finny_get_quote",
+    "finny_workspace_prepare",
     "question",
     "skill",
     "task",
@@ -288,6 +290,8 @@ describe("Finny debloat", () => {
       expect(Permission.evaluate("task", "news_agent", research!.permission).action).toBe("allow")
       expect(Permission.evaluate("task", "sec_agent", research!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "general", research!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_workspace_prepare", "*", research!.permission).action).toBe("allow")
+      expect(Permission.evaluate("finny_workspace_prepare", "*", build!.permission).action).toBe("allow")
 
       expect(Permission.evaluate("task", "news_agent", chat!.permission).action).toBe("allow")
       expect(Permission.evaluate("task", "data_extractor", chat!.permission).action).toBe("deny")

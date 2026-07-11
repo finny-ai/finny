@@ -86,6 +86,20 @@ it.instance("build agent has correct default properties", () =>
   }),
 )
 
+it.instance("versioned Finny CLI aliases resolve to their canonical compatibility modes", () =>
+  Effect.gen(function* () {
+    const build = yield* load((svc) => svc.get("finny-build"))
+    const research = yield* load((svc) => svc.get("finny-research"))
+    const chat = yield* load((svc) => svc.get("finny-chat"))
+
+    expect(build?.name).toBe("build")
+    expect(research?.name).toBe("research")
+    expect(chat?.name).toBe("chat")
+    expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+    expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
+  }),
+)
+
 it.instance("returns Finny as the visible primary agent", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())

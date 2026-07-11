@@ -53,6 +53,16 @@ const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
 type PermissionConfig = Parameters<typeof Permission.fromConfig>[0]
 
+const BUILTIN_AGENT_ALIASES: Record<string, string> = {
+  "finny-build": "build",
+  "finny-research": "research",
+  "finny-chat": "chat",
+}
+
+export function resolveBuiltInAgentAlias(name: string): string {
+  return BUILTIN_AGENT_ALIASES[name] ?? name
+}
+
 export const Info = Schema.Struct({
   name: Schema.String,
   description: Schema.optional(Schema.String),
@@ -186,6 +196,7 @@ export const layer = Layer.effect(
         const finnyBuildTools = [
           "question",
           "task",
+          "finny_workspace_prepare",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
           "finny_algorithm_validate",
@@ -229,6 +240,7 @@ export const layer = Layer.effect(
         const finnyResearchTools = [
           "question",
           "task",
+          "finny_workspace_prepare",
           "finny_get_quote",
           "finny_get_history",
           "webfetch",
@@ -444,7 +456,7 @@ export const layer = Layer.effect(
           finny: {
             name: "finny",
             description:
-              "Finny strategy mode. Researches, builds, validates, backtests, and walk-forward tests trading strategies.",
+              "Finny strategy workflow. Researches first, then builds, validates, backtests, and walk-forward tests with explicit evidence gates.",
             color: "#f97316",
             options: {},
             prompt: PROMPT_FINNY,
@@ -472,7 +484,8 @@ export const layer = Layer.effect(
           },
           build: {
             name: "build",
-            description: "Build mode. Generates trading algorithms immediately based on your specifications.",
+            description:
+              "Build compatibility mode. Consumes an approved ResearchBrief when Research was used, then builds, validates, and backtests.",
             color: "#f97316",
             options: {},
             prompt: PROMPT_FINNY_BUILD,
@@ -500,7 +513,8 @@ export const layer = Layer.effect(
           },
           research: {
             name: "research",
-            description: "Research mode. Asks clarifying questions, gathers data, and then builds.",
+            description:
+              "Research compatibility mode. Produces a versioned ResearchBrief; Build requires explicit user approval before execution.",
             color: "#a78bfa",
             options: {},
             prompt: PROMPT_FINNY_RESEARCH,
@@ -789,7 +803,7 @@ export const layer = Layer.effect(
         }
 
         const get = Effect.fnUntraced(function* (agent: string) {
-          return agents[agent]
+          return agents[resolveBuiltInAgentAlias(agent)]
         })
 
         const primaryOrder = new Map([
@@ -816,7 +830,8 @@ export const layer = Layer.effect(
         const defaultInfo = Effect.fnUntraced(function* () {
           const c = yield* config.get()
           if (c.default_agent) {
-            const agent = agents[c.default_agent]
+            const resolved = resolveBuiltInAgentAlias(c.default_agent)
+            const agent = agents[resolved]
             if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
             if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
             if (agent.hidden === true && !["build", "research", "chat"].includes(agent.name))

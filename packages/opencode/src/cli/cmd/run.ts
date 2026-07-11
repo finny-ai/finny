@@ -523,7 +523,7 @@ export const RunCommand = effectCmd({
 
       async function localAgent() {
         if (!args.agent) return undefined
-        const name = args.agent
+        const name = Agent.resolveBuiltInAgentAlias(args.agent)
 
         const entry = await Effect.runPromise(
           agentSvc.get(name).pipe(Effect.provideService(InstanceRef, localInstance)),
@@ -541,7 +541,7 @@ export const RunCommand = effectCmd({
 
       async function attachAgent(sdk: OpencodeClient) {
         if (!args.agent) return undefined
-        const name = args.agent
+        const name = Agent.resolveBuiltInAgentAlias(args.agent)
 
         const modes = await sdk.app
           .agents(undefined, { throwOnError: true })
