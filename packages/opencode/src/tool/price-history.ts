@@ -8,8 +8,8 @@ import { Process } from "@/util/process"
 import { resolveSessionPythonEnv } from "@/python/session-env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
 
-const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
-type Interval = (typeof INTERVALS)[number]
+export const PRICE_HISTORY_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
+type Interval = (typeof PRICE_HISTORY_INTERVALS)[number]
 
 // yfinance's native intervals. There is intentionally no `4h` here — yfinance
 // does not provide native 4h bars, and silently aliasing it to 1h was lying
@@ -25,7 +25,7 @@ const YF_INTERVAL: Record<Interval, string> = {
 }
 
 // yfinance period limits — keep `period` aligned with the interval to avoid empty frames.
-const YF_PERIOD: Record<Interval, string> = {
+export const PRICE_HISTORY_RETENTION: Record<Interval, string> = {
   "1m": "5d",
   "5m": "30d",
   "15m": "60d",
@@ -39,7 +39,7 @@ const parameters = z.object({
     .string()
     .describe("Symbol to fetch (BTC, BTC/USD, BTC-USD, AAPL, etc.). Must be a supported market."),
   interval: z
-    .enum(INTERVALS)
+    .enum(PRICE_HISTORY_INTERVALS)
     .default("1h")
     .describe("Bar interval. yfinance only supports the listed natives; 4h was removed because it aliased to 1h and lied about bar size."),
   limit: z
@@ -115,7 +115,7 @@ export const PriceHistoryTool = Tool.define(
 
         const interval = params.interval
         const yfInterval = YF_INTERVAL[interval]
-        const yfPeriod = YF_PERIOD[interval]
+        const yfPeriod = PRICE_HISTORY_RETENTION[interval]
 
         const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-history-"))
         try {

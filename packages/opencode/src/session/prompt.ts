@@ -67,6 +67,7 @@ import { BrokerRegistry } from "@/live/brokers"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 import { ProviderPreflight } from "./provider-preflight"
 import { Auth } from "@/auth"
+import { buildCapabilityManifest, capabilityManifestSystemFragment } from "@/capability/manifest"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1331,6 +1332,14 @@ export const layer = Layer.effect(
             const bypassAgentCheck = lastUserMsg?.parts.some((p) => p.type === "agent") ?? false
             const promptOps = yield* ops()
 
+            const [capabilityDefinitions, capabilityAgentInfos] = yield* Effect.all([
+              registry.tools({
+                modelID: ModelV2.ID.make(model.api.id),
+                providerID: model.providerID,
+                agent,
+              }),
+              agents.list(),
+            ])
             const tools = yield* SessionTools.resolve({
               agent,
               session,
@@ -1339,6 +1348,7 @@ export const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
+              definitions: capabilityDefinitions,
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1386,6 +1396,25 @@ export const layer = Layer.effect(
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
+            const manifest = buildCapabilityManifest({
+              agent,
+              agents: capabilityAgentInfos,
+              tools: capabilityDefinitions,
+              sessionPermission: session.permission,
+            })
+            const capabilityManifest = yield* Effect.succeed(manifest).pipe(
+              Effect.withSpan("Finny.capabilityManifest", {
+                attributes: {
+                  "finny.capability_manifest.version": manifest.version,
+                  "finny.capability_manifest.hash": manifest.hash,
+                  "finny.capability_manifest.phase": manifest.phase,
+                  "finny.capability_manifest.selected": manifest.selectedCapabilities.join(","),
+                },
+              }),
+            )
+            if (capabilityManifest.phase !== "internal") {
+              system.push(capabilityManifestSystemFragment(capabilityManifest))
+            }
             const activeBrokerKind = yield* Effect.promise(() => readActiveBrokerKind())
             if (activeBrokerKind) system.push(BrokerRegistry.getSpec(activeBrokerKind).promptFragment)
             const format = lastUser.format ?? { type: "text" as const }

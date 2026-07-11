@@ -30,6 +30,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
+  definitions?: Tool.Def[]
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -73,11 +74,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         .pipe(Effect.orDie),
   })
 
-  for (const item of yield* registry.tools({
-    modelID: ModelV2.ID.make(input.model.api.id),
-    providerID: input.model.providerID,
-    agent: input.agent,
-  })) {
+  const definitions =
+    input.definitions ??
+    (yield* registry.tools({
+      modelID: ModelV2.ID.make(input.model.api.id),
+      providerID: input.model.providerID,
+      agent: input.agent,
+    }))
+  for (const item of definitions) {
     const schema = ProviderTransform.schema(input.model, ToolJsonSchema.fromTool(item))
     tools[item.id] = tool({
       description: item.description,
