@@ -72,28 +72,72 @@ export function normalizeSymbol(input?: string): string | undefined {
   return s || undefined
 }
 
-/** Canonical interval token: "15min"/"15-minute"/"15 m" → "15m"; "60m"/"1hour" → "1h". */
+/** Spoken/cardinal forms that still mean a numeric bar interval. */
+const WORD_NUMBERS: Record<string, number> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  fifteen: 15,
+  twenty: 20,
+  "twenty-five": 25,
+  twentyfive: 25,
+  thirty: 30,
+  forty: 40,
+  "forty-five": 45,
+  fortyfive: 45,
+  sixty: 60,
+}
+
+function parseIntervalCount(raw: string): number | undefined {
+  const digits = /^(\d+)$/.exec(raw.trim())
+  if (digits) return parseInt(digits[1]!, 10)
+  const key = raw.trim().toLowerCase().replace(/\s+/g, "-")
+  return WORD_NUMBERS[key] ?? WORD_NUMBERS[key.replace(/-/g, "")]
+}
+
+/** Canonical interval token: "15min"/"five-minute"/"60m"/"1hour"/"weekly" → "15m"/"5m"/"1h"/"1w". */
 export function normalizeInterval(input?: string): string | undefined {
   if (!input) return undefined
   const trimmed = input.trim()
   if (/\bdaily\b/i.test(trimmed)) return "1d"
   if (/\bhourly\b/i.test(trimmed)) return "1h"
-  const m = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i.exec(trimmed)
+  if (/\bweekly\b/i.test(trimmed)) return "1w"
+
+  const m =
+    /^[@(]?\s*(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty(?:[-\s]?five)?|thirty|forty(?:[-\s]?five)?|sixty)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)\s*[)]?$/i.exec(
+      trimmed,
+    ) ??
+    /(\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty(?:[-\s]?five)?|thirty|forty(?:[-\s]?five)?|sixty)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)\b/i.exec(
+      trimmed,
+    )
   if (!m) return undefined
-  let n = parseInt(m[1]!, 10)
+  const n = parseIntervalCount(m[1]!)
+  if (n === undefined || !Number.isFinite(n) || n <= 0) return undefined
   const unit = m[2]!.toLowerCase()
-  if (/^m/.test(unit)) {
+  if (unit === "w" || unit.startsWith("week")) return n === 1 ? "1w" : `${n}w`
+  if (unit === "h" || unit.startsWith("hour") || unit.startsWith("hr")) return `${n}h`
+  if (unit === "d" || unit.startsWith("day")) return `${n}d`
+  // minutes / m / min / mins — never months (months is not in the unit alt list)
+  if (unit === "m" || unit.startsWith("min")) {
     if (n % 60 === 0 && n >= 60) return `${n / 60}h`
     return `${n}m`
   }
-  if (/^h/.test(unit)) return `${n}h`
-  return `${n}d`
+  return undefined
 }
 
 /** Render a canonical interval for human-facing messages: "15m" → "15min". */
 function displayInterval(canonical?: string): string | undefined {
   if (!canonical) return undefined
-  const m = /^(\d+)([mhd])$/.exec(canonical)
+  const m = /^(\d+)([mhdw])$/.exec(canonical)
   if (!m) return canonical
   const n = m[1]
   switch (m[2]) {
@@ -101,6 +145,8 @@ function displayInterval(canonical?: string): string | undefined {
       return `${n}min`
     case "h":
       return `${n}h`
+    case "w":
+      return n === "1" ? "weekly" : `${n}w`
     default:
       return `${n}d`
   }
@@ -185,10 +231,29 @@ function normalizedRequestedSymbols(facts: RequestFacts): string[] {
 
 // ── Prompt fact parsing ─────────────────────────────────────────────────────
 
-const INTERVAL_RE = /(\d+)\s*-?\s*(minutes?|mins?|m|hours?|hrs?|h|days?|d)\b/i
-const BARE_INTERVAL_RE = /\b(daily|hourly)\b/gi
+const INTERVAL_COUNT = String.raw`(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty(?:[-\s]?five)?|thirty|forty(?:[-\s]?five)?|sixty)`
+const INTERVAL_UNIT = String.raw`(?:minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)`
+const INTERVAL_RE = new RegExp(String.raw`(${INTERVAL_COUNT})\s*-?\s*(${INTERVAL_UNIT})\b`, "gi")
+const INTERVAL_TOKEN = String.raw`${INTERVAL_COUNT}\s*-?\s*${INTERVAL_UNIT}`
+// Labels that mark the *request bar* rather than an indicator window.
+const EXPLICIT_INTERVAL_BEFORE_RE =
+  /\b(?:bar\s+size|bar\s+interval|bar\s+period|candle\s+size|candle\s+period|cadence|every|frequency|interval|resolution|sampling\s+frequency|timeframe|time-frame)\s*(?::|=|is|of)?\s*$/i
+// Accept both "1h or 4h bars" and "1h, 4h, or 1d bars" as explicit bar alternatives.
+const EXPLICIT_INTERVAL_AFTER_RE = new RegExp(
+  String.raw`^\s*(?:(?:(?:,\s*|\s+(?:or|and)\s+|\/\s*)+${INTERVAL_TOKEN}\s*)+)?(?:bar|bars|candle|candles|chart|charts|cadence|data|frequency|interval|market\s+data|ohlc|ohlcv|price|prices|resolution|timeframe|time-frame)\b`,
+  "i",
+)
+// Word-boundary feature tokens so "small-cap" / "smart beta" are not treated as SMA/window horizons.
+const FEATURE_HORIZON_AFTER_RE =
+  /^\s*(?:[-–—]\s*)?(?:(?:simple|exponential|relative\s+strength|average\s+true\s+range)\s+)?(?:\b(?:adx|atr|bollinger|ema|indicator|lookback|macd|ma|period|rsi|sma|stdev|volatility|window|wma)\b|moving\s+average|standard\s+deviation|vol\s+filter|rolling\b)/i
+const FEATURE_HORIZON_BEFORE_RE =
+  /(?:\b(?:adx|atr|bollinger|ema|macd|ma|rsi|sma|stdev|volatility|window|wma)\b|moving\s+average|standard\s+deviation|rolling|lookback(?:\s+period)?|look\s*back(?:\s+period)?)\s*(?:\(|of|:|=|is)?\s*$/i
+// Durations ("last 6 months", "over 3 months") are not bar intervals.
+const DURATION_CONTEXT_RE =
+  /\b(?:last|past|previous|next|over|for|during|within|across)\s*$/i
+const BARE_INTERVAL_RE = /\b(daily|hourly|weekly)\b/gi
 const BARE_INTERVAL_TIMEFRAME_CONTEXT_RE =
-  /\b(?:bar|bars|candle|candles|chart|charts|cadence|data|frequency|interval|market\s+data|ohlcv|price|prices|resolution|strategy|timeframe|time-frame)\b/i
+  /\b(?:bar|bars|candle|candles|chart|charts|cadence|crossover|data|frequency|interval|market\s+data|ohlc|ohlcv|price|prices|resolution|strategy|timeframe|time-frame)\b/i
 const BARE_INTERVAL_RISK_CONTEXT_RE =
   /\b(?:cap|caps|drawdown|limit|limits|loss|losses|max|maximum|min|minimum|p&l|pnl|profit|profits|return|returns|risk|risking|stop|stops|target|targets|vol|volatility)\b/i
 const REQUESTED_ALGORITHM_NAME_RES = [
@@ -311,6 +376,19 @@ function looseSymbolFromPrompt(prompt: string): { sym: string; asset: AssetClass
   return undefined
 }
 
+function nextToken(text: string): string | undefined {
+  const match = /^\s*[`"'([]*([A-Za-z0-9][A-Za-z0-9./_-]*)/.exec(text)
+  return match?.[1]
+}
+
+function bareIntervalNearSymbol(before: string, after: string): boolean {
+  // "on daily AAPL" / "AAPL daily" — bare cadence next to a known ticker is bar identity.
+  const afterTok = nextToken(after)
+  if (afterTok && recognizeToken(afterTok)) return true
+  const previous = before.match(/([A-Za-z0-9][A-Za-z0-9./_-]*)\s*$/)?.[1]
+  return Boolean(previous && recognizeToken(previous))
+}
+
 function bareIntervalFromPrompt(prompt: string): string | undefined {
   BARE_INTERVAL_RE.lastIndex = 0
   for (const match of prompt.matchAll(BARE_INTERVAL_RE)) {
@@ -331,12 +409,75 @@ function bareIntervalFromPrompt(prompt: string): string | undefined {
     if (BARE_INTERVAL_RISK_CONTEXT_RE.test(immediateContext)) continue
 
     if (BARE_INTERVAL_TIMEFRAME_CONTEXT_RE.test(localContext)) return normalizeInterval(word)
+    if (bareIntervalNearSymbol(before, after)) return normalizeInterval(word)
 
     // Keep terse prompts like "SOL daily" working without treating common
     // risk phrases in full sentences as interval requests.
     if (promptWords(prompt).length <= 4) return normalizeInterval(word)
   }
   return undefined
+}
+
+/**
+ * Distinguish the request's bar interval from feature horizons. Financial
+ * prompts commonly mix both ("daily bars with a 20-day SMA"); selecting the
+ * first interval-shaped token lets the indicator horizon corrupt request
+ * identity. Explicit bar/timeframe language wins, feature windows are ignored,
+ * and compatible implicit forms such as "SPY 15-minute strategy" remain valid.
+ */
+function isExplicitBarInterval(before: string, after: string): boolean {
+  if (EXPLICIT_INTERVAL_BEFORE_RE.test(before) || EXPLICIT_INTERVAL_AFTER_RE.test(after)) return true
+  // Parenthetical / at-sign / dotted compact forms: "SPY (15m)", "SPY @ 5m".
+  if (/[@(]\s*$/.test(before) && /^\s*[,;).]/.test(after)) return true
+  if (/@\s*$/.test(before)) return true
+  return false
+}
+
+function isFeatureHorizon(before: string, after: string): boolean {
+  return FEATURE_HORIZON_BEFORE_RE.test(before) || FEATURE_HORIZON_AFTER_RE.test(after)
+}
+
+function isDurationContext(before: string, after: string): boolean {
+  // Only reject when the duration cue is *adjacent* to this token.
+  // "15-minute ... over 3 months" must keep 15m; "over 3 months" alone must not invent a bar.
+  if (DURATION_CONTEXT_RE.test(before)) return true
+  // "3-month window" / "6 months of data" immediately after the number+unit.
+  if (/^\s*(?:-?\s*)?(?:month|months|mo)\b/i.test(after)) return true
+  return false
+}
+
+function intervalFromPrompt(prompt: string): string | undefined {
+  const candidates: Array<{ index: number; score: number; interval: string }> = []
+  INTERVAL_RE.lastIndex = 0
+  for (const match of prompt.matchAll(INTERVAL_RE)) {
+    const index = match.index ?? 0
+    const before = prompt.slice(Math.max(0, index - 64), index)
+    const after = prompt.slice(index + match[0].length, index + match[0].length + 80)
+    if (isDurationContext(before, after)) continue
+    const explicit = isExplicitBarInterval(before, after)
+    // Explicit bar/timeframe labels win over nearby feature-horizon words
+    // ("timeframe: 15-minute volatility breakout" is still 15m bars).
+    if (!explicit && isFeatureHorizon(before, after)) continue
+
+    const interval = normalizeInterval(match[0])
+    if (!interval) continue
+    const nearbyTimeframe = BARE_INTERVAL_TIMEFRAME_CONTEXT_RE.test(`${before.slice(-32)} ${after.slice(0, 56)}`)
+    const nearSymbol = bareIntervalNearSymbol(before, after)
+    const score = explicit ? 300 : nearbyTimeframe ? 200 : nearSymbol ? 150 : 100
+    candidates.push({ index, score, interval })
+  }
+
+  // Compact parenthetical / @ tokens that INTERVAL_RE may not own when glued:
+  // "SPY(15m)", "SPY@5m".
+  for (const match of prompt.matchAll(/[@(]\s*(\d+)\s*-?\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\s*\)?/gi)) {
+    const index = match.index ?? 0
+    const interval = normalizeInterval(match[0].replace(/^[@(]/, "").replace(/\)$/, ""))
+    if (!interval) continue
+    candidates.push({ index, score: 280, interval })
+  }
+
+  candidates.sort((a, b) => b.score - a.score || a.index - b.index)
+  return candidates[0]?.interval ?? bareIntervalFromPrompt(prompt)
 }
 
 const EXPLICIT_TICKER_RE = /^[A-Z][A-Z0-9.]{0,5}$/
@@ -488,8 +629,7 @@ export function parseRequestFacts(prompt: string): RequestFacts {
     }
   }
 
-  const im = INTERVAL_RE.exec(prompt)
-  facts.requested_interval = im ? normalizeInterval(im[0]) : bareIntervalFromPrompt(prompt)
+  facts.requested_interval = intervalFromPrompt(prompt)
 
   const name = requestedAlgorithmName(prompt)
   if (name) facts.requested_algorithm_name = name

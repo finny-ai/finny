@@ -31,6 +31,10 @@ describe("request identity normalization", () => {
     expect(normalizeInterval("1 hour")).toBe("1h")
     expect(normalizeInterval("daily")).toBe("1d")
     expect(normalizeInterval("hourly")).toBe("1h")
+    expect(normalizeInterval("weekly")).toBe("1w")
+    expect(normalizeInterval("five-minute")).toBe("5m")
+    expect(normalizeInterval("thirty minutes")).toBe("30m")
+    expect(normalizeInterval("(15m)")).toBe("15m")
   })
 })
 
@@ -90,6 +94,58 @@ describe("parseRequestFacts", () => {
     expect(parseRequestFacts("Build a SOL daily strategy with max drawdown 10%.").requested_interval).toBe("1d")
     expect(parseRequestFacts("Build SPY with max daily drawdown 2%.").requested_interval).toBeUndefined()
     expect(parseRequestFacts("Build SPY with daily risk limit 2%.").requested_interval).toBeUndefined()
+  })
+
+  test("does not let indicator lookbacks override the bar interval", () => {
+    const audit = parseRequestFacts("Build a daily AAPL strategy using a 20-day SMA and test it for leakage.")
+    expect(audit.requested_symbol).toBe("AAPL")
+    expect(audit.requested_interval).toBe("1d")
+
+    expect(parseRequestFacts("15-minute SPY with a 20-day volatility filter").requested_interval).toBe("15m")
+    expect(parseRequestFacts("SPY timeframe: 1h using a 14-day RSI").requested_interval).toBe("1h")
+    expect(parseRequestFacts("SPY on daily candles with a 21-day EMA").requested_interval).toBe("1d")
+  })
+
+  test("treats explicit bar language as interval identity", () => {
+    expect(parseRequestFacts("AAPL on 20-day bars").requested_interval).toBe("20d")
+    expect(parseRequestFacts("SPY with interval=4h and a 60-minute ATR window").requested_interval).toBe("4h")
+    expect(parseRequestFacts("Use 15-minute candles for SPY with rolling 20-day statistics").requested_interval).toBe(
+      "15m",
+    )
+  })
+
+  test("leaves isolated feature horizons ambiguous instead of treating them as bars", () => {
+    expect(parseRequestFacts("Build AAPL using a 20-day SMA").requested_interval).toBeUndefined()
+    expect(parseRequestFacts("Build SPY using 14-day RSI and 20-day ATR").requested_interval).toBeUndefined()
+    expect(parseRequestFacts("Model SPY with 60-minute volatility").requested_interval).toBeUndefined()
+  })
+
+  test("does not treat ordinary strategy words as SMA/window feature horizons", () => {
+    expect(parseRequestFacts("Build a 1d small-cap momentum strategy for IWM").requested_interval).toBe("1d")
+    expect(parseRequestFacts("Build SPY 15m smart beta mean reversion").requested_interval).toBe("15m")
+  })
+
+  test("propagates explicit bar context across comma-separated alternatives", () => {
+    expect(parseRequestFacts("Prefer 1h, 4h, or 1d bars for SPY momentum").requested_interval).toBe("1h")
+    expect(parseRequestFacts("Prefer 1h or 4h bars for SPY momentum").requested_interval).toBe("1h")
+  })
+
+  test("keeps explicitly labeled intervals even when feature words follow", () => {
+    expect(parseRequestFacts("timeframe: 15-minute volatility breakout on SPY").requested_interval).toBe("15m")
+    expect(parseRequestFacts("interval 15m RSI scalping on SPY").requested_interval).toBe("15m")
+  })
+
+  test("accepts spoken and compact bar intervals without inventing duration windows", () => {
+    expect(parseRequestFacts("SPY five-minute strategy").requested_interval).toBe("5m")
+    expect(parseRequestFacts("AAPL thirty minute bars").requested_interval).toBe("30m")
+    expect(parseRequestFacts("trade TSLA on weekly bars").requested_interval).toBe("1w")
+    expect(parseRequestFacts("Build SPY (15m) breakout").requested_interval).toBe("15m")
+    expect(parseRequestFacts("SPY @ 5m with 200-day MA").requested_interval).toBe("5m")
+    expect(parseRequestFacts("Use bar size 5 minutes for SPY").requested_interval).toBe("5m")
+    expect(parseRequestFacts("20-day SMA crossover on daily AAPL").requested_interval).toBe("1d")
+    expect(parseRequestFacts("Build SPY for the last 6 months").requested_interval).toBeUndefined()
+    expect(parseRequestFacts("lookback period = 20 days for SPY").requested_interval).toBeUndefined()
+    expect(parseRequestFacts("SPY with lookback of 20 days on 15m bars").requested_interval).toBe("15m")
   })
 
   test("preserves crypto pair recognition inside compact slugs", () => {

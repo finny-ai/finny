@@ -23,7 +23,7 @@ import {
   mirrorNewsToWorkspace,
   FinnyWorkspacePlugin,
 } from "../../src/plugin/finny-workspace"
-import { parseRequestFacts } from "../../src/agent/request-identity"
+import { parseRequestFacts, verifyIdentity } from "../../src/agent/request-identity"
 import {
   extractDateWindow,
   syncWorkspaceRequestContext,
@@ -108,6 +108,27 @@ describe("workspace naming", () => {
 })
 
 describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
+  test("audit prompt keeps daily identity across workspace naming and request context", async () => {
+    const prompt = "Build a daily AAPL strategy using a 20-day SMA and test it for leakage."
+    const result = await bootstrapWorkspace("ses_issue_131", prompt)
+
+    expect(result).toBeDefined()
+    expect(result!.slug.startsWith("aapl-1d-")).toBe(true)
+    expect(result!.slug).not.toContain("20d")
+
+    const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
+    expect(request.requested_symbol).toBe("AAPL")
+    expect(request.requested_interval).toBe("1d")
+    expect(request.requested_asset_class).toBe("equity")
+    expect(
+      verifyIdentity(request, {
+        actual_symbol: "AAPL",
+        actual_interval: "1d",
+        actual_asset_class: "equity",
+      }).ok,
+    ).toBe(true)
+  })
+
   test("SPY build prompt provisions a workspace, binds the session, writes request.json", async () => {
     const result = await bootstrapWorkspace("ses_spy1", SPY_PROMPT)
     expect(result).toBeDefined()
