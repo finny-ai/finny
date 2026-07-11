@@ -75,6 +75,20 @@ async function verifiedDataset(root: string): Promise<VerifiedDatasetRef> {
 }
 
 describe("BacktestRunner strict_v2 guardrails", () => {
+  test("requires a schema-v4 executable risk contract for product eligibility", () => {
+    expect(BacktestRunner._internalForTests.hasProductRiskContract({ risk: { max_drawdown_pct: 10 } })).toBe(false)
+    expect(
+      BacktestRunner._internalForTests.hasProductRiskContract({
+        risk_contract: {
+          sizing_stop_distance_pct: 2,
+          protective_stop: { mode: "strategy_next_open" },
+          drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+          max_positions: 1,
+        },
+      }),
+    ).toBe(true)
+  })
+
   test("rejects invalid strategy before any market data subprocess work", async () => {
     const r = await BacktestRunner.run({
       algorithm: algo({

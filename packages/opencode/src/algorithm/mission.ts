@@ -2,11 +2,9 @@ import matter from "gray-matter"
 import z from "zod"
 
 /**
- * Validation for the `schema_version: 3` mission.md contract described in
- * `algos/_template/README.md`. New algorithm saves must carry a complete v3
- * mission (frontmatter + Core 8 questionnaire); enforcement lives in the
- * finny_algorithm_save tool so the low-level Algorithm.save storage API stays
- * usable for migrations and tests.
+ * Validation for Finny mission.md contracts. Schema v3 remains readable for
+ * existing algorithms; new saves use v4, which turns risk declarations into a
+ * machine-enforced contract that is copied into the executable config.
  */
 export namespace Mission {
   export const CORE8_IDS = [
@@ -40,9 +38,27 @@ export namespace Mission {
   // strings; accept either and let downstream consumers coerce.
   const StringOrNumber = z.union([z.string().min(1), z.number()])
 
-  const Frontmatter = z
+  export const RiskContractSchema = z
     .object({
-      schema_version: z.literal(3),
+      sizing_stop_distance_pct: z.number().finite().positive().max(100),
+      protective_stop: z
+        .object({
+          mode: z.enum(["none", "strategy_next_open", "engine_stop"]),
+        })
+        .strict(),
+      drawdown: z
+        .object({
+          mode: z.enum(["evaluation_only", "halt_and_flatten_next_open"]),
+          limit_pct: z.number().finite().positive().max(100),
+        })
+        .strict(),
+      max_positions: z.number().int().positive(),
+    })
+    .strict()
+
+  export type RiskContract = z.infer<typeof RiskContractSchema>
+
+  const CommonFrontmatter = {
       name: z.string().regex(ALGO_NAME_RE, "must be kebab-case (lowercase, digits, hyphens)"),
       status: z.enum(["research", "backtested", "paper", "live", "retired"]),
       created: z.union([
@@ -72,6 +88,20 @@ export namespace Mission {
         .loose(),
       exit_conditions: NonEmpty,
       questionnaire: z.array(QuestionnaireItem),
+  }
+
+  const FrontmatterV3 = z
+    .object({
+      schema_version: z.literal(3),
+      ...CommonFrontmatter,
+    })
+    .loose()
+
+  const FrontmatterV4 = z
+    .object({
+      schema_version: z.literal(4),
+      ...CommonFrontmatter,
+      risk_contract: RiskContractSchema,
     })
     .loose()
 
@@ -114,6 +144,10 @@ export namespace Mission {
     userPreferences?: string
     bodyTitle?: string
     body?: string
+  }
+
+  export interface RenderV4Input extends RenderV3Input {
+    risk_contract: RiskContract
   }
 
   function yamlBlockScalar(value: string): string {
@@ -188,13 +222,49 @@ export namespace Mission {
     return `${frontmatter}\n\n${sections.filter(Boolean).join("\n\n")}\n`
   }
 
+  /** Render the current schema_version: 4 contract used by new workflows. */
+  export function renderV4(input: RenderV4Input): string {
+    const legacy = renderV3(input)
+    const risk = input.risk_contract
+    const riskYaml = [
+      "risk_contract:",
+      `  sizing_stop_distance_pct: ${risk.sizing_stop_distance_pct}`,
+      "  protective_stop:",
+      `    mode: ${risk.protective_stop.mode}`,
+      "  drawdown:",
+      `    mode: ${risk.drawdown.mode}`,
+      `    limit_pct: ${risk.drawdown.limit_pct}`,
+      `  max_positions: ${risk.max_positions}`,
+    ].join("\n")
+    return legacy
+      .replace("schema_version: 3", "schema_version: 4")
+      .replace("\nexit_conditions:", `\n${riskYaml}\nexit_conditions:`)
+  }
+
+  function parseMission(mission: string): { data: Record<string, unknown> } | undefined {
+    try {
+      return matter(mission)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** Return the v4 contract only after a complete schema parse. */
+  export function riskContract(mission: string | undefined): RiskContract | undefined {
+    if (!mission) return undefined
+    const parsed = parseMission(mission)
+    if (!parsed) return undefined
+    const result = FrontmatterV4.safeParse(parsed.data)
+    return result.success ? result.data.risk_contract : undefined
+  }
+
   /**
-   * Validate a mission.md string against the v3 contract. Returns a list of
-   * human-readable issues; empty means valid.
+   * Validate a mission.md string for reading. Both v3 and v4 are supported so
+   * historical algorithms remain inspectable.
    */
   export function validate(mission: string | undefined): string[] {
     if (!mission || mission.trim().length === 0) {
-      return ["mission is missing — new algorithms require a schema_version: 3 mission.md with the Core 8 questionnaire"]
+      return ["mission is missing — algorithms require a mission.md with the Core 8 questionnaire"]
     }
 
     let parsed: { data: Record<string, unknown> }
@@ -204,10 +274,13 @@ export namespace Mission {
       return [`frontmatter is not valid YAML: ${e?.message ?? String(e)}`]
     }
     if (!mission.trimStart().startsWith("---") || Object.keys(parsed.data).length === 0) {
-      return ["missing YAML frontmatter — mission.md must start with a `---` frontmatter block containing schema_version: 3"]
+      return ["missing YAML frontmatter — mission.md must start with a `---` frontmatter block containing schema_version"]
     }
 
-    const result = Frontmatter.safeParse(parsed.data)
+    const schemaVersion = parsed.data.schema_version
+    const result = schemaVersion === 3
+      ? FrontmatterV3.safeParse(parsed.data)
+      : FrontmatterV4.safeParse(parsed.data)
     const issues: string[] = []
     if (!result.success) {
       for (const issue of result.error.issues) {
@@ -230,6 +303,17 @@ export namespace Mission {
       if (count > 1) issues.push(`questionnaire: duplicate Core 8 item \`${id}\``)
     }
 
+    return issues
+  }
+
+  /** New saves are strict v4; callers may use validate() for legacy reads. */
+  export function validateForNewSave(mission: string | undefined): string[] {
+    const issues = validate(mission)
+    if (!mission) return issues
+    const parsed = parseMission(mission)
+    if (parsed && parsed.data.schema_version !== 4) {
+      issues.unshift("schema_version: new saves require schema_version 4 with a complete risk_contract")
+    }
     return issues
   }
 }

@@ -30,8 +30,16 @@ function finite(value: unknown, fallback = 0): number {
 
 function failedWalkForward(wf: EngineV2.WalkForwardSummary, stitchedSharpe: number, stitchedReturn: number) {
   if (wf.flagged) return true
+  if ((wf.flag_reasons?.length ?? 0) > 0) return true
+  // Legacy schema 3.x artifacts may contain the old negative/negative ratio
+  // bug while reporting flagged=false. Re-evaluate the source metrics instead
+  // of trusting that historical derived flag.
+  if (finite(wf.is_sharpe_mean, Number.NEGATIVE_INFINITY) <= 0) return true
+  if (wf.oos_decay === null || !Number.isFinite(wf.oos_decay)) return true
   if (stitchedSharpe <= 0) return true
-  return stitchedReturn <= 0
+  if (stitchedReturn <= 0) return true
+  if (finite(wf.stitched_oos_coverage, Number.NEGATIVE_INFINITY) < 0.95) return true
+  return finite(wf.ruined_folds, 0) > 0
 }
 
 function startsAsCandidate(label: BacktestQuality["label"]): boolean {
@@ -57,9 +65,10 @@ export function deriveWalkForwardVerdict(wf: EngineV2.WalkForwardSummary | null 
   const stitchedSharpe = finite(wf.stitched_oos_sharpe ?? wf.oos_sharpe_mean, Number.NEGATIVE_INFINITY)
   const stitchedReturn = finite(wf.stitched_oos_return, Number.NEGATIVE_INFINITY)
   if (failedWalkForward(wf, stitchedSharpe, stitchedReturn)) {
+    const reasonDetail = wf.flag_reasons?.length ? ` (${wf.flag_reasons.join(", ")})` : ""
     return {
       verdict: "failed",
-      reason: "rolling OOS Sharpe decayed below threshold or stitched OOS performance became non-positive",
+      reason: `rolling OOS validation failed its retention, absolute-performance, coverage, or ruin gates${reasonDetail}`,
     }
   }
   if (finite(wf.oos_decay, 0) < 0.7) {

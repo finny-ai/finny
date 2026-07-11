@@ -14,8 +14,9 @@ import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
 import { requireBrokerTier } from "@/plan/brokers"
 import { License } from "@/license"
-import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { NativeHedgeLedger, type NativeHedgeLiveEventInput, type NativeHedgeLiveEventType } from "./native-hedge-ledger"
+import { verifyPromotion } from "@/backtest/run-integrity"
+import type { ControllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
 
 const log = Log.create({ service: "live" })
 
@@ -59,6 +60,7 @@ export namespace LiveRunner {
     id: string
     algorithmId: string
     algorithmName: string
+    backtestRunId: string
     symbol: string
     interval: string
     brokerKind: BrokerKind
@@ -81,10 +83,13 @@ export namespace LiveRunner {
 
   export interface StartParams {
     algorithm: Algorithm.Info
+    runId: string
     symbol: string
     interval: string
     accountProviderID: string
     brokerKind?: BrokerKind
+    /** Server-derived proof from the authoritative workflow database; never accepted from the HTTP payload. */
+    controllerApproval?: ControllerPaperApproval
     /** Project directory the run is scoped to. Set by the HTTP handler. */
     directory?: string
   }
@@ -105,13 +110,8 @@ export namespace LiveRunner {
   }
 
   export function canStartForMode(eligibility: string | null, mode: BrokerMode): boolean {
-    if (mode === "live") return eligibility === "paper_eligible" || eligibility === "live_eligible"
-    return (
-      eligibility === "backtested" ||
-      eligibility === "robustness_passed" ||
-      eligibility === "paper_eligible" ||
-      eligibility === "live_eligible"
-    )
+    if (mode === "live") return eligibility === "live_eligible"
+    return eligibility === "paper_eligible"
   }
 
   export function canRemoveStatus(status: RunStatus): boolean {
@@ -663,17 +663,21 @@ if __name__ == "__main__":
     const accountLabel = account?.label
     const accountMode = account?.mode ?? creds.mode ?? spec.mode
 
-    // Backtest-eligibility gate. Robustness is required only when real money is
-    // at stake. Paper/testnet runs are virtual-money validation and only need a
-    // completed immutable backtest artifact.
-    const eligibility = await latestEligibility(params.algorithm)
+    // Promotion is bound to one explicit immutable run and its matching
+    // approval sidecar. Historical/legacy runs stay readable, but cannot pass
+    // this hash-complete gate.
+    const promotion = await verifyPromotion({
+      algorithm: params.algorithm,
+      runId: params.runId,
+      mode: accountMode,
+      controllerApproval: params.controllerApproval,
+    })
+    const eligibility = promotion.status
     const isLiveMoney = accountMode === "live"
-    if (!canStartForMode(eligibility, accountMode)) {
-      const need = isLiveMoney
-        ? "paper/live eligible (run walk-forward robustness)"
-        : "backtested or better (run a completed backtest first)"
+    if (!promotion.ok || !canStartForMode(eligibility, accountMode)) {
+      const need = isLiveMoney ? "a separate live_eligible record" : "a matching paper approval record"
       throw new StartRejectedError(
-        `${isLiveMoney ? "Live" : "Paper"} trading is blocked until the latest immutable backtest run is ${need}. Current eligibility: ${eligibility ?? "none"}.`,
+        `${isLiveMoney ? "Live" : "Paper"} trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
       )
     }
 
@@ -684,6 +688,7 @@ if __name__ == "__main__":
       id,
       algorithmId: params.algorithm.algorithmId,
       algorithmName: params.algorithm.name,
+      backtestRunId: params.runId,
       symbol: params.symbol,
       interval: params.interval,
       brokerKind,
@@ -1070,30 +1075,4 @@ if __name__ == "__main__":
     return removed
   }
 
-  async function latestEligibility(algorithm: Algorithm.Info): Promise<string | null> {
-    const version = Number((algorithm as any).version ?? 0) || 0
-    const runsDir = path.join(
-      finnyArtifactPath("algorithms"),
-      algorithm.algorithmId,
-      `v${String(version).padStart(2, "0")}`,
-      "runs",
-    )
-    try {
-      const entries = await fs.readdir(runsDir, { withFileTypes: true })
-      let newest: { mtime: number; status: string } | null = null
-      for (const entry of entries) {
-        if (!entry.isDirectory()) continue
-        const runPath = path.join(runsDir, entry.name, "run.json")
-        try {
-          const stat = await fs.stat(runPath)
-          const run = JSON.parse(await fs.readFile(runPath, "utf8")) as { eligibilityStatus?: string }
-          if (!newest || stat.mtimeMs > newest.mtime)
-            newest = { mtime: stat.mtimeMs, status: run.eligibilityStatus ?? "prototype" }
-        } catch {}
-      }
-      return newest?.status ?? null
-    } catch {
-      return null
-    }
-  }
 }

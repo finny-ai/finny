@@ -141,11 +141,11 @@ export function missionRejectionMessage(issues: string[]): string {
     "Invalid mission.md for this save:",
     ...issues.map((i) => `  - ${i}`),
     "",
-    "The `mission` parameter must be a `schema_version: 3` mission.md markdown string starting with a YAML frontmatter block enclosed in `---`. Required shape:",
+    "The `mission` parameter must be a `schema_version: 4` mission.md markdown string starting with a YAML frontmatter block enclosed in `---`. Required shape:",
     "",
     "```markdown",
     "---",
-    "schema_version: 3",
+    "schema_version: 4",
     "name: <kebab-case-algorithm-name>",
     "status: research | backtested | paper | live | retired",
     "created: YYYY-MM-DD",
@@ -168,6 +168,14 @@ export function missionRejectionMessage(issues: string[]): string {
     "  backtest_window: <duration/window description>",
     "  success_metric: |",
     "    <success criteria description; use a block scalar for prose>",
+    "risk_contract:",
+    "  sizing_stop_distance_pct: <positive percent used by sizing>",
+    "  protective_stop:",
+    "    mode: none | strategy_next_open | engine_stop  # engine_stop is reserved and currently fails closed",
+    "  drawdown:",
+    "    mode: evaluation_only | halt_and_flatten_next_open",
+    "    limit_pct: <positive percent, at most 100>",
+    "  max_positions: <positive integer>",
     "exit_conditions: |",
     "  <detailed exit conditions>",
     "questionnaire:",
@@ -185,6 +193,31 @@ export function missionRejectionMessage(issues: string[]): string {
     "Any user preferences (capital, sizing, data sources/depth, custom numbers) belong in a `## User Preferences` section at the bottom of the markdown body.",
     "```",
   ].join("\n")
+}
+
+/** Bind a validated mission risk contract into the executable config. */
+export function bindMissionRiskContract(config: string | undefined, mission: string | undefined): string | undefined {
+  const riskContract = Mission.riskContract(mission)
+  if (!riskContract) return config
+  let parsed: Record<string, unknown> = {}
+  if (config) {
+    try {
+      const value = JSON.parse(config)
+      if (value && typeof value === "object" && !Array.isArray(value)) parsed = value
+    } catch {}
+  }
+  return JSON.stringify({ ...parsed, risk_contract: riskContract })
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`)
+      .join(",")}}`
+  }
+  return JSON.stringify(value)
 }
 
 /**
@@ -216,18 +249,19 @@ export function contractRejectionBlock(missionIssues: string[], configIssues: st
 }
 
 export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
-  if (warnings.length === 0) return undefined
+  const blockers = warnings.filter((warning) => Validate.diagnosticDisposition(warning) === "blocking")
+  if (blockers.length === 0) return undefined
   return {
-    title: "Save blocked — validation warnings",
+    title: "Save blocked — validation diagnostics",
     output:
-      "Validator warnings must be fixed before saving or backtesting.\n\n" +
-      RetryOrchestrator.formatWarningRejection(warnings) +
-      "\n\nRewrite the strategy to clear every warning, then call finny_algorithm_save again.",
+      "Blocking validator diagnostics must be fixed before saving or backtesting.\n\n" +
+      Validate.format({ valid: false, errors: blockers, warnings: [] }) +
+      "\n\nRewrite the strategy to clear every blocker, then call finny_algorithm_save again.",
     metadata: {
       blocked: true,
       retry: true,
-      warningCount: warnings.length,
-      warningCodes: warnings.map((w) => w.code),
+      diagnosticCount: blockers.length,
+      diagnosticCodes: blockers.map((w) => w.code),
     },
   }
 }
@@ -240,14 +274,21 @@ const parameters = z.object({
     .describe(
       'REQUIRED. Pick "new" to create a sibling algorithm (fresh lineage, version=1) or "version" to bump the existing algorithm with this name (version+1, history preserved). No default. See the tool description for the heuristic.',
     ),
+  docsMode: z
+    .enum(["inherit", "replace"])
+    .optional()
+    .describe(
+      'REQUIRED when saveMode is "version". "inherit" snapshots the prior mission/preferences/risk unchanged; "replace" uses the supplied documents. decisions is always append-only.',
+    ),
   language: z.string().optional().describe("Programming language, defaults to python"),
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
   backtestCode: z.string().optional().describe("The backtest.py source code"),
   reasoning: z.string().optional().describe("Markdown explaining why this version exists — what changed and why. Written to reasoning.md inside the version directory."),
-  mission: z.string().optional().describe("For new algorithms only. WHO: the hypothesis, scope, and exit conditions. Written to mission.md."),
-  prefs: z.string().optional().describe("For new algorithms only. HOW: sizing, risk constraints, interval, target asset. Written to prefs.md."),
-  decisions: z.string().optional().describe("For new algorithms only. Design decisions log: why this approach was chosen. Written to decisions.md."),
+  mission: z.string().optional().describe("WHO: the hypothesis, scope, and exit conditions. Version replacements write mission.md in the new version."),
+  prefs: z.string().optional().describe("HOW: sizing, risk constraints, interval, target asset. Version replacements write prefs.md in the new version."),
+  decisions: z.string().optional().describe("Design decisions to append to the immutable decisions.md history for the new version."),
+  riskContract: z.string().optional().describe("JSON risk contract saved as risk.json with the version."),
   targetBrokerage: z.enum(["alpaca", "binance", "ibkr"]).optional().describe("Target brokerage for live deployment. Use when building a strategy for a brokerage the user hasn't connected yet (e.g. futures on Alpaca → target ibkr). Backtest runs immediately; live deploy requires the target brokerage to be connected later."),
 })
 
@@ -351,12 +392,42 @@ export const AlgorithmSaveTool = Tool.define(
             // checks — run them together BEFORE code validation so the agent
             // gets every structural blocker in ONE response instead of
             // peeling them one save round-trip at a time. New algorithms
-            // require a complete v3 mission.md; a mission passed on a version
+            // require a complete v4 mission.md; a mission passed on a version
             // bump must also be valid.
-            const normalizedConfig = normalizeConfigForSave({ incoming: params.config })
+            const normalizedConfig = bindMissionRiskContract(
+              normalizeConfigForSave({ incoming: params.config }),
+              params.mission,
+            )
+            const missionRiskContract = Mission.riskContract(params.mission)
+            const normalizedRiskContract = missionRiskContract
+              ? `${JSON.stringify(missionRiskContract, null, 2)}\n`
+              : params.riskContract
             const missionIssues =
-              params.saveMode === "new" || params.mission !== undefined ? Mission.validate(params.mission) : []
+              params.saveMode === "new" || params.docsMode === "replace" || params.mission !== undefined
+                ? Mission.validateForNewSave(params.mission)
+                : []
             const configIssues: string[] = []
+            if (missionRiskContract && params.riskContract) {
+              try {
+                if (canonicalJson(JSON.parse(params.riskContract)) !== canonicalJson(missionRiskContract)) {
+                  configIssues.push("riskContract must exactly match mission.risk_contract")
+                }
+              } catch {
+                configIssues.push("riskContract must be valid JSON matching mission.risk_contract")
+              }
+            }
+            if (params.saveMode === "version" && !params.docsMode) {
+              configIssues.push('version saves require docsMode: "inherit" or "replace"')
+            }
+            if (
+              params.saveMode === "version" &&
+              params.docsMode === "inherit" &&
+              (params.mission !== undefined || params.prefs !== undefined || params.riskContract !== undefined)
+            ) {
+              configIssues.push(
+                'docsMode "inherit" cannot replace mission, preferences, or riskContract; use docsMode: "replace"',
+              )
+            }
             if (params.saveMode === "new") {
               const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
               if (missingConfig.length > 0) {
@@ -487,6 +558,8 @@ export const AlgorithmSaveTool = Tool.define(
                 mission: params.mission,
                 prefs: params.prefs,
                 decisions: params.decisions,
+                riskContract: normalizedRiskContract,
+                docsMode: params.docsMode,
                 brokerKind: activeBrokerKind ?? undefined,
                 targetBrokerage: params.targetBrokerage,
                 saveMode: params.saveMode,
@@ -500,6 +573,15 @@ export const AlgorithmSaveTool = Tool.define(
                     title: err.kind === "name_taken" ? "Name already in use" : "No existing algorithm to version",
                     output: lines.join(" "),
                     metadata: { blocked: true, saveModeConflict: err.kind, suggestedName: err.suggested },
+                  },
+                }
+              }
+              if (err instanceof Algorithm.DocsModeRequiredError) {
+                return {
+                  result: {
+                    title: "Version save blocked — docsMode required",
+                    output: err.message,
+                    metadata: { blocked: true, docsModeRequired: true },
                   },
                 }
               }

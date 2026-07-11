@@ -22,6 +22,10 @@ export interface AlgorithmRow {
   config?: string
   backtestCode?: string
   reasoning?: string
+  mission?: string
+  prefs?: string
+  decisions?: string
+  riskContract?: string
   brokerKind?: BrokerKind
   targetBrokerage?: BrokerKind
   time_created: number
@@ -81,6 +85,22 @@ function reasoningPath(algorithmId: string, version: number) {
   return path.join(versionDirPath(algorithmId, version), "reasoning.md")
 }
 
+const VERSION_DOCUMENT_FILES = {
+  mission: "mission.md",
+  prefs: "prefs.md",
+  decisions: "decisions.md",
+  riskContract: "risk.json",
+} as const
+
+export type AlgorithmDocsMode = "inherit" | "replace"
+
+interface VersionDocuments {
+  mission: string
+  prefs: string
+  decisions: string
+  riskContract: string
+}
+
 function currentPointerPath(algorithmId: string) {
   return path.join(algoDir(algorithmId), "CURRENT")
 }
@@ -96,20 +116,12 @@ const DATA_SUBDIRS = [
   "data/news",
 ]
 
-async function scaffoldAlgoStructure(
-  algorithmId: string,
-  docs?: { mission?: string; prefs?: string; decisions?: string },
-): Promise<void> {
+async function scaffoldAlgoStructure(algorithmId: string): Promise<void> {
   const dir = algoDir(algorithmId)
   for (const sub of DATA_SUBDIRS) {
     await fs.mkdir(path.join(dir, sub), { recursive: true })
   }
-  const docFiles: Record<string, string> = {
-    "mission.md": docs?.mission ?? "",
-    "prefs.md": docs?.prefs ?? "",
-    "decisions.md": docs?.decisions ?? "",
-    "memory.md": "",
-  }
+  const docFiles: Record<string, string> = { "memory.md": "" }
   for (const [name, content] of Object.entries(docFiles)) {
     const p = path.join(dir, name)
     try {
@@ -119,7 +131,58 @@ async function scaffoldAlgoStructure(
 }
 
 async function writeCurrent(algorithmId: string, version: number): Promise<void> {
-  await Filesystem.write(currentPointerPath(algorithmId), versionTag(version))
+  await writeAtomic(currentPointerPath(algorithmId), versionTag(version))
+}
+
+async function readCurrentVersion(algorithmId: string, fallback: number): Promise<number> {
+  try {
+    const pointer = (await fs.readFile(currentPointerPath(algorithmId), "utf8")).trim()
+    const match = /^v(\d+)$/.exec(pointer)
+    const version = match ? Number(match[1]) : Number.NaN
+    return Number.isSafeInteger(version) && version > 0 ? version : fallback
+  } catch {
+    return fallback
+  }
+}
+
+async function acquireVersionLock(algorithmId: string): Promise<() => Promise<void>> {
+  const dir = algoDir(algorithmId)
+  const lock = path.join(dir, ".version.lock")
+  await fs.mkdir(dir, { recursive: true })
+  for (let attempt = 0; attempt < 1_000; attempt++) {
+    try {
+      const handle = await fs.open(lock, "wx")
+      await handle.writeFile(`${process.pid} ${Date.now()}\n`)
+      return async () => {
+        await handle.close().catch(() => undefined)
+        await fs.rm(lock, { force: true }).catch(() => undefined)
+      }
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error
+      const stat = await fs.stat(lock).catch(() => undefined)
+      if (stat && Date.now() - stat.mtimeMs > 120_000) {
+        await fs.rm(lock, { force: true }).catch(() => undefined)
+        continue
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10))
+    }
+  }
+  throw new Error(`Timed out waiting for version lock for ${algorithmId}`)
+}
+
+async function writeAtomic(filePath: string, content: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true })
+  const tmpPath = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${crypto.randomUUID()}.tmp`)
+  try {
+    await fs.writeFile(tmpPath, content)
+    await fs.rename(tmpPath, filePath)
+  } finally {
+    await fs.rm(tmpPath, { force: true }).catch(() => undefined)
+  }
+}
+
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  await writeAtomic(filePath, JSON.stringify(value, null, 2))
 }
 
 async function readMeta(algorithmId: string): Promise<AlgorithmMeta | null> {
@@ -131,7 +194,7 @@ async function readMeta(algorithmId: string): Promise<AlgorithmMeta | null> {
 }
 
 async function writeMeta(meta: AlgorithmMeta): Promise<void> {
-  await Filesystem.writeJson(metaPath(meta.algorithmId), meta)
+  await writeJsonAtomic(metaPath(meta.algorithmId), meta)
 }
 
 async function readNameIndex(): Promise<Record<string, string>> {
@@ -143,7 +206,71 @@ async function readNameIndex(): Promise<Record<string, string>> {
 }
 
 async function writeNameIndex(index: Record<string, string>): Promise<void> {
-  await Filesystem.writeJson(nameIndexPath(), index)
+  await writeJsonAtomic(nameIndexPath(), index)
+}
+
+async function readOptionalText(filePath: string): Promise<string | undefined> {
+  try {
+    return await Filesystem.readText(filePath)
+  } catch {
+    return undefined
+  }
+}
+
+async function readVersionDocuments(algorithmId: string, version: number): Promise<VersionDocuments> {
+  const versionDir = versionDirPath(algorithmId, version)
+  const root = algoDir(algorithmId)
+  const read = async (file: string, fallback: string) =>
+    (await readOptionalText(path.join(versionDir, file))) ??
+    (await readOptionalText(path.join(root, file))) ??
+    fallback
+  return {
+    mission: await read(VERSION_DOCUMENT_FILES.mission, ""),
+    prefs: await read(VERSION_DOCUMENT_FILES.prefs, ""),
+    decisions: await read(VERSION_DOCUMENT_FILES.decisions, ""),
+    riskContract: await read(VERSION_DOCUMENT_FILES.riskContract, "{}\n"),
+  }
+}
+
+function appendDecisions(previous: string, incoming: string | undefined): string {
+  if (!incoming || incoming.trim().length === 0) return previous
+  if (!previous || previous.trim().length === 0) return incoming
+  if (incoming === previous || incoming.startsWith(previous)) return incoming
+  return `${previous.trimEnd()}\n\n${incoming.trimStart()}`
+}
+
+async function resolveVersionDocuments(input: {
+  algorithmId: string
+  previousVersion?: number
+  docsMode: AlgorithmDocsMode
+  mission?: string
+  prefs?: string
+  decisions?: string
+  riskContract?: string
+}): Promise<VersionDocuments> {
+  const previous = input.previousVersion
+    ? await readVersionDocuments(input.algorithmId, input.previousVersion)
+    : { mission: "", prefs: "", decisions: "", riskContract: "{}\n" }
+  if (input.docsMode === "inherit") {
+    return {
+      ...previous,
+      decisions: appendDecisions(previous.decisions, input.decisions),
+    }
+  }
+  return {
+    mission: input.mission ?? "",
+    prefs: input.prefs ?? "",
+    decisions: appendDecisions(previous.decisions, input.decisions),
+    riskContract: input.riskContract ?? "{}\n",
+  }
+}
+
+async function mirrorCurrentDocuments(algorithmId: string, docs: VersionDocuments): Promise<void> {
+  await Promise.all(
+    Object.entries(VERSION_DOCUMENT_FILES).map(([key, file]) =>
+      writeAtomic(path.join(algoDir(algorithmId), file), docs[key as keyof VersionDocuments]),
+    ),
+  )
 }
 
 function nameKey(userId: string, name: string): string {
@@ -211,6 +338,7 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
     try {
       reasoning = await Filesystem.readText(reasoningPath(algorithmId, version))
     } catch {}
+    const docs = await readVersionDocuments(algorithmId, version)
     return {
       algorithmId: meta.algorithmId,
       userId: meta.userId,
@@ -223,6 +351,7 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
       config,
       backtestCode,
       reasoning,
+      ...docs,
       brokerKind: meta.brokerKind,
       targetBrokerage: meta.targetBrokerage,
       time_created: meta.time_created,
@@ -360,102 +489,93 @@ export namespace LocalAlgorithmStore {
     mission?: string
     prefs?: string
     decisions?: string
+    riskContract?: string
+    docsMode?: AlgorithmDocsMode
     brokerKind?: BrokerKind
     targetBrokerage?: BrokerKind
     time_created: number
     time_updated: number
   }): Promise<AlgorithmRow> {
+    const releaseVersionLock = await acquireVersionLock(values.algorithmId)
+    try {
     const dir = algoDir(values.algorithmId)
     await fs.mkdir(dir, { recursive: true })
 
     const versions = await scanVersions(values.algorithmId)
+    const latestVer = versions.length > 0 ? Math.max(...versions) : undefined
+    const docsMode = values.docsMode ?? (latestVer === undefined ? "replace" : "inherit")
+    const docs = await resolveVersionDocuments({
+      algorithmId: values.algorithmId,
+      previousVersion: latestVer,
+      docsMode,
+      mission: values.mission,
+      prefs: values.prefs,
+      decisions: values.decisions,
+      riskContract: values.riskContract,
+    })
+    const persistedConfig = values.config ?? "{}\n"
 
-    // Deduplicate: skip the version bump if code + config + backtestCode are
-    // identical to the latest version. This prevents the agent's validation
-    // retries and redundant re-saves from inflating the version number.
-    if (versions.length > 0) {
-      const latestVer = Math.max(...versions)
+    // Deduplicate only complete material snapshots. A config, mission,
+    // preference, decision-log, or risk-contract change must always create a
+    // new immutable version; a byte-identical replay must not.
+    if (latestVer !== undefined) {
       try {
         const prevCode = await Filesystem.readText(codePath(values.algorithmId, latestVer))
-        let prevConfig: string | undefined
-        try { prevConfig = await Filesystem.readText(configPath(values.algorithmId, latestVer)) } catch {}
+        const prevConfig = (await readOptionalText(configPath(values.algorithmId, latestVer))) ?? "{}\n"
         let prevBacktest: string | undefined
         try { prevBacktest = await Filesystem.readText(backtestCodePath(values.algorithmId, latestVer)) } catch {}
+        const prevReasoning = (await readOptionalText(reasoningPath(values.algorithmId, latestVer))) ?? ""
+        const prevDocs = await readVersionDocuments(values.algorithmId, latestVer)
 
         const codeMatch = prevCode === values.code
-        const configMatch = (prevConfig ?? "") === (values.config ?? "")
+        const configMatch = prevConfig === persistedConfig
         const backtestMatch = (prevBacktest ?? "") === (values.backtestCode ?? "")
+        const reasoningMatch = prevReasoning === (values.reasoning ?? "")
+        const docsMatch = (Object.keys(VERSION_DOCUMENT_FILES) as Array<keyof VersionDocuments>)
+          .every((key) => prevDocs[key] === docs[key])
 
-        if (codeMatch && configMatch && backtestMatch) {
+        if (codeMatch && configMatch && backtestMatch && reasoningMatch && docsMatch) {
           const meta = await readMeta(values.algorithmId)
           if (meta) {
             meta.time_updated = values.time_updated
             await writeMeta(meta)
           }
           log.info("skipped duplicate version", { algorithmId: values.algorithmId, version: latestVer })
-          return {
-            algorithmId: values.algorithmId,
-            userId: values.userId,
-            name: values.name,
-            code: values.code,
-            language: values.language,
-            version: latestVer,
-            status: values.status,
-            description: values.description,
-            config: values.config,
-            backtestCode: values.backtestCode,
-            reasoning: values.reasoning,
-            brokerKind: values.brokerKind,
-            targetBrokerage: values.targetBrokerage,
-            time_created: values.time_created,
-            time_updated: values.time_updated,
-          }
+          const row = meta ? await readVersion(values.algorithmId, latestVer, meta) : null
+          if (row) return { ...row, time_updated: values.time_updated }
         }
       } catch {}
     }
 
-    let nextVersion = versions.length > 0 ? Math.max(...versions) + 1 : 1
-    let written = false
-
-    // Atomic version claim: mkdir without recursive fails with EEXIST if dir exists
-    for (let attempt = 0; attempt < MAX_RETRY; attempt++) {
-      const vDir = versionDirPath(values.algorithmId, nextVersion)
+    let nextVersion = latestVer === undefined ? 1 : latestVer + 1
+    let publishedVersionDir: string | undefined
+    for (let attempt = 0; attempt < MAX_RETRY; attempt++, nextVersion++) {
+      const finalDir = versionDirPath(values.algorithmId, nextVersion)
+      const stagingDir = path.join(dir, `.tmp-${versionTag(nextVersion)}-${crypto.randomUUID()}`)
       try {
-        await fs.mkdir(vDir)
-        written = true
+        await fs.mkdir(stagingDir)
+        await fs.writeFile(path.join(stagingDir, "strategy.py"), values.code)
+        await fs.writeFile(path.join(stagingDir, "config.json"), persistedConfig)
+        if (values.backtestCode) await fs.writeFile(path.join(stagingDir, "backtest.py"), values.backtestCode)
+        await fs.writeFile(path.join(stagingDir, "reasoning.md"), values.reasoning ?? "")
+        for (const [key, file] of Object.entries(VERSION_DOCUMENT_FILES)) {
+          await fs.writeFile(path.join(stagingDir, file), docs[key as keyof VersionDocuments])
+        }
+        await fs.rename(stagingDir, finalDir)
+        publishedVersionDir = finalDir
         break
       } catch (e: any) {
-        if (e.code === "EEXIST") {
-          nextVersion++
-          continue
-        }
+        await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined)
+        if (e.code === "EEXIST" || e.code === "ENOTEMPTY") continue
         throw e
       }
     }
 
-    if (!written) {
+    if (!publishedVersionDir) {
       throw new Error(`Failed to write version after ${MAX_RETRY} retries for ${values.algorithmId}`)
     }
 
-    await fs.writeFile(codePath(values.algorithmId, nextVersion), values.code)
-    if (values.config) {
-      await fs.writeFile(configPath(values.algorithmId, nextVersion), values.config)
-    }
-    if (values.backtestCode) {
-      await fs.writeFile(backtestCodePath(values.algorithmId, nextVersion), values.backtestCode)
-    }
-    if (values.reasoning) {
-      await fs.writeFile(reasoningPath(values.algorithmId, nextVersion), values.reasoning)
-    }
-    await writeCurrent(values.algorithmId, nextVersion)
-
-    if (nextVersion === 1) {
-      await scaffoldAlgoStructure(values.algorithmId, {
-        mission: values.mission,
-        prefs: values.prefs,
-        decisions: values.decisions,
-      })
-    }
+    if (nextVersion === 1) await scaffoldAlgoStructure(values.algorithmId)
 
     const meta: AlgorithmMeta = {
       algorithmId: values.algorithmId,
@@ -469,11 +589,16 @@ export namespace LocalAlgorithmStore {
       time_created: values.time_created,
       time_updated: values.time_updated,
     }
-    await writeMeta(meta)
-
     const nameIndex = await readNameIndex()
     nameIndex[nameKey(values.userId, values.name)] = values.algorithmId
+
+    // Publish compatibility projections only after the complete version
+    // directory exists. CURRENT is the final pointer update; root documents
+    // are derived mirrors and are never the version authority.
+    await writeMeta(meta)
     await writeNameIndex(nameIndex)
+    await writeCurrent(values.algorithmId, nextVersion)
+    await mirrorCurrentDocuments(values.algorithmId, docs)
 
     log.info("algorithm version written locally", {
       algorithmId: values.algorithmId,
@@ -489,40 +614,24 @@ export namespace LocalAlgorithmStore {
       version: nextVersion,
       status: values.status,
       description: values.description,
-      config: values.config,
+      config: persistedConfig,
       backtestCode: values.backtestCode,
       reasoning: values.reasoning,
+      ...docs,
       brokerKind: values.brokerKind,
       targetBrokerage: values.targetBrokerage,
       time_created: values.time_created,
       time_updated: values.time_updated,
     }
-  }
-
-  export async function patchLatestConfig(algorithmId: string, config: string): Promise<AlgorithmRow | null> {
-    const meta = await readMeta(algorithmId)
-    if (!meta) return null
-
-    const tmpPath = configPath(algorithmId, meta.latestVersion) + ".tmp"
-    const finalPath = configPath(algorithmId, meta.latestVersion)
-    await Filesystem.write(tmpPath, config)
-    await fs.rename(tmpPath, finalPath)
-
-    const now = Date.now()
-    meta.time_updated = now
-    await writeMeta(meta)
-
-    const row = await readVersion(algorithmId, meta.latestVersion, meta)
-    if (!row) return null
-    row.config = config
-    row.time_updated = now
-    return row
+    } finally {
+      await releaseVersionLock()
+    }
   }
 
   export async function getById(algorithmId: string): Promise<AlgorithmRow | null> {
     const meta = await readMeta(algorithmId)
     if (!meta) return null
-    return readVersion(algorithmId, meta.latestVersion, meta)
+    return readVersion(algorithmId, await readCurrentVersion(algorithmId, meta.latestVersion), meta)
   }
 
   export async function getByIdAndVersion(algorithmId: string, version: number): Promise<AlgorithmRow | null> {
@@ -545,7 +654,7 @@ export namespace LocalAlgorithmStore {
     const meta = await readMeta(algorithmId)
     if (!meta || meta.userId !== userId) return null
 
-    return readVersion(algorithmId, meta.latestVersion, meta)
+    return readVersion(algorithmId, await readCurrentVersion(algorithmId, meta.latestVersion), meta)
   }
 
   export async function listByUser(userId: string): Promise<AlgorithmRow[]> {
@@ -556,7 +665,7 @@ export namespace LocalAlgorithmStore {
         if (entry.startsWith("_")) continue
         const meta = await readMeta(entry)
         if (!meta || meta.userId !== userId) continue
-        const row = await readVersion(entry, meta.latestVersion, meta)
+        const row = await readVersion(entry, await readCurrentVersion(entry, meta.latestVersion), meta)
         if (row) results.push(row)
       }
     } catch {

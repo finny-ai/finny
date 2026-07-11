@@ -10,6 +10,7 @@ Emits a JSON array of diagnostics on stdout (same shape as ast_analyzer.py).
 
 Diagnostic codes:
   SMOKE_TEST_EXCEPTION            (error)   on_tick raised
+  SMOKE_TEST_INCONCLUSIVE         (error)   warmup leaves fewer than 200 bounded probe bars
   INVARIANT_BAD_RETURN            (error)   on_tick returned something other than BUY/SELL/HOLD
   INVARIANT_CONSTANT_TRADES       (error)   trades emitted on a flat-price series
   INVARIANT_RSI_STUCK             (error)   an indicator-shaped attribute stayed ≥95 (or ≤5) for >90% of ticks
@@ -17,7 +18,7 @@ Diagnostic codes:
   INVARIANT_DIRECTIONAL_SANITY    (warning) mean-reversion-shaped BUY fired on a monotone-up series
   EQUITY_STATIC                   (error)   trades fired but self.equity (or similar) never changed
   LEVERAGE_VIOLATION              (error)   position_qty * price > self.equity at some tick
-  GUARD_NEVER_BINDING             (warning) strategy produced zero entry orders across random-walk regimes
+  GUARD_NEVER_BINDING             (warning) strategy produced zero trades on the random-walk regime
 
 Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emits
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
@@ -296,9 +297,19 @@ def _regime_prices(n=200, seed=42, base=100.0):
     return constant, up, down, rw
 
 
-def _regimes(n=200, include_high_price=False):
+MAX_SMOKE_BARS = 5_000
+MIN_SMOKE_BARS = 400
+POST_WARMUP_PROBE_BARS = 200
+
+
+def smoke_length(required_history_bars=0):
+    required = max(0, int(required_history_bars or 0))
+    return min(MAX_SMOKE_BARS, max(MIN_SMOKE_BARS, required + POST_WARMUP_PROBE_BARS))
+
+
+def _regimes(n=MIN_SMOKE_BARS, include_high_price=False):
     constant, up, down, rw = _regime_prices(n, 42)
-    _, _, _, long_rw = _regime_prices(500, 4242)
+    _, _, _, long_rw = _regime_prices(n, 4242)
     regimes = {
         "constant": constant,
         "up": up,
@@ -498,8 +509,25 @@ def _run_regime(StrategyCls, prices):
     }
 
 
-def analyze(source, symbol=None):
+def analyze(source, symbol=None, required_history_bars=0):
     diagnostics = []
+
+    required_history_bars = max(0, int(required_history_bars or 0))
+    n = smoke_length(required_history_bars)
+    if n - required_history_bars < POST_WARMUP_PROBE_BARS:
+        diagnostics.append({
+            "code": "SMOKE_TEST_INCONCLUSIVE",
+            "severity": "error",
+            "message": (
+                f"Strategy requires {required_history_bars} warmup bars, but the {MAX_SMOKE_BARS}-bar "
+                f"smoke cap leaves only {max(0, n - required_history_bars)} post-warmup observations."
+            ),
+            "fix": (
+                f"Reduce required_history_bars to at most "
+                f"{MAX_SMOKE_BARS - POST_WARMUP_PROBE_BARS}, or validate with a bounded dedicated fixture."
+            ),
+        })
+        return diagnostics
 
     try:
         StrategyCls = _load_strategy(source)
@@ -515,7 +543,7 @@ def analyze(source, symbol=None):
     # High-price regime only for crypto: whole-share equities legitimately
     # never trade at BTC-scale prices on a $10K account, and futures size in
     # margin-backed whole contracts whose notional routinely exceeds equity.
-    regimes = _regimes(200, include_high_price=_symbol_is_crypto(symbol))
+    regimes = _regimes(n, include_high_price=_symbol_is_crypto(symbol))
     results = {}
     for name, prices in regimes.items():
         try:
@@ -712,21 +740,19 @@ def analyze(source, symbol=None):
             if any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
                 break
 
-    # GUARD_NEVER_BINDING: a strategy with tunable guards that never opens
-    # exposure across the short and long random walks is likely mis-scaled.
-    # Count opening broker intents, not BUY return labels: a valid short-only
-    # strategy enters with `sell`, and close orders must not make a dead entry
-    # predicate look healthy. The longer walk also prevents a legitimate
-    # session-bound or low-frequency strategy from being rejected solely for a
-    # sparse 200-bar sample.
+    # GUARD_NEVER_BINDING: strategy produced zero entry orders on random-walk regimes.
+    # Count requested entry intents (buy or sell) so short-only strategies are not
+    # false-positive warned. Only warn when a tunable threshold-like attribute exists.
     rw_entries = sum(
         len(results[regime_name].get("requested_qty_events", []))
         for regime_name in ("random", "long_random")
+        if regime_name in results
     )
     if rw_entries == 0:
         has_threshold = any(
             re.search(r"threshold|min_|max_|oversold|overbought|num_std|stop_|risk_|period|lookback|entry_|exit_|lower|upper|band|level|cutoff", name, re.IGNORECASE)
             for regime_name in ("random", "long_random")
+            if regime_name in results
             for name in results[regime_name]["initial_scalars"]
         )
         if has_threshold:
@@ -747,11 +773,16 @@ def analyze(source, symbol=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default=None, help="Symbol from config.json (enables the crypto high-price regime).")
+    parser.add_argument("--required-history-bars", type=int, default=0)
     args = parser.parse_args()
 
     source = sys.stdin.read()
     try:
-        diagnostics = analyze(source, symbol=args.symbol)
+        diagnostics = analyze(
+            source,
+            symbol=args.symbol,
+            required_history_bars=args.required_history_bars,
+        )
     except Exception as exc:
         sys.stderr.write(f"smoke_test error: {exc}\n")
         sys.stdout.write("[]")

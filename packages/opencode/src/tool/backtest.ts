@@ -53,7 +53,7 @@ type WfMeta = {
   n_folds: number
   is_sharpe_mean: number
   oos_sharpe_mean: number
-  oos_decay: number
+  oos_decay: number | null
   is_to_oos_sharpe_change?: number
   flag_threshold: number
   flagged: boolean
@@ -66,6 +66,7 @@ type WfMeta = {
   stitched_oos_coverage?: number
   ruined_folds?: number
   multiple_testing_trials?: number
+  flag_reasons?: string[]
   folds: Array<{
     fold: number
     train_start: string
@@ -417,21 +418,21 @@ export function parseDataQualityFailure(
   }
 }
 
-async function mergeRunJson(input: {
+async function verifyPersistedRecommendation(input: {
   artifactDir?: string
   unifiedVerdict: string
   verdictReasons: string[]
 }) {
   if (!input.artifactDir) return
   const file = path.join(input.artifactDir, "run.json")
-  try {
-    const raw = JSON.parse(await fs.readFile(file, "utf8"))
-    await fs.writeFile(file, JSON.stringify({
-      ...raw,
-      unifiedVerdict: input.unifiedVerdict,
-      verdictReasons: input.verdictReasons,
-    }, null, 2))
-  } catch {}
+  const raw = JSON.parse(await fs.readFile(file, "utf8"))
+  const persisted = raw?.recommendation
+  if (persisted?.verdict !== input.unifiedVerdict) {
+    throw new Error(`immutable run recommendation mismatch: persisted=${persisted?.verdict ?? "missing"}, computed=${input.unifiedVerdict}`)
+  }
+  if (JSON.stringify(persisted?.reasons ?? []) !== JSON.stringify(input.verdictReasons)) {
+    throw new Error("immutable run recommendation reasons do not match the computed verdict")
+  }
 }
 
 export const BacktestTool = Tool.define(
@@ -863,7 +864,7 @@ export const BacktestTool = Tool.define(
             if (workflow) experiment = { ...experiment, workflow }
           }
         }
-        await mergeRunJson({
+        await verifyPersistedRecommendation({
           artifactDir: r.artifactDir,
           unifiedVerdict: unified.verdict,
           verdictReasons: unified.reasons,

@@ -40,6 +40,7 @@ from ..portfolio.account import Account
 from ..portfolio.liquidation import liquidation_price
 from ..portfolio.positions import Position, PositionBook
 from ..execution.spread import half_spread
+from .risk import RiskContract
 
 
 class PortfolioBroker:
@@ -51,6 +52,7 @@ class PortfolioBroker:
         fill_cfg: FillConfig,
         interval: str,
         asset_specs: Optional[Dict[str, AssetSpec]] = None,
+        risk_contract: Optional[RiskContract] = None,
     ):
         self.market = market
         self.account = account
@@ -73,6 +75,13 @@ class PortfolioBroker:
         self.halted = False
         self.dust_adjustments: List[Dict[str, object]] = []
         self._participation_budgets: Dict[str, ParticipationBudget] = {}
+        self.risk_contract = risk_contract or RiskContract.legacy()
+        if self.risk_contract.enforces_drawdown and self.fill_cfg.mode != "v2":
+            raise ValueError("halt_and_flatten_next_open requires the strict v2 fill model")
+        self._high_water_equity = float(self.get_equity())
+        self.drawdown_trigger: Optional[Dict[str, object]] = None
+        self._drawdown_liquidation_pending = False
+        self._risk_sizing_events: List[Dict[str, object]] = []
 
     # ---------- Strategy-facing API ----------
 
@@ -179,6 +188,10 @@ class PortfolioBroker:
             "rejections": list(self.rejections[-100:]),
             "pending_orders_at_end": len(self.orders),
             "halted": self.halted,
+            "risk_contract": self.risk_contract.to_dict(),
+            "risk_sizing_events": list(self._risk_sizing_events[-100:]),
+            "risk_high_water_equity": self._high_water_equity,
+            "drawdown_trigger": self.drawdown_trigger,
             "dust_adjustments": len(self.dust_adjustments),
         }
 
@@ -241,34 +254,46 @@ class PortfolioBroker:
 
     # ---------- Runtime-facing API ----------
 
+    def _open_prices(self, i: int) -> Dict[str, float]:
+        return {sym: float(self.market.arrays[sym].open[i]) for sym in self.market.symbols}
+
+    def _process_open_symbol(self, sym: str, i: int, bar_fills: List[Fill]) -> None:
+        ba = self.market.arrays[sym]
+        self._participation_budgets[sym] = ParticipationBudget(
+            forecast_volume=volume_forecast(ba, i),
+            participation_pct=self.fill_cfg.participation_pct,
+        )
+        sym_orders = [o for o in self.orders if o.symbol == sym]
+        fills = process_open_orders_for_bar(
+            sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
+            participation_budget=self._participation_budgets[sym],
+            margin_check=self._margin_cap_at_fill,
+            on_expire=self._record_ttl_expired,
+        )
+        for f in fills:
+            self._apply_fill(f)
+            bar_fills.append(f)
+        kept_ids = {o.id for o in sym_orders}
+        self.orders = [o for o in self.orders if o.symbol != sym or o.id in kept_ids]
+        self._settle_dust(sym, i)
+
+    def _process_open_halted(self, i: int) -> List[Fill]:
+        if not self._drawdown_liquidation_pending:
+            return []
+        bar_fills = self._execute_drawdown_flatten(i)
+        self.account.mark_prices(self._open_prices(i))
+        self._check_insolvency(i)
+        return bar_fills
+
     def process_open(self, i: int) -> List[Fill]:
         """Fill queued market orders at the decision-time-safe open and mark to open."""
         if self.halted:
-            return []
+            return self._process_open_halted(i)
         bar_fills: List[Fill] = []
         self._participation_budgets = {}
         for sym in self.market.symbols:
-            ba = self.market.arrays[sym]
-            self._participation_budgets[sym] = ParticipationBudget(
-                forecast_volume=volume_forecast(ba, i),
-                participation_pct=self.fill_cfg.participation_pct,
-            )
-            sym_orders = [o for o in self.orders if o.symbol == sym]
-            fills = process_open_orders_for_bar(
-                sym_orders, ba, i, self.costs, self.fill_cfg, self.asset_specs,
-                participation_budget=self._participation_budgets[sym],
-                margin_check=self._margin_cap_at_fill,
-                on_expire=self._record_ttl_expired,
-            )
-            for f in fills:
-                self._apply_fill(f)
-                bar_fills.append(f)
-            kept_ids = {o.id for o in sym_orders}
-            self.orders = [o for o in self.orders if o.symbol != sym or o.id in kept_ids]
-            self._settle_dust(sym, i)
-
-        open_prices = {sym: float(self.market.arrays[sym].open[i]) for sym in self.market.symbols}
-        self.account.mark_prices(open_prices)
+            self._process_open_symbol(sym, i, bar_fills)
+        self.account.mark_prices(self._open_prices(i))
         self._check_insolvency(i)
         return bar_fills
 
@@ -333,6 +358,7 @@ class PortfolioBroker:
         self._apply_periodic_costs(i)
 
         self.book.mark_all(prices)
+        self._enforce_drawdown_contract(i)
 
         self.bar_counter += 1
         self.fills_log.extend(bar_fills)
@@ -410,6 +436,107 @@ class PortfolioBroker:
             for order in self.orders:
                 self._record_order_event("canceled", order=order, reason="insolvency_halt")
             self.orders.clear()
+
+    def _enforce_drawdown_contract(self, i: int) -> None:
+        equity = float(self.get_equity())
+        if np.isfinite(equity) and equity > self._high_water_equity:
+            self._high_water_equity = equity
+        if not self.risk_contract.enforces_drawdown or self.drawdown_trigger is not None:
+            return
+        limit_pct = self.risk_contract.drawdown_limit_pct
+        if limit_pct is None or self._high_water_equity <= 0 or not np.isfinite(equity):
+            return
+        drawdown_pct = max(0.0, (self._high_water_equity - equity) / self._high_water_equity * 100.0)
+        if drawdown_pct + 1e-12 < limit_pct:
+            return
+
+        canceled = len(self.orders)
+        for order in self.orders:
+            self._record_order_event("canceled", order=order, reason="drawdown_halt")
+        self.orders.clear()
+        open_symbols = [symbol for symbol, pos in self.book.positions.items() if abs(float(pos.qty)) > 1e-12]
+        self.halted = True
+        self._drawdown_liquidation_pending = bool(open_symbols)
+        symbol = open_symbols[0] if open_symbols else next(iter(self.market.symbols), None)
+        ts_ns = self._current_ts_ns(symbol)
+        self.drawdown_trigger = {
+            "bar_index": int(i),
+            "ts_ns": ts_ns,
+            "high_water_equity": float(self._high_water_equity),
+            "equity": equity,
+            "drawdown_pct": drawdown_pct,
+            "limit_pct": float(limit_pct),
+            "canceled_pending_orders": canceled,
+            "flatten_symbols": open_symbols,
+            "flatten_status": "scheduled" if open_symbols else "not_required",
+            "flatten_execution_bar": None,
+            "flatten_execution_ts_ns": None,
+            "flatten_fill_count": 0,
+            "flatten_fees": 0.0,
+        }
+
+    def _flatten_position_at_open(self, i: int, symbol: str, pos) -> List[Fill]:
+        from ..execution.orders import Order
+
+        qty = abs(float(pos.qty))
+        if qty <= 1e-12:
+            return []
+        side = "sell" if pos.qty > 0 else "buy"
+        ba = self.market.arrays[symbol]
+        order = Order(
+            id=f"drawdown-{i}-{symbol}-{uuid.uuid4().hex[:8]}",
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            order_type="market",
+            submitted_ts_ns=int(ba.ts[i]),
+            tag="DRAWDOWN_FLATTEN",
+        )
+        self._record_order_event("submitted", order=order, reason="drawdown_flatten")
+        risk_fills = process_open_orders_for_bar(
+            [order],
+            ba,
+            i,
+            self.costs,
+            self.fill_cfg,
+            self.asset_specs,
+            participation_budget=ParticipationBudget.unlimited(volume_forecast(ba, i)),
+            margin_check=None,
+            on_expire=None,
+        )
+        for fill in risk_fills:
+            self._apply_fill(fill)
+        return risk_fills
+
+    def _record_flatten_outcome(self, i: int, fills: List[Fill], remaining: List[str]) -> None:
+        if self.drawdown_trigger is None:
+            return
+        self.drawdown_trigger["flatten_execution_bar"] = int(i)
+        first_symbol = next(iter(self.market.symbols), None)
+        self.drawdown_trigger["flatten_execution_ts_ns"] = self._current_ts_ns(first_symbol)
+        self.drawdown_trigger["flatten_fill_count"] = len(fills)
+        self.drawdown_trigger["flatten_fees"] = float(sum(fill.fee for fill in fills))
+        self.drawdown_trigger["flatten_status"] = "partial" if remaining else "completed"
+        self.drawdown_trigger["remaining_symbols"] = remaining
+
+    def _execute_drawdown_flatten(self, i: int) -> List[Fill]:
+        """Force-close the triggered book at the next open using normal costs.
+
+        The risk liquidation bypasses the participation cap so a configured
+        volume throttle cannot leave exposure behind after a hard halt. Price,
+        slippage, spread, asset rounding, and commission all use the ordinary
+        v2 open-fill path.
+        """
+        if not self._drawdown_liquidation_pending:
+            return []
+        fills: List[Fill] = []
+        for symbol, pos in list(self.book.positions.items()):
+            fills.extend(self._flatten_position_at_open(i, symbol, pos))
+
+        remaining = [symbol for symbol, pos in self.book.positions.items() if abs(float(pos.qty)) > 1e-12]
+        self._drawdown_liquidation_pending = bool(remaining)
+        self._record_flatten_outcome(i, fills, remaining)
+        return fills
 
     def _settle_dust(self, symbol: str, i: int) -> None:
         """Close sub-lot residuals below venue precision without re-queueing orders."""
@@ -538,10 +665,93 @@ class PortfolioBroker:
     def _record_order_event(self, status: str, **kwargs) -> None:
         self.order_log.append(self._order_event_row(status, **kwargs))
 
+    def _projected_qty_before_order(self, symbol: str) -> float:
+        projected = float(self.book.get(symbol).qty)
+        for queued in self.orders:
+            if str(getattr(queued, "symbol", "")) != symbol:
+                continue
+            side = str(getattr(queued, "side", ""))
+            remaining = float(
+                getattr(queued, "qty_remaining", 0.0)
+                or getattr(queued, "qty", 0.0)
+            )
+            if side == "buy":
+                projected += remaining
+            elif side == "sell":
+                projected -= remaining
+        return projected
+
+    def _enforce_contract_sizing(self, order, qty: float, price: float) -> Optional[float]:
+        """Apply the schema-v4 stop-distance sizing boundary to new exposure.
+
+        Reductions and full closes are never blocked.  New or increased
+        exposure is capped so its declared stop-distance loss fits within one
+        position slot's share of the portfolio drawdown budget.
+        """
+        stop_distance = self.risk_contract.stop_distance_for_price(price)
+        if stop_distance is None:
+            return qty
+
+        symbol = str(order.symbol)
+        side = str(order.side)
+        direction = 1.0 if side == "buy" else -1.0
+        before = self._projected_qty_before_order(symbol)
+        after = before + direction * qty
+        flips_side = before * after < -1e-12
+        increases_exposure = abs(after) > abs(before) + 1e-12
+        if not flips_side and not increases_exposure:
+            return qty
+
+        spec = self.asset_specs.get(symbol)
+        multiplier = float(spec.multiplier) if spec is not None else 1.0
+        equity = float(self.get_equity())
+        max_qty = self.risk_contract.max_position_qty(
+            equity=equity,
+            price=price,
+            multiplier=multiplier,
+        )
+        if max_qty is None or not np.isfinite(max_qty) or max_qty <= 0:
+            self._reject(symbol, side, qty, "risk_sizing_unavailable")
+            return None
+
+        accepted_qty = qty
+        if abs(after) > max_qty + 1e-12:
+            # Final quantity at the order-side boundary is +max_qty for buys
+            # and -max_qty for sells.  This formula also handles a side flip.
+            accepted_qty = max(0.0, max_qty - direction * before)
+            if spec is not None:
+                accepted_qty = spec.round_qty(accepted_qty)
+            if accepted_qty <= 1e-12:
+                self._reject(symbol, side, qty, "risk_sizing_limit")
+                return None
+
+        order.stop_distance_hint = float(stop_distance)
+        order.qty = float(accepted_qty)
+        order.qty_remaining = float(accepted_qty)
+        self._risk_sizing_events.append({
+            "bar_index": int(self.market.i),
+            "symbol": symbol,
+            "side": side,
+            "requested_qty": float(qty),
+            "accepted_qty": float(accepted_qty),
+            "projected_qty_before": float(before),
+            "max_position_qty": float(max_qty),
+            "decision_price": float(price),
+            "stop_distance": float(stop_distance),
+            "risk_budget_pct_per_position": self.risk_contract.risk_budget_pct_per_position,
+            "status": "constrained" if accepted_qty + 1e-12 < qty else "derived",
+        })
+        return float(accepted_qty)
+
+    # @codescene(disable-all) Queue validation centralizes the broker safety contract.
     def _validate_order_for_queue(self, order) -> bool:
         symbol = str(getattr(order, "symbol", ""))
         side = str(getattr(order, "side", ""))
         qty = float(getattr(order, "qty", 0.0))
+        if self.halted:
+            reason = "drawdown_halt" if self.drawdown_trigger is not None else "insolvency_halt"
+            self._reject(symbol, side, qty, reason)
+            return False
         if symbol not in self.market.symbols:
             self._reject(symbol, side, qty, "symbol_mismatch")
             return False
@@ -575,6 +785,10 @@ class PortfolioBroker:
             if (spec is None or spec.volume_required) and (not np.isfinite(volume) or volume <= 0):
                 self._reject(symbol, side, qty, "zero_volume_bar")
                 return False
+        constrained_qty = self._enforce_contract_sizing(order, qty, price)
+        if constrained_qty is None:
+            return False
+        qty = constrained_qty
         # Participation is enforced by the fill engine as partial fills. Do not
         # reject larger parent orders here; the unfilled remainder carries until
         # filled or TTL-expired. Margin, however, must be checked against the
@@ -602,6 +816,12 @@ class PortfolioBroker:
                 asset_class=qspec.assetClass if qspec is not None else "",
             )
         projected_prices = {sym: self.latest_price(sym) for sym in projected_qty}
+        max_positions = self.risk_contract.max_positions
+        if max_positions is not None:
+            projected_open_positions = sum(1 for value in projected_qty.values() if abs(value) > 1e-12)
+            if projected_open_positions > max_positions:
+                self._reject(symbol, side, qty, "max_positions")
+                return False
         required_margin = self.account.required_initial_margin_for_quantities(projected_qty, projected_prices)
         allowed = self.account.equity(self.book.positions)
         if required_margin + queued_fee > allowed + 1e-9:

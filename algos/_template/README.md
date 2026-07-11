@@ -38,7 +38,8 @@ strategy stub, and grow the rest of the folder as the algo matures.
 
 - Folder name is kebab-case (`hanta-biotech-swing`) and must match
   `mission.frontmatter.name`.
-- `mission.md` has YAML frontmatter governed by `schema_version: 2`. The
+- `mission.md` has YAML frontmatter governed by `schema_version: 4`. Historical
+  v2/v3 missions remain readable, but new saves require the v4 risk contract. The
   schemas live in `@finny-ai/core/algo`.
 - `CURRENT` contains exactly one token, the version directory name. No JSON,
   no YAML, no comments.

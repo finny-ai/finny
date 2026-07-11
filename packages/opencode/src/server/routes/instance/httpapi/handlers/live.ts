@@ -1,8 +1,13 @@
 import * as InstanceState from "@/effect/instance-state"
 import { LiveRunner } from "@/live/runner"
+import { Algorithm } from "@/algorithm"
 import { GlobalBus } from "@/bus/global"
 import { Effect } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
+import { controllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
+import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import { readApproval, strictRunDir } from "@/backtest/run-integrity"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, LiveRunNotFoundError, LiveRunStartError } from "../errors"
 import type { StartPayload } from "../groups/live"
@@ -45,6 +50,9 @@ function ensureBridge() {
 
 export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handlers) =>
   Effect.gen(function* () {
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
     const releaseBridge = ensureBridge()
     yield* Effect.addFinalizer(() =>
       Effect.sync(() => {
@@ -72,15 +80,36 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
     const start = Effect.fn("LiveHttpApi.start")(function* (ctx: { payload: typeof StartPayload.Type }) {
       const dir = yield* InstanceState.directory
       return yield* Effect.tryPromise({
-        try: () =>
-          LiveRunner.start({
-            algorithm: ctx.payload.algorithm,
+        try: async () => {
+          const algorithm = await Algorithm.getById(ctx.payload.algorithm.algorithmId)
+          if (!algorithm) {
+            throw new LiveRunner.StartRejectedError(
+              `Algorithm ${ctx.payload.algorithm.algorithmId} no longer exists; refresh before starting a run.`,
+            )
+          }
+          const approval = await readApproval(strictRunDir(algorithm, ctx.payload.runId), "paper_eligible")
+          const workflow = approval?.workflowId
+            ? await runWorkflow(BuildWorkflowStore.get(approval.workflowId))
+            : undefined
+          const authority = approval
+            ? controllerPaperApproval(workflow, {
+                algorithmId: algorithm.algorithmId,
+                algorithmVersion: algorithm.version,
+                runId: ctx.payload.runId,
+                identityHash: approval.identityHash,
+              })
+            : undefined
+          return LiveRunner.start({
+            algorithm,
+            runId: ctx.payload.runId,
             symbol: ctx.payload.symbol,
             interval: ctx.payload.interval,
             accountProviderID: ctx.payload.accountProviderID,
             brokerKind: ctx.payload.brokerKind,
             directory: dir,
-          }),
+            controllerApproval: authority,
+          })
+        },
         catch: (error) => {
           if (error instanceof LiveRunner.StartRejectedError) {
             return new LiveRunStartError({ message: error.message })

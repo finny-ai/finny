@@ -8,9 +8,11 @@ import {
   experimentTrialSummary,
   makeApprovalChallenge,
   makeExperimentAttempt,
+  paperTradingApprovalScope,
   requestJsonProjection,
   transition,
 } from "@/algorithm/build-workflow/state"
+import { controllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
 import type {
   BuildWorkflowState,
   CreateBuildWorkflowInput,
@@ -126,6 +128,7 @@ function reviewableWorkflow(): BuildWorkflowState {
     manifestHash: "manifest_hash",
     engineHash: "engine_hash",
     windowHash: "window_hash",
+    strictRunIdentityHash: "a".repeat(64),
   }
   return applied(
     transition(state, {
@@ -332,6 +335,56 @@ describe("algorithm build workflow approvals", () => {
       challengeId: challenge.id,
       questionRequestId: "que_structured",
     })
+  })
+
+  test("derives a promotion proof only from the exact approved strict run", () => {
+    let state = reviewableWorkflow()
+    const challenge = makeApprovalChallenge({
+      id: "approval_strict_run",
+      kind: "paper_trading",
+      scope: paperTradingApprovalScope(state.backtest!),
+      reason: "Approve the exact strict run.",
+      now: 2_500,
+    })
+    state = applied(
+      transition(state, {
+        id: "evt_strict_approval_requested",
+        type: "approval.requested",
+        occurredAt: 2_500,
+        source: { actor: "tool" },
+        challenge,
+      }),
+    )
+    state = applied(
+      transition(state, {
+        id: "evt_strict_approval_granted",
+        type: "approval.granted",
+        occurredAt: 2_600,
+        source: { actor: "user", structuredResponse: true, questionRequestId: "question_strict" },
+        challengeId: challenge.id,
+        scopeHash: challenge.scopeHash,
+      }),
+    )
+    expect(
+      controllerPaperApproval(state, {
+        algorithmId: "algo_1",
+        algorithmVersion: 1,
+        runId: "run_1",
+        identityHash: "a".repeat(64),
+      }),
+    ).toMatchObject({
+      workflowId: state.workflowId,
+      challengeId: challenge.id,
+      questionRequestId: "question_strict",
+    })
+    expect(
+      controllerPaperApproval(state, {
+        algorithmId: "algo_1",
+        algorithmVersion: 1,
+        runId: "run_1",
+        identityHash: "b".repeat(64),
+      }),
+    ).toBeUndefined()
   })
 })
 

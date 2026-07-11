@@ -1,158 +1,141 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import crypto from "node:crypto"
 import z from "zod"
 import { Effect } from "effect"
-import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import { Database } from "@opencode-ai/core/database/database"
 import { Algorithm } from "../algorithm"
+import { controllerPaperApproval } from "../algorithm/build-workflow/paper-approval"
+import { BuildWorkflowStore } from "../algorithm/build-workflow/store"
+import {
+  strictRunDir,
+  verifyRunForAlgorithm,
+  writePaperApproval,
+} from "../backtest/run-integrity"
 import { Tool } from "./tool"
 
 const parameters = z.object({
-  algorithmName: z.string().describe("Name of the saved algorithm whose latest recommended run should be approved for paper trading."),
-  runId: z.string().optional().describe("Optional immutable run id. Defaults to newest run.json for the algorithm version."),
+  algorithmName: z.string().describe("Name of the saved algorithm whose exact recommended run should be approved for paper trading."),
+  runId: z.string().min(1).describe("Immutable strict run id to approve. Approval never defaults to the newest run."),
 })
 
 type ApprovalMetadata = {
   approved: boolean
   runId?: string
   runPath?: string
-  expected?: string
-  actual?: string
+  identityHash?: string
+  errors?: string[]
 }
 
-function sha256Text(input: string): string {
-  return crypto.createHash("sha256").update(input).digest("hex")
-}
-
-function runsDir(algorithm: Algorithm.Info): string {
-  const version = Number((algorithm as any).version ?? 0) || 0
-  return path.join(
-    finnyArtifactPath("algorithms"),
-    algorithm.algorithmId,
-    `v${String(version).padStart(2, "0")}`,
-    "runs",
-  )
-}
-
-async function existingRunDir(root: string, runId: string): Promise<string | undefined> {
-  const candidate = path.join(root, runId)
+async function validateDurability(dir: string, input: {
+  runId: string
+  algorithmId: string
+  algorithmVersion: number
+  verdict: string
+}): Promise<string[]> {
   try {
-    return (await fs.stat(path.join(candidate, "run.json"))).isFile() ? candidate : undefined
+    const report = JSON.parse(await fs.readFile(path.join(dir, "durability.json"), "utf8"))
+    const errors: string[] = []
+    if (report?.schema !== "finny.durability" || report?.version !== 1) errors.push("durability.json schema is invalid")
+    if (report?.runId !== input.runId) errors.push("durability.json runId does not match")
+    if (report?.algorithmId !== input.algorithmId || report?.algorithmVersion !== input.algorithmVersion) errors.push("durability.json algorithm version does not match")
+    if (report?.verdict !== input.verdict) errors.push("durability.json verdict does not match the immutable recommendation")
+    return errors
   } catch {
-    return undefined
+    return ["durability.json review baseline is missing or unreadable"]
   }
 }
 
-async function newestRunDir(root: string): Promise<string | undefined> {
-  try {
-    const entries = await fs.readdir(root, { withFileTypes: true })
-    let newest: { mtime: number; dir: string } | undefined
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue
-      const dir = path.join(root, entry.name)
-      try {
-        const stat = await fs.stat(path.join(dir, "run.json"))
-        if (!newest || stat.mtimeMs > newest.mtime) newest = { mtime: stat.mtimeMs, dir }
-      } catch {}
-    }
-    return newest?.dir
-  } catch {
-    return undefined
-  }
-}
-
-async function latestRunDir(algorithm: Algorithm.Info, runId?: string): Promise<string | undefined> {
-  const root = runsDir(algorithm)
-  return runId ? existingRunDir(root, runId) : newestRunDir(root)
-}
-
-export const PaperApproveTool = Tool.define<typeof parameters, ApprovalMetadata, never, "finny_paper_approve">(
+export const PaperApproveTool = Tool.define<typeof parameters, ApprovalMetadata, Database.Service, "finny_paper_approve">(
   "finny_paper_approve",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
+    return {
     description:
-      "Explicitly approve a recommended unified backtest run for paper trading after human review. This is the only tool that can flip run.json eligibilityStatus to paper_eligible.",
+      "Publish the immutable approval receipt for one exact hash-complete recommended run after its controller-created paper challenge was approved by the user. This tool cannot ask for or create approval itself.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_paper_approve",
-          patterns: ["*"],
-          always: [],
-          metadata: {},
-        })
-
         const algo = await Algorithm.get(params.algorithmName)
         if (!algo) {
           return {
             title: "Paper approval failed",
             output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
-            metadata: { approved: false } satisfies ApprovalMetadata,
+            metadata: { approved: false, runId: params.runId } satisfies ApprovalMetadata,
           }
         }
 
-        const dir = await latestRunDir(algo, params.runId)
-        if (!dir) {
+        const integrity = await verifyRunForAlgorithm(algo, params.runId)
+        const run = integrity.run
+        if (!integrity.ok || !run) {
           return {
             title: "Paper approval refused",
-            output: params.runId ? `Run "${params.runId}" was not found for ${algo.name}.` : `No completed run.json was found for ${algo.name}.`,
-            metadata: { approved: false } satisfies ApprovalMetadata,
+            output: `Run ${params.runId} is not an exact hash-complete strict run for ${algo.name}: ${integrity.errors.join("; ") || "run not found"}.`,
+            metadata: { approved: false, runId: params.runId, errors: integrity.errors } satisfies ApprovalMetadata,
           }
         }
-
-        const runPath = path.join(dir, "run.json")
-        const durabilityPath = path.join(dir, "durability.json")
-        const run = JSON.parse(await fs.readFile(runPath, "utf8"))
-        if (run.unifiedVerdict !== "recommended_for_paper") {
+        if (run.recommendation.verdict !== "recommended_for_paper") {
           return {
             title: "Paper approval refused",
-            output: `Run ${run.runId ?? path.basename(dir)} is not recommended_for_paper (unifiedVerdict=${run.unifiedVerdict ?? "missing"}).`,
-            metadata: { approved: false, runId: run.runId } satisfies ApprovalMetadata,
+            output: `Run ${params.runId} is not recommended_for_paper (verdict=${run.recommendation.verdict}).`,
+            metadata: { approved: false, runId: params.runId, identityHash: run.identityHash } satisfies ApprovalMetadata,
           }
         }
-        try {
-          await fs.access(durabilityPath)
-        } catch {
+
+        const dir = strictRunDir(algo, params.runId)
+        const durabilityErrors = await validateDurability(dir, {
+          runId: run.runId,
+          algorithmId: run.identity.algorithmId,
+          algorithmVersion: run.identity.algorithmVersion,
+          verdict: run.recommendation.verdict,
+        })
+        if (durabilityErrors.length) {
           return {
             title: "Paper approval refused",
-            output: `Run ${run.runId ?? path.basename(dir)} has no durability.json review baseline.`,
-            metadata: { approved: false, runId: run.runId } satisfies ApprovalMetadata,
+            output: `Run ${params.runId} has no matching durability review baseline: ${durabilityErrors.join("; ")}.`,
+            metadata: { approved: false, runId: params.runId, identityHash: run.identityHash, errors: durabilityErrors } satisfies ApprovalMetadata,
           }
         }
 
-        const currentHash = sha256Text(algo.code)
-        if (run.strategyHash !== currentHash) {
+        const workflows = await runWorkflow(BuildWorkflowStore.listBySession(ctx.sessionID))
+        const authority = workflows
+          .map((workflow) =>
+            controllerPaperApproval(workflow, {
+              algorithmId: algo.algorithmId,
+              algorithmVersion: algo.version,
+              runId: run.runId,
+              identityHash: run.identityHash,
+            }),
+          )
+          .find((item) => item !== undefined)
+        if (!authority) {
           return {
             title: "Paper approval refused",
-            output: `Run ${run.runId ?? path.basename(dir)} was produced from a different strategy hash. Re-run finny_backtest after the latest edits before approval.`,
-            metadata: { approved: false, runId: run.runId, expected: currentHash, actual: run.strategyHash } satisfies ApprovalMetadata,
+            output:
+              `Run ${params.runId} has no matching controller-backed human approval. ` +
+              "Use the paper_trading challengeId returned by finny_backtest with finny_workflow_request_approval first.",
+            metadata: {
+              approved: false,
+              runId: run.runId,
+              identityHash: run.identityHash,
+              errors: ["matching controller-backed human approval is missing"],
+            } satisfies ApprovalMetadata,
           }
         }
 
-        const priorEligibility = run.eligibilityStatus ?? "prototype"
-        const approved = {
-          ...run,
-          eligibilityStatus: "paper_eligible",
-          approval: {
-            approvedAt: new Date().toISOString(),
-            approvedVia: "finny_paper_approve",
-            priorEligibility,
-            verdict: run.unifiedVerdict,
-          },
-        }
-        await fs.writeFile(runPath, JSON.stringify(approved, null, 2))
-        const manifestPath = path.join(dir, "manifest.json")
-        try {
-          const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"))
-          manifest.approvals = Array.isArray(manifest.approvals) ? manifest.approvals : []
-          manifest.approvals.push(approved.approval)
-          await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2))
-        } catch {}
-
+        const approved = await writePaperApproval({ dir, run, authority })
         return {
-          title: "Paper approved",
-          output: `Run ${approved.runId} is now paper_eligible. Live paper gate will pick it up from ${runPath}.`,
-          metadata: { approved: true, runId: approved.runId, runPath } satisfies ApprovalMetadata,
+          title: approved.created ? "Paper approved" : "Paper already approved",
+          output: `Run ${run.runId} is paper_eligible through immutable approval.json bound to identity ${run.identityHash}.`,
+          metadata: {
+            approved: true,
+            runId: run.runId,
+            runPath: path.join(dir, "run.json"),
+            identityHash: run.identityHash,
+          } satisfies ApprovalMetadata,
         }
       }),
+    }
   }),
 )

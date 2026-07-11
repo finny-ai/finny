@@ -1,7 +1,7 @@
 import crypto from "crypto"
 import { BusEvent } from "../bus/bus-event"
 import z from "zod"
-import { LocalAlgorithmStore } from "../storage/local/algorithm-store"
+import { LocalAlgorithmStore, type AlgorithmDocsMode } from "../storage/local/algorithm-store"
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
 import { emit } from "../analytics/emit"
@@ -24,6 +24,10 @@ export namespace Algorithm {
     config: z.string().optional(),
     backtestCode: z.string().optional(),
     reasoning: z.string().optional(),
+    mission: z.string().optional(),
+    prefs: z.string().optional(),
+    decisions: z.string().optional(),
+    riskContract: z.string().optional(),
     brokerKind: BrokerKindSchema.optional(),
     targetBrokerage: BrokerKindSchema.optional(),
     time_created: z.number(),
@@ -65,6 +69,8 @@ export namespace Algorithm {
     mission?: string
     prefs?: string
     decisions?: string
+    riskContract?: string
+    docsMode?: AlgorithmDocsMode
     brokerKind?: BrokerKind
     targetBrokerage?: BrokerKind
     saveMode: SaveMode
@@ -77,6 +83,13 @@ export namespace Algorithm {
       super(message)
       this.kind = kind
       this.suggested = suggested
+    }
+  }
+
+  export class DocsModeRequiredError extends Error {
+    constructor(message: string) {
+      super(message)
+      this.name = "DocsModeRequiredError"
     }
   }
 
@@ -111,6 +124,19 @@ export namespace Algorithm {
       algorithmId = existing.algorithmId
       time_created = existing.time_created
       status = existing.status ?? "draft"
+      if (!input.docsMode) {
+        throw new DocsModeRequiredError(
+          `Version saves for "${input.name}" require docsMode: "inherit" or "replace".`,
+        )
+      }
+      if (
+        input.docsMode === "inherit" &&
+        (input.mission !== undefined || input.prefs !== undefined || input.riskContract !== undefined)
+      ) {
+        throw new DocsModeRequiredError(
+          `docsMode "inherit" cannot include replacement mission, preferences, or risk contract. Use docsMode: "replace".`,
+        )
+      }
     }
 
     const normalizedConfig = normalizeConfigForSave({
@@ -133,6 +159,8 @@ export namespace Algorithm {
       mission: input.mission,
       prefs: input.prefs,
       decisions: input.decisions,
+      riskContract: input.riskContract,
+      docsMode: input.saveMode === "new" ? "replace" : input.docsMode,
       brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
       targetBrokerage: input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
       time_created,
@@ -230,14 +258,33 @@ export namespace Algorithm {
 
   export async function updateConfig(algorithmId: string, config: string): Promise<Info | null> {
     if (!(await verifyOwnership(algorithmId))) return null
-    const result = await LocalAlgorithmStore.patchLatestConfig(algorithmId, config)
+    const existing = await LocalAlgorithmStore.getById(algorithmId)
+    if (!existing) return null
+    const now = Date.now()
+    const result = await LocalAlgorithmStore.insertVersion({
+      algorithmId: existing.algorithmId,
+      userId: existing.userId,
+      name: existing.name,
+      code: existing.code,
+      language: existing.language,
+      status: existing.status,
+      description: existing.description,
+      config,
+      backtestCode: existing.backtestCode,
+      reasoning: existing.reasoning,
+      docsMode: "inherit",
+      brokerKind: existing.brokerKind,
+      targetBrokerage: existing.targetBrokerage,
+      time_created: existing.time_created,
+      time_updated: now,
+    })
     if (!result) return null
-    log.info("algorithm config patched", { algorithmId })
+    log.info("algorithm config versioned", { algorithmId, version: result.version })
 
     emit({
-      eventType: "algorithm.config_patched",
+      eventType: "algorithm.config_versioned",
       algorithmId,
-      payload: { algorithmId, config },
+      payload: { algorithmId, config, version: result.version },
     })
 
     return result as Info

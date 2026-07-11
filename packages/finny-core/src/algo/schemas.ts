@@ -82,17 +82,87 @@ export const MissionScope = z.object({
 })
 export type MissionScope = z.infer<typeof MissionScope>
 
-export const MissionFrontmatter = z
+export const MISSION_CORE8_IDS = [
+  "market_universe",
+  "timeframe_bar_interval",
+  "strategy_family",
+  "directional_thesis_regime",
+  "entry_signal_idea",
+  "exit_invalidation_rules",
+  "risk_tolerance_max_drawdown",
+  "backtest_window_success_metric",
+] as const
+
+const MissionQuestionnaireItem = z.object({
+  id: z.enum(MISSION_CORE8_IDS),
+  question: z.string().min(1),
+  answer: z.string(),
+  status: z.enum(["answered", "skipped"]),
+}).strict()
+
+const StringOrNumber = z.union([z.string().min(1), z.number()])
+
+export const MissionStrategy = z.object({
+  bar_interval: StringOrNumber,
+  type: z.string().min(1),
+  direction: z.enum(["long", "short", "both"]),
+  entry_signal: z.string().min(1),
+  risk_profile: z.string().min(1),
+  max_drawdown_pct: StringOrNumber,
+  backtest_window: StringOrNumber,
+  success_metric: z.string().min(1),
+}).strict()
+
+export const MissionRiskContract = z.object({
+  sizing_stop_distance_pct: z.number().finite().positive().max(100),
+  protective_stop: z.object({
+    mode: z.enum(["none", "strategy_next_open", "engine_stop"]),
+  }).strict(),
+  drawdown: z.object({
+    mode: z.enum(["evaluation_only", "halt_and_flatten_next_open"]),
+    limit_pct: z.number().finite().positive().max(100),
+  }).strict(),
+  max_positions: z.number().int().positive(),
+}).strict()
+export type MissionRiskContract = z.infer<typeof MissionRiskContract>
+
+const MissionCommon = {
+  name: z.string().regex(ALGO_NAME_RE, "name must be kebab-case (lowercase, digits, hyphens)"),
+  status: AlgoStatus,
+  created: IsoDate,
+  hypothesis: z.string().min(1),
+  scope: MissionScope,
+  exit_conditions: z.string().min(1),
+} as const
+
+export const MissionFrontmatterV2 = z
   .object({
     schema_version: z.literal(2),
-    name: z.string().regex(ALGO_NAME_RE, "name must be kebab-case (lowercase, digits, hyphens)"),
-    status: AlgoStatus,
-    created: IsoDate,
-    hypothesis: z.string().min(1),
-    scope: MissionScope,
-    exit_conditions: z.string().min(1),
+    ...MissionCommon,
   })
   .strict()
+
+export const MissionFrontmatterV3 = z.object({
+  schema_version: z.literal(3),
+  ...MissionCommon,
+  strategy: MissionStrategy,
+  questionnaire: z.array(MissionQuestionnaireItem),
+}).strict()
+
+export const MissionFrontmatterV4 = z.object({
+  schema_version: z.literal(4),
+  ...MissionCommon,
+  strategy: MissionStrategy,
+  risk_contract: MissionRiskContract,
+  questionnaire: z.array(MissionQuestionnaireItem),
+}).strict()
+
+/** Historical v2/v3 missions remain readable; v4 is the current write schema. */
+export const MissionFrontmatter = z.discriminatedUnion("schema_version", [
+  MissionFrontmatterV2,
+  MissionFrontmatterV3,
+  MissionFrontmatterV4,
+])
 export type MissionFrontmatter = z.infer<typeof MissionFrontmatter>
 
 const Nullable = <T extends z.ZodTypeAny>(t: T) => z.union([t, z.null()])

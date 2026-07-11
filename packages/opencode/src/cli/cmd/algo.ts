@@ -138,6 +138,7 @@ async function loadAlgorithmPayload(args: {
   "mission-file"?: string
   "prefs-file"?: string
   "decisions-file"?: string
+  "risk-contract-file"?: string
 }) {
   const code = await readText(args.code, args.file, "code")
   if (!code) throw new Error("Pass --code or --file")
@@ -148,6 +149,7 @@ async function loadAlgorithmPayload(args: {
     mission: await readOptionalFile(args["mission-file"]),
     prefs: await readOptionalFile(args["prefs-file"]),
     decisions: await readOptionalFile(args["decisions-file"]),
+    riskContract: await readOptionalFile(args["risk-contract-file"]),
   }
 }
 
@@ -281,6 +283,15 @@ const algoAddOptionSpecs = [
   ["mission-file", { type: "string", describe: "path to mission.md" }],
   ["prefs-file", { type: "string", describe: "path to prefs.md" }],
   ["decisions-file", { type: "string", describe: "path to decisions.md" }],
+  ["risk-contract-file", { type: "string", describe: "path to risk.json" }],
+  [
+    "docs-mode",
+    {
+      type: "string",
+      choices: ["inherit", "replace"] as const,
+      describe: "required for version saves: inherit or replace versioned documents",
+    },
+  ],
   [
     "target-brokerage",
     {
@@ -326,6 +337,8 @@ const handleAlgoAdd = Effect.fn("Cli.algo.add")(function* (args) {
         mission: payload.mission,
         prefs: payload.prefs,
         decisions: payload.decisions,
+        riskContract: payload.riskContract,
+        docsMode: args["docs-mode"],
         saveMode: args["save-mode"],
         targetBrokerage: args["target-brokerage"],
       }),

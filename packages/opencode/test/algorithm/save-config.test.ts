@@ -112,6 +112,12 @@ describe("algorithm save config normalization", () => {
   })
 
   test("version save preserves execution config while replacing strategy params", () => {
+    const riskContract = {
+      sizing_stop_distance_pct: 2,
+      protective_stop: { mode: "strategy_next_open" },
+      drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+      max_positions: 1,
+    }
     const normalized = normalizeConfigForSave({
       previous: JSON.stringify({
         symbol: "SPY",
@@ -119,6 +125,7 @@ describe("algorithm save config normalization", () => {
         required_history_bars: 50,
         equity_usd: 10000,
         asset_class: "equity",
+        risk_contract: riskContract,
         params: { old_param: 1 },
       }),
       incoming: JSON.stringify({
@@ -135,6 +142,7 @@ describe("algorithm save config normalization", () => {
       required_history_bars: 50,
       equity_usd: 10000,
       asset_class: "equity",
+      risk_contract: riskContract,
       params: {
         fast_ma: 20,
         slow_ma: 50,
@@ -159,6 +167,7 @@ describe("algorithm save config normalization", () => {
           name: "qqq-cross",
           code: "class Strategy:\n    pass\n",
           saveMode: "version",
+          docsMode: "inherit",
           config: JSON.stringify({ fast_ma: 20, slow_ma: 50 }),
         })
 
@@ -169,6 +178,62 @@ describe("algorithm save config normalization", () => {
           equity_usd: 10000,
           params: { fast_ma: 20, slow_ma: 50 },
         })
+      },
+    })
+  })
+
+  test("version saves require an explicit docsMode", async () => {
+    await using tmp = await tmpdir()
+    await provideTestInstance({
+      directory: tmp.path,
+      fn: async () => {
+        await Algorithm.save({
+          name: "spy-doc-mode",
+          code: "class Strategy:\n    pass\n",
+          saveMode: "new",
+          config: JSON.stringify({ symbol: "SPY", interval: "1d", required_history_bars: 20 }),
+        })
+
+        await expect(
+          Algorithm.save({
+            name: "spy-doc-mode",
+            code: "class Strategy:\n    version = 2\n",
+            saveMode: "version",
+          }),
+        ).rejects.toBeInstanceOf(Algorithm.DocsModeRequiredError)
+      },
+    })
+  })
+
+  test("config updates create a new immutable version and inherit documents", async () => {
+    await using tmp = await tmpdir()
+    await provideTestInstance({
+      directory: tmp.path,
+      fn: async () => {
+        const first = await Algorithm.save({
+          name: "spy-versioned-params",
+          code: "class Strategy:\n    pass\n",
+          saveMode: "new",
+          config: JSON.stringify({ symbol: "SPY", interval: "1d", required_history_bars: 20, params: { period: 10 } }),
+          mission: "mission-v1\n",
+          prefs: "prefs-v1\n",
+          decisions: "decision-v1\n",
+          riskContract: '{"max_drawdown_pct":10}\n',
+        })
+
+        const updated = await Algorithm.updateConfig(
+          first.algorithmId,
+          JSON.stringify({ symbol: "SPY", interval: "1d", required_history_bars: 20, params: { period: 20 } }),
+        )
+        expect(updated?.version).toBe(2)
+
+        const old = await Algorithm.getVersion(first.algorithmId, 1)
+        expect(JSON.parse(old!.config!).params.period).toBe(10)
+        expect(JSON.parse(updated!.config!).params.period).toBe(20)
+        expect(updated?.mission).toBe("mission-v1\n")
+        expect(updated?.prefs).toBe("prefs-v1\n")
+        expect(updated?.decisions).toBe("decision-v1\n")
+        expect(updated?.riskContract).toBe('{"max_drawdown_pct":10}\n')
       },
     })
   })

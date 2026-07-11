@@ -21,6 +21,7 @@ Diagnostic codes:
   CRYPTO_WHOLE_UNIT_QTY     (warning) crypto order qty floored to whole units / clamped to a 1-unit minimum
   DIVISION_NO_ZERO_CHECK    (warning) division by a variable with no zero-guard anywhere in the function
   NEAR_ZERO_DIVISION        (warning) RSI-shaped division guarded only by != 0 / > 0
+  PROTECTIVE_STOP_CAPABILITY_MISSING (error) declared strategy stop has no AST evidence
 
 Exits 0 on success (diagnostics on stdout). Exits non-zero only on parse failure.
 """
@@ -246,6 +247,62 @@ def _collect_trade_actions(entry_method):
         elif _is_broker_trade_call(node):
             out.append((node.lineno, enclosing_if(node), "broker-call"))
     return out
+
+
+STOP_NAME_HINTS = ("stop", "loss_limit", "risk_limit", "invalidation")
+PRICE_NAME_HINTS = ("price", "open", "close", "pnl", "return", "drawdown")
+
+
+def _identifier_names(node):
+    names = set()
+    for sub in ast.walk(node):
+        if isinstance(sub, ast.Name):
+            names.add(sub.id.lower())
+        elif isinstance(sub, ast.Attribute):
+            names.add(sub.attr.lower())
+        elif isinstance(sub, ast.Subscript):
+            key = _string_constant(sub.slice)
+            if key:
+                names.add(key.lower())
+    return names
+
+
+def _has_strategy_stop_guard(test):
+    """Conservative AST evidence for a decision-time strategy stop.
+
+    The exit must be guarded by both a stop/risk-shaped value and a
+    price/PnL-shaped value. This does not try to prove the threshold math; it
+    proves that the declared capability exists in executable control flow.
+    """
+    names = _identifier_names(test)
+    has_stop = any(any(hint in name for hint in STOP_NAME_HINTS) for name in names)
+    has_price = any(any(hint in name for hint in PRICE_NAME_HINTS) for name in names)
+    return has_stop and has_price
+
+
+def check_protective_stop_capability(cls, mode):
+    if mode != "strategy_next_open":
+        return []
+    for entry in _find_entry_methods(cls):
+        for line, guard, kind in _collect_trade_actions(entry):
+            if kind != "broker-call" or guard is None:
+                continue
+            action = _trade_action_at(guard, line)
+            if _is_exit_action(action) and _has_strategy_stop_guard(guard.test):
+                return []
+    return [{
+        "code": "PROTECTIVE_STOP_CAPABILITY_MISSING",
+        "severity": "error",
+        "message": (
+            "risk_contract.protective_stop.mode declares strategy_next_open, but no broker exit "
+            "is guarded by both a stop threshold and a decision-time price/PnL value."
+        ),
+        "fix": (
+            "In on_bar, compare the decision-safe current open (or computed PnL) with a stored "
+            "protective-stop threshold and call broker.sell/close/cover in that guarded branch. "
+            "A guarded broker.buy or broker.short creates exposure and is not stop evidence."
+        ),
+    }]
 
 
 def _is_mutable_container_init(value):
@@ -1789,7 +1846,7 @@ def check_division_no_zero_guard(cls):
     return diagnostics
 
 
-def analyze(code, symbol=None):
+def analyze(code, symbol=None, protective_stop_mode=None):
     try:
         tree = ast.parse(code)
     except SyntaxError:
@@ -1809,6 +1866,7 @@ def analyze(code, symbol=None):
     diagnostics += check_equity_never_updated(cls)
     diagnostics += check_crypto_qty_floor(cls, symbol)
     diagnostics += check_division_no_zero_guard(cls)
+    diagnostics += check_protective_stop_capability(cls, protective_stop_mode)
 
     # Run entry-method-scoped checks for every entry method the strategy defines.
     # This covers both legacy on_tick strategies and broker-API on_bar strategies.
@@ -1838,11 +1896,21 @@ def analyze(code, symbol=None):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--symbol", default=None, help="Symbol from config.json (informs FRACTIONAL_SHARES_EQUITY).")
+    parser.add_argument(
+        "--protective-stop-mode",
+        choices=("none", "strategy_next_open", "engine_stop"),
+        default=None,
+        help="Declared schema-v4 protective stop mode.",
+    )
     args = parser.parse_args()
 
     code = sys.stdin.read()
     try:
-        diagnostics = analyze(code, symbol=args.symbol)
+        diagnostics = analyze(
+            code,
+            symbol=args.symbol,
+            protective_stop_mode=args.protective_stop_mode,
+        )
     except Exception as exc:  # defensive: never crash the parent process
         sys.stderr.write(f"ast_analyzer error: {exc}\n")
         sys.stdout.write("[]")

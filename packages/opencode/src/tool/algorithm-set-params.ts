@@ -89,12 +89,14 @@ export const AlgorithmSetParamsTool = Tool.define(
         }
 
         return {
-          title: `Updated params on ${algo.name}`,
+          title: `Saved params as ${algo.name} v${updated.version}`,
           output: JSON.stringify(merged, null, 2),
           metadata: {
             found: true,
             algorithmId: algo.algorithmId,
             name: algo.name,
+            previousVersion: algo.version,
+            version: updated.version,
             params: merged,
           },
         }

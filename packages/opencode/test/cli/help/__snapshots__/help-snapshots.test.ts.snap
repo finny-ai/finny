@@ -986,37 +986,40 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 add a new algorithm or save a new version
 
 Options:
-  -h, --help               show help                                                       [boolean]
-  -v, --version            show version number                                             [boolean]
-      --print-logs         print logs to stderr                                            [boolean]
-      --log-level          log level            [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
-      --pure               run without external plugins                                    [boolean]
-      --license-key        Finny license key for this startup (also available via FINNY_LICENSE_KEY)
-                                                                                            [string]
-      --name               algorithm name                                        [string] [required]
-      --code               inline strategy source code                                      [string]
-      --file               path to strategy source file                                     [string]
-      --config             inline config JSON                                               [string]
-      --config-file        path to config JSON file                                         [string]
-      --description        algorithm description                                            [string]
-      --save-mode          create a new algorithm or bump an existing version
+  -h, --help                show help                                                      [boolean]
+  -v, --version             show version number                                            [boolean]
+      --print-logs          print logs to stderr                                           [boolean]
+      --log-level           log level           [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
+      --pure                run without external plugins                                   [boolean]
+      --license-key         Finny license key for this startup (also available via
+                            FINNY_LICENSE_KEY)                                              [string]
+      --name                algorithm name                                       [string] [required]
+      --code                inline strategy source code                                     [string]
+      --file                path to strategy source file                                    [string]
+      --config              inline config JSON                                              [string]
+      --config-file         path to config JSON file                                        [string]
+      --description         algorithm description                                           [string]
+      --save-mode           create a new algorithm or bump an existing version
                                                [string] [choices: "new", "version"] [default: "new"]
-      --language           strategy language                            [string] [default: "python"]
-      --reasoning          inline reasoning markdown                                        [string]
-      --reasoning-file     path to reasoning markdown                                       [string]
-      --mission-file       path to mission.md                                               [string]
-      --prefs-file         path to prefs.md                                                 [string]
-      --decisions-file     path to decisions.md                                             [string]
-      --target-brokerage   optional target brokerage metadata
+      --language            strategy language                           [string] [default: "python"]
+      --reasoning           inline reasoning markdown                                       [string]
+      --reasoning-file      path to reasoning markdown                                      [string]
+      --mission-file        path to mission.md                                              [string]
+      --prefs-file          path to prefs.md                                                [string]
+      --decisions-file      path to decisions.md                                            [string]
+      --risk-contract-file  path to risk.json                                               [string]
+      --docs-mode           required for version saves: inherit or replace versioned documents
+                                                            [string] [choices: "inherit", "replace"]
+      --target-brokerage    optional target brokerage metadata
                                                      [string] [choices: "alpaca", "binance", "ibkr"]
-      --validate           validate immediately after saving              [boolean] [default: false]
-      --backtest           run a backtest immediately after saving        [boolean] [default: false]
-      --duration           backtest duration when --backtest is used        [string] [default: "3m"]
-      --interval           backtest interval when --backtest is used        [string] [default: "1h"]
-      --capital            backtest capital when --backtest is used      [string] [default: "10000"]
-      --start-date         exact backtest start date YYYY-MM-DD                             [string]
-      --end-date           exact backtest end date YYYY-MM-DD                               [string]
-      --data-quality-mode  backtest data quality mode when --backtest is used
+      --validate            validate immediately after saving             [boolean] [default: false]
+      --backtest            run a backtest immediately after saving       [boolean] [default: false]
+      --duration            backtest duration when --backtest is used       [string] [default: "3m"]
+      --interval            backtest interval when --backtest is used       [string] [default: "1h"]
+      --capital             backtest capital when --backtest is used     [string] [default: "10000"]
+      --start-date          exact backtest start date YYYY-MM-DD                            [string]
+      --end-date            exact backtest end date YYYY-MM-DD                              [string]
+      --data-quality-mode   backtest data quality mode when --backtest is used
                                  [string] [choices: "strict", "repair_outliers"] [default: "strict"]"
 `;
 

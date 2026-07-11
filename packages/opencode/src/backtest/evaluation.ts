@@ -58,6 +58,19 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   const benchmarkDrawdown = finite(results.benchmarkMaxDrawdown, Number.NaN)
   const strictRun = results.runKind === "crucible_2_0" || results.productLabel === "Crucible 2.0"
   const requiresBenchmark = strictRun
+  const drawdownTrigger = results.v2?.diagnostics?.drawdown_trigger
+  const executionConfig = results.v2?.execution_config
+  const riskContract = executionConfig?.risk_contract
+  const researchOnlyRisk = results.runKind === "legacy" || (
+    strictRun
+    && executionConfig !== undefined
+    && (
+      riskContract === undefined
+      || riskContract.sizing_stop_distance_pct == null
+      || riskContract.drawdown?.limit_pct == null
+      || riskContract.max_positions == null
+    )
+  )
 
   if (liquidationAdjustedReturn <= 0) reasons.push("liquidation-adjusted return <= 0")
   if (requiresBenchmark && !Number.isFinite(benchmarkReturn)) reasons.push("buy-and-hold benchmark unavailable")
@@ -65,6 +78,7 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   if (results.sharpeRatio <= 0) reasons.push("Sharpe <= 0")
   if (liquidationAdjustedDrawdown >= 0.5) reasons.push("liquidation-adjusted max drawdown >= 50%")
   if (repaired) reasons.push("uses repaired data")
+  if (drawdownTrigger && typeof drawdownTrigger === "object") reasons.push("drawdown risk contract triggered")
 
   if (reasons.length > 0) {
     return { label: "failed", paperEligible: false, reasons, minTrades }
@@ -91,6 +105,8 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
     const oosTrades = finite(wf.stitched_oos_trades, 0)
     const oosCoverage = finite(wf.stitched_oos_coverage, 0)
     if (wf.flagged) reasons.push("rolling OOS validation flagged")
+    if (finite(wf.is_sharpe_mean, Number.NEGATIVE_INFINITY) <= 0) reasons.push("walk-forward IS Sharpe <= 0")
+    if (wf.oos_decay === null || !Number.isFinite(wf.oos_decay)) reasons.push("walk-forward OOS decay unavailable")
     if (finite(wf.stitched_oos_return, -Infinity) <= 0) reasons.push("stitched OOS return <= 0")
     if (finite(wf.stitched_oos_sharpe ?? wf.oos_sharpe_mean, -Infinity) <= 0) reasons.push("stitched OOS Sharpe <= 0")
     if (oosTrades < minTrades) reasons.push(`stitched OOS trade count low (${oosTrades} trades)`)
@@ -104,10 +120,21 @@ export function evaluateBacktestQuality(results: BacktestRunner.Results): Backte
   }
 
   if (!wf) {
+    const candidateReasons = ["walk-forward robustness not run"]
+    if (researchOnlyRisk) candidateReasons.push("legacy/v3 risk contract is research-only")
     return {
       label: "candidate",
       paperEligible: false,
-      reasons: ["walk-forward robustness not run"],
+      reasons: candidateReasons,
+      minTrades,
+    }
+  }
+
+  if (researchOnlyRisk) {
+    return {
+      label: "candidate",
+      paperEligible: false,
+      reasons: ["legacy/v3 risk contract is research-only"],
       minTrades,
     }
   }

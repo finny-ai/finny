@@ -75,7 +75,7 @@ describe("isPythonAvailable", () => {
 })
 
 describe("validationWarningsBlock", () => {
-  test("blocks saves that still have validator warnings", () => {
+  test("does not silently promote advisory warnings to save blockers", () => {
     const block = validationWarningsBlock([
       {
         code: "DIVISION_NO_ZERO_CHECK",
@@ -84,12 +84,21 @@ describe("validationWarningsBlock", () => {
       } as any,
     ])
 
-    expect(block?.title).toBe("Save blocked — validation warnings")
+    expect(block).toBeUndefined()
+  })
+
+  test("blocks diagnostics classified as errors", () => {
+    const block = validationWarningsBlock([
+      {
+        code: "SMOKE_TEST_INCONCLUSIVE",
+        severity: "error",
+        message: "No post-warmup probe was possible.",
+      } as any,
+    ])
+
+    expect(block?.title).toBe("Save blocked — validation diagnostics")
     expect(block?.metadata.blocked).toBe(true)
-    expect(block?.metadata.warningCodes).toEqual(["DIVISION_NO_ZERO_CHECK"])
-    expect(block?.output).toContain("Validator warnings must be fixed")
-    expect(block?.output).toContain("Validation rejected: warnings must clear")
-    expect(block?.output).not.toContain("Validation passed")
+    expect(block?.metadata.diagnosticCodes).toEqual(["SMOKE_TEST_INCONCLUSIVE"])
   })
 
   test("allows saves with no validator warnings", () => {

@@ -194,8 +194,100 @@ def test_walk_forward_negative_is_sharpe_reports_absolute_change():
         }
 
     wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
-    assert wf.oos_decay == pytest.approx(-0.4)
+    assert wf.oos_decay is None
+    assert wf.flagged is True
+    assert "nonpositive_is_sharpe" in wf.flag_reasons
     assert wf.is_to_oos_sharpe_change > 0.0
+
+
+def test_walk_forward_negative_is_and_oos_cannot_form_a_positive_decay_ratio():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        is_slice = end - eval_start > 50
+        sharpe = -0.5 if is_slice else -0.2
+        bars = max(0, end - eval_start - 1)
+        returns = np.full(bars, -0.001) if bars else np.zeros(0)
+        return {
+            "sharpe": sharpe,
+            "total_return": float(np.prod(1.0 + returns) - 1.0) if bars else 0.0,
+            "returns": returns,
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 90.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
+
+    assert wf.oos_decay is None
+    assert wf.flagged is True
+    assert "nonpositive_is_sharpe" in wf.flag_reasons
+    assert "nonpositive_stitched_oos_return" in wf.flag_reasons
+    assert "nonpositive_stitched_oos_sharpe" in wf.flag_reasons
+
+
+def test_walk_forward_absolute_stitched_metrics_override_positive_fold_labels():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        is_slice = end - eval_start > 50
+        sharpe = 1.2 if is_slice else 0.9
+        bars = max(0, end - eval_start - 1)
+        returns = np.full(bars, -0.001) if bars else np.zeros(0)
+        return {
+            "sharpe": sharpe,
+            "total_return": float(np.prod(1.0 + returns) - 1.0) if bars else 0.0,
+            "returns": returns,
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 90.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
+
+    assert wf.oos_decay == pytest.approx(0.75)
+    assert wf.flagged is True
+    assert "nonpositive_stitched_oos_return" in wf.flag_reasons
+    assert "nonpositive_stitched_oos_sharpe" in wf.flag_reasons
+
+
+def test_walk_forward_positive_absolute_profile_has_no_flag_reasons():
+    ts = np.arange(500, dtype=np.int64) * 86_400_000_000_000
+
+    def runner(start: int, end: int, eval_start: int, params: dict | None) -> dict:
+        is_slice = end - eval_start > 50
+        sharpe = 1.2 if is_slice else 0.9
+        bars = max(0, end - eval_start - 1)
+        returns = np.resize(np.array([0.002, -0.001]), bars) if bars else np.zeros(0)
+        return {
+            "sharpe": sharpe,
+            "total_return": float(np.prod(1.0 + returns) - 1.0) if bars else 0.0,
+            "returns": returns,
+            "bars": bars,
+            "trades": bars,
+            "min_equity": 100.0,
+        }
+
+    wf = run_walk_forward(runner, n_bars=500, ts_ns=ts, n_folds=5)
+
+    assert wf.oos_decay == pytest.approx(0.75)
+    assert wf.stitched_oos_return > 0.0
+    assert wf.stitched_oos_sharpe > 0.0
+    assert wf.flagged is False
+    assert wf.flag_reasons == []
+
+
+def test_walk_forward_insufficient_input_is_structurally_flagged():
+    wf = run_walk_forward(
+        lambda start, end: {},
+        n_bars=50,
+        ts_ns=np.arange(50, dtype=np.int64),
+        n_folds=5,
+    )
+
+    assert wf.oos_decay is None
+    assert wf.flagged is True
+    assert wf.flag_reasons == ["insufficient_folds"]
 
 
 def test_walk_forward_dsr_psr_invariant_to_annualization():

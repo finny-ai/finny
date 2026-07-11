@@ -58,12 +58,13 @@ export namespace RetryOrchestrator {
     currentAttempt: number
   }): Outcome {
     const { result, currentAttempt } = input
-    if (result.valid && result.warnings.length === 0) {
-      return { kind: "passed", attempts: currentAttempt, warnings: [] }
+    const blockingDiagnostics = Validate.blockingDiagnostics(result)
+    const advisoryDiagnostics = Validate.advisoryDiagnostics(result)
+    if (blockingDiagnostics.length === 0) {
+      return { kind: "passed", attempts: currentAttempt, warnings: advisoryDiagnostics }
     }
 
-    const report = result.valid && result.warnings.length > 0 ? formatWarningRejection(result.warnings) : Validate.format(result)
-    const blockingDiagnostics = [...result.errors, ...result.warnings]
+    const report = Validate.format(result)
 
     if (currentAttempt >= MAX_ATTEMPTS) {
       return { kind: "exhausted", attempts: currentAttempt, report }
@@ -148,7 +149,7 @@ export namespace RetryOrchestrator {
     })
 
     return [
-      `Validation rejected: warnings must clear before save/backtest.`,
+      `Validation advisory warnings:`,
       ``,
       `${warnings.length} warning(s):`,
       ...lines,

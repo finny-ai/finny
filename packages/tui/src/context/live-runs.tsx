@@ -161,6 +161,7 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
           method: "POST",
           body: JSON.stringify({
             algorithm: params.algorithm,
+            runId: params.runId,
             symbol: params.symbol,
             interval: params.interval,
             accountProviderID: params.accountProviderID,

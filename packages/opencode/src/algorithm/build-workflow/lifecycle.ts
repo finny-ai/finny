@@ -5,6 +5,7 @@ import { Effect } from "effect"
 import { normalizeSymbol } from "@/agent/request-identity"
 import type { Algorithm } from "@/algorithm"
 import type { BacktestRunner } from "@/backtest/runner"
+import * as RunIntegrity from "@/backtest/run-integrity"
 import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
 import { experimentRunContext, sha256Text, type ExperimentRunContext } from "./experiment"
 import { backtestIdentityHash } from "./state"
@@ -206,6 +207,86 @@ function compatibilityEngineHash(run: Record<string, unknown>, results: Backtest
   return sha256Text(String(results.engineVersion ?? "engine_v2"))
 }
 
+function strictRunProjection(
+  run: Record<string, unknown>,
+  results: BacktestRunner.Results,
+  experiment: ExperimentRunContext,
+): StrictRunHashProjection | undefined {
+  if (run.schema !== RunIntegrity.RUN_BUNDLE_SCHEMA || run.version !== 1) return undefined
+  const identity = run.identity
+  if (!identity || typeof identity !== "object" || Array.isArray(identity)) {
+    throw new Error("strict run is missing its immutable identity")
+  }
+  const strictIdentity = identity as Record<string, any>
+  const strictIdentityHash = typeof run.identityHash === "string" ? run.identityHash : ""
+  if (
+    !/^[a-f0-9]{64}$/.test(strictIdentityHash) ||
+    RunIntegrity.sha256Text(RunIntegrity.stableStringify(strictIdentity)) !== strictIdentityHash
+  ) {
+    throw new Error("strict run identity hash is missing or non-canonical")
+  }
+  const runId = typeof run.runId === "string" ? run.runId : ""
+  if (results.runId && results.runId !== runId) throw new Error("strict runId disagrees with the engine result")
+
+  const required = [
+    "strategyHash",
+    "savedConfigHash",
+    "effectiveConfigHash",
+    "rawDataHash",
+    "processedDataHash",
+    "manifestHash",
+    "engineTreeHash",
+    "riskContractHash",
+    "assetProfileHash",
+    "executionProfileHash",
+  ] as const
+  for (const name of required) {
+    if (typeof strictIdentity[name] !== "string" || !/^[a-f0-9]{64}$/.test(strictIdentity[name])) {
+      throw new Error(`strict run identity is missing ${name}`)
+    }
+  }
+  if (
+    strictIdentity.strategyHash !== experiment.strategyHash ||
+    strictIdentity.savedConfigHash !== experiment.savedConfigHash ||
+    strictIdentity.rawDataHash !== experiment.datasetHash ||
+    strictIdentity.manifestHash !== experiment.manifestHash
+  ) {
+    throw new Error("strict run identity disagrees with the controller candidate or verified dataset")
+  }
+  const documents = strictIdentity.documentHashes
+  if (!documents || typeof documents !== "object" || Array.isArray(documents)) {
+    throw new Error("strict run identity is missing document hashes")
+  }
+  const hashes: BacktestHashes = {
+    strategyHash: strictIdentity.strategyHash,
+    savedConfigHash: strictIdentity.savedConfigHash,
+    effectiveConfigHash: strictIdentity.effectiveConfigHash,
+    dataHash: strictIdentity.rawDataHash,
+    processedDataHash: strictIdentity.processedDataHash,
+    manifestHash: strictIdentity.manifestHash,
+    engineHash: strictIdentity.engineTreeHash,
+    riskContractHash: strictIdentity.riskContractHash,
+    assetProfileHash: strictIdentity.assetProfileHash,
+    executionProfileHash: strictIdentity.executionProfileHash,
+    missionHash: String((documents as Record<string, unknown>).mission ?? ""),
+    preferencesHash: String((documents as Record<string, unknown>).preferences ?? ""),
+    decisionsHash: String((documents as Record<string, unknown>).decisions ?? ""),
+    reasoningHash: String((documents as Record<string, unknown>).reasoning ?? ""),
+    windowHash: experiment.windowHash,
+    strictDateWindowHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(strictIdentity.dateWindow)),
+    strictSeedHash: RunIntegrity.sha256Text(String(strictIdentity.seed)),
+    strictRunIdentityHash: strictIdentityHash,
+  }
+  for (const name of ["missionHash", "preferencesHash", "decisionsHash", "reasoningHash"] as const) {
+    if (!/^[a-f0-9]{64}$/.test(hashes[name])) throw new Error(`strict run identity is missing ${name}`)
+  }
+  return {
+    runId,
+    engineHash: strictIdentity.engineTreeHash,
+    hashes,
+    identityHash: backtestIdentityHash(hashes),
+  }
+}
 async function strictRunHashes(
   results: BacktestRunner.Results,
   experiment: ExperimentRunContext,
@@ -216,6 +297,8 @@ async function strictRunHashes(
       run = JSON.parse(await fs.readFile(path.join(results.artifactDir, "run.json"), "utf8"))
     } catch {}
   }
+  const strict = strictRunProjection(run, results, experiment)
+  if (strict) return strict
   const runId = results.runId ?? String(run.runId ?? "")
   const engineHash = compatibilityEngineHash(run, results)
   const hashes: BacktestHashes = {

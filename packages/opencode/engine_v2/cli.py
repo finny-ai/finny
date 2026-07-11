@@ -47,6 +47,7 @@ from engine_v2.metrics import returns as M_returns
 from engine_v2.metrics import drawdown as M_drawdown
 from engine_v2.runtime.broker import PortfolioBroker
 from engine_v2.runtime.loop import run_loop
+from engine_v2.runtime.risk import RiskContract
 
 
 def _load_csv(path: Path) -> pd.DataFrame:
@@ -180,7 +181,15 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, ass
             lookback_bars=int(effective_exec.get("spread_lookback", 30)),
         ),
     )
-    return PortfolioBroker(snap, account, costs, fill_cfg, interval=interval, asset_specs={asset_spec.symbol: asset_spec})
+    return PortfolioBroker(
+        snap,
+        account,
+        costs,
+        fill_cfg,
+        interval=interval,
+        asset_specs={asset_spec.symbol: asset_spec},
+        risk_contract=RiskContract.from_config(cfg),
+    )
 
 
 def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, Any]:
@@ -236,6 +245,7 @@ def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, 
         "multiplier": asset_spec.multiplier,
         "tick_size": asset_spec.tickSize,
         "lot_size": asset_spec.lotSize,
+        "risk_contract": RiskContract.from_config(cfg).to_dict(),
     }
 
 

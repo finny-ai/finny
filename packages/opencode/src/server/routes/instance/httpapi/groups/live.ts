@@ -43,6 +43,7 @@ export const Run = Schema.Struct({
   id: Schema.String,
   algorithmId: Schema.String,
   algorithmName: Schema.String,
+  backtestRunId: Schema.String,
   symbol: Schema.String,
   interval: Schema.String,
   brokerKind: BrokerKind,
@@ -83,6 +84,7 @@ const AlgorithmInfo = Schema.Struct({
 
 export const StartPayload = Schema.Struct({
   algorithm: AlgorithmInfo,
+  runId: Schema.String,
   symbol: Schema.String,
   interval: Schema.String,
   accountProviderID: Schema.String,

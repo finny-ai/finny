@@ -65,7 +65,7 @@ describe("backtest walk-forward formatting", () => {
       end: "2026-06-02",
       verdict: "degraded",
       verdictReason: "probability metrics unavailable",
-      walkForward: { ...walkForward, is_sharpe_mean: 0 },
+      walkForward: { ...walkForward, is_sharpe_mean: 0, oos_decay: null },
     }).join("\n")
     expect(guardedOutput).toContain("Robustness ratio:      N/A")
   })

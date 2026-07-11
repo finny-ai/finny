@@ -31,6 +31,53 @@ from ..runtime.broker import PortfolioBroker
 from . import schema as S
 
 
+WALK_FORWARD_ROBUST_RETENTION = 0.7
+
+
+def _walk_forward_sensitivity_status(walk_forward: Any) -> str:
+    """Mirror the TS walk-forward verdict's pass boundary.
+
+    `flagged` carries the canonical failure reasons for schema 3.5+; the
+    explicit absolute checks keep this presentation layer fail-closed if it is
+    handed an older or partially populated result object.
+    """
+    decay = getattr(walk_forward, "oos_decay", None)
+    stitched_return = getattr(walk_forward, "stitched_oos_return", None)
+    stitched_sharpe = getattr(walk_forward, "stitched_oos_sharpe", None)
+    coverage = getattr(walk_forward, "stitched_oos_coverage", None)
+    ruined_folds = getattr(walk_forward, "ruined_folds", 0)
+    n_folds = getattr(walk_forward, "n_folds", 0)
+    if not isinstance(n_folds, (int, float)) or float(n_folds) < 2.0:
+        return "review"
+    if bool(getattr(walk_forward, "flagged", False)):
+        return "review"
+    if not isinstance(decay, (int, float)) or not math.isfinite(float(decay)):
+        return "review"
+    if float(decay) < WALK_FORWARD_ROBUST_RETENTION:
+        return "review"
+    if (
+        not isinstance(stitched_return, (int, float))
+        or not math.isfinite(float(stitched_return))
+        or float(stitched_return) <= 0.0
+    ):
+        return "review"
+    if (
+        not isinstance(stitched_sharpe, (int, float))
+        or not math.isfinite(float(stitched_sharpe))
+        or float(stitched_sharpe) <= 0.0
+    ):
+        return "review"
+    if (
+        not isinstance(coverage, (int, float))
+        or not math.isfinite(float(coverage))
+        or float(coverage) < 0.95
+    ):
+        return "review"
+    if isinstance(ruined_folds, (int, float)) and float(ruined_folds) > 0.0:
+        return "review"
+    return "pass"
+
+
 def _sanitize_json(obj: Any, path: str = "") -> tuple[Any, List[Dict[str, str]]]:
     non_finite: List[Dict[str, str]] = []
     if isinstance(obj, float):
@@ -359,6 +406,7 @@ def assemble(
                 )
                 for f in walk_forward.folds
             ],
+            flag_reasons=list(getattr(walk_forward, "flag_reasons", [])),
         )
 
     regimes_block = None
@@ -407,7 +455,7 @@ def assemble(
     if wf_block is not None:
         sens.append(S.SensitivityOutcome(
             name="Walk-forward",
-            status="review" if wf_block.flagged else "pass",
+            status=_walk_forward_sensitivity_status(wf_block),
             value=wf_block.oos_decay,
             explanation="Out-of-sample folds compare live-like performance against in-sample fit.",
         ))

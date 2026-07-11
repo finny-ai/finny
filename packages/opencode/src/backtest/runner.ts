@@ -22,6 +22,8 @@ import {
   normalizeInterval as normalizeRequestInterval,
   normalizeSymbol as normalizeRequestSymbol,
 } from "@/agent/request-identity"
+import { composeBacktestVerdict, deriveWalkForwardVerdict } from "./verdict"
+import * as RunIntegrity from "./run-integrity"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
@@ -670,6 +672,7 @@ with open("_data_provider.txt", "w") as f:
     computeBuyHoldBenchmark,
     prepareBacktestData,
     attachDataSourceProvenance,
+    hasProductRiskContract,
     ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
   } as {
     parseResults: typeof parseResults
@@ -677,6 +680,7 @@ with open("_data_provider.txt", "w") as f:
     computeBuyHoldBenchmark: typeof computeBuyHoldBenchmark
     prepareBacktestData: typeof prepareBacktestData
     attachDataSourceProvenance: typeof attachDataSourceProvenance
+    hasProductRiskContract: typeof hasProductRiskContract
     ENGINE_VERSION: string
   }
 
@@ -1612,10 +1616,6 @@ if __name__ == "__main__":
     return Number.isFinite(n) && n > 0 ? n : null
   }
 
-  function sha256Text(input: string): string {
-    return crypto.createHash("sha256").update(input).digest("hex")
-  }
-
   function makeRunId(date = new Date()): string {
     const compact = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
     return `${compact}-${crypto.randomBytes(8).toString("hex")}`
@@ -2102,19 +2102,22 @@ if __name__ == "__main__":
     return "backtested"
   }
 
-  async function copyIfExists(src: string, dst: string): Promise<boolean> {
-    try {
-      await fs.copyFile(src, dst)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  async function requireArtifactCopy(src: string, dst: string): Promise<void> {
-    if (!(await copyIfExists(src, dst))) {
-      throw new Error(`strict backtest artifact missing: ${path.basename(src)}`)
-    }
+  function hasProductRiskContract(config: Record<string, any>): boolean {
+    const risk = config.risk_contract
+    return Boolean(
+      risk &&
+      typeof risk === "object" &&
+      Number.isFinite(risk.sizing_stop_distance_pct) &&
+      risk.sizing_stop_distance_pct > 0 &&
+      risk.protective_stop &&
+      ["none", "strategy_next_open", "engine_stop"].includes(risk.protective_stop.mode) &&
+      risk.drawdown &&
+      ["evaluation_only", "halt_and_flatten_next_open"].includes(risk.drawdown.mode) &&
+      Number.isFinite(risk.drawdown.limit_pct) &&
+      risk.drawdown.limit_pct > 0 &&
+      Number.isSafeInteger(risk.max_positions) &&
+      risk.max_positions > 0
+    )
   }
 
   async function persistStrictRunArtifacts(input: {
@@ -2128,6 +2131,8 @@ if __name__ == "__main__":
     interval: string
     capital: string
     seed: number
+    startDate: string
+    endDate: string
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2137,60 +2142,89 @@ if __name__ == "__main__":
       "runs",
       input.runId,
     )
-    await fs.mkdir(base, { recursive: true })
-
     const assetSpec = buildArtifactAssetSpec(input.config, input.algorithm)
-    const metadata = (input.results.v2?.run_metadata ?? {}) as Record<string, unknown>
-    const eligibilityStatus = deriveEligibility(input.results)
-    const run = {
+    if (!input.validation.valid) throw new Error("strict run cannot be published from failed validation")
+    const quality = evaluateBacktestQuality(input.results)
+    const walkForward = deriveWalkForwardVerdict(input.results.v2?.walk_forward)
+    const recommendation = composeBacktestVerdict({
+      quality,
+      walkForward,
+      consistency: input.results.v2?.consistency,
+      decay: input.results.v2?.alpha_decay,
+    })
+    const current = await RunIntegrity.currentAlgorithmHashes(input.algorithm)
+    const rawDataPath = path.join(input.tmpDir, "ohlcv.csv")
+    const processedDataPath = path.join(input.tmpDir, PROCESSED_OHLCV_CSV)
+    const executionProfile = input.results.v2?.execution_config ?? input.config.execution ?? {}
+    const engineTree = await RunIntegrity.directoryTreeManifest(path.join(input.tmpDir, "engine_v2"))
+    await RunIntegrity.publishStrictRun({
+      finalDir: base,
       runId: input.runId,
       productLabel: input.results.productLabel ?? "Crucible 2.0",
-      runKind: input.results.runKind ?? "crucible_2_0",
-      algorithmId: input.algorithm.algorithmId,
-      algorithmVersion: version,
-      strategyHash: String(metadata.strategy_hash ?? sha256Text(input.algorithm.code)),
-      configHash: String(metadata.config_hash ?? sha256Text(stableStringify(input.config))),
-      dataHash: String(metadata.data_hash ?? ""),
-      dataSourceMode: metadata.data_source_mode ?? "provider_fetch",
-      rawDataProvenance: metadata.raw_data_provenance ?? null,
-      engineVersion: input.results.engineVersion ?? input.results.v2?.engine_version ?? "engine_v2",
-      engineHash: String(metadata.engine_hash ?? sha256Text(String(input.results.engineVersion ?? "engine_v2"))),
-      assetSpecHash: sha256Text(stableStringify(assetSpec)),
-      seed: input.seed,
-      createdAt: new Date().toISOString(),
-      duration: input.duration,
-      interval: input.interval,
-      capital: input.capital,
-      validationStatus: input.validation.valid ? "passed" : "failed",
-      eligibilityStatus,
-    }
-
-    await fs.writeFile(path.join(base, "run.json"), JSON.stringify(run, null, 2))
-    await fs.writeFile(path.join(base, "validation.json"), JSON.stringify(input.validation, null, 2))
-    await fs.writeFile(path.join(base, "metrics.json"), JSON.stringify(input.results, null, 2))
-    await fs.writeFile(path.join(base, "data_quality.json"), JSON.stringify(input.results.v2?.data_quality ?? {}, null, 2))
-    await fs.writeFile(path.join(base, "execution_assumptions.json"), JSON.stringify(input.results.diagnostics?.assumptions ?? input.results.v2?.execution_config ?? {}, null, 2))
-    await fs.writeFile(path.join(base, "asset_spec.json"), JSON.stringify(assetSpec, null, 2))
-
-    await copyIfExists(path.join(input.tmpDir, "results.json"), path.join(base, "results.json"))
-    await copyIfExists(path.join(input.tmpDir, "equity.csv"), path.join(base, "equity.csv"))
-    await copyIfExists(path.join(input.tmpDir, "finny_evidence_equity.csv"), path.join(base, "finny_evidence_equity.csv"))
-    await copyIfExists(path.join(input.tmpDir, "rolling_sharpe.csv"), path.join(base, "rolling_sharpe.csv"))
-    await copyIfExists(path.join(input.tmpDir, RAW_OHLCV_ARTIFACT), path.join(base, RAW_OHLCV_ARTIFACT))
-    await copyIfExists(
-      path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
-      path.join(base, VERIFIED_MANIFEST_ARTIFACT),
-    )
-    await copyIfExists(path.join(input.tmpDir, PROCESSED_OHLCV_CSV), path.join(base, PROCESSED_OHLCV_CSV))
-    await copyIfExists(path.join(input.tmpDir, "trades.csv"), path.join(base, "trades.csv"))
-    await copyIfExists(path.join(input.tmpDir, "diagnostics.csv"), path.join(base, "diagnostics.csv"))
-    await requireArtifactCopy(path.join(input.tmpDir, "orders.csv"), path.join(base, "orders.csv"))
-    await requireArtifactCopy(path.join(input.tmpDir, "fills.csv"), path.join(base, "fills.csv"))
-    await requireArtifactCopy(path.join(input.tmpDir, "rejections.csv"), path.join(base, "rejections.csv"))
+      identity: {
+        algorithmId: input.algorithm.algorithmId,
+        algorithmVersion: version,
+        strategyHash: current.strategyHash,
+        savedConfigHash: current.savedConfigHash,
+        effectiveConfigHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(input.config)),
+        documentHashes: current.documentHashes,
+        riskContractHash: current.riskContractHash,
+        rawDataHash: await RunIntegrity.sha256File(rawDataPath),
+        processedDataHash: await RunIntegrity.sha256File(processedDataPath),
+        manifestHash: await RunIntegrity.sha256File(path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT)),
+        engineTreeHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(engineTree)),
+        assetProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(assetSpec)),
+        executionProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(executionProfile)),
+        seed: input.seed,
+        dateWindow: { start: input.startDate, end: input.endDate, interval: input.interval },
+      },
+      recommendation,
+      jsonArtifacts: {
+        "validation.json": input.validation,
+        "metrics.json": input.results,
+        "data_quality.json": input.results.v2?.data_quality ?? {},
+        "execution_assumptions.json": input.results.diagnostics?.assumptions ?? executionProfile,
+        "execution_profile.json": executionProfile,
+        "effective_config.json": input.config,
+        "engine_tree.json": engineTree,
+        "asset_spec.json": assetSpec,
+      },
+      artifacts: [
+        { source: path.join(input.tmpDir, "results.json"), path: "results.json" },
+        { source: rawDataPath, path: "ohlcv.csv" },
+        { source: path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT), path: VERIFIED_MANIFEST_ARTIFACT },
+        { source: processedDataPath, path: PROCESSED_OHLCV_CSV },
+        { source: path.join(input.tmpDir, "equity.csv"), path: "equity.csv", required: false },
+        { source: path.join(input.tmpDir, "finny_evidence_equity.csv"), path: "finny_evidence_equity.csv", required: false },
+        { source: path.join(input.tmpDir, "rolling_sharpe.csv"), path: "rolling_sharpe.csv", required: false },
+        { source: path.join(input.tmpDir, "trades.csv"), path: "trades.csv", required: false },
+        { source: path.join(input.tmpDir, "diagnostics.csv"), path: "diagnostics.csv", required: false },
+        { source: path.join(input.tmpDir, "orders.csv"), path: "orders.csv" },
+        { source: path.join(input.tmpDir, "fills.csv"), path: "fills.csv" },
+        { source: path.join(input.tmpDir, "rejections.csv"), path: "rejections.csv" },
+      ],
+      requiredArtifacts: [
+        "validation.json",
+        "metrics.json",
+        "data_quality.json",
+        "execution_assumptions.json",
+        "execution_profile.json",
+        "effective_config.json",
+        "engine_tree.json",
+        "asset_spec.json",
+        "results.json",
+        "ohlcv.csv",
+        VERIFIED_MANIFEST_ARTIFACT,
+        PROCESSED_OHLCV_CSV,
+        "orders.csv",
+        "fills.csv",
+        "rejections.csv",
+      ],
+    })
 
     input.results.runId = input.runId
     input.results.artifactDir = base
-    input.results.eligibilityStatus = eligibilityStatus
+    input.results.eligibilityStatus = deriveEligibility(input.results)
     return base
   }
 
@@ -2632,18 +2666,36 @@ if __name__ == "__main__":
           benchmark,
           calendar: assetSpec.calendar,
         })
-        await persistStrictRunArtifacts({
-          tmpDir,
-          runId,
-          algorithm,
-          config,
-          validation,
-          results,
-          duration,
-          interval,
-          capital,
-          seed: effectiveSeed,
-        })
+        if (dataSource.kind === "verified_artifact" && hasProductRiskContract(config)) {
+          await persistStrictRunArtifacts({
+            tmpDir,
+            runId,
+            algorithm,
+            config,
+            validation,
+            results,
+            duration,
+            interval,
+            capital,
+            seed: effectiveSeed,
+            startDate: start,
+            endDate: end,
+          })
+        } else {
+          // Internal provider fetches remain useful for research, but they do
+          // not produce an immutable product run and can never be promoted.
+          // The same fail-closed rule applies to legacy v3 algorithms that do
+          // not own a schema-v4 executable risk contract.
+          results.runKind = "legacy"
+          results.eligibilityStatus = "backtested"
+          results.v2.run_metadata = {
+            ...(results.v2.run_metadata ?? {}),
+            product_eligibility_blockers: [
+              ...(dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
+              ...(!hasProductRiskContract(config) ? ["schema_v4_risk_contract_required"] : []),
+            ],
+          }
+        }
 
         emit({
           eventType: "backtest.completed",

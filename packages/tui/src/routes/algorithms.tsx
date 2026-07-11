@@ -102,11 +102,21 @@ export function Algorithms() {
       equityUsd: liveEquity,
     })
     if (!params) return
+    const runId = history.list().find((entry) =>
+      entry.algorithmId === algo.algorithmId &&
+      typeof entry.results.runId === "string" &&
+      entry.results.runId.length > 0
+    )?.results.runId
+    if (!runId) {
+      await DialogAlert.show(dialog, "Live Run Failed", "No exact strict backtest run is available. Run and approve finny_backtest before starting paper or live trading.")
+      return
+    }
     // Immediately start the run (returns fast with a "starting" state)
     // and open the live dialog so the user sees setup progress live.
     try {
       const run = await liveRuns.start({
         algorithm: algo,
+        runId,
         symbol: params.symbol,
         interval: params.interval,
         accountProviderID: params.accountProviderID,

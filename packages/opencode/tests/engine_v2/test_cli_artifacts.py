@@ -83,3 +83,82 @@ class Strategy:
     orders = list(csv.DictReader((out / "orders.csv").open(newline="")))
     assert {row["order_id"] for row in fills} <= {row["order_id"] for row in orders if row["order_id"]}
     assert {"submitted", "filled"} <= {row["status"] for row in orders}
+
+
+def test_strict_run_records_contract_drawdown_flatten(tmp_path):
+    data = tmp_path / "spy-risk.csv"
+    data.write_text(
+        "\n".join([
+            "timestamp,open,high,low,close,volume",
+            "2026-01-05T14:30:00Z,100,101,99,100,1000000",
+            "2026-01-06T14:30:00Z,100,121,99,120,1000000",
+            "2026-01-07T14:30:00Z,120,121,89,90,1000000",
+            "2026-01-08T14:30:00Z,80,81,79,80,1000000",
+            "2026-01-09T14:30:00Z,80,81,79,80,1000000",
+        ])
+    )
+    config = tmp_path / "config-risk.json"
+    config.write_text(json.dumps({
+        "symbol": "SPY",
+        "asset_class": "equity",
+        "interval": "1d",
+        "risk": {"starting_equity_usd": 100000},
+        "risk_contract": {
+            "sizing_stop_distance_pct": 2,
+            "protective_stop": {"mode": "strategy_next_open"},
+            "drawdown": {"mode": "halt_and_flatten_next_open", "limit_pct": 10},
+            "max_positions": 1,
+        },
+    }))
+    strategy = tmp_path / "strategy-risk.py"
+    strategy.write_text("""
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        self.n = 0
+
+    def on_bar(self, symbol, bar):
+        if self.n == 0:
+            self.broker.buy(symbol, qty=900)
+        self.n += 1
+""")
+    out = tmp_path / "out-risk"
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "engine_v2.cli",
+            "--csv",
+            str(data),
+            "--config",
+            str(config),
+            "--interval",
+            "1d",
+            "--capital",
+            "100000",
+            "--out",
+            str(out),
+            "--strategy",
+            str(strategy),
+            "--mode",
+            "v2",
+            "--mc-paths",
+            "0",
+        ],
+        cwd=ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+    results = json.loads((out / "results.json").read_text())
+    trigger = results["diagnostics"]["drawdown_trigger"]
+    assert trigger["bar_index"] == 2
+    assert trigger["flatten_execution_bar"] == 3
+    assert trigger["flatten_status"] == "completed"
+    assert trigger["flatten_fees"] > 0
+    assert results["open_trades"] == []
+    fills = list(csv.DictReader((out / "fills.csv").open(newline="")))
+    assert any(row["tag"] == "DRAWDOWN_FLATTEN" for row in fills)

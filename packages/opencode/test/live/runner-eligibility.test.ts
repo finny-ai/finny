@@ -2,15 +2,17 @@ import { describe, expect, test } from "bun:test"
 import { LiveRunner } from "../../src/live/runner"
 
 describe("LiveRunner eligibility gate", () => {
-  test("allows paper and testnet from a completed backtest without robustness", () => {
-    expect(LiveRunner.canStartForMode("backtested", "paper")).toBe(true)
-    expect(LiveRunner.canStartForMode("backtested", "testnet")).toBe(true)
+  test("paper and testnet require an exact approved run", () => {
+    expect(LiveRunner.canStartForMode("backtested", "paper")).toBe(false)
+    expect(LiveRunner.canStartForMode("robustness_passed", "paper")).toBe(false)
+    expect(LiveRunner.canStartForMode("paper_eligible", "paper")).toBe(true)
+    expect(LiveRunner.canStartForMode("paper_eligible", "testnet")).toBe(true)
   })
 
   test("requires robustness for live-money runs", () => {
     expect(LiveRunner.canStartForMode("backtested", "live")).toBe(false)
     expect(LiveRunner.canStartForMode("robustness_passed", "live")).toBe(false)
-    expect(LiveRunner.canStartForMode("paper_eligible", "live")).toBe(true)
+    expect(LiveRunner.canStartForMode("paper_eligible", "live")).toBe(false)
     expect(LiveRunner.canStartForMode("live_eligible", "live")).toBe(true)
   })
 

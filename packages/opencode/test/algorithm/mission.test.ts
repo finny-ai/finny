@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Mission } from "../../src/algorithm/mission"
-import { contractRejectionBlock, missionRejectionMessage } from "../../src/tool/algorithm-save"
+import { bindMissionRiskContract, contractRejectionBlock, missionRejectionMessage } from "../../src/tool/algorithm-save"
 
 const questionnaire = (overrides: Record<string, Partial<{ answer: string; status: string }>> = {}) =>
   Mission.CORE8_IDS.map((id) => {
@@ -48,9 +48,63 @@ Workspace body.
 - Capital: $10,000
 `
 
+const validMissionV4 = () =>
+  validMission()
+    .replace("schema_version: 3", "schema_version: 4")
+    .replace(
+      "exit_conditions:",
+      `risk_contract:
+  sizing_stop_distance_pct: 2
+  protective_stop:
+    mode: strategy_next_open
+  drawdown:
+    mode: halt_and_flatten_next_open
+    limit_pct: 15
+  max_positions: 1
+exit_conditions:`,
+    )
+
 describe("Mission.validate", () => {
   test("accepts a complete v3 mission", () => {
     expect(Mission.validate(validMission())).toEqual([])
+  })
+
+  test("requires v4 risk fields for new saves while retaining v3 read compatibility", () => {
+    expect(Mission.validate(validMissionV4())).toEqual([])
+    expect(Mission.validateForNewSave(validMissionV4())).toEqual([])
+    expect(Mission.validateForNewSave(validMission())).toContain(
+      "schema_version: new saves require schema_version 4 with a complete risk_contract",
+    )
+    expect(Mission.riskContract(validMissionV4())).toEqual({
+      sizing_stop_distance_pct: 2,
+      protective_stop: { mode: "strategy_next_open" },
+      drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 15 },
+      max_positions: 1,
+    })
+  })
+
+  test("rejects invalid v4 risk modes and bounds", () => {
+    const issues = Mission.validateForNewSave(
+      validMissionV4()
+        .replace("mode: strategy_next_open", "mode: magic_stop")
+        .replace("limit_pct: 15", "limit_pct: 0"),
+    )
+    expect(issues.some((issue) => issue.startsWith("risk_contract.protective_stop.mode:"))).toBe(true)
+    expect(issues.some((issue) => issue.startsWith("risk_contract.drawdown.limit_pct:"))).toBe(true)
+  })
+
+  test("binds the validated risk contract into executable config", () => {
+    const config = bindMissionRiskContract(JSON.stringify({ symbol: "SPY", params: { fast: 10 } }), validMissionV4())
+    expect(JSON.parse(config!)).toEqual({
+      symbol: "SPY",
+      params: { fast: 10 },
+      risk_contract: {
+        sizing_stop_distance_pct: 2,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 15 },
+        max_positions: 1,
+      },
+    })
   })
 
   test("rejects a missing mission", () => {
@@ -127,7 +181,7 @@ describe("contractRejectionBlock", () => {
     expect(block!.output).toContain("Config issues:")
     expect(block!.output).toContain("missing required config field(s): symbol, interval")
     expect(block!.output).toContain("status: Invalid option")
-    expect(block!.output).toContain("schema_version: 3")
+    expect(block!.output).toContain("schema_version: 4")
     expect(block!.metadata).toMatchObject({ blocked: true, missionInvalid: true, configRequired: true })
   })
 
@@ -138,16 +192,17 @@ describe("contractRejectionBlock", () => {
   test("config-only rejection skips the mission template", () => {
     const block = contractRejectionBlock([], ["symbol must be one tradable symbol"])
     expect(block!.output).toContain("Config issues:")
-    expect(block!.output).not.toContain("schema_version: 3")
+    expect(block!.output).not.toContain("schema_version: 4")
     expect(block!.metadata).toMatchObject({ missionInvalid: false, configRequired: true })
   })
 })
 
 describe("missionRejectionMessage", () => {
-  test("leads with the issues and includes the full v3 template", () => {
+  test("leads with the issues and includes the full v4 template", () => {
     const message = missionRejectionMessage(["status: Invalid option"])
     expect(message).toContain("  - status: Invalid option")
-    expect(message).toContain("schema_version: 3")
+    expect(message).toContain("schema_version: 4")
+    expect(message).toContain("risk_contract:")
     expect(message).toContain("hypothesis: |")
     expect(message).toContain("YAML safety")
     expect(message).toContain("status: research | backtested | paper | live | retired")

@@ -257,7 +257,7 @@ export namespace EngineV2 {
     n_folds: number
     is_sharpe_mean: number
     oos_sharpe_mean: number
-    oos_decay: number
+    oos_decay: number | null
     is_to_oos_sharpe_change?: number
     flag_threshold: number
     flagged: boolean
@@ -271,6 +271,8 @@ export namespace EngineV2 {
     ruined_folds?: number
     multiple_testing_trials?: number
     folds: WalkForwardFold[]
+    /** Added in schema 3.5. Older v3 artifacts may omit this field. */
+    flag_reasons?: string[]
   }
 
   export interface RegimeBreakdown {
@@ -334,6 +336,15 @@ export namespace EngineV2 {
     multiplier?: number
     tick_size?: number
     lot_size?: number
+    risk_contract?: {
+      sizing_stop_distance_pct: number | null
+      protective_stop: { mode: "none" | "strategy_next_open" }
+      drawdown: {
+        mode: "evaluation_only" | "halt_and_flatten_next_open"
+        limit_pct: number | null
+      }
+      max_positions: number | null
+    }
   }
 
   export interface AssetSpecReport {

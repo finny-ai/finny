@@ -115,6 +115,17 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.reasons).not.toContain("Sharpe <= buy-and-hold Sharpe")
   })
 
+  test("labels legacy risk runs research-only and never paper eligible", () => {
+    const quality = evaluateBacktestQuality(result({
+      runKind: "legacy",
+      productLabel: "Legacy backtest",
+    }))
+
+    expect(quality.label).toBe("candidate")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("legacy/v3 risk contract is research-only")
+  })
+
   test("keeps defensive outperformance blocked by the absolute return gate", () => {
     const quality = evaluateBacktestQuality(result({
       totalReturn: -0.04,
@@ -190,6 +201,38 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.reasons.join("; ")).toContain("stitched OOS trade count low")
   })
 
+  test("rejects legacy negative-over-negative walk-forward artifacts", () => {
+    const quality = evaluateBacktestQuality(result({
+      benchmarkReturn: 0.02,
+      benchmarkMaxDrawdown: 0.08,
+      benchmarkSharpeRatio: 0.8,
+      alpha: 0.08,
+      v2: {
+        walk_forward: {
+          n_folds: 5,
+          is_sharpe_mean: -0.5,
+          oos_sharpe_mean: -0.2,
+          oos_decay: 0.4,
+          is_to_oos_sharpe_change: 0.3,
+          flag_threshold: 0.5,
+          flagged: false,
+          deflated_sharpe: 0.1,
+          probabilistic_sharpe: 0.1,
+          stitched_oos_return: 0.02,
+          stitched_oos_sharpe: 0.2,
+          stitched_oos_trades: 30,
+          stitched_oos_bars: 300,
+          stitched_oos_coverage: 1,
+          ruined_folds: 0,
+          folds: [],
+        },
+      } as any,
+    }))
+
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("walk-forward IS Sharpe <= 0")
+  })
+
   test("repaired-data result cannot be paper eligible", () => {
     const quality = evaluateBacktestQuality(result({
       v2: {
@@ -210,6 +253,24 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.label).toBe("failed")
     expect(quality.paperEligible).toBe(false)
     expect(quality.reasons).toContain("uses repaired data")
+  })
+
+  test("a triggered drawdown contract cannot become paper eligible", () => {
+    const quality = evaluateBacktestQuality(result({
+      v2: {
+        diagnostics: {
+          drawdown_trigger: {
+            bar_index: 100,
+            drawdown_pct: 10.1,
+            limit_pct: 10,
+            flatten_status: "completed",
+          },
+        },
+      } as any,
+    }))
+    expect(quality.label).toBe("failed")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("drawdown risk contract triggered")
   })
 
   test("uses liquidation-adjusted NAV for eligibility", () => {

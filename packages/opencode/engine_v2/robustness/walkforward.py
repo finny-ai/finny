@@ -62,7 +62,7 @@ class WalkForwardResult:
     n_folds: int
     is_sharpe_mean: float
     oos_sharpe_mean: float
-    oos_decay: float
+    oos_decay: Optional[float]
     is_to_oos_sharpe_change: float
     flag_threshold: float
     flagged: bool
@@ -76,6 +76,7 @@ class WalkForwardResult:
     ruined_folds: int = 0
     multiple_testing_trials: int = 1
     folds: List[Fold] = field(default_factory=list)
+    flag_reasons: List[str] = field(default_factory=list)
 
 
 def deflated_sharpe(sharpe_hat: float, t: int, skew: float, ex_kurt: float,
@@ -202,6 +203,44 @@ def _stitched_dsr_psr(
     return ds, ps
 
 
+def _sharpe_decay(is_mean: float, oos_mean: float) -> Optional[float]:
+    if not math.isfinite(is_mean) or is_mean <= 1e-9:
+        return None
+    if not math.isfinite(oos_mean):
+        return None
+    return float(oos_mean / is_mean)
+
+
+def _walk_forward_flags(
+    *,
+    is_mean: float,
+    oos_mean: float,
+    stitched_ret: float,
+    stitched_sharpe: float,
+    stitched_oos_coverage: float,
+    ruined_folds: int,
+    flag_threshold: float,
+) -> tuple[Optional[float], List[str]]:
+    flag_reasons: List[str] = []
+    decay = _sharpe_decay(is_mean, oos_mean)
+    if not math.isfinite(is_mean) or is_mean <= 1e-9:
+        flag_reasons.append("nonpositive_is_sharpe")
+    elif not math.isfinite(oos_mean):
+        flag_reasons.append("nonfinite_oos_sharpe")
+    elif decay is not None and decay < flag_threshold:
+        flag_reasons.append("oos_decay_below_threshold")
+
+    if not math.isfinite(stitched_ret) or stitched_ret <= 0.0:
+        flag_reasons.append("nonpositive_stitched_oos_return")
+    if not math.isfinite(stitched_sharpe) or stitched_sharpe <= 0.0:
+        flag_reasons.append("nonpositive_stitched_oos_sharpe")
+    if stitched_oos_coverage < 0.95:
+        flag_reasons.append("insufficient_stitched_oos_coverage")
+    if ruined_folds > 0:
+        flag_reasons.append("ruined_oos_fold")
+    return decay, flag_reasons
+
+
 def run_walk_forward(
     full_runner: Callable[..., Dict[str, Any]],
     n_bars: int,
@@ -222,7 +261,18 @@ def run_walk_forward(
     Metrics are computed only from `eval_start_idx:end_idx`; earlier bars are
     warm-up history for strategy state.
     """
-    empty = WalkForwardResult(0, 0.0, 0.0, 0.0, 0.0, flag_threshold, False, 0.0, 0.0)
+    empty = WalkForwardResult(
+        n_folds=0,
+        is_sharpe_mean=0.0,
+        oos_sharpe_mean=0.0,
+        oos_decay=None,
+        is_to_oos_sharpe_change=0.0,
+        flag_threshold=flag_threshold,
+        flagged=True,
+        deflated_sharpe=0.0,
+        probabilistic_sharpe=0.0,
+        flag_reasons=["insufficient_folds"],
+    )
     if n_bars < 100 or n_folds < 2:
         return empty
 
@@ -280,9 +330,7 @@ def run_walk_forward(
 
     is_mean = float(np.mean(is_sharpes))
     oos_mean = float(np.mean(oos_sharpes))
-    decay = float(oos_mean / is_mean) if abs(is_mean) > 1e-9 else 0.0
     abs_change = float(oos_mean - is_mean)
-    flagged = decay < flag_threshold
     stitched = np.concatenate(oos_returns_all) if oos_returns_all else np.zeros(0)
     stitched_ret = float(np.prod(1.0 + stitched) - 1.0) if stitched.size else 0.0
     from ..metrics import ratios as RAT
@@ -291,6 +339,18 @@ def run_walk_forward(
     trials = max(1, prior_selection_trials + current_trials)
     ds, ps = _stitched_dsr_psr(stitched, trials)
     stitched_oos_bars = sum(fold.oos_bars for fold in folds)
+    stitched_oos_coverage = float(stitched_oos_bars / max(1, total_expected_oos_bars))
+    ruined_folds = sum(1 for fold in folds if fold.ruined)
+
+    decay, flag_reasons = _walk_forward_flags(
+        is_mean=is_mean,
+        oos_mean=oos_mean,
+        stitched_ret=stitched_ret,
+        stitched_sharpe=stitched_sharpe,
+        stitched_oos_coverage=stitched_oos_coverage,
+        ruined_folds=ruined_folds,
+        flag_threshold=flag_threshold,
+    )
 
     return WalkForwardResult(
         n_folds=len(folds),
@@ -299,15 +359,16 @@ def run_walk_forward(
         oos_decay=decay,
         is_to_oos_sharpe_change=abs_change,
         flag_threshold=flag_threshold,
-        flagged=flagged,
+        flagged=bool(flag_reasons),
         deflated_sharpe=ds,
         probabilistic_sharpe=ps,
         stitched_oos_return=stitched_ret,
         stitched_oos_sharpe=stitched_sharpe,
         stitched_oos_trades=sum(fold.oos_trades for fold in folds),
         stitched_oos_bars=stitched_oos_bars,
-        stitched_oos_coverage=float(stitched_oos_bars / max(1, total_expected_oos_bars)),
-        ruined_folds=sum(1 for fold in folds if fold.ruined),
+        stitched_oos_coverage=stitched_oos_coverage,
+        ruined_folds=ruined_folds,
         multiple_testing_trials=trials,
         folds=folds,
+        flag_reasons=flag_reasons,
     )

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../../src/backtest/verdict"
 import type { BacktestQuality } from "../../src/backtest/evaluation"
+import type { EngineV2 } from "../../src/backtest/results"
 
 const weakQuality: BacktestQuality = {
   label: "weak_positive",
@@ -17,6 +18,26 @@ const candidateQuality: BacktestQuality = {
 }
 
 const robustWf = { verdict: "robust" as const, reason: "robust" }
+const walkForward = (overrides: Partial<EngineV2.WalkForwardSummary> = {}): EngineV2.WalkForwardSummary => ({
+  n_folds: 5,
+  is_sharpe_mean: 1.2,
+  oos_sharpe_mean: 0.9,
+  oos_decay: 0.75,
+  is_to_oos_sharpe_change: -0.3,
+  flag_threshold: 0.5,
+  flagged: false,
+  deflated_sharpe: 0.8,
+  probabilistic_sharpe: 0.9,
+  stitched_oos_return: 0.05,
+  stitched_oos_sharpe: 0.9,
+  stitched_oos_trades: 20,
+  stitched_oos_bars: 100,
+  stitched_oos_coverage: 1,
+  ruined_folds: 0,
+  multiple_testing_trials: 1,
+  folds: [],
+  ...overrides,
+})
 const consistent = {
   label: "consistent" as const,
   confidence: "high" as const,
@@ -76,5 +97,45 @@ describe("composeBacktestVerdict", () => {
       consistency: consistent,
       decay: stable,
     }).verdict).toBe("failed")
+  })
+
+  test("rejects legacy negative-over-negative decay artifacts", () => {
+    const result = deriveWalkForwardVerdict(walkForward({
+      is_sharpe_mean: -0.5,
+      oos_sharpe_mean: -0.2,
+      oos_decay: 0.4,
+      flagged: false,
+      flag_reasons: undefined,
+    }))
+
+    expect(result.verdict).toBe("failed")
+  })
+
+  test("rejects nullable decay and structured failure reasons", () => {
+    const result = deriveWalkForwardVerdict(walkForward({
+      is_sharpe_mean: 0,
+      oos_decay: null,
+      flagged: true,
+      flag_reasons: ["nonpositive_is_sharpe"],
+    }))
+
+    expect(result.verdict).toBe("failed")
+    expect(result.reason).toContain("nonpositive_is_sharpe")
+  })
+
+  test("rejects nonpositive stitched metrics even when the derived flag is false", () => {
+    expect(deriveWalkForwardVerdict(walkForward({
+      flagged: false,
+      stitched_oos_return: -0.01,
+    })).verdict).toBe("failed")
+    expect(deriveWalkForwardVerdict(walkForward({
+      flagged: false,
+      stitched_oos_sharpe: -0.1,
+    })).verdict).toBe("failed")
+  })
+
+  test("keeps the legacy degraded retention band distinct from failure", () => {
+    expect(deriveWalkForwardVerdict(walkForward({ oos_decay: 0.6 })).verdict).toBe("degraded")
+    expect(deriveWalkForwardVerdict(walkForward({ oos_decay: 0.8 })).verdict).toBe("robust")
   })
 })

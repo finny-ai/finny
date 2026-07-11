@@ -116,6 +116,49 @@ describe("MissionFrontmatter schema", () => {
     }
     expect(() => MissionFrontmatter.parse(oldVersion)).toThrow()
   })
+
+  test("accepts schema_version 4 with the machine risk contract", () => {
+    const core8 = [
+      "market_universe",
+      "timeframe_bar_interval",
+      "strategy_family",
+      "directional_thesis_regime",
+      "entry_signal_idea",
+      "exit_invalidation_rules",
+      "risk_tolerance_max_drawdown",
+      "backtest_window_success_metric",
+    ] as const
+    const current = {
+      schema_version: 4,
+      name: "spy-sma-crossover",
+      status: "research",
+      created: "2026-07-09",
+      hypothesis: "Trend persistence can support a moving-average crossover.",
+      scope: { asset_class: "equities", universe: ["SPY"], horizon: "intraday" },
+      strategy: {
+        bar_interval: "5min",
+        type: "momentum",
+        direction: "long",
+        entry_signal: "Fast SMA crosses above slow SMA.",
+        risk_profile: "moderate",
+        max_drawdown_pct: 10,
+        backtest_window: "6mo",
+        success_metric: "Positive OOS Sharpe.",
+      },
+      risk_contract: {
+        sizing_stop_distance_pct: 2,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+      exit_conditions: "Exit on reverse crossover or protective stop.",
+      questionnaire: core8.map((id) => ({ id, question: id, answer: "answered", status: "answered" })),
+    }
+    expect(MissionFrontmatter.parse(current)).toMatchObject({
+      schema_version: 4,
+      risk_contract: { max_positions: 1 },
+    })
+  })
 })
 
 describe("Backtest schema", () => {

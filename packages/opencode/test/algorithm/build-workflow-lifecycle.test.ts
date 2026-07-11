@@ -1,5 +1,8 @@
 import crypto from "node:crypto"
 import { expect } from "bun:test"
+import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
 import { Database } from "@opencode-ai/core/database/database"
 import { Effect } from "effect"
 import {
@@ -11,10 +14,12 @@ import {
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
 import type { Algorithm } from "@/algorithm"
 import type { BacktestRunner } from "@/backtest/runner"
+import * as RunIntegrity from "@/backtest/run-integrity"
 import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Database.defaultLayer)
+const hash = (value: string) => RunIntegrity.sha256Text(value)
 
 it.live("drives the single-symbol strict path from verified evidence through a reviewable run", () =>
   Effect.gen(function* () {
@@ -38,9 +43,9 @@ it.live("drives the single-symbol strict path from verified evidence through a r
     })
     const dataset = {
       manifestPath: "/tmp/manifest.json",
-      manifestSha256: "manifest_hash",
+      manifestSha256: hash("manifest"),
       csvPath: "/tmp/spy.csv",
-      csvSha256: "dataset_hash",
+      csvSha256: hash("dataset"),
       identity: {
         runId: "extractor_run",
         requestedAlgorithmName: "spy-5m-sma",
@@ -83,12 +88,51 @@ it.live("drives the single-symbol strict path from verified evidence through a r
 
     const running = yield* startWorkflowBacktest(candidate.workflow)
     expect(running.stage).toBe("backtest_running")
+    const artifactDir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "finny-workflow-run-")))
+    const strictIdentity = {
+      schema: RunIntegrity.RUN_IDENTITY_SCHEMA,
+      version: 1 as const,
+      algorithmId: algorithm.algorithmId,
+      algorithmVersion: algorithm.version,
+      strategyHash: candidate.experiment.strategyHash,
+      savedConfigHash: candidate.experiment.savedConfigHash,
+      effectiveConfigHash: hash("effective-config"),
+      documentHashes: {
+        mission: hash("mission"),
+        preferences: hash("preferences"),
+        decisions: hash("decisions"),
+        reasoning: hash("reasoning"),
+      },
+      riskContractHash: hash("risk"),
+      rawDataHash: candidate.experiment.datasetHash,
+      processedDataHash: hash("processed"),
+      manifestHash: candidate.experiment.manifestHash,
+      engineTreeHash: hash("engine-tree"),
+      assetProfileHash: hash("asset-profile"),
+      executionProfileHash: hash("execution-profile"),
+      seed: 42,
+      dateWindow: { start: "2026-04-09", end: "2026-07-08", interval: "5m" },
+    }
+    const strictIdentityHash = RunIntegrity.sha256Text(RunIntegrity.stableStringify(strictIdentity))
+    yield* Effect.promise(() =>
+      fs.writeFile(
+        path.join(artifactDir, "run.json"),
+        JSON.stringify({
+          schema: RunIntegrity.RUN_BUNDLE_SCHEMA,
+          version: 1,
+          runId: "run_strict",
+          identity: strictIdentity,
+          identityHash: strictIdentityHash,
+        }),
+      ),
+    )
     const reviewable = yield* completeWorkflowBacktest({
       workflow: running,
       experiment: { ...candidate.experiment, workflow: running },
       results: {
         runId: "run_strict",
         engineVersion: "engine_v2",
+        artifactDir,
       } as BacktestRunner.Results,
       verdict: "recommended_for_paper",
     })
@@ -96,19 +140,21 @@ it.live("drives the single-symbol strict path from verified evidence through a r
       stage: "reviewable",
       backtest: {
         runId: "run_strict",
-        dataHash: "dataset_hash",
+        dataHash: hash("dataset"),
         hashes: {
           strategyHash: expect.any(String),
           savedConfigHash: expect.any(String),
           effectiveConfigHash: expect.any(String),
-          dataHash: "dataset_hash",
-          manifestHash: "manifest_hash",
-          engineHash: expect.any(String),
+          dataHash: hash("dataset"),
+          manifestHash: hash("manifest"),
+          engineHash: hash("engine-tree"),
+          strictRunIdentityHash: strictIdentityHash,
           windowHash: expect.any(String),
         },
         verdict: "recommended_for_paper",
       },
     })
     expect(reviewable.backtest?.identityHash).toMatch(/^[a-f0-9]{64}$/)
+    yield* Effect.promise(() => fs.rm(artifactDir, { recursive: true, force: true }))
   }),
 )

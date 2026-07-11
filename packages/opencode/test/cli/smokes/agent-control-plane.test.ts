@@ -81,6 +81,8 @@ describe("agent-friendly CLI control plane (smoke)", () => {
           strategyV2,
           "--save-mode",
           "version",
+          "--docs-mode",
+          "inherit",
         ])
         opencode.expectExit(addedV2, 0, "algo add v2")
         const savedV2 = JSON.parse(addedV2.stdout) as { saved: { algorithmId: string; name: string; version: number } }

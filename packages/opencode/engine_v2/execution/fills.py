@@ -71,9 +71,19 @@ class ParticipationBudget:
     forecast_volume: float
     participation_pct: float
     used_qty: float = 0.0
+    unbounded: bool = False
+
+    @classmethod
+    def unlimited(cls, forecast_volume: float) -> "ParticipationBudget":
+        """A deliberate risk/liquidation bypass of ordinary volume caps."""
+        return cls(
+            forecast_volume=float(forecast_volume),
+            participation_pct=0.0,
+            unbounded=True,
+        )
 
     def remaining(self) -> float:
-        if self.participation_pct >= 1.0:
+        if self.unbounded or self.participation_pct >= 1.0:
             return float("inf")
         if self.forecast_volume <= 0:
             return 0.0

@@ -48,7 +48,7 @@ describe("live HttpApi", () => {
     }),
   )
 
-  it.live("returns a declared LiveRunStartError for live start validation failures", () =>
+  it.live("reloads the current algorithm instead of trusting the client payload", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
       const previousBypass = process.env.FINNY_LICENSE_BYPASS
@@ -70,6 +70,7 @@ describe("live HttpApi", () => {
               time_created: Date.now(),
               time_updated: Date.now(),
             },
+            runId: "strict-run-1",
             symbol: "AAPL",
             interval: "1min",
             accountProviderID: "alpaca-paper-missing",
@@ -79,7 +80,7 @@ describe("live HttpApi", () => {
         expect(res.status).toBe(400)
         expect(yield* res.json).toMatchObject({
           _tag: "LiveRunStartError",
-          message: expect.stringContaining("custom backtestCode"),
+          message: expect.stringContaining("no longer exists"),
         })
       } finally {
         if (previousBypass === undefined) delete process.env.FINNY_LICENSE_BYPASS

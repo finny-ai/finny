@@ -16,6 +16,8 @@ CHANGELOG:
   3.3.0  benchmark block adds same-window benchmark total return and strategy
          excess return for artifact-grounded comparison.
   3.4.0  durability blocks add consistency and alpha-decay diagnostics.
+  3.5.0  walk-forward decay is nullable when in-sample Sharpe is nonpositive;
+         structured failure reasons make sensitivity status auditable.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
-SCHEMA_VERSION = "3.4.0"
+SCHEMA_VERSION = "3.5.0"
 
 
 @dataclass
@@ -292,7 +294,7 @@ class WalkForwardSummary:
     n_folds: int
     is_sharpe_mean: float
     oos_sharpe_mean: float
-    oos_decay: float
+    oos_decay: Optional[float]
     is_to_oos_sharpe_change: float
     flag_threshold: float
     flagged: bool
@@ -306,6 +308,7 @@ class WalkForwardSummary:
     ruined_folds: int
     multiple_testing_trials: int
     folds: List[WalkForwardFold]
+    flag_reasons: List[str] = field(default_factory=list)
 
 
 @dataclass

@@ -26,8 +26,11 @@ export namespace Validate {
     | "SAME_BAR_EXECUTION_BIAS"
     | "EQUITY_NEVER_UPDATED"
     | "POSITION_SIZE_UNCAPPED"
+    | "PROTECTIVE_STOP_CAPABILITY_MISSING"
+    | "UNSUPPORTED_ENGINE_STOP"
     // Phase 1 smoke-test errors
     | "SMOKE_TEST_EXCEPTION"
+    | "SMOKE_TEST_INCONCLUSIVE"
     | "INVARIANT_BAD_RETURN"
     | "INVARIANT_CONSTANT_TRADES"
     | "INVARIANT_RSI_STUCK"
@@ -78,6 +81,12 @@ export namespace Validate {
     valid: boolean
     errors: Diagnostic[]
     warnings: Diagnostic[]
+    capabilities?: {
+      protectiveStop: {
+        mode: "none" | "strategy_next_open" | "engine_stop" | "undeclared"
+        astVerified: boolean | null
+      }
+    }
   }
 
   export interface Options {
@@ -122,7 +131,10 @@ export namespace Validate {
     "SAME_BAR_EXECUTION_BIAS",
     "EQUITY_NEVER_UPDATED",
     "POSITION_SIZE_UNCAPPED",
+    "PROTECTIVE_STOP_CAPABILITY_MISSING",
+    "UNSUPPORTED_ENGINE_STOP",
     "SMOKE_TEST_EXCEPTION",
+    "SMOKE_TEST_INCONCLUSIVE",
     "INVARIANT_BAD_RETURN",
     "INVARIANT_CONSTANT_TRADES",
     "INVARIANT_RSI_STUCK",
@@ -152,6 +164,8 @@ export namespace Validate {
     "SAME_BAR_EXECUTION_BIAS",
     "LEVERAGE_VIOLATION",
     "POSITION_SIZE_UNCAPPED",
+    "PROTECTIVE_STOP_CAPABILITY_MISSING",
+    "UNSUPPORTED_ENGINE_STOP",
     "INVARIANT_RSI_STUCK",
     "INVARIANT_CONSTANT_TRADES",
     "INVARIANT_STATE_NOT_ACCUMULATING",
@@ -357,14 +371,22 @@ export namespace Validate {
     }
   }
 
-  async function checkAST(code: string, symbol?: string): Promise<Diagnostic[]> {
+  async function checkAST(
+    code: string,
+    symbol?: string,
+    protectiveStopMode?: "none" | "strategy_next_open" | "engine_stop",
+  ): Promise<Diagnostic[]> {
     const args = symbol ? ["--symbol", symbol] : []
+    if (protectiveStopMode) args.push("--protective-stop-mode", protectiveStopMode)
     return runPythonDiagnostic(scriptPath("ast_analyzer.py"), code, 5_000, args)
   }
 
-  async function checkSmokeTest(code: string, symbol?: string): Promise<Diagnostic[]> {
-    const args = symbol ? ["--symbol", symbol] : []
-    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, 15_000, args)
+  async function checkSmokeTest(code: string, symbol?: string, requiredHistoryBars?: number): Promise<Diagnostic[]> {
+    const args: string[] = []
+    if (symbol) args.push("--symbol", symbol)
+    if (requiredHistoryBars !== undefined) args.push("--required-history-bars", String(requiredHistoryBars))
+    const timeoutMs = Math.min(60_000, 15_000 + Math.max(0, requiredHistoryBars ?? 0) * 8)
+    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, timeoutMs, args)
   }
 
   async function checkSyntax(code: string): Promise<Diagnostic | null> {
@@ -613,6 +635,26 @@ export namespace Validate {
     return typeof sym === "string" ? sym : undefined
   }
 
+  function extractRequiredHistoryBars(config: Options["config"]): number | undefined {
+    const parsed = parseConfig(config)
+    if (!parsed) return undefined
+    const value = parsed.required_history_bars
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined
+    return Math.max(0, Math.floor(value))
+  }
+
+  function extractProtectiveStopMode(
+    config: Options["config"],
+  ): "none" | "strategy_next_open" | "engine_stop" | undefined {
+    const parsed = parseConfig(config)
+    const risk = parsed?.risk_contract
+    if (!risk || typeof risk !== "object" || Array.isArray(risk)) return undefined
+    const stop = (risk as Record<string, unknown>).protective_stop
+    if (!stop || typeof stop !== "object" || Array.isArray(stop)) return undefined
+    const mode = (stop as Record<string, unknown>).mode
+    return mode === "none" || mode === "strategy_next_open" || mode === "engine_stop" ? mode : undefined
+  }
+
   function flattenConfigLeaves(obj: unknown, prefix = ""): Array<{ key: string; value: unknown }> {
     const out: Array<{ key: string; value: unknown }> = []
     if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return out
@@ -630,6 +672,16 @@ export namespace Validate {
     const diagnostics: Diagnostic[] = []
     const parsed = parseConfig(config)
     if (!parsed) return diagnostics
+    const protectiveStopMode = extractProtectiveStopMode(parsed)
+    if (protectiveStopMode === "engine_stop") {
+      diagnostics.push({
+        code: "UNSUPPORTED_ENGINE_STOP",
+        severity: "error",
+        message:
+          "risk_contract.protective_stop.mode=engine_stop is not eligible because engine_v2 has no contract-bound protective-stop producer.",
+        fix: "Use strategy_next_open with AST-verifiable strategy logic, or none, until engine-stop semantics are implemented.",
+      })
+    }
     try {
       const spec = resolveAssetSpec(parsed, typeof parsed.symbol === "string" ? parsed.symbol : "AAPL")
       if (spec.assetClass === "option" && process.env.FINNY_ALLOW_EXPERIMENTAL_OPTIONS !== "1") {
@@ -649,7 +701,10 @@ export namespace Validate {
       })
     }
 
-    const leaves = flattenConfigLeaves(parsed)
+    // risk_contract is enforced by the platform and must not be mistaken for
+    // a collection of unused strategy parameters.
+    const { risk_contract: _riskContract, ...strategyVisibleConfig } = parsed
+    const leaves = flattenConfigLeaves(strategyVisibleConfig)
     for (const { key, value } of leaves) {
       if (CONFIG_META_KEYS.has(key)) continue
       const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -720,9 +775,10 @@ export namespace Validate {
 
     if (!hardFailed) {
       const symbol = extractSymbol(options.config)
-      astDiagnostics = await checkAST(normalized, symbol)
+      const protectiveStopMode = extractProtectiveStopMode(options.config)
+      astDiagnostics = await checkAST(normalized, symbol, protectiveStopMode)
       if (!options.skipSmokeTest) {
-        smokeDiagnostics = await checkSmokeTest(normalized, symbol)
+        smokeDiagnostics = await checkSmokeTest(normalized, symbol, extractRequiredHistoryBars(options.config))
       }
     }
 
@@ -739,12 +795,44 @@ export namespace Validate {
 
     const errors = allDiagnostics.filter((d) => d.severity === "error")
     const warnings = allDiagnostics.filter((d) => d.severity === "warning")
+    const blocking = allDiagnostics.filter((d) => diagnosticDisposition(d) === "blocking")
+    const protectiveStopMode = extractProtectiveStopMode(options.config)
+    const protectiveStopAstVerified = protectiveStopMode === "strategy_next_open"
+      ? !errors.some((diagnostic) => diagnostic.code === "PROTECTIVE_STOP_CAPABILITY_MISSING")
+      : protectiveStopMode === "engine_stop"
+        ? false
+        : null
 
     return {
-      valid: errors.length === 0,
+      valid: blocking.length === 0,
       errors,
       warnings,
+      capabilities: {
+        protectiveStop: {
+          mode: protectiveStopMode ?? "undeclared",
+          astVerified: protectiveStopAstVerified,
+        },
+      },
     }
+  }
+
+  export type DiagnosticDisposition = "blocking" | "advisory"
+
+  /**
+   * One policy point for every validator consumer. Python risk diagnostics are
+   * normalized to errors before this function; warnings remain advisory and
+   * must not be silently promoted by save/backtest callers.
+   */
+  export function diagnosticDisposition(diagnostic: Diagnostic): DiagnosticDisposition {
+    return diagnostic.severity === "error" ? "blocking" : "advisory"
+  }
+
+  export function blockingDiagnostics(result: Result): Diagnostic[] {
+    return [...result.errors, ...result.warnings].filter((d) => diagnosticDisposition(d) === "blocking")
+  }
+
+  export function advisoryDiagnostics(result: Result): Diagnostic[] {
+    return [...result.errors, ...result.warnings].filter((d) => diagnosticDisposition(d) === "advisory")
   }
 
   /**

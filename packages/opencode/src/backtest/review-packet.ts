@@ -217,7 +217,23 @@ async function writeDurability(input: ReviewInput): Promise<string | undefined> 
   const artifactDir = input.results.artifactDir
   if (!artifactDir) return undefined
   const durabilityPath = path.join(artifactDir, "durability.json")
-  await fs.writeFile(durabilityPath, JSON.stringify(buildDurabilityReport(input), null, 2))
+  const report = buildDurabilityReport(input)
+  try {
+    await fs.writeFile(durabilityPath, `${JSON.stringify(report, null, 2)}\n`, { flag: "wx" })
+  } catch (error: any) {
+    if (error?.code !== "EEXIST") throw error
+    const existing = JSON.parse(await fs.readFile(durabilityPath, "utf8"))
+    if (
+      existing?.schema !== report.schema ||
+      existing?.version !== report.version ||
+      existing?.runId !== report.runId ||
+      existing?.algorithmId !== report.algorithmId ||
+      existing?.algorithmVersion !== report.algorithmVersion ||
+      existing?.verdict !== report.verdict
+    ) {
+      throw new Error("immutable durability.json does not match this run")
+    }
+  }
   if (input.results.evidenceDir) {
     await fs.copyFile(durabilityPath, path.join(input.results.evidenceDir, "durability.json")).catch(() => undefined)
   }

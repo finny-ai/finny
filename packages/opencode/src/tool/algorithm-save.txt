@@ -9,14 +9,16 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **name** (required): A short, descriptive name for the algorithm (e.g., "momentum-spy", "mean-reversion-eth", "breakout-qqq"). Use kebab-case.
 - **code** (required): The full strategy.py source code
 - **saveMode** (required): Either `"new"` or `"version"`. There is no default — you must choose every time. See **Choosing saveMode** below.
+- **docsMode**: Required with `saveMode: "version"`. Use `"inherit"` to snapshot the prior mission/preferences/risk unchanged, or `"replace"` to provide replacements. Decisions are append-only in either mode.
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.
 - **backtestCode**: The backtest.py source code
 - **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
-- **mission**: (new algorithms only) WHO: hypothesis, scope, exit conditions. Written to `mission.md`. Must be valid `schema_version: 3` with all Core 8 questionnaire records. Any user preferences (e.g. capital, sizing, data sources/depth, custom thresholds) must be stored in a `## User Preferences` section at the bottom of the markdown body.
-- **prefs**: (new algorithms only) HOW: sizing, risk, constraints, interval, asset. Written to `prefs.md`.
-- **decisions**: (new algorithms only) Design decisions log. Written to `decisions.md`.
+- **mission**: WHO: hypothesis, scope, exit conditions, and the machine-enforced risk contract. Required for new algorithms and `docsMode: "replace"`. Must be valid `schema_version: 4` with all Core 8 questionnaire records plus `risk_contract` (`sizing_stop_distance_pct`, `protective_stop.mode`, `drawdown.mode`, `drawdown.limit_pct`, and `max_positions`). `engine_stop` is reserved and currently fails closed; use `strategy_next_open` only when the strategy contains validator-verifiable stop logic.
+- **prefs**: HOW: sizing, risk, constraints, interval, asset. Included in each version snapshot.
+- **decisions**: New design-decision entries. Existing decisions are preserved and these entries are appended.
+- **riskContract**: JSON risk contract saved as `risk.json` in each version.
 
 ## Mission YAML Safety
 
@@ -59,12 +61,16 @@ Each algorithm is stored under `$FINNY_HOME/algorithms/<id>/` with this structur
   v01/
     strategy.py           ← the algorithm code
     config.json           ← config parameters
+    mission.md            ← immutable mission snapshot
+    prefs.md              ← immutable preferences snapshot
+    decisions.md          ← append-only decisions snapshot
+    risk.json             ← immutable risk-contract snapshot
     backtest.py           ← custom backtest runner (if any)
     reasoning.md          ← why this version exists
   v02/ ...
 ```
 
-On the **first save** (`saveMode: "new"`, v01), the tool scaffolds `data/` subdirectories and writes `mission.md`, `prefs.md`, `decisions.md` from the provided parameters (or creates empty stubs if not provided). Always provide `mission`, `prefs`, and `decisions` on the first save so they're populated immediately.
+Root `mission.md`, `prefs.md`, `decisions.md`, and `risk.json` are compatibility mirrors of `CURRENT`; the version directory is authoritative. The pointer advances only after the complete new version has been written.
 
 ## Behavior
 - On success: a new row is inserted. With `saveMode: "new"` the algorithm starts at version 1 with status "draft". With `saveMode: "version"` the version is incremented and the lineage's status is preserved.

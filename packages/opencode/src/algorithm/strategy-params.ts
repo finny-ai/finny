@@ -1,5 +1,6 @@
 import { z } from "zod"
 import { resolveSymbol } from "../data/symbols"
+import { Mission } from "./mission"
 
 // Canonical execution-context parameters extracted from chat. Stored as the
 // JSON string in Algorithm.Info.config. Only the inputs the user supplies —
@@ -42,6 +43,9 @@ export const StrategyParams = z.object({
       starting_equity_usd: z.number().optional(),
     })
     .optional(),
+  // Schema-v4 mission contract. This is platform-owned execution metadata,
+  // not a tunable strategy parameter.
+  risk_contract: Mission.RiskContractSchema.optional(),
 })
 export type StrategyParams = z.infer<typeof StrategyParams>
 
@@ -56,6 +60,7 @@ const EXECUTION_KEYS = new Set([
   "asset_spec",
   "backtest",
   "risk",
+  "risk_contract",
 ])
 
 function parseRawObject(json: string | undefined | null): Record<string, any> {
@@ -97,7 +102,7 @@ export function mergeConfig(prev: StrategyParams, patch: Partial<StrategyParams>
       delete (out as any)[key]
       continue
     }
-    if (key === "params" || key === "backtest" || key === "risk" || key === "execution" || key === "asset_spec") {
+    if (key === "params" || key === "backtest" || key === "risk" || key === "risk_contract" || key === "execution" || key === "asset_spec") {
       const prevSub = (prev as any)[key] ?? {}
       const merged = { ...prevSub }
       for (const [k2, v2] of Object.entries(value)) {
