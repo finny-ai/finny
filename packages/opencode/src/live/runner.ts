@@ -9,6 +9,7 @@ import { Validate } from "@/algorithm/validate"
 import { FINNY_BROKER_PY } from "@/backtest/broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind, type BrokerMode } from "./brokers"
+import { validateSymbolForBroker } from "./brokers/policy"
 import { LiveLedger } from "./ledger"
 import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
@@ -107,6 +108,53 @@ export namespace LiveRunner {
       super(message)
       this.name = "LiveRunnerStartRejectedError"
     }
+  }
+
+  export interface StartTarget {
+    brokerKind: BrokerKind
+    symbol: string
+  }
+
+  /** Resolve the account/broker/market tuple before any live worker is created. */
+  export function resolveStartTarget(
+    input: Pick<StartParams, "symbol" | "accountProviderID" | "brokerKind">,
+  ): StartTarget {
+    const accountBrokerKind = BrokerRegistry.detectKind(input.accountProviderID)
+    const brokerKind = input.brokerKind ?? accountBrokerKind
+
+    if (!brokerKind) {
+      throw new StartRejectedError(
+        `Brokerage account "${input.accountProviderID}" is not recognized. Reconnect it in Settings → Brokerages.`,
+      )
+    }
+    if (accountBrokerKind && accountBrokerKind !== brokerKind) {
+      const selected = BrokerRegistry.getSpec(brokerKind)
+      const connected = BrokerRegistry.getSpec(accountBrokerKind)
+      throw new StartRejectedError(
+        `Selected ${selected.displayName}, but account "${input.accountProviderID}" belongs to ${connected.displayName}. Choose a matching account.`,
+      )
+    }
+
+    const market = validateSymbolForBroker(input.symbol, brokerKind)
+    if (!market.ok || !market.normalizedSymbol) {
+      throw new StartRejectedError(market.message ?? `Symbol "${input.symbol}" is not supported by this brokerage.`)
+    }
+    return { brokerKind, symbol: market.normalizedSymbol }
+  }
+
+  type DeploymentKey = Pick<Run, "algorithmId" | "accountProviderID" | "symbol">
+
+  /**
+   * A strategy may run in several markets/accounts concurrently, but the
+   * daemon must never start two workers for the exact same brokerage deployment.
+   */
+  export function isActiveDeploymentConflict(existing: Run, incoming: DeploymentKey): boolean {
+    if (existing.status !== "running" && existing.status !== "starting") return false
+    return (
+      existing.algorithmId === incoming.algorithmId &&
+      existing.accountProviderID === incoming.accountProviderID &&
+      existing.symbol.trim().toUpperCase() === incoming.symbol.trim().toUpperCase()
+    )
   }
 
   export function canStartForMode(eligibility: string | null, mode: BrokerMode): boolean {
@@ -616,28 +664,31 @@ if __name__ == "__main__":
         "Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.",
       )
     }
+    const target = resolveStartTarget(params)
+    const brokerKind = target.brokerKind
+    const symbol = target.symbol
+
     const validation = await Validate.run(params.algorithm.code, {
       config: {
-        symbol: params.symbol,
+        symbol,
       },
     })
     if (!validation.valid) {
       throw new StartRejectedError(`Strategy validation failed before live start.\n${Validate.format(validation)}`)
     }
-    // Prevent duplicate: only one active run per algorithm.
+    // Prevent duplicate workers for the same deployment while allowing the
+    // same algorithm to trade several distinct markets/accounts concurrently.
     for (const existing of runs.values()) {
-      if (
-        existing.algorithmId === params.algorithm.algorithmId &&
-        (existing.status === "running" || existing.status === "starting")
-      ) {
+      if (isActiveDeploymentConflict(existing, {
+        algorithmId: params.algorithm.algorithmId,
+        accountProviderID: params.accountProviderID,
+        symbol,
+      })) {
         throw new StartRejectedError(
-          `"${params.algorithm.name}" is already running. Stop it before starting a new run.`,
+          `"${params.algorithm.name}" is already running ${symbol} on this account. Stop it before starting a duplicate run.`,
         )
       }
     }
-
-    // Resolve broker kind from explicit param or providerID prefix.
-    const brokerKind: BrokerKind = params.brokerKind ?? BrokerRegistry.detectKind(params.accountProviderID) ?? "alpaca"
 
     // Tier gate for live trading on this brokerage. Paper trading bypasses
     // this check entirely — it never enters this code path.
@@ -669,6 +720,7 @@ if __name__ == "__main__":
     const promotion = await verifyPromotion({
       algorithm: params.algorithm,
       runId: params.runId,
+      symbol,
       mode: accountMode,
       controllerApproval: params.controllerApproval,
     })
@@ -689,7 +741,7 @@ if __name__ == "__main__":
       algorithmId: params.algorithm.algorithmId,
       algorithmName: params.algorithm.name,
       backtestRunId: params.runId,
-      symbol: params.symbol,
+      symbol,
       interval: params.interval,
       brokerKind,
       accountProviderID: params.accountProviderID,
@@ -754,7 +806,7 @@ if __name__ == "__main__":
           path.join(tmpDir, "config.json"),
           JSON.stringify(
             {
-              symbol: params.symbol,
+              symbol,
               interval: params.interval,
               run_id: id,
               broker_kind: brokerKind,

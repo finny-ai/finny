@@ -143,6 +143,13 @@ describe("crypto whole-unit sizing diagnostics", () => {
     expect(violation!.message).toContain("max(1, int(qty))")
   })
 
+  test("treats IBKR dot-quoted crypto as crypto during validation", async () => {
+    const result = await Validate.run(MIN_CLAMP_STRATEGY, {
+      config: { symbol: "BTC.USD" },
+    })
+    expect(result.errors.some((e) => e.code === "LEVERAGE_VIOLATION" && e.message.includes("high_price"))).toBe(true)
+  })
+
   test("smoke test does not run the high-price regime for non-crypto symbols", async () => {
     const result = await Validate.run(MIN_CLAMP_STRATEGY, {
       config: { symbol: "SPY" },

@@ -1350,7 +1350,7 @@ def check_position_size_uncapped(on_tick):
 
 
 EQUITY_TICKER_RE = None  # computed lazily
-CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT")
+CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT", ".USD")
 FUTURES_ROOTS = {"ES", "NQ", "RTY", "YM", "CL", "GC", "SI", "HG", "ZN", "ZB", "6E"}
 
 

@@ -154,11 +154,30 @@ export async function writePaperApproval(input: {
 export async function verifyPromotion(input: {
   algorithm: Algorithm.Info
   runId: string
+  /** Normalized market requested for the live/paper worker. */
+  symbol?: string
   mode: "paper" | "testnet" | "live"
   controllerApproval?: ControllerPaperApproval
 }): Promise<{ ok: boolean; status: string | null; errors: string[]; run?: StrictRunV1 }> {
   const integrity = await verifyRunForAlgorithm(input.algorithm, input.runId)
   if (!integrity.ok || !integrity.run) return { ok: false, status: null, errors: integrity.errors, run: integrity.run }
+  if (input.symbol) {
+    const config = await readJson<{ symbol?: unknown }>({
+      file: path.join(strictRunDir(input.algorithm, input.runId), "effective_config.json"),
+    })
+    const approvedSymbol = typeof config.symbol === "string" ? config.symbol.trim().toUpperCase() : ""
+    const requestedSymbol = input.symbol.trim().toUpperCase()
+    if (!approvedSymbol || approvedSymbol !== requestedSymbol) {
+      return {
+        ok: false,
+        status: null,
+        errors: [
+          `approved run market mismatch (approved=${approvedSymbol || "missing"}, requested=${requestedSymbol}); run a separate backtest and approval for this market`,
+        ],
+        run: integrity.run,
+      }
+    }
+  }
   if (input.mode === "live") {
     return {
       ok: false,

@@ -41,7 +41,7 @@ VALID_RETURNS = {"BUY", "SELL", "HOLD", None}
 
 # Mirrors ast_analyzer.py's symbol heuristics (kept local: both scripts are run
 # standalone via stdin and must not depend on each other's import side effects).
-CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT")
+CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT", ".USD")
 
 
 def _symbol_is_crypto(symbol):

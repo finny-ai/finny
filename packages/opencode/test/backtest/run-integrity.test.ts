@@ -346,7 +346,11 @@ async function preparePromotionFixture(home: string) {
     finalDir: dir,
     runId: "run-exact",
     identity: {
-      ...identity({ algorithmId: algorithm.algorithmId, algorithmVersion: 1 }),
+      ...identity({
+        algorithmId: algorithm.algorithmId,
+        algorithmVersion: 1,
+        effectiveConfigHash: hash(stableStringify({ symbol: "SPY" })),
+      }),
       strategyHash: current.strategyHash,
       savedConfigHash: current.savedConfigHash,
       documentHashes: current.documentHashes,
@@ -368,7 +372,7 @@ async function preparePromotionFixture(home: string) {
       "data_quality.json": {},
       "execution_assumptions.json": {},
       "execution_profile.json": {},
-      "effective_config.json": {},
+      "effective_config.json": { symbol: "SPY" },
       "engine_tree.json": ENGINE_TREE,
       "asset_spec.json": {},
     },
@@ -408,6 +412,12 @@ async function preparePromotionFixture(home: string) {
     expect(
       (await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok,
     ).toBe(true)
+    expect(
+      (await verifyPromotion({ algorithm, runId: "run-exact", symbol: "spy", mode: "paper", controllerApproval: authority })).ok,
+    ).toBe(true)
+    expect(
+      (await verifyPromotion({ algorithm, runId: "run-exact", symbol: "BTC/USDT", mode: "paper", controllerApproval: authority })).errors.join(" "),
+    ).toContain("approved run market mismatch")
     const approvalFile = path.join(dir, "approval.json")
     const approvalReceipt = await fs.readFile(approvalFile, "utf8")
     await fs.writeFile(approvalFile, approvalReceipt.replace(authority.challengeId, "handcrafted-challenge"))

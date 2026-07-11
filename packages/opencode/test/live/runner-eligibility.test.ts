@@ -29,3 +29,121 @@ describe("LiveRunner eligibility gate", () => {
     expect(LiveRunner.canRemoveStatus("error")).toBe(true)
   })
 })
+
+describe("LiveRunner multi-market start target", () => {
+  test("normalizes supported markets for Alpaca, Binance, and IBKR", () => {
+    expect(
+      LiveRunner.resolveStartTarget({
+        symbol: "aapl",
+        accountProviderID: "alpaca-paper-equities",
+      }),
+    ).toEqual({ brokerKind: "alpaca", symbol: "AAPL" })
+
+    expect(
+      LiveRunner.resolveStartTarget({
+        symbol: "BTC/USD",
+        accountProviderID: "binance-testnet-crypto",
+      }),
+    ).toEqual({ brokerKind: "binance", symbol: "BTC/USDT" })
+
+    expect(
+      LiveRunner.resolveStartTarget({
+        symbol: "ES/CONT",
+        accountProviderID: "ibkr-futures",
+      }),
+    ).toEqual({ brokerKind: "ibkr", symbol: "ES/CONT" })
+
+    expect(
+      LiveRunner.resolveStartTarget({
+        symbol: "SPY/20260619/500C",
+        accountProviderID: "ibkr-options",
+      }),
+    ).toEqual({ brokerKind: "ibkr", symbol: "SPY/20260619/500C" })
+  })
+
+  test("rejects a broker/account mismatch before reading credentials", () => {
+    expect(() =>
+      LiveRunner.resolveStartTarget({
+        symbol: "BTC/USD",
+        accountProviderID: "alpaca-paper-crypto",
+        brokerKind: "binance",
+      }),
+    ).toThrow("belongs to Alpaca")
+  })
+
+  test("rejects a market the selected brokerage cannot execute", () => {
+    expect(() =>
+      LiveRunner.resolveStartTarget({
+        symbol: "AAPL",
+        accountProviderID: "binance-testnet-crypto",
+      }),
+    ).toThrow('Symbol "AAPL" is not compatible with Binance')
+  })
+})
+
+describe("LiveRunner multi-market deployment key", () => {
+  const activeRun: LiveRunner.Run = {
+    id: "run_1",
+    backtestRunId: "backtest_1",
+    algorithmId: "algo_1",
+    algorithmName: "Cross-market strategy",
+    symbol: "BTC/USDT",
+    interval: "1min",
+    brokerKind: "binance",
+    accountProviderID: "binance-testnet-crypto",
+    mode: "testnet",
+    directory: "/project-a",
+    status: "running",
+    startedAt: 1,
+    positions: {},
+    orders: [],
+    logs: [],
+  }
+
+  test("rejects only the exact active deployment", () => {
+    expect(
+      LiveRunner.isActiveDeploymentConflict(activeRun, {
+        algorithmId: "algo_1",
+        accountProviderID: "binance-testnet-crypto",
+        symbol: "btc/usdt",
+      }),
+    ).toBe(true)
+  })
+
+  test("allows distinct markets and accounts to run concurrently", () => {
+    expect(
+      LiveRunner.isActiveDeploymentConflict(activeRun, {
+        algorithmId: "algo_1",
+        accountProviderID: "binance-testnet-crypto",
+        symbol: "ETH/USDT",
+      }),
+    ).toBe(false)
+    expect(
+      LiveRunner.isActiveDeploymentConflict(activeRun, {
+        algorithmId: "algo_1",
+        accountProviderID: "binance-live-crypto",
+        symbol: "BTC/USDT",
+      }),
+    ).toBe(false)
+    expect(
+      LiveRunner.isActiveDeploymentConflict(activeRun, {
+        algorithmId: "algo_1",
+        accountProviderID: "binance-testnet-crypto",
+        symbol: "BTC/USDT",
+      }),
+    ).toBe(true)
+  })
+
+  test("allows a stopped deployment to restart", () => {
+    expect(
+      LiveRunner.isActiveDeploymentConflict(
+        { ...activeRun, status: "stopped" },
+        {
+          algorithmId: "algo_1",
+          accountProviderID: "binance-testnet-crypto",
+          symbol: "BTC/USDT",
+        },
+      ),
+    ).toBe(false)
+  })
+})
