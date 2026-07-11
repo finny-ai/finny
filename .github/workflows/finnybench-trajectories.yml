@@ -1,0 +1,62 @@
+name: finnybench trajectories
+
+on:
+  pull_request:
+    branches: [dev]
+    paths:
+      - ".github/workflows/finnybench-trajectories.yml"
+      - "packages/opencode/finnybench/**"
+      - "packages/opencode/script/finnybench-trajectory.ts"
+      - "packages/opencode/src/finnybench/**"
+      - "packages/opencode/test/finnybench/**"
+  schedule:
+    - cron: "17 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      artifact_url:
+        description: Private URL for a normalized provider-backed JSONL capture
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: deterministic smoke
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun
+      - run: bun run --cwd packages/opencode finnybench:trajectory:smoke
+
+  full:
+    name: provider-backed full suite
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.artifact_url != '')
+    runs-on: ubuntu-latest
+    env:
+      CAPTURE_URL: ${{ inputs.artifact_url || vars.FINNYBENCH_FULL_ARTIFACT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-bun
+      - name: Require private capture configuration
+        run: test -n "$CAPTURE_URL"
+      - name: Download redacted provider-backed trajectories
+        run: >-
+          curl --fail --location --silent --show-error
+          --header "Authorization: Bearer ${{ secrets.FINNYBENCH_ARTIFACT_TOKEN }}"
+          "$CAPTURE_URL" --output full.jsonl
+      - name: Grade full Gemini and OpenAI-compatible coverage
+        run: >-
+          bun run packages/opencode/script/finnybench-trajectory.ts
+          --suite packages/opencode/finnybench/trajectory-suite.json
+          --input full.jsonl --require-subset full > trajectory-report.json
+      - name: Upload deterministic scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finnybench-trajectory-report-${{ github.run_id }}
+          path: trajectory-report.json
+          if-no-files-found: warn
+          retention-days: 30
