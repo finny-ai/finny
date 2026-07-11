@@ -49,6 +49,7 @@ def _daily_bars_per_year(day_span: float, trading_days: float) -> float:
 def _calendar_session_minutes(calendar: str) -> float | None:
     return {
         "US_EQUITIES": 6.5 * 60.0,
+        "US_EQUITIES_EXTENDED": 16.0 * 60.0,
         "US_OPTIONS": 6.5 * 60.0,
         "US_FUTURES": 23.0 * 60.0,
     }.get(calendar.upper())
@@ -87,8 +88,9 @@ def calendar_bars_per_year(interval: str, calendar: str) -> float:
     """Annualization from asset calendar and interval.
 
     Intraday 24/7 assets use 365 calendar days. US equities/options use regular
-    6.5 hour sessions and 252 trading days. Listed futures use a conservative
-    23 hour, 252 session-year approximation; FX uses 24x5.
+    6.5 hour sessions and 252 trading days. Explicit US equity extended-hours
+    data uses the 4:00-20:00 ET session. Listed futures use a conservative 23
+    hour, 252 session-year approximation; FX uses 24x5.
     """
     s = _normalize_interval(interval)
     if s.endswith("m"):

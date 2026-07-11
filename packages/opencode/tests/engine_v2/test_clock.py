@@ -8,7 +8,7 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from engine_v2.cli import _quality_failure, _resample
-from engine_v2.core.clock import interval_to_rule_and_bars_per_year
+from engine_v2.core.clock import calendar_bars_per_year, interval_to_rule_and_bars_per_year
 from engine_v2.data.quality import QualityReport
 
 
@@ -20,6 +20,10 @@ def test_hour_intervals_use_lowercase_pandas_frequency():
     assert rule_4h == "4h"
     assert bpy_1h == 24.0 * 365.0
     assert bpy_4h == 6.0 * 365.0
+
+
+def test_explicit_extended_equity_calendar_uses_sixteen_hour_session():
+    assert calendar_bars_per_year("1m", "US_EQUITIES_EXTENDED") == 16.0 * 60.0 * 252.0
 
 
 def test_resample_accepts_1h_without_uppercase_frequency_error():

@@ -18,13 +18,18 @@ import numpy as np
 import pandas as pd
 
 from .cache import CacheConfig, load_range
-from ..assets import normalize_asset_class
+from ..assets import normalize_asset_class, resolve_asset_spec
+from ..core.clock import calendar_bars_per_year
 from .providers.alpaca import AlpacaProvider
 from .providers.binance import BinanceProvider
 from .providers.synthetic_options import SyntheticOptionsProvider
 from .providers.yfinance import YFinanceProvider
 from .quality import QualityReport, analyze
 from ..options.symbols import is_option_symbol
+
+
+DIGEST_SCHEMA_VERSION = 2
+
 
 def _classify_asset(symbol: str) -> str:
     return normalize_asset_class(None, symbol)
@@ -61,10 +66,114 @@ class RollBoundary:
     applied_shift: float
 
 
-def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
+def _interval_seconds(interval: str) -> float:
+    normalized = interval.strip().lower().replace("mins", "m").replace("min", "m")
+    if normalized.endswith("m"):
+        return float(int(normalized[:-1]) * 60)
+    if normalized.endswith("h"):
+        return float(int(normalized[:-1]) * 60 * 60)
+    if normalized.endswith("d"):
+        return float(int(normalized[:-1]) * 24 * 60 * 60)
+    raise ValueError(f"Unsupported interval: {interval}")
+
+
+def _timestamp_index(df: pd.DataFrame) -> pd.DatetimeIndex:
+    timestamps = pd.DatetimeIndex(pd.to_datetime(df["timestamp"], utc=True))
+    return timestamps.sort_values()
+
+
+def _session_policy(
+    timestamps: pd.DatetimeIndex,
+    interval: str,
+    asset_class: str,
+    calendar: str,
+) -> tuple[str, str, Optional[str]]:
+    """Return effective calendar, session policy, and ambiguity reason."""
+    if interval.strip().lower().endswith("d"):
+        return calendar, {
+            "equity": "regular_session",
+            "option": "regular_session",
+            "future": "23_hour_session",
+            "fx": "24x5",
+            "crypto_spot": "24x7",
+            "crypto_perp": "24x7",
+        }.get(asset_class, "calendar_default"), None
+
+    if asset_class not in {"equity", "option"}:
+        return calendar, {
+            "future": "23_hour_session",
+            "fx": "24x5",
+            "crypto_spot": "24x7",
+            "crypto_perp": "24x7",
+        }.get(asset_class, "calendar_default"), None
+
+    local = timestamps.tz_convert("America/New_York")
+    minute = local.hour * 60 + local.minute
+    outside_regular = (minute < 9 * 60 + 30) | (minute >= 16 * 60)
+    dates = pd.Series(local.date)
+    extended_by_date = pd.Series(outside_regular, dtype=bool).groupby(dates).any()
+    if not bool(extended_by_date.any()):
+        return calendar, "regular_session", None
+    if not bool(extended_by_date.all()):
+        return "UNKNOWN", "mixed_sessions", "regular and extended-hours coverage varies by trading day"
+    if asset_class == "option":
+        return "UNKNOWN", "extended_hours", "US options extended-hours policy is not defined"
+    return "US_EQUITIES_EXTENDED", "extended_hours_04:00-20:00_ET", None
+
+
+def _realized_cadence(
+    timestamps: pd.DatetimeIndex,
+    interval: str,
+    calendar: str,
+) -> Dict:
+    expected = _interval_seconds(interval)
+    if len(timestamps) < 2:
+        return {
+            "expected_seconds": expected,
+            "observed_median_seconds": None,
+            "matching_delta_pct": None,
+            "missing_intervals": 0,
+            "status": "insufficient_data",
+        }
+
+    deltas = timestamps.to_series().diff().dt.total_seconds().iloc[1:].to_numpy()
+    intraday = expected < 24 * 60 * 60
+    considered = np.ones(len(deltas), dtype=bool)
+    if intraday and calendar.startswith("US_"):
+        local_dates = timestamps.tz_convert("America/New_York").date
+        considered = np.asarray(local_dates[1:] == local_dates[:-1])
+    elif intraday and calendar == "FX_24_5":
+        # The Friday close to Sunday open is a scheduled market closure.
+        considered = deltas < 48 * 60 * 60
+
+    cadence_deltas = deltas[considered]
+    if len(cadence_deltas) == 0:
+        cadence_deltas = deltas
+    matches = np.isclose(cadence_deltas, expected, rtol=0.0, atol=max(1.0, expected * 0.01))
+    missing = int(
+        sum(max(0, round(delta / expected) - 1) for delta in cadence_deltas if delta > expected * 1.5)
+    )
+    return {
+        "expected_seconds": expected,
+        "observed_median_seconds": round(float(np.median(cadence_deltas)), 3),
+        "matching_delta_pct": round(float(np.mean(matches) * 100.0), 2),
+        "missing_intervals": missing,
+        "status": "irregular_or_missing" if missing > 0 or not bool(matches.all()) else "regular",
+    }
+
+
+def _build_digest(df: pd.DataFrame, symbol: str, interval: str, asset_class: str) -> Dict:
     """Structured summary for LLM consumption — stats, not raw rows."""
+    calendar = resolve_asset_spec({"symbol": symbol, "asset_class": asset_class}).calendar
     if df.empty:
-        return {"symbol": symbol, "bars": 0, "status": "no_data"}
+        return {
+            "digest_schema_version": DIGEST_SCHEMA_VERSION,
+            "symbol": symbol,
+            "asset_class": asset_class,
+            "calendar": calendar,
+            "bars": 0,
+            "status": "no_data",
+        }
 
     o = df["open"].to_numpy()
     c = df["close"].to_numpy()
@@ -72,9 +181,21 @@ def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
     total_return = float((c[-1] / c[0]) - 1) if c[0] != 0 else 0.0
 
     log_ret = np.diff(np.log(np.clip(c, 1e-12, None)))
-    ann_factor = {"1m": 525600, "5m": 105120, "15m": 35040, "30m": 17520,
-                  "1h": 8760, "4h": 2190, "1d": 365}.get(interval, 365)
-    ann_vol = float(np.std(log_ret, ddof=1) * np.sqrt(ann_factor)) if len(log_ret) > 1 else 0.0
+    timestamps = _timestamp_index(df)
+    effective_calendar, session_policy, ambiguity = _session_policy(
+        timestamps, interval, asset_class, calendar
+    )
+    cadence = _realized_cadence(timestamps, interval, effective_calendar)
+    ann_factor = (
+        calendar_bars_per_year(interval, effective_calendar)
+        if effective_calendar != "UNKNOWN"
+        else None
+    )
+    ann_vol = (
+        float(np.std(log_ret, ddof=1) * np.sqrt(ann_factor))
+        if len(log_ret) > 1 and ann_factor is not None
+        else None
+    )
 
     peak = np.maximum.accumulate(c)
     dd = (c - peak) / np.where(peak > 0, peak, 1)
@@ -82,17 +203,27 @@ def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
 
     avg_vol = float(np.mean(v))
 
-    ts = pd.to_datetime(df["timestamp"])
-    first_ts = ts.iloc[0].isoformat()
-    last_ts = ts.iloc[-1].isoformat()
+    first_ts = timestamps[0].isoformat()
+    last_ts = timestamps[-1].isoformat()
 
     pct_50 = np.percentile(c, 50)
     pct_5 = np.percentile(c, 5)
     pct_95 = np.percentile(c, 95)
 
     return {
+        "digest_schema_version": DIGEST_SCHEMA_VERSION,
         "symbol": symbol,
+        "asset_class": asset_class,
         "interval": interval,
+        "calendar": effective_calendar,
+        "bars_per_year": round(ann_factor, 6) if ann_factor is not None else None,
+        "session_policy": session_policy,
+        "annualization_method": "calendar_bars_per_year" if ann_factor is not None else "unknown",
+        "annualization": {
+            "status": "unknown" if ambiguity else "ok",
+            "reason": ambiguity,
+            "realized_cadence": cadence,
+        },
         "bars": len(df),
         "period": {"start": first_ts, "end": last_ts},
         "price": {
@@ -106,7 +237,7 @@ def _build_digest(df: pd.DataFrame, symbol: str, interval: str) -> Dict:
         },
         "performance": {
             "total_return_pct": round(total_return * 100, 4),
-            "annualized_volatility_pct": round(ann_vol * 100, 4),
+            "annualized_volatility_pct": round(ann_vol * 100, 4) if ann_vol is not None else None,
             "max_drawdown_pct": round(max_dd * 100, 4),
         },
         "volume": {
@@ -255,7 +386,7 @@ def extract(
             parquet_path="",
             bars_written=0,
             sources_tried=sources_tried,
-            digest={"symbol": symbol, "bars": 0, "status": "no_data"},
+            digest=_build_digest(pd.DataFrame(), symbol, interval, asset_class),
         )
 
     best_df = best_df.sort_values("timestamp").drop_duplicates(subset=["timestamp"]).reset_index(drop=True)
@@ -267,7 +398,7 @@ def extract(
         best_quality = analyze(best_df, interval, asset_class)
     parquet_path = _write_frame(best_df, parquet_path)
 
-    digest = _build_digest(best_df, symbol, interval)
+    digest = _build_digest(best_df, symbol, interval, asset_class)
     digest["source"] = best_provider
     digest["quality"] = {
         "coverage_pct": round(best_quality.coverage_pct * 100, 2) if best_quality else 0,

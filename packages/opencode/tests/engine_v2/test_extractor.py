@@ -35,6 +35,7 @@ from engine_v2.data.providers.binance import (
     BinanceProvider,
     _to_binance_symbol,
 )
+from engine_v2.core.clock import calendar_bars_per_year
 from engine_v2.data.quality import QualityReport
 
 
@@ -199,13 +200,13 @@ class TestAssetClassification:
 class TestDigestBuilder:
     def test_empty_df_returns_no_data(self):
         df = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         assert d["bars"] == 0
         assert d["status"] == "no_data"
 
     def test_digest_has_required_keys(self):
         df = _fake_df(100)
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         assert d["symbol"] == "BTC/USD"
         assert d["interval"] == "1h"
         assert d["bars"] == 100
@@ -216,31 +217,106 @@ class TestDigestBuilder:
 
     def test_digest_price_range_correct(self):
         df = _fake_df(50)
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         assert d["price"]["high"] == round(float(df["high"].max()), 6)
         assert d["price"]["low"] == round(float(df["low"].min()), 6)
 
     def test_digest_total_return_calculation(self):
         df = _fake_df(10)
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         expected = ((df["close"].iloc[-1] / df["close"].iloc[0]) - 1) * 100
         assert abs(d["performance"]["total_return_pct"] - round(expected, 4)) < 0.01
 
     def test_digest_max_drawdown_is_negative(self):
         df = _fake_df(200)
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         assert d["performance"]["max_drawdown_pct"] <= 0
 
     def test_digest_volume_totals(self):
         df = _fake_df(50)
-        d = _build_digest(df, "BTC/USD", "1h")
+        d = _build_digest(df, "BTC/USD", "1h", "crypto_spot")
         assert d["volume"]["total"] == round(float(df["volume"].sum()), 2)
 
     def test_digest_period_timestamps(self):
         df = _fake_df(20, start="2024-03-01")
-        d = _build_digest(df, "ETH/USD", "1h")
+        d = _build_digest(df, "ETH/USD", "1h", "crypto_spot")
         assert "2024-03-01" in d["period"]["start"]
         assert d["period"]["end"] != d["period"]["start"]
+
+    @pytest.mark.parametrize(
+        ("symbol", "asset_class", "interval", "start", "frequency", "calendar", "bars_per_year"),
+        [
+            ("AAPL", "equity", "1d", "2024-01-02", "1D", "US_EQUITIES", 252.0),
+            ("AAPL", "equity", "1m", "2024-01-02 14:30", "1min", "US_EQUITIES", 390.0 * 252.0),
+            ("AAPL/20261218/200C", "option", "1h", "2024-01-02 15:00", "1h", "US_OPTIONS", 6.5 * 252.0),
+            ("ES", "future", "1h", "2024-01-02", "1h", "US_FUTURES", 23.0 * 252.0),
+            ("EURUSD", "fx", "1h", "2024-01-02", "1h", "FX_24_5", 24.0 * 260.0),
+            ("BTC/USD", "crypto_spot", "1h", "2024-01-02", "1h", "24/7", 24.0 * 365.0),
+        ],
+    )
+    def test_digest_uses_asset_calendar_annualization(
+        self, symbol, asset_class, interval, start, frequency, calendar, bars_per_year
+    ):
+        df = _fake_df(5, start=start, freq=frequency)
+
+        digest = _build_digest(df, symbol, interval, asset_class)
+
+        assert digest["digest_schema_version"] == 2
+        assert digest["asset_class"] == asset_class
+        assert digest["calendar"] == calendar
+        assert digest["bars_per_year"] == bars_per_year
+        assert digest["annualization_method"] == "calendar_bars_per_year"
+        assert digest["annualization"]["status"] == "ok"
+        assert digest["performance"]["annualized_volatility_pct"] is not None
+
+    def test_digest_and_shared_clock_annualization_agree(self):
+        df = _fake_df(20, start="2024-01-02 14:30", freq="1min")
+
+        digest = _build_digest(df, "AAPL", "1m", "equity")
+
+        expected_factor = calendar_bars_per_year("1m", "US_EQUITIES")
+        log_returns = np.diff(np.log(df["close"].to_numpy()))
+        expected_vol = round(float(np.std(log_returns, ddof=1) * np.sqrt(expected_factor) * 100), 4)
+        assert digest["bars_per_year"] == expected_factor
+        assert digest["performance"]["annualized_volatility_pct"] == expected_vol
+
+    def test_extended_hours_equity_uses_explicit_calendar(self):
+        df = _fake_df(10, start="2024-01-02 09:00", freq="1h")
+
+        digest = _build_digest(df, "AAPL", "1h", "equity")
+
+        assert digest["calendar"] == "US_EQUITIES_EXTENDED"
+        assert digest["session_policy"] == "extended_hours_04:00-20:00_ET"
+        assert digest["bars_per_year"] == 16.0 * 252.0
+
+    def test_mixed_equity_sessions_mark_annualization_unknown(self):
+        regular = pd.date_range("2024-01-02 14:30", periods=3, freq="1h", tz="UTC")
+        extended = pd.date_range("2024-01-03 09:00", periods=8, freq="1h", tz="UTC")
+        df = _fake_df(len(regular) + len(extended))
+        df["timestamp"] = regular.append(extended)
+
+        digest = _build_digest(df, "AAPL", "1h", "equity")
+
+        assert digest["calendar"] == "UNKNOWN"
+        assert digest["session_policy"] == "mixed_sessions"
+        assert digest["bars_per_year"] is None
+        assert digest["annualization_method"] == "unknown"
+        assert digest["annualization"]["status"] == "unknown"
+        assert digest["performance"]["annualized_volatility_pct"] is None
+
+    def test_realized_cadence_flags_missing_intraday_bar(self):
+        df = _fake_df(3)
+        df["timestamp"] = pd.to_datetime(
+            ["2024-01-02 14:30:00Z", "2024-01-02 14:31:00Z", "2024-01-02 14:33:00Z"]
+        )
+
+        digest = _build_digest(df, "AAPL", "1m", "equity")
+        cadence = digest["annualization"]["realized_cadence"]
+
+        assert cadence["expected_seconds"] == 60.0
+        assert cadence["observed_median_seconds"] == 90.0
+        assert cadence["missing_intervals"] == 1
+        assert cadence["status"] == "irregular_or_missing"
 
 
 # ---------------------------------------------------------------------------
