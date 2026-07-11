@@ -44,6 +44,7 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
+import { aiSdkTelemetryPrivacy } from "@/security/telemetry"
 
 const PROMPT_FINNY = renderPromptWithSymbols(PROMPT_FINNY_RAW)
 const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
@@ -877,10 +878,14 @@ export const layer = Layer.effect(
         const authInfo = yield* auth.get(model.providerID).pipe(Effect.orDie)
         const isOpenaiOauth = model.providerID === "openai" && authInfo?.type === "oauth"
 
+        // Privacy: aiSdkTelemetryPrivacy forces recordInputs/recordOutputs off.
+        // Issue #134 (and any span enrichment) must use sanitizeTelemetryPayload
+        // for optional debug attributes — never raw messages/tool transcripts.
         const params = {
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
             tracer,
+            ...aiSdkTelemetryPrivacy,
             metadata: {
               userId: cfg.username ?? "unknown",
             },

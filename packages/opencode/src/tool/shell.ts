@@ -26,6 +26,11 @@ import { Python } from "@/python/env"
 import { workspaceEnvDir } from "@/python/session-env"
 import { resolveAlpacaMarketDataEnv } from "@/data/alpaca-market-data-env"
 import { resolveBinanceBaseUrl } from "@/data/binance-market-data-env"
+import {
+  assertNoWorkerEnvironmentEnumeration,
+  redactSensitiveOutput,
+  workerShellEnv,
+} from "@/security/worker-shell"
 
 export { Parameters } from "./shell/prompt"
 
@@ -87,29 +92,7 @@ const ALL_WRITE_COMMANDS = new Set([
 const DESTINATION_WRITE_COMMANDS = new Set(["cp", "copy-item"])
 const DOWNLOAD_WRITE_COMMANDS = new Set(["curl", "wget"])
 const READ_COMMANDS = new Set(["cat", "get-content", "head", "tail", "wc", "ls"])
-const ENV_READ_COMMANDS = new Set(["env", "printenv", "set", "export"])
 const REDIRECT_TARGET_TYPES = ["word", "string", "raw_string", "concatenation", "generic_token"]
-const SENSITIVE_ENV_RE = /(?:^|_)(?:API|AUTH|BROKER|CREDENTIAL|KEY|PASS|PASSWORD|SECRET|TOKEN)(?:_|$)/i
-const SENTIMENT_ENV_ALLOWLIST = new Set([
-  "PATH",
-  "HOME",
-  "USER",
-  "USERNAME",
-  "TMPDIR",
-  "TMP",
-  "TEMP",
-  "SHELL",
-  "LANG",
-  "LC_ALL",
-  "LC_CTYPE",
-  "SSL_CERT_FILE",
-  "REQUESTS_CA_BUNDLE",
-  "CURL_CA_BUNDLE",
-  "SYSTEMROOT",
-  "WINDIR",
-  "COMSPEC",
-  "PATHEXT",
-])
 
 type Part = {
   type: string
@@ -439,41 +422,6 @@ function hasPythonInterpreterWriteCommand(root: Node, ps: boolean) {
     if (isHostInterpreterPath(executable) && pythonCommandCanWrite(node.text)) return true
   }
   return false
-}
-
-function hasEnvironmentDumpCommand(root: Node, ps: boolean) {
-  for (const node of commands(root)) {
-    const command = parts(node)
-    const raw = command[0]?.text
-    if (!raw) continue
-    const executable = ps ? raw.toLowerCase() : unquote(raw)
-    if (ENV_READ_COMMANDS.has(executable)) return true
-  }
-  return false
-}
-
-function referencesSensitiveEnv(text: string) {
-  const unix = /\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g
-  for (const match of text.matchAll(unix)) {
-    if (SENSITIVE_ENV_RE.test(match[1] ?? "")) return true
-  }
-  const powershell = /\$env:([A-Za-z_][A-Za-z0-9_]*)/gi
-  for (const match of text.matchAll(powershell)) {
-    if (SENSITIVE_ENV_RE.test(match[1] ?? "")) return true
-  }
-  return false
-}
-
-function sentimentShellEnv(env: NodeJS.ProcessEnv) {
-  const out: NodeJS.ProcessEnv = {}
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) continue
-    const upper = key.toUpperCase()
-    if (SENTIMENT_ENV_ALLOWLIST.has(upper) || upper.startsWith("FINNY_") || upper === "VIRTUAL_ENV") {
-      out[key] = value
-    }
-  }
-  return out
 }
 
 function downloadWriteArgs(cmd: string, args: string[]) {
@@ -942,12 +890,6 @@ export const ShellTool = Tool.define(
     ) {
       if (ctx.agent !== "sentiment_agent") return
 
-      if (hasEnvironmentDumpCommand(root, ps) || referencesSensitiveEnv(root.text)) {
-        throw new Error(
-          "Sentiment Agent bash read blocked: commands may not print environment variables or credential-like env references.",
-        )
-      }
-
       const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
       const allowedHint = workspace ? algoDir(workspace) : "the session workspace directory"
 
@@ -1076,6 +1018,7 @@ export const ShellTool = Tool.define(
       )
       const fileEnv: NodeJS.ProcessEnv = {}
       const runtimeEnv: NodeJS.ProcessEnv = {}
+      let request: Record<string, unknown> | undefined
       if (ctx.agent === "data_extractor") {
         const instanceCtx = yield* InstanceState.context
         const dataRoot = yield* dataExtractorDataRoot(ctx)
@@ -1098,6 +1041,14 @@ export const ShellTool = Tool.define(
           if (brokerEnv) Object.assign(runtimeEnv, brokerEnv)
         }
         if (dataRoot) {
+          const requestText = yield* fs
+            .readFileString(path.join(dataRoot.workspacePath, "request.json"))
+            .pipe(Effect.catch(() => Effect.succeed("")))
+          try {
+            request = requestText ? JSON.parse(requestText) : undefined
+          } catch {
+            request = undefined
+          }
           runtimeEnv.FINNY_STRATEGY_WORKSPACE_NAME = dataRoot.workspace
           runtimeEnv.FINNY_STRATEGY_WORKSPACE_PATH = dataRoot.workspacePath
           runtimeEnv.ALLOWED_DATA_DIR = dataRoot.dataRoot
@@ -1146,7 +1097,7 @@ export const ShellTool = Tool.define(
         ...runtimeEnv,
         ...extra.env,
       }
-      return ctx.agent === "sentiment_agent" ? sentimentShellEnv(merged) : merged
+      return workerShellEnv({ agent: ctx.agent, env: merged, request })
     })
 
     const run = Effect.fn("ShellTool.run")(function* (
@@ -1210,7 +1161,8 @@ export const ShellTool = Tool.define(
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
           const pump = yield* Effect.forkScoped(
-            Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
+            Stream.runForEach(Stream.decodeText(handle.all), (rawChunk) => {
+              const chunk = redactSensitiveOutput({ text: rawChunk, env: input.env })
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
               used += size
@@ -1358,6 +1310,7 @@ export const ShellTool = Tool.define(
               const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
               const env = yield* shellEnv(ctx, cwd)
+              assertNoWorkerEnvironmentEnumeration({ agent: ctx.agent, command: params.command })
               yield* Effect.scoped(
                 Effect.gen(function* () {
                   const tree = yield* Effect.acquireRelease(parse(params.command, ps), (tree) =>

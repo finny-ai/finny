@@ -31,6 +31,7 @@ import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
 import { repairQuestionToolInput, repairToolCallInput } from "./repair-tool-call"
+import { aiSdkTelemetryPrivacy } from "@/security/telemetry"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
 
@@ -385,10 +386,14 @@ const live: Layer.Layer<
               },
             ],
           }),
+          // Privacy contract (@/security/telemetry): no raw prompt/completion
+          // attributes. Optional debug payloads must go through
+          // sanitizeTelemetryPayload (see session/llm/telemetry modelTelemetry).
           experimental_telemetry: {
             isEnabled: cfg.experimental?.openTelemetry,
             functionId: "session.llm",
             tracer: telemetryTracer,
+            ...aiSdkTelemetryPrivacy,
             metadata: {
               userId: cfg.username ?? "unknown",
               sessionId: input.sessionID,

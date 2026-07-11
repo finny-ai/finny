@@ -1166,6 +1166,62 @@ describe("tool.shell abort", () => {
   )
 })
 
+describe("tool.shell secret boundary", () => {
+  it.live("removes non-allowlisted host secrets from worker expansion", () =>
+    runIn(
+      projectRoot,
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = process.env.ISSUE_140_SECRET_TOKEN
+          process.env.ISSUE_140_SECRET_TOKEN = "worker-host-canary"
+          return previous
+        }),
+        () =>
+          Effect.gen(function* () {
+            const result = yield* run(
+              { command: 'echo "$ISSUE_140_SECRET_TOKEN"', description: "Check scoped environment" },
+              { ...ctx, agent: "sec_agent" },
+            )
+            expect(result.output).not.toContain("worker-host-canary")
+          }),
+        (previous) =>
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.ISSUE_140_SECRET_TOKEN
+            else process.env.ISSUE_140_SECRET_TOKEN = previous
+          }),
+      ),
+    ),
+  )
+
+  it.live("redacts credential values before returning shell output", () =>
+    runIn(
+      projectRoot,
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = process.env.ISSUE_140_API_TOKEN
+          process.env.ISSUE_140_API_TOKEN = "returned-output-canary"
+          return previous
+        }),
+        () =>
+          Effect.gen(function* () {
+            const result = yield* run({
+              command: 'echo "$ISSUE_140_API_TOKEN"',
+              description: "Check redacted output",
+            })
+            expect(result.output).toContain("[REDACTED]")
+            expect(result.output).not.toContain("returned-output-canary")
+            expect(JSON.stringify(result.metadata)).not.toContain("returned-output-canary")
+          }),
+        (previous) =>
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.ISSUE_140_API_TOKEN
+            else process.env.ISSUE_140_API_TOKEN = previous
+          }),
+      ),
+    ),
+  )
+})
+
 describe("tool.shell truncation", () => {
   it.live("truncates output exceeding line limit", () =>
     runIn(
