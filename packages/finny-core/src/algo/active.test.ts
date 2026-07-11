@@ -17,7 +17,7 @@ import {
 import { DATA_SUBDIRS, MISSION_FILE } from "./schemas"
 
 const MISSION = `---
-schema_version: 2
+schema_version: 3
 name: active-demo
 status: research
 created: 2026-05-17
@@ -27,8 +27,19 @@ scope:
   asset_class: crypto
   universe: [BTC]
   horizon: weeks
+strategy:
+  bar_interval: 1d
+  type: fixture
+  direction: both
+  entry_signal: fixture entry
+  risk_profile: fixture risk
+  max_drawdown_pct: "10"
+  backtest_window: 1y
+  success_metric: fixture success
 exit_conditions: |
   - 14d
+questionnaire:
+${["market_universe", "timeframe_bar_interval", "strategy_family", "directional_thesis_regime", "entry_signal_idea", "exit_invalidation_rules", "risk_tolerance_max_drawdown", "backtest_window_success_metric"].map((id) => `  - id: ${id}\n    question: "Fixture?"\n    answer: ""\n    status: skipped`).join("\n")}
 ---
 
 # active-demo
@@ -171,6 +182,7 @@ describe("ensureAlgoWorkspace", () => {
     // Mission stores human name, not slug
     const parsed = parseMission(missionRaw)
     expect(parsed.frontmatter.name).toBe("fresh-algo")
+    expect(parsed.frontmatter.schema_version).toBe(3)
 
     for (const subdir of DATA_SUBDIRS) {
       const stat = await fs.stat(path.join(res.dir, subdir))

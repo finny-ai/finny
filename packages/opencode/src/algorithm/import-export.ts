@@ -12,6 +12,7 @@ import {
   configure,
 } from "@zip.js/zip.js"
 import { finnyHomeArtifacts } from "@finny-ai/core/prefs"
+import { migrateMissionToV3 } from "@finny-ai/core/algo"
 import { DeviceProfile } from "../device"
 import { LocalAlgorithmStore } from "../storage/local/algorithm-store"
 import type { Algorithm } from "."
@@ -29,9 +30,8 @@ const MAX_BUNDLE_ENTRIES = 100_000
 const MAX_BUNDLE_ENTRY_BYTES = 250 * 1024 * 1024
 const MAX_BUNDLE_UNCOMPRESSED_BYTES = 2 * 1024 * 1024 * 1024
 
-const BundleManifest = z.object({
+const BundleManifestCommon = {
   schema: z.literal(BUNDLE_SCHEMA),
-  schemaVersion: z.literal(1),
   exportedAt: z.string(),
   source: z.object({
     algorithmId: z.string().min(1),
@@ -40,9 +40,25 @@ const BundleManifest = z.object({
   }),
   openFolder: z.object({
     kind: z.enum(["workspace", "store"]),
-    basename: z.string().min(1).refine((value) => isSafePathSegment(value), "must be a safe folder name"),
+    basename: z
+      .string()
+      .min(1)
+      .refine((value) => isSafePathSegment(value), "must be a safe folder name"),
   }),
-})
+} as const
+
+const BundleManifest = z.discriminatedUnion("schemaVersion", [
+  z.object({ schemaVersion: z.literal(1), ...BundleManifestCommon }),
+  z.object({
+    schemaVersion: z.literal(2),
+    ...BundleManifestCommon,
+    artifactContract: z.object({
+      missionSchemaVersion: z.literal(3),
+      backtestEngine: z.literal("strict_v2"),
+      legacyUnsafeCustomRunner: z.boolean(),
+    }),
+  }),
+])
 type BundleManifest = z.infer<typeof BundleManifest>
 
 export interface ExportAlgorithmBundleResult {
@@ -60,6 +76,11 @@ export interface ImportAlgorithmBundleOptions {
 export interface ImportAlgorithmBundleResult {
   algorithm: Algorithm.Info
   copiedWorkspacePath?: string
+  provenance: {
+    sourceBundleSchemaVersion: 1 | 2
+    missionMigration: "none" | "v2_to_v3"
+    legacyUnsafeCustomRunner: boolean
+  }
 }
 
 interface ZipEntryLike {
@@ -103,6 +124,7 @@ interface RootBoundaryInput extends ExtractTargetInput {
 interface TreeSection {
   sourceDir: string
   zipRoot: string
+  missionMigration?: { migratedAt: string; source: string }
 }
 
 interface AddTreeInput {
@@ -249,7 +271,11 @@ async function addTree(input: AddTreeInput): Promise<void> {
         continue
       }
       if (!entry.isFile()) continue
-      const bytes = await fs.readFile(fullPath)
+      let bytes = await fs.readFile(fullPath)
+      if (rel === "mission.md" && section.missionMigration) {
+        const migrated = migrateMissionToV3(bytes.toString("utf8"), section.missionMigration)
+        bytes = Buffer.from(migrated.mission)
+      }
       await writer.add(zipName, new Uint8ArrayReader(bytes), ZIP_OPTIONS)
     }
   }
@@ -260,7 +286,11 @@ async function addTree(input: AddTreeInput): Promise<void> {
 async function writeZip(input: WriteZipInput) {
   const { destZipPath, manifest, sections } = input
   const writer = new ZipWriter(new BlobWriter("application/zip"))
-  await writer.add(ALGORITHM_BUNDLE_MANIFEST, new Uint8ArrayReader(Buffer.from(JSON.stringify(manifest, null, 2))), ZIP_OPTIONS)
+  await writer.add(
+    ALGORITHM_BUNDLE_MANIFEST,
+    new Uint8ArrayReader(Buffer.from(JSON.stringify(manifest, null, 2))),
+    ZIP_OPTIONS,
+  )
   for (const section of sections) {
     await addTree({ writer, section })
   }
@@ -312,7 +342,8 @@ function totalKnownUncompressedSize(entries: ZipEntryLike[]): number {
 
 function assertZipEntryLimits(input: ZipEntriesInput): void {
   assertBundleEntryCount(input.entries)
-  if (totalKnownUncompressedSize(input.entries) > MAX_BUNDLE_UNCOMPRESSED_BYTES) throw new Error("Algorithm bundle is too large")
+  if (totalKnownUncompressedSize(input.entries) > MAX_BUNDLE_UNCOMPRESSED_BYTES)
+    throw new Error("Algorithm bundle is too large")
 }
 
 function validateZipEntries(input: ZipEntriesInput): void {
@@ -325,7 +356,9 @@ function validateZipEntries(input: ZipEntriesInput): void {
 }
 
 function bundleManifestEntry(input: ZipEntriesInput): ReadableZipEntry {
-  const manifestEntry = input.entries.find((entry) => zipEntryKey({ filename: entry.filename }) === ALGORITHM_BUNDLE_MANIFEST)
+  const manifestEntry = input.entries.find(
+    (entry) => zipEntryKey({ filename: entry.filename }) === ALGORITHM_BUNDLE_MANIFEST,
+  )
   if (!manifestEntry) throw new Error("Zip is not a Finny algorithm bundle")
   if (manifestEntry.directory) throw new Error("Zip is not a Finny algorithm bundle")
   if (!manifestEntry.getData) throw new Error("Zip is not a Finny algorithm bundle")
@@ -475,6 +508,15 @@ async function importOpenFolderWorkspace(input: {
   return target
 }
 
+async function migrateMissionFile(input: { file: string; migratedAt: string; source: string }): Promise<boolean> {
+  const raw = await fs.readFile(input.file, "utf8").catch(() => undefined)
+  if (!raw) return false
+  const migrated = migrateMissionToV3(raw, { migratedAt: input.migratedAt, source: input.source })
+  if (!migrated.migrated) return false
+  await fs.writeFile(input.file, migrated.mission, "utf8")
+  return true
+}
+
 export async function exportAlgorithmBundle(
   algo: Algorithm.Info,
   destZipPath: string,
@@ -493,10 +535,12 @@ export async function exportAlgorithmBundle(
   })
   if (!resolved.found) throw new Error(`No local folder found for ${algo.name}`)
 
+  const exportedAt = new Date().toISOString()
+
   const manifest: BundleManifest = {
     schema: BUNDLE_SCHEMA,
-    schemaVersion: 1,
-    exportedAt: new Date().toISOString(),
+    schemaVersion: 2,
+    exportedAt,
     source: {
       algorithmId: algo.algorithmId,
       name: algo.name,
@@ -506,14 +550,24 @@ export async function exportAlgorithmBundle(
       kind: resolved.kind,
       basename: safeBasename({ path: resolved.path }),
     },
+    artifactContract: {
+      missionSchemaVersion: 3,
+      backtestEngine: "strict_v2",
+      legacyUnsafeCustomRunner: Boolean(algo.backtestCode?.trim()),
+    },
   }
 
+  const missionMigration = { migratedAt: exportedAt, source: `finny.algorithm.export:${algo.algorithmId}` }
   const bytes = await writeZip({
     destZipPath: zipPath,
     manifest,
     sections: [
-      { sourceDir: resolved.path, zipRoot: `open-folder/${manifest.openFolder.basename}` },
-      { sourceDir: storePath, zipRoot: `algorithm-store/${algo.algorithmId}` },
+      {
+        sourceDir: resolved.path,
+        zipRoot: `open-folder/${manifest.openFolder.basename}`,
+        missionMigration,
+      },
+      { sourceDir: storePath, zipRoot: `algorithm-store/${algo.algorithmId}`, missionMigration },
     ],
   })
 
@@ -539,6 +593,16 @@ export async function importAlgorithmBundle(
   try {
     const manifest = await extractBundleZip({ zipPath: sourceZipPath, destDir: tempDir })
     const sourceStoreDir = path.join(tempDir, "algorithm-store", manifest.source.algorithmId)
+    const migrationSource = `finny.algorithm.bundle.v${manifest.schemaVersion}`
+    const migratedAt = new Date().toISOString()
+    let missionMigration: "none" | "v2_to_v3" = "none"
+    const missionFiles = [
+      path.join(sourceStoreDir, "mission.md"),
+      path.join(tempDir, "open-folder", manifest.openFolder.basename, "mission.md"),
+    ]
+    for (const file of missionFiles) {
+      if (await migrateMissionFile({ file, migratedAt, source: migrationSource })) missionMigration = "v2_to_v3"
+    }
     const userId = await DeviceProfile.userId()
     const imported = (await LocalAlgorithmStore.importCopy({
       sourceDir: sourceStoreDir,
@@ -550,7 +614,15 @@ export async function importAlgorithmBundle(
       imported,
     })
 
-    return { algorithm: imported, copiedWorkspacePath }
+    return {
+      algorithm: imported,
+      copiedWorkspacePath,
+      provenance: {
+        sourceBundleSchemaVersion: manifest.schemaVersion,
+        missionMigration,
+        legacyUnsafeCustomRunner: Boolean(imported.backtestCode?.trim()),
+      },
+    }
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true })
   }

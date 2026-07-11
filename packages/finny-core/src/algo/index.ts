@@ -11,6 +11,7 @@ import {
   MEMORY_FILE,
   MISSION_FILE,
   MissionFrontmatter,
+  MissionFrontmatterV2,
   PREFS_FILE,
   REASONING_FILE,
   STRATEGY_FILE,
@@ -49,6 +50,82 @@ export function serializeMission(mission: ParsedMission): string {
   const fm = YAML.stringify(mission.frontmatter).trimEnd()
   const body = mission.body.startsWith("\n") ? mission.body : "\n" + mission.body
   return `---\n${fm}\n---${body}`
+}
+
+export interface MissionMigrationResult {
+  mission: string
+  migrated: boolean
+  fromVersion: 2 | 3
+  toVersion: 3
+  provenance?: {
+    kind: "deterministic_migration"
+    migratedAt: string
+    source: string
+  }
+}
+
+const CORE8_QUESTIONS: Record<(typeof import("./schemas").MISSION_CORE8_IDS)[number], string> = {
+  market_universe: "What market and universe does this strategy trade?",
+  timeframe_bar_interval: "What timeframe and bar interval does it use?",
+  strategy_family: "What strategy family does it belong to?",
+  directional_thesis_regime: "What directional thesis and regime does it target?",
+  entry_signal_idea: "What is the entry signal idea?",
+  exit_invalidation_rules: "What are the exit and invalidation rules?",
+  risk_tolerance_max_drawdown: "What risk tolerance and maximum drawdown apply?",
+  backtest_window_success_metric: "What backtest window and success metric apply?",
+}
+
+/** Deterministically upgrades a legacy v2 mission while recording provenance. */
+export function migrateMissionToV3(raw: string, input: { migratedAt: string; source: string }): MissionMigrationResult {
+  const m = FRONTMATTER_RE.exec(raw)
+  if (!m) throw new Error("mission.md missing YAML frontmatter (`---` fenced block at start)")
+  const data = YAML.parse(m[1]!)
+  if (data?.schema_version === 3) {
+    MissionFrontmatter.parse(data)
+    return { mission: raw, migrated: false, fromVersion: 3, toVersion: 3 }
+  }
+
+  const legacy = MissionFrontmatterV2.parse(data)
+  const created = legacy.created
+  const frontmatter: MissionFrontmatter = {
+    ...legacy,
+    created,
+    schema_version: 3,
+    strategy: {
+      bar_interval: "legacy-unspecified",
+      type: "legacy-unspecified",
+      direction: "both",
+      entry_signal: "Legacy v2 mission did not record a typed entry signal.",
+      risk_profile: "legacy-unspecified",
+      max_drawdown_pct: "legacy-unspecified",
+      backtest_window: "legacy-unspecified",
+      success_metric: "Legacy v2 mission did not record a typed success metric.",
+    },
+    questionnaire: Object.entries(CORE8_QUESTIONS).map(([id, question]) => ({
+      id: id as keyof typeof CORE8_QUESTIONS,
+      question,
+      answer: "",
+      status: "skipped" as const,
+    })),
+  }
+  const provenance = { kind: "deterministic_migration" as const, migratedAt: input.migratedAt, source: input.source }
+  const originalBody = m[2]?.trim() ?? ""
+  const body = [
+    originalBody,
+    "## Artifact Migration Provenance",
+    `- Migrated from mission schema v2 to v3 at ${input.migratedAt}.`,
+    `- Source: ${input.source}.`,
+    "- Newly required strategy and Core 8 fields unavailable in v2 are explicitly marked legacy-unspecified or skipped.",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+  return {
+    mission: serializeMission({ frontmatter, body: `${body}\n` }),
+    migrated: true,
+    fromVersion: 2,
+    toVersion: 3,
+    provenance,
+  }
 }
 
 export interface AlgoVersion {
@@ -128,9 +205,7 @@ export async function loadAlgo(nameOrSlug: string, root: string = algosRoot()): 
 
   // Mission frontmatter stores the human name, not the slug
   if (mission.frontmatter.name !== displayName) {
-    throw new Error(
-      `mission.name (${mission.frontmatter.name}) does not match folder name (${slug}) at ${dir}`,
-    )
+    throw new Error(`mission.name (${mission.frontmatter.name}) does not match folder name (${slug}) at ${dir}`)
   }
   const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
   const current = parseCurrent(currentRaw)

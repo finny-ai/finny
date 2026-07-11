@@ -2,19 +2,14 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import {
-  parseMission,
-  writeAlgo,
-  DATA_NEWS_DIR,
-  NEWS_HEADLINES_FILE_RE,
-} from "../algo"
+import { parseMission, writeAlgo, DATA_NEWS_DIR, NEWS_HEADLINES_FILE_RE } from "../algo"
 
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
 
 const MISSION_YAML = `---
-schema_version: 2
+schema_version: 3
 name: trump-china-swing
 status: research
 created: 2026-05-10
@@ -24,9 +19,20 @@ scope:
   asset_class: equities
   universe: [BABA, JD, PDD, FXI]
   horizon: days
+strategy:
+  bar_interval: 1d
+  type: fixture
+  direction: both
+  entry_signal: fixture entry
+  risk_profile: fixture risk
+  max_drawdown_pct: "10"
+  backtest_window: 1y
+  success_metric: fixture success
 exit_conditions: |
   - Time stop: 5 trading days
   - Price stop: -5% from entry
+questionnaire:
+${["market_universe", "timeframe_bar_interval", "strategy_family", "directional_thesis_regime", "entry_signal_idea", "exit_invalidation_rules", "risk_tolerance_max_drawdown", "backtest_window_success_metric"].map((id) => `  - id: ${id}\n    question: "Fixture?"\n    answer: ""\n    status: skipped`).join("\n")}
 ---
 
 # Trump-China trade swing strategy
@@ -39,9 +45,7 @@ async function mkSandbox(): Promise<string> {
 }
 
 async function seedAlgo(root: string, name: string = "trump-china-swing") {
-  const mission = parseMission(
-    MISSION_YAML.replace("trump-china-swing", name),
-  )
+  const mission = parseMission(MISSION_YAML.replace("trump-china-swing", name))
   mission.frontmatter.name = name
   const { dir } = await writeAlgo({
     root,
@@ -66,10 +70,7 @@ async function setupEnv(): Promise<{ algosPath: string; algoDir: string }> {
 // ---------------------------------------------------------------------------
 
 describe("researcher agent definition", () => {
-  const AGENT_PATH = path.resolve(
-    __dirname,
-    "../../../../.opencode/agent/researcher.md",
-  )
+  const AGENT_PATH = path.resolve(__dirname, "../../../../.opencode/agent/researcher.md")
 
   let content: string
 
@@ -89,25 +90,17 @@ describe("researcher agent definition", () => {
 
   test("has correct permissions including edit and external_directory", () => {
     expect(content).toContain('"*": deny')
-    for (const perm of [
-      "websearch",
-      "webfetch",
-      "finny_discord_read",
-      "write",
-      "edit",
-      "read",
-      "external_directory",
-    ]) {
+    for (const perm of ["websearch", "webfetch", "finny_discord_read", "write", "edit", "read", "external_directory"]) {
       expect(content).toContain(`${perm}: allow`)
     }
   })
 
   test("does not grant bash, glob, or grep permissions", () => {
     const lines = content.split("\n")
-    const permLines = lines.filter(l => l.match(/^\s+["']?\w+["']?\s*:\s*allow/))
+    const permLines = lines.filter((l) => l.match(/^\s+["']?\w+["']?\s*:\s*allow/))
     for (const perm of ["bash", "glob", "grep"]) {
       const re = new RegExp(`^["']?${perm}["']?\\s*:`)
-      expect(permLines.some(l => re.test(l.trim()))).toBe(false)
+      expect(permLines.some((l) => re.test(l.trim()))).toBe(false)
     }
   })
 
@@ -250,10 +243,7 @@ BABA +4.2%, JD +3.8%, PDD +5.1% in pre-market. FXI ETF up 2.7%.
 
 - [Reuters: Trump slashes China tariffs](https://reuters.com/example) — Breaking news report
 `
-    await fs.writeFile(
-      path.join(newsDir, "trump-tariff-reduction-china.md"),
-      bodyContent1,
-    )
+    await fs.writeFile(path.join(newsDir, "trump-tariff-reduction-china.md"), bodyContent1)
 
     const bodyContent2 = `# Beijing welcomes tariff reduction
 
@@ -268,37 +258,23 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
 
 - [SCMP: Beijing responds](https://scmp.com/example) — First Chinese response
 `
-    await fs.writeFile(
-      path.join(newsDir, "beijing-welcomes-tariff-reduction.md"),
-      bodyContent2,
-    )
+    await fs.writeFile(path.join(newsDir, "beijing-welcomes-tariff-reduction.md"), bodyContent2)
 
     const newsFiles = await fs.readdir(newsDir)
-    const dateFiles = newsFiles.filter((f) =>
-      NEWS_HEADLINES_FILE_RE.test(f),
-    )
+    const dateFiles = newsFiles.filter((f) => NEWS_HEADLINES_FILE_RE.test(f))
     expect(dateFiles).toEqual(["2026-05-18.md"])
 
-    const headlines = await fs.readFile(
-      path.join(newsDir, "2026-05-18.md"),
-      "utf8",
-    )
+    const headlines = await fs.readFile(path.join(newsDir, "2026-05-18.md"), "utf8")
     expect(headlines).toContain("Trump announces 25% tariff reduction")
     expect(headlines).toContain("trump-tariff-reduction-china")
 
-    const body = await fs.readFile(
-      path.join(newsDir, "trump-tariff-reduction-china.md"),
-      "utf8",
-    )
+    const body = await fs.readFile(path.join(newsDir, "trump-tariff-reduction-china.md"), "utf8")
     expect(body).toContain("## Summary")
     expect(body).toContain("## Citations")
     expect(body).toContain("BABA +4.2%")
 
     const detailFiles = newsFiles.filter((f) => !NEWS_HEADLINES_FILE_RE.test(f)).sort()
-    expect(detailFiles).toEqual([
-      "beijing-welcomes-tariff-reduction.md",
-      "trump-tariff-reduction-china.md",
-    ])
+    expect(detailFiles).toEqual(["beijing-welcomes-tariff-reduction.md", "trump-tariff-reduction-china.md"])
   })
 
   test("simulates multiple days of research accumulating over time", async () => {
@@ -328,14 +304,11 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
 
     // Verify accumulated across days
     const allNewsFiles = await fs.readdir(newsDir)
-    const headlinesFiles = allNewsFiles.filter(f => NEWS_HEADLINES_FILE_RE.test(f)).sort()
+    const headlinesFiles = allNewsFiles.filter((f) => NEWS_HEADLINES_FILE_RE.test(f)).sort()
     expect(headlinesFiles).toEqual(["2026-05-17.md", "2026-05-18.md"])
 
     const bodyFiles = allNewsFiles.filter((f) => !NEWS_HEADLINES_FILE_RE.test(f)).sort()
-    expect(bodyFiles).toEqual([
-      "tariff-cut-confirmed.md",
-      "tariff-talks-rumours.md",
-    ])
+    expect(bodyFiles).toEqual(["tariff-cut-confirmed.md", "tariff-talks-rumours.md"])
   })
 
   test("researcher output integrates with loadAlgo data structure", async () => {
@@ -363,10 +336,7 @@ China's Ministry of Commerce issued a statement welcoming the US tariff reductio
 // ---------------------------------------------------------------------------
 
 describe("main agent prompts reference researcher", () => {
-  const PROMPT_DIR = path.resolve(
-    __dirname,
-    "../../../opencode/src/agent/prompt",
-  )
+  const PROMPT_DIR = path.resolve(__dirname, "../../../opencode/src/agent/prompt")
 
   test("Build prompt owns strategy implementation and backtests", async () => {
     const content = await fs.readFile(path.join(PROMPT_DIR, "finny-build.txt"), "utf8")

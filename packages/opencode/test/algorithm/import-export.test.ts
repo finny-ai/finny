@@ -9,6 +9,7 @@ import {
   BlobWriter,
   TextReader,
   Uint8ArrayReader,
+  Uint8ArrayWriter,
   configure,
 } from "@zip.js/zip.js"
 import { Algorithm } from "../../src/algorithm"
@@ -25,6 +26,22 @@ configure(ZIP_OPTIONS)
 
 let sandbox: string
 let savedEnv: NodeJS.ProcessEnv
+
+const LEGACY_MISSION = `---
+schema_version: 2
+name: eth-daily-momentum
+status: research
+created: 2026-06-30
+hypothesis: Trade ETH momentum.
+scope:
+  asset_class: crypto
+  universe: [ETH]
+  horizon: days
+exit_conditions: Exit when momentum reverses.
+---
+
+# ETH daily momentum
+`
 
 beforeEach(async () => {
   savedEnv = { ...process.env }
@@ -51,7 +68,7 @@ async function seedSourceAlgorithm(home: string): Promise<{ latest: AlgorithmRow
     config: JSON.stringify({ version: 1, risk: 0.01 }, null, 2),
     backtestCode: "print('backtest v1')\n",
     reasoning: "v1 reasoning\n",
-    mission: "Trade ETH momentum.\n",
+    mission: LEGACY_MISSION,
     prefs: "Use daily bars.\n",
     decisions: "Keep drawdown capped.\n",
     time_created: 10,
@@ -115,6 +132,19 @@ async function zipEntryNames(zipPath: string): Promise<string[]> {
   }
 }
 
+async function bundleManifest(zipPath: string): Promise<any> {
+  const reader = new ZipReader(new BlobReader(new Blob([await fs.readFile(zipPath)])), ZIP_OPTIONS)
+  try {
+    const entries = await reader.getEntries()
+    const entry = entries.find((candidate) => candidate.filename === ALGORITHM_BUNDLE_MANIFEST)
+    if (!entry?.getData) throw new Error("missing bundle manifest")
+    const data = await entry.getData(new Uint8ArrayWriter(), ZIP_OPTIONS)
+    return JSON.parse(Buffer.from(data).toString("utf8"))
+  } finally {
+    await reader.close()
+  }
+}
+
 async function writeNonBundleZip(zipPath: string): Promise<void> {
   const writer = new ZipWriter(new BlobWriter("application/zip"))
   await writer.add("README.txt", new TextReader("not a Finny algorithm bundle"), ZIP_OPTIONS)
@@ -173,7 +203,36 @@ async function writeBundleWithUnsafeWorkspaceBasename(zipPath: string, latest: A
     ),
     ZIP_OPTIONS,
   )
-  await addDirectoryToZip(writer, LocalAlgorithmStore.directoryFor(latest.algorithmId), `algorithm-store/${latest.algorithmId}`)
+  await addDirectoryToZip(
+    writer,
+    LocalAlgorithmStore.directoryFor(latest.algorithmId),
+    `algorithm-store/${latest.algorithmId}`,
+  )
+  const blob = await writer.close()
+  await fs.writeFile(zipPath, new Uint8Array(await blob.arrayBuffer()))
+}
+
+async function writeLegacyV1Bundle(zipPath: string, latest: AlgorithmRow, workspace: string): Promise<void> {
+  const writer = new ZipWriter(new BlobWriter("application/zip"))
+  await writer.add(
+    ALGORITHM_BUNDLE_MANIFEST,
+    new TextReader(
+      JSON.stringify({
+        schema: "finny.algorithm.bundle",
+        schemaVersion: 1,
+        exportedAt: "2026-07-01T00:00:00.000Z",
+        source: { algorithmId: latest.algorithmId, name: latest.name, version: latest.version },
+        openFolder: { kind: "workspace", basename: path.basename(workspace) },
+      }),
+    ),
+    ZIP_OPTIONS,
+  )
+  await addDirectoryToZip(writer, workspace, `open-folder/${path.basename(workspace)}`)
+  await addDirectoryToZip(
+    writer,
+    LocalAlgorithmStore.directoryFor(latest.algorithmId),
+    `algorithm-store/${latest.algorithmId}`,
+  )
   const blob = await writer.close()
   await fs.writeFile(zipPath, new Uint8Array(await blob.arrayBuffer()))
 }
@@ -207,6 +266,14 @@ describe("algorithm import/export bundles", () => {
     expect(entries).toContain("algorithm-store/source-algo/v01/strategy.py")
     expect(entries).toContain("algorithm-store/source-algo/v02/strategy.py")
     expect(entries).toContain("algorithm-store/source-algo/v02/config.json")
+    expect(await bundleManifest(zipPath)).toMatchObject({
+      schemaVersion: 2,
+      artifactContract: {
+        missionSchemaVersion: 3,
+        backtestEngine: "strict_v2",
+        legacyUnsafeCustomRunner: true,
+      },
+    })
   })
 
   test("import into an empty FINNY_HOME appears in Algorithm.list and preserves versions", async () => {
@@ -229,7 +296,14 @@ describe("algorithm import/export bundles", () => {
     expect(await fs.readFile(path.join(importedStore, "v01", "strategy.py"), "utf8")).toContain("version = 1")
     expect(await fs.readFile(path.join(importedStore, "v02", "strategy.py"), "utf8")).toContain("version = 2")
     expect(await fs.readFile(path.join(importedStore, "v02", "config.json"), "utf8")).toContain('"version": 2')
-    expect(await fs.readFile(path.join(importedStore, "mission.md"), "utf8")).toBe("Trade ETH momentum.\n")
+    const importedMission = await fs.readFile(path.join(importedStore, "mission.md"), "utf8")
+    expect(importedMission).toContain("schema_version: 3")
+    expect(importedMission).toContain("Artifact Migration Provenance")
+    expect(imported.provenance).toEqual({
+      sourceBundleSchemaVersion: 2,
+      missionMigration: "none",
+      legacyUnsafeCustomRunner: true,
+    })
 
     expect(imported.copiedWorkspacePath).toBe(path.join(destHome, "algos", "eth-daily-momentum-imported"))
     expect(await fs.readFile(path.join(imported.copiedWorkspacePath!, "notes.md"), "utf8")).toBe("workspace docs\n")
@@ -240,6 +314,28 @@ describe("algorithm import/export bundles", () => {
     expect(workspaceManifest.algorithms[0].name).toBe(imported.algorithm.name)
     expect(workspaceManifest.algorithms[0].latest_version).toBe(2)
     expect(workspaceManifest.algorithms[0].store_path).toBe(importedStore)
+  })
+
+  test("imports legacy v1 bundles through explicit v2-to-v3 mission migration", async () => {
+    const sourceHome = path.join(sandbox, "source-home")
+    const { latest, workspace } = await seedSourceAlgorithm(sourceHome)
+    const zipPath = path.join(sandbox, "legacy-v1.zip")
+    await writeLegacyV1Bundle(zipPath, latest, workspace)
+
+    process.env.FINNY_HOME = path.join(sandbox, "dest-home")
+    const imported = await importAlgorithmBundle(zipPath, { conflictPolicy: "copy" })
+
+    expect(imported.provenance).toEqual({
+      sourceBundleSchemaVersion: 1,
+      missionMigration: "v2_to_v3",
+      legacyUnsafeCustomRunner: true,
+    })
+    const mission = await fs.readFile(
+      path.join(LocalAlgorithmStore.directoryFor(imported.algorithm.algorithmId), "mission.md"),
+      "utf8",
+    )
+    expect(mission).toContain("schema_version: 3")
+    expect(mission).toContain("finny.algorithm.bundle.v1")
   })
 
   test("import name conflict creates a numbered copy instead of overwriting", async () => {

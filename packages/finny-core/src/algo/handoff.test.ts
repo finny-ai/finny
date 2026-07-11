@@ -16,7 +16,7 @@ import {
 } from "./index"
 
 const MISSION_YAML = `---
-schema_version: 2
+schema_version: 3
 name: demo-strat
 status: research
 created: 2026-06-25
@@ -26,8 +26,19 @@ scope:
   asset_class: equities
   universe: [AAPL]
   horizon: days
+strategy:
+  bar_interval: 1d
+  type: fixture
+  direction: both
+  entry_signal: fixture entry
+  risk_profile: fixture risk
+  max_drawdown_pct: "10"
+  backtest_window: 1y
+  success_metric: fixture success
 exit_conditions: |
   Stop at -2%.
+questionnaire:
+${["market_universe", "timeframe_bar_interval", "strategy_family", "directional_thesis_regime", "entry_signal_idea", "exit_invalidation_rules", "risk_tolerance_max_drawdown", "backtest_window_success_metric"].map((id) => `  - id: ${id}\n    question: "Fixture?"\n    answer: ""\n    status: skipped`).join("\n")}
 ---
 
 # Demo
@@ -126,7 +137,7 @@ describe("progress timeline", () => {
     const out = renderProgressTimeline({
       algo: "demo-strat",
       version: "v02",
-      steps: ["Asked: \"build a momentum strat\"", "Launched data_extractor subagent", "Saved strategy v01"],
+      steps: ['Asked: "build a momentum strat"', "Launched data_extractor subagent", "Saved strategy v01"],
       date: "2026-06-25",
     })
     expect(out).toContain("# Progress — demo-strat")

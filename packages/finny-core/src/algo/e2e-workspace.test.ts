@@ -19,14 +19,7 @@ import {
   isSlug,
   humanNameOf,
 } from "./index"
-import {
-  DATA_NEWS_DIR,
-  DATA_SUBDIRS,
-  DATA_STOCK_DIR,
-  DATA_CRYPTO_DIR,
-  DATA_SEC_DIR,
-  MISSION_FILE,
-} from "./schemas"
+import { DATA_NEWS_DIR, DATA_SUBDIRS, DATA_STOCK_DIR, DATA_CRYPTO_DIR, DATA_SEC_DIR, MISSION_FILE } from "./schemas"
 
 let savedEnv: NodeJS.ProcessEnv
 let sandbox: string
@@ -64,9 +57,7 @@ describe("subagents-without-scaffold: full lifecycle with slugs", () => {
 
     // Verify full directory tree was created
     const dir = res1.dir
-    expect(DATA_SUBDIRS).toEqual(
-      expect.arrayContaining([DATA_STOCK_DIR, DATA_CRYPTO_DIR, DATA_SEC_DIR, DATA_NEWS_DIR]),
-    )
+    expect(DATA_SUBDIRS).toEqual(expect.arrayContaining([DATA_STOCK_DIR, DATA_CRYPTO_DIR, DATA_SEC_DIR, DATA_NEWS_DIR]))
     for (const sub of DATA_SUBDIRS) {
       const stat = await fs.stat(path.join(dir, sub))
       expect(stat.isDirectory()).toBe(true)
@@ -97,13 +88,33 @@ describe("subagents-without-scaffold: full lifecycle with slugs", () => {
       slug: res1.slug,
       mission: {
         frontmatter: {
-          schema_version: 2,
+          schema_version: 3,
           name: algoName,
           status: "backtested",
           created: "2026-05-21",
           hypothesis: "Mean-reversion on BTC/USD 1h using Bollinger bands",
           scope: { asset_class: "crypto", universe: ["BTC"], horizon: "days" },
+          strategy: {
+            bar_interval: "1h",
+            type: "mean-reversion",
+            direction: "both",
+            entry_signal: "Bollinger-band reversion",
+            risk_profile: "moderate",
+            max_drawdown_pct: "10",
+            backtest_window: "1y",
+            success_metric: "positive risk-adjusted return",
+          },
           exit_conditions: "- 7d max hold\n- 2% stop loss",
+          questionnaire: [
+            "market_universe",
+            "timeframe_bar_interval",
+            "strategy_family",
+            "directional_thesis_regime",
+            "entry_signal_idea",
+            "exit_invalidation_rules",
+            "risk_tolerance_max_drawdown",
+            "backtest_window_success_metric",
+          ].map((id) => ({ id, question: "Fixture?", answer: "", status: "skipped" })) as any,
         },
         body: "\n# btc-mean-reversion-1h\n\nBuilt from price digest + news brief.\n",
       },

@@ -13,7 +13,7 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.
-- **backtestCode**: The backtest.py source code
+- Finny generates the trusted strict-v2 backtest runner internally. Do not provide custom runner code.
 - **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
 - **mission**: WHO: hypothesis, scope, exit conditions, and the machine-enforced risk contract. Required for new algorithms and `docsMode: "replace"`. Must be valid `schema_version: 4` with all Core 8 questionnaire records plus `risk_contract` (`sizing_stop_distance_pct`, `protective_stop.mode`, `drawdown.mode`, `drawdown.limit_pct`, and `max_positions`). `engine_stop` is reserved and currently fails closed; use `strategy_next_open` only when the strategy contains validator-verifiable stop logic.
 - **prefs**: HOW: sizing, risk, constraints, interval, asset. Included in each version snapshot.

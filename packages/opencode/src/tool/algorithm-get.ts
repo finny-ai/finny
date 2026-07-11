@@ -11,7 +11,7 @@ export const AlgorithmGetTool = Tool.define(
   "finny_algorithm_get",
   Effect.succeed({
     description:
-      "Get a saved trading algorithm by name. Returns the full algorithm details including code, config, backtest code, and metadata.",
+      "Get a saved trading algorithm by name. Returns strategy code, typed config, metadata, and whether an imported legacy unsafe runner is quarantined.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
@@ -47,7 +47,7 @@ export const AlgorithmGetTool = Tool.define(
               description: algo.description ?? "",
               code: algo.code,
               config: algo.config ?? null,
-              backtestCode: algo.backtestCode ?? null,
+              legacyUnsafeCustomRunner: Boolean(algo.backtestCode?.trim()),
               created: new Date(algo.time_created).toISOString(),
               updated: new Date(algo.time_updated).toISOString(),
             },
