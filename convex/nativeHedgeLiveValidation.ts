@@ -1,4 +1,5 @@
 export const NATIVE_HEDGE_SECRET_HEADER = "x-finny-native-hedge-secret"
+export const NATIVE_HEDGE_DASHBOARD_SECRET_HEADER = "x-finny-dashboard-secret"
 export const MAX_NATIVE_HEDGE_BATCH = 100
 
 const EVENT_TYPES = new Set([
@@ -28,11 +29,29 @@ const OPTIONAL_STRING_FIELDS = [
 ]
 const OPTIONAL_NUMBER_FIELDS = ["qty", "price"]
 
-type EnvLike = { FINNY_NATIVE_HEDGE_SECRET?: string | undefined }
+type EnvLike = {
+  FINNY_NATIVE_HEDGE_SECRET?: string | undefined
+  FINNY_NATIVE_HEDGE_DASHBOARD_SECRET?: string | undefined
+}
 type EventCheck = (value: Record<string, unknown>) => boolean
 
 function defaultEnv(): EnvLike {
   return (globalThis as { process?: { env?: EnvLike } }).process?.env ?? {}
+}
+
+/** Constant-time string equality for shared secrets (Convex-safe, no Node crypto). */
+export function secretsEqual(expected: string, provided: string | null): boolean {
+  if (provided === null) return false
+  const a = expected
+  const b = provided
+  const len = Math.max(a.length, b.length)
+  let mismatch = a.length === b.length ? 0 : 1
+  for (let i = 0; i < len; i++) {
+    const ac = a.charCodeAt(i) || 0
+    const bc = b.charCodeAt(i) || 0
+    mismatch |= ac ^ bc
+  }
+  return mismatch === 0
 }
 
 function asRecord(input: unknown) {
@@ -84,7 +103,13 @@ export function nativeHedgeSecret(env: EnvLike = defaultEnv()) {
 export function hasValidNativeHedgeSecret(request: Request, env: EnvLike = defaultEnv()) {
   const expected = nativeHedgeSecret(env)
   if (!expected) return false
-  return request.headers.get(NATIVE_HEDGE_SECRET_HEADER) === expected
+  return secretsEqual(expected, request.headers.get(NATIVE_HEDGE_SECRET_HEADER))
+}
+
+export function hasValidNativeHedgeDashboardSecret(request: Request, env: EnvLike = defaultEnv()) {
+  const expected = env.FINNY_NATIVE_HEDGE_DASHBOARD_SECRET?.trim()
+  if (!expected) return false
+  return secretsEqual(expected, request.headers.get(NATIVE_HEDGE_DASHBOARD_SECRET_HEADER))
 }
 
 export function isNativeHedgeLiveEvent(input: unknown): input is Record<string, unknown> {

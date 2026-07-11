@@ -1,4 +1,4 @@
-import { internalMutation } from "./_generated/server"
+import { internalMutation, internalQuery } from "./_generated/server"
 import { v } from "convex/values"
 import { MAX_NATIVE_HEDGE_BATCH } from "./nativeHedgeLiveValidation"
 
@@ -43,6 +43,67 @@ type NativeHedgeLiveEvent = {
   why?: string
   features?: unknown
   payload?: unknown
+}
+
+export type NativeHedgeDashboardRun = {
+  algorithmName?: string
+  symbol?: string
+  interval?: string
+  brokerage?: string
+  mode?: string
+  status: string
+  startedAt?: number
+  stoppedAt?: number
+  lastEventAt: number
+  hasError: boolean
+}
+
+type NativeHedgeStoredRun = Omit<NativeHedgeDashboardRun, "hasError"> & { error?: string }
+
+const DASHBOARD_STRING_MAX = 80
+const DASHBOARD_STATUSES = new Set(["running", "stopped", "error", "starting", "stopping"])
+
+function dashboardString(value: unknown) {
+  if (typeof value !== "string") return
+  const trimmed = value.trim()
+  if (!trimmed) return
+  return trimmed.length > DASHBOARD_STRING_MAX ? trimmed.slice(0, DASHBOARD_STRING_MAX) : trimmed
+}
+
+function dashboardStatus(value: unknown) {
+  if (typeof value !== "string") return "unknown"
+  const normalized = value.trim().toLowerCase()
+  if (DASHBOARD_STATUSES.has(normalized)) return normalized
+  // Never echo arbitrary ledger status text; collapse to a safe token.
+  if (normalized.includes("error") || normalized.includes("fail")) return "error"
+  if (normalized.includes("stop")) return "stopped"
+  if (normalized.includes("run") || normalized.includes("active")) return "running"
+  return "unknown"
+}
+
+export function buildDashboardSnapshot(input: {
+  now: number
+  runningCount: number
+  runningCountCapped: boolean
+  runs: NativeHedgeStoredRun[]
+}) {
+  return {
+    generatedAt: input.now,
+    runningCount: input.runningCount,
+    runningCountCapped: input.runningCountCapped,
+    recentRuns: input.runs.map((run) => ({
+      algorithmName: dashboardString(run.algorithmName),
+      symbol: dashboardString(run.symbol),
+      interval: dashboardString(run.interval),
+      brokerage: dashboardString(run.brokerage),
+      mode: dashboardString(run.mode),
+      status: dashboardStatus(run.status),
+      startedAt: run.startedAt,
+      stoppedAt: run.stoppedAt,
+      lastEventAt: run.lastEventAt,
+      hasError: !!run.error,
+    })),
+  }
 }
 
 function eventPayload(event: NativeHedgeLiveEvent) {
@@ -180,5 +241,24 @@ export const ingest = internalMutation({
     }
 
     return { ok: true as const, accepted, duplicates }
+  },
+})
+
+export const dashboardSnapshot = internalQuery({
+  args: {},
+  handler: async (ctx) => {
+    const [running, runs] = await Promise.all([
+      ctx.db
+        .query("nativeHedgeLiveRuns")
+        .withIndex("by_status", (q) => q.eq("status", "running"))
+        .take(101),
+      ctx.db.query("nativeHedgeLiveRuns").withIndex("by_lastEventAt").order("desc").take(24),
+    ])
+    return buildDashboardSnapshot({
+      now: Date.now(),
+      runningCount: Math.min(running.length, 100),
+      runningCountCapped: running.length > 100,
+      runs,
+    })
   },
 })

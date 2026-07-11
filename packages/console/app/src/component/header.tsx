@@ -154,6 +154,9 @@ export function Header(props: { zen?: boolean; go?: boolean; hideGetStarted?: bo
             <a href={language.route("/data")}>{i18n.t("nav.data")}</a>
           </li>
           <li>
+            <A href={language.route("/live")}>{i18n.t("nav.live")}</A>
+          </li>
+          <li>
             <A href={language.route("/zen")}>{i18n.t("nav.zen")}</A>
           </li>
           <li>
@@ -252,6 +255,9 @@ export function Header(props: { zen?: boolean; go?: boolean; hideGetStarted?: bo
                 </li>
                 <li>
                   <a href={language.route("/data")}>{i18n.t("nav.data")}</a>
+                </li>
+                <li>
+                  <A href={language.route("/live")}>{i18n.t("nav.live")}</A>
                 </li>
                 <Show when={!props.zen}>
                   <li>

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
+  NATIVE_HEDGE_DASHBOARD_SECRET_HEADER,
   NATIVE_HEDGE_SECRET_HEADER,
+  hasValidNativeHedgeDashboardSecret,
   hasValidNativeHedgeSecret,
   isNativeHedgeIngestPayload,
 } from "../../../../convex/nativeHedgeLiveValidation"
@@ -32,6 +34,25 @@ describe("native hedge Convex ingest validation", () => {
     expect(hasValidNativeHedgeSecret(ok, { FINNY_NATIVE_HEDGE_SECRET: "secret" })).toBe(true)
     expect(hasValidNativeHedgeSecret(bad, { FINNY_NATIVE_HEDGE_SECRET: "secret" })).toBe(false)
     expect(hasValidNativeHedgeSecret(ok, {})).toBe(false)
+  })
+
+  test("uses a distinct dashboard read secret", () => {
+    const request = new Request("https://example.convex.site/dashboard/native-hedge-live", {
+      headers: { [NATIVE_HEDGE_DASHBOARD_SECRET_HEADER]: "read-secret" },
+    })
+
+    expect(hasValidNativeHedgeDashboardSecret(request, { FINNY_NATIVE_HEDGE_DASHBOARD_SECRET: "read-secret" })).toBe(
+      true,
+    )
+    expect(hasValidNativeHedgeDashboardSecret(request, { FINNY_NATIVE_HEDGE_DASHBOARD_SECRET: "wrong" })).toBe(false)
+    expect(hasValidNativeHedgeDashboardSecret(request, {})).toBe(false)
+    // Prefix matches must not pass (and comparison is length-aware).
+    const prefix = new Request("https://example.convex.site/dashboard/native-hedge-live", {
+      headers: { [NATIVE_HEDGE_DASHBOARD_SECRET_HEADER]: "read-secre" },
+    })
+    expect(hasValidNativeHedgeDashboardSecret(prefix, { FINNY_NATIVE_HEDGE_DASHBOARD_SECRET: "read-secret" })).toBe(
+      false,
+    )
   })
 
   test("accepts valid batches and rejects malformed event payloads", () => {

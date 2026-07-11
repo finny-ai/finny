@@ -1,7 +1,11 @@
 import { httpRouter } from "convex/server"
 import { httpAction } from "./_generated/server"
 import { internal } from "./_generated/api"
-import { hasValidNativeHedgeSecret, isNativeHedgeIngestPayload } from "./nativeHedgeLiveValidation"
+import {
+  hasValidNativeHedgeDashboardSecret,
+  hasValidNativeHedgeSecret,
+  isNativeHedgeIngestPayload,
+} from "./nativeHedgeLiveValidation"
 
 const http = httpRouter()
 const HASH_RE = /^[a-f0-9]{64}$/i
@@ -45,6 +49,16 @@ function json(input: unknown, status: 200 | 400 | 403 | 500) {
   return new Response(JSON.stringify(input), {
     status,
     headers: { "content-type": "application/json" },
+  })
+}
+
+function dashboardJson(input: unknown, status: 200 | 403 | 500) {
+  return new Response(JSON.stringify(input), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": status === 200 ? "private, max-age=10, stale-while-revalidate=20" : "no-store",
+    },
   })
 }
 
@@ -230,6 +244,23 @@ http.route({
       return json(result, result?.ok ? 200 : 400)
     } catch {
       return json({ ok: false, error_code: "internal_error" }, 500)
+    }
+  }),
+})
+
+http.route({
+  path: "/dashboard/native-hedge-live",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    if (!hasValidNativeHedgeDashboardSecret(request)) {
+      return dashboardJson({ ok: false, error_code: "verification_failed" }, 403)
+    }
+
+    try {
+      const snapshot = await ctx.runQuery((internal as any).nativeHedgeLive.dashboardSnapshot, {})
+      return dashboardJson({ ok: true, ...snapshot }, 200)
+    } catch {
+      return dashboardJson({ ok: false, error_code: "internal_error" }, 500)
     }
   }),
 })
