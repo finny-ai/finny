@@ -38,7 +38,7 @@ const COPY: Record<SimpleSettingsTab, SimpleCopy> = {
   },
   providers: {
     title: "Providers",
-    body: "Connect API keys for OpenAI, Anthropic, GitHub Copilot, and more.",
+    body: "Connect API keys for OpenAI, Anthropic, Perplexity (finance websearch), GitHub Copilot, and more.",
     cta: "Manage providers",
   },
   agents: {

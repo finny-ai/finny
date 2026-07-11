@@ -12,6 +12,11 @@ const enabledByExperimental = (name: string) =>
   Config.all({ experimental, enabled: Config.boolean(name).pipe(Config.option) }).pipe(
     Config.map((flags) => Option.getOrElse(flags.enabled, () => flags.experimental)),
   )
+const providerEnabled = (provider: string) =>
+  Config.string("OPENCODE_WEBSEARCH_PROVIDER").pipe(
+    Config.option,
+    Config.map((value) => Option.getOrElse(value, () => "") === provider),
+  )
 
 export class Service extends ConfigService.Service<Service>()("@opencode/RuntimeFlags", {
   autoShare: bool("OPENCODE_AUTO_SHARE"),
@@ -37,6 +42,7 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
     enabled: bool("OPENCODE_ENABLE_PARALLEL"),
     legacy: bool("OPENCODE_EXPERIMENTAL_PARALLEL"),
   }).pipe(Config.map((flags) => flags.enabled || flags.legacy)),
+  enablePerplexity: providerEnabled("perplexity"),
   enableExperimentalModels: bool("OPENCODE_ENABLE_EXPERIMENTAL_MODELS"),
   enableQuestionTool: bool("OPENCODE_ENABLE_QUESTION_TOOL"),
   experimentalReferences: enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES"),

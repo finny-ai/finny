@@ -98,6 +98,16 @@ describe("RuntimeFlags", () => {
     }),
   )
 
+  it.effect("enables Perplexity websearch from its explicit provider override", () =>
+    Effect.gen(function* () {
+      const enabled = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_WEBSEARCH_PROVIDER: "perplexity" })))
+      const disabled = yield* readFlags.pipe(Effect.provide(fromConfig({ OPENCODE_WEBSEARCH_PROVIDER: "exa" })))
+
+      expect(enabled.enablePerplexity).toBe(true)
+      expect(disabled.enablePerplexity).toBe(false)
+    }),
+  )
+
   it.effect("layer accepts partial test overrides and fills defaults from Config definitions", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(

@@ -76,11 +76,15 @@ import { Permission } from "@/permission"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { hasPerplexityApiKey } from "./perplexity-credentials"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Bus } from "@/bus"
 
-export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
-  return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel
+export function webSearchEnabled(
+  providerID: ProviderV2.ID,
+  flags: { exa: boolean; parallel: boolean; perplexity?: boolean } = { exa: false, parallel: false },
+) {
+  return providerID === ProviderV2.ID.opencode || flags.exa || flags.parallel || flags.perplexity === true
 }
 
 type TaskDef = Tool.InferDef<typeof TaskTool>
@@ -366,9 +370,15 @@ export const layer = Layer.effect(
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
+      const perplexityEnabled =
+        flags.enablePerplexity || (yield* Effect.promise(() => hasPerplexityApiKey()))
       const filtered = (yield* all()).filter((tool) => {
         if (tool.id === WebSearchTool.id) {
-          return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
+          return webSearchEnabled(input.providerID, {
+            exa: flags.enableExa,
+            parallel: flags.enableParallel,
+            perplexity: perplexityEnabled,
+          })
         }
 
         const usePatch =

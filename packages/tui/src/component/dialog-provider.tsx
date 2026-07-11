@@ -63,6 +63,7 @@ export function providerOptions(list: { id: string; name: string }[]): ProviderO
           anthropic: "(API key)",
           openai: "(ChatGPT Plus/Pro or API key)",
           "opencode-go": "Low cost subscription for everyone",
+          perplexity: "(API key · finance websearch + Sonar models)",
         }[provider.id],
         category: provider.id in PROVIDER_PRIORITY ? "Popular" : "Providers",
       })),
@@ -388,6 +389,18 @@ function ApiMethod(props: ApiMethodProps) {
               <text fg={theme.text}>
                 Go to <span style={{ fg: theme.primary }}>https://opencode.ai/go</span> and enable OpenCode Go
               </text>
+            </box>
+          ),
+          perplexity: (
+            <box gap={1}>
+              <text fg={theme.textMuted}>
+                Stores a Perplexity API key locally (auth.json). Enables Sonar models and Finny finance/news websearch
+                with ranked source titles, URLs, dates, and snippets.
+              </text>
+              <text fg={theme.text}>
+                Get a key at <span style={{ fg: theme.primary }}>https://www.perplexity.ai/settings/api</span>
+              </text>
+              <text fg={theme.textMuted}>You can also manage this under Settings → Data Sources → Web search.</text>
             </box>
           ),
         }[props.providerID] ?? undefined

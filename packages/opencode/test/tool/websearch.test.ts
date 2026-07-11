@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { Effect } from "effect"
 import { parseResponse } from "../../src/tool/mcp-websearch"
 import { selectWebSearchProvider, webSearchModelName, webSearchProviderLabel } from "../../src/tool/websearch"
+import { maskPerplexityKey, resolvePerplexityApiKey } from "../../src/tool/perplexity-credentials"
+import { Auth } from "../../src/auth"
 
 import { webSearchEnabled } from "../../src/tool/registry"
 import { it } from "../lib/effect"
@@ -23,6 +25,9 @@ describe("websearch provider", () => {
 
       process.env.OPENCODE_WEBSEARCH_PROVIDER = "exa"
       expect(selectWebSearchProvider(SESSION_ID)).toBe("exa")
+
+      process.env.OPENCODE_WEBSEARCH_PROVIDER = "perplexity"
+      expect(selectWebSearchProvider(SESSION_ID)).toBe("perplexity")
     } finally {
       if (original === undefined) delete process.env.OPENCODE_WEBSEARCH_PROVIDER
       else process.env.OPENCODE_WEBSEARCH_PROVIDER = original
@@ -37,16 +42,49 @@ describe("websearch provider", () => {
     expect(selectWebSearchProvider(SESSION_ID, { exa: false, parallel: true })).toBe("parallel")
   })
 
+  test("routes to Perplexity when its provider is enabled", () => {
+    expect(selectWebSearchProvider(SESSION_ID, { exa: false, parallel: false, perplexity: true })).toBe("perplexity")
+  })
+
+  test("resolves Perplexity key from env before auth store", async () => {
+    const previous = process.env.PERPLEXITY_API_KEY
+    process.env.PERPLEXITY_API_KEY = "pplx-env-key"
+    try {
+      expect(await resolvePerplexityApiKey()).toBe("pplx-env-key")
+    } finally {
+      if (previous === undefined) delete process.env.PERPLEXITY_API_KEY
+      else process.env.PERPLEXITY_API_KEY = previous
+    }
+  })
+
+  test("resolves Perplexity key from local auth.json when env is unset", async () => {
+    const previous = process.env.PERPLEXITY_API_KEY
+    delete process.env.PERPLEXITY_API_KEY
+    const marker = `pplx-auth-test-${Date.now()}`
+    try {
+      await Auth.set("perplexity", { type: "api", key: marker })
+      expect(await resolvePerplexityApiKey()).toBe(marker)
+      expect(maskPerplexityKey(marker).includes("…")).toBe(true)
+      expect(maskPerplexityKey(marker)).not.toBe(marker)
+    } finally {
+      await Auth.remove("perplexity").catch(() => undefined)
+      if (previous === undefined) delete process.env.PERPLEXITY_API_KEY
+      else process.env.PERPLEXITY_API_KEY = previous
+    }
+  })
+
   test("is only enabled for opencode or explicit websearch provider flags", () => {
     expect(webSearchEnabled(ProviderV2.ID.opencode, { exa: false, parallel: false })).toBe(true)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: false, parallel: false })).toBe(false)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: true, parallel: false })).toBe(true)
     expect(webSearchEnabled(ProviderV2.ID.openai, { exa: false, parallel: true })).toBe(true)
+    expect(webSearchEnabled(ProviderV2.ID.openai, { exa: false, parallel: false, perplexity: true })).toBe(true)
   })
 
   test("uses branded labels", () => {
     expect(webSearchProviderLabel("parallel")).toBe("Parallel Web Search")
     expect(webSearchProviderLabel("exa")).toBe("Exa Web Search")
+    expect(webSearchProviderLabel("perplexity")).toBe("Perplexity Search")
     expect(webSearchProviderLabel(undefined)).toBe("Web Search")
   })
 

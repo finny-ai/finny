@@ -6,6 +6,8 @@ import DESCRIPTION from "./websearch.txt"
 import { checksum } from "@opencode-ai/core/util/encode"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { PerplexitySearch } from "@opencode-ai/core/tool/perplexity-search"
+import { resolvePerplexityApiKey } from "./perplexity-credentials"
 
 export const Parameters = Schema.Struct({
   query: Schema.String.annotate({ description: "Websearch query" }),
@@ -24,19 +26,24 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-const WebSearchProviderSchema = Schema.Literals(["exa", "parallel"])
+const WebSearchProviderSchema = Schema.Literals(["exa", "parallel", "perplexity"])
 export type WebSearchProvider = Schema.Schema.Type<typeof WebSearchProviderSchema>
 
-export function selectWebSearchProvider(sessionID: string, flags = { exa: false, parallel: false }): WebSearchProvider {
+export function selectWebSearchProvider(
+  sessionID: string,
+  flags: { exa: boolean; parallel: boolean; perplexity?: boolean } = { exa: false, parallel: false },
+): WebSearchProvider {
   const override = process.env.OPENCODE_WEBSEARCH_PROVIDER
-  if (override === "exa" || override === "parallel") return override
+  if (override === "exa" || override === "parallel" || override === "perplexity") return override
   if (flags.parallel) return "parallel"
   if (flags.exa) return "exa"
+  if (flags.perplexity) return "perplexity"
 
   return Number.parseInt(checksum(sessionID) ?? "0", 36) % 2 === 0 ? "exa" : "parallel"
 }
 
 export function webSearchProviderLabel(provider: unknown) {
+  if (provider === "perplexity") return "Perplexity Search"
   if (provider === "parallel") return "Parallel Web Search"
   if (provider === "exa") return "Exa Web Search"
   return "Web Search"
@@ -62,7 +69,22 @@ function callProvider(
   provider: WebSearchProvider,
   params: Schema.Schema.Type<typeof Parameters>,
   ctx: Tool.Context,
+  apiKey: string,
 ) {
+  if (provider === "perplexity") {
+    return PerplexitySearch.search(http, {
+      apiKey,
+      query: params.query,
+      numResults: params.numResults,
+      maxCharacters: params.contextMaxCharacters,
+    }).pipe(
+      Effect.timeoutOrElse({
+        duration: "25 seconds",
+        orElse: () => Effect.die(new Error("Perplexity search request timed out")),
+      }),
+    )
+  }
+
   if (provider === "parallel") {
     return McpWebSearch.call(
       http,
@@ -109,9 +131,12 @@ export const WebSearchTool = Tool.define(
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          // Local auth.json key (Settings) enables Perplexity without env vars.
+          const perplexityKey = yield* Effect.promise(() => resolvePerplexityApiKey())
           const provider = selectWebSearchProvider(ctx.sessionID, {
             exa: flags.enableExa,
             parallel: flags.enableParallel,
+            perplexity: flags.enablePerplexity || !!perplexityKey,
           })
           const title = webSearchProviderLabel(provider)
           yield* ctx.metadata({ title: `${title} "${params.query}"`, metadata: { provider } })
@@ -130,7 +155,7 @@ export const WebSearchTool = Tool.define(
             },
           })
 
-          const result = yield* callProvider(http, provider, params, ctx)
+          const result = yield* callProvider(http, provider, params, ctx, perplexityKey)
 
           return {
             output: result ?? "No search results found. Please try a different query.",

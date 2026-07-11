@@ -32,6 +32,9 @@ describe("WebSearchTool provider selection", () => {
       "parallel",
     )
     expect(WebSearchTool.selectProvider(sessionID, { enableExa: false, enableParallel: false }, "exa")).toBe("exa")
+    expect(WebSearchTool.selectProvider(sessionID, { enableExa: false, enableParallel: false }, "perplexity")).toBe(
+      "perplexity",
+    )
   })
 
   test("prefers Parallel when both explicit flags are enabled", () => {
@@ -106,11 +109,17 @@ const websearchConfig = Layer.succeed(
     get enableParallel() {
       return config.enableParallel
     },
+    get enablePerplexity() {
+      return config.enablePerplexity
+    },
     get exaApiKey() {
       return config.exaApiKey
     },
     get parallelApiKey() {
       return config.parallelApiKey
+    },
+    get perplexityApiKey() {
+      return config.perplexityApiKey
     },
   }),
 )
@@ -226,6 +235,71 @@ describe("WebSearchTool registration", () => {
         },
       })
       expect(JSON.stringify(settled)).not.toContain("parallel-secret")
+    }),
+  )
+
+  it.effect("calls Perplexity Search and returns source-backed finance results without exposing credentials", () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      assertions.length = 0
+      responseBody = JSON.stringify({
+        results: [
+          {
+            title: "Federal Reserve press release",
+            url: "https://www.federalreserve.gov/example",
+            snippet: "The Federal Reserve announced its latest rate decision.",
+            date: "2026-07-09",
+            last_updated: null,
+          },
+        ],
+      })
+      config = {
+        provider: "perplexity",
+        enableExa: false,
+        enableParallel: false,
+        perplexityApiKey: "pplx-secret",
+      }
+      const registry = yield* ToolRegistry.Service
+
+      const settled = yield* settleTool(registry, {
+        sessionID,
+        ...toolIdentity,
+        call: {
+          type: "tool-call",
+          id: "call-perplexity",
+          name: "websearch",
+          input: { query: "latest Federal Reserve rate decision", numResults: 3 },
+        },
+      })
+
+      expect(requests[0]).toMatchObject({
+        url: "https://api.perplexity.ai/search",
+        headers: { authorization: "Bearer pplx-secret" },
+        body: { query: "latest Federal Reserve rate decision", max_results: 3 },
+      })
+      expect(settled.result).toEqual({
+        type: "text",
+        value: expect.stringContaining("https://www.federalreserve.gov/example"),
+      })
+      expect(settled.output?.structured).toMatchObject({ provider: "perplexity" })
+      expect(JSON.stringify(settled)).not.toContain("pplx-secret")
+    }),
+  )
+
+  it.effect("reports an error when Perplexity is selected without a key", () =>
+    Effect.gen(function* () {
+      requests.length = 0
+      config = { provider: "perplexity", enableExa: false, enableParallel: false }
+      const registry = yield* ToolRegistry.Service
+
+      expect(
+        yield* executeTool(registry, {
+          sessionID,
+          ...toolIdentity,
+          call: { type: "tool-call", id: "call-perplexity-no-key", name: "websearch", input: { query: "rates" } },
+        }),
+      ).toEqual({ type: "error", value: "Unable to search the web for rates" })
+      expect(requests).toEqual([])
     }),
   )
 

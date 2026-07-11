@@ -6,6 +6,7 @@ import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { Card } from "./card"
 import { SettingsPanelPaperTrading } from "./settings-panel-paper-trading"
+import { SettingsPanelWebSearch } from "./settings-panel-websearch"
 
 type DataAgentInstructions = {
   path: "data-agent/instructions.md"
@@ -14,7 +15,7 @@ type DataAgentInstructions = {
   exists: boolean
 }
 
-type DataSourceSection = "instructions" | "brokerages"
+type DataSourceSection = "instructions" | "brokerages" | "websearch"
 
 const DATA_AGENT_INSTRUCTIONS_PATH = "data-agent/instructions.md"
 const SECTIONS: { id: DataSourceSection; label: string; description: string }[] = [
@@ -27,6 +28,11 @@ const SECTIONS: { id: DataSourceSection; label: string; description: string }[] 
     id: "brokerages",
     label: "Brokerages",
     description: "Connected accounts",
+  },
+  {
+    id: "websearch",
+    label: "Web search",
+    description: "Perplexity API key",
   },
 ]
 
@@ -76,6 +82,9 @@ export function SettingsPanelDataSources(props: { initialSection?: DataSourceSec
         </Show>
         <Show when={section() === "brokerages"}>
           <SettingsPanelPaperTrading />
+        </Show>
+        <Show when={section() === "websearch"}>
+          <SettingsPanelWebSearch />
         </Show>
       </box>
     </box>

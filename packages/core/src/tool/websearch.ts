@@ -10,6 +10,7 @@ import { PermissionV2 } from "../permission"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 import { checksum } from "../util/encode"
+import { PerplexitySearch } from "./perplexity-search"
 
 export const name = "websearch"
 export const NO_RESULTS = "No search results found. Please try a different query."
@@ -27,9 +28,9 @@ export const MAX_RESPONSE_BYTES = 256 * 1024
  */
 export const description = `Search the web using the session's local web search provider. Use this for current information beyond knowledge cutoff.
 
-This is a provider-independent local tool backed by Exa or Parallel. Provider-hosted web search tools are separate and execute at the model provider.
+This is a provider-independent local tool backed by Exa, Parallel, or Perplexity (opt-in via OPENCODE_WEBSEARCH_PROVIDER). Provider-hosted web search tools are separate and execute at the model provider.
 
-Optional controls support result count, live crawling ('fallback' or 'preferred'), search type ('auto', 'fast', or 'deep'), and maximum context characters.
+Optional controls support result count, live crawling ('fallback' or 'preferred'), search type ('auto', 'fast', or 'deep'), and maximum context characters. Perplexity uses ranked titles, URLs, dates, and snippets for finance and news research.
 
 The current year is ${new Date().getFullYear()}. Use this year when searching for recent information or current events.`
 
@@ -52,41 +53,58 @@ export const Input = Schema.Struct({
   ),
 })
 
-export const Provider = Schema.Literals(["exa", "parallel"])
+export const Provider = Schema.Literals(["exa", "parallel", "perplexity"])
 export type Provider = typeof Provider.Type
 
 export interface Config {
   readonly provider?: Provider
   readonly enableExa: boolean
   readonly enableParallel: boolean
+  readonly enablePerplexity?: boolean
   readonly exaApiKey?: string
   readonly parallelApiKey?: string
+  readonly perplexityApiKey?: string
 }
 
 export class ConfigService extends Context.Service<ConfigService, Config>()("@opencode/v2/WebSearchConfig") {}
 
 /** Isolates the retained product environment contract from the generic tool implementation. */
-export const defaultConfigLayer = Layer.sync(ConfigService, () =>
-  ConfigService.of({
+export const defaultConfigLayer = Layer.sync(ConfigService, () => {
+  const envKey = process.env.PERPLEXITY_API_KEY?.trim()
+  // Auth-backed keys (Settings → Providers / Data Sources) are resolved by the
+  // opencode websearch path via Auth.get("perplexity"). Core config still
+  // honors the env var and treats a present key as an enable signal.
+  const hasPerplexityKey = Boolean(envKey)
+  return ConfigService.of({
     provider:
-      process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" || process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel"
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "exa" ||
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "parallel" ||
+      process.env.OPENCODE_WEBSEARCH_PROVIDER === "perplexity"
         ? process.env.OPENCODE_WEBSEARCH_PROVIDER
-        : undefined,
+        : hasPerplexityKey
+          ? "perplexity"
+          : undefined,
     enableExa: truthy("OPENCODE_EXPERIMENTAL") || truthy("OPENCODE_ENABLE_EXA") || truthy("OPENCODE_EXPERIMENTAL_EXA"),
     enableParallel: truthy("OPENCODE_ENABLE_PARALLEL") || truthy("OPENCODE_EXPERIMENTAL_PARALLEL"),
+    enablePerplexity: process.env.OPENCODE_WEBSEARCH_PROVIDER === "perplexity" || hasPerplexityKey,
     exaApiKey: process.env.EXA_API_KEY,
     parallelApiKey: process.env.PARALLEL_API_KEY,
-  }),
-)
+    perplexityApiKey: envKey || process.env.PERPLEXITY_API_KEY,
+  })
+})
 
 export function selectProvider(
   sessionID: string,
-  flags: Pick<Config, "enableExa" | "enableParallel"> = { enableExa: false, enableParallel: false },
+  flags: Pick<Config, "enableExa" | "enableParallel"> & { readonly enablePerplexity?: boolean } = {
+    enableExa: false,
+    enableParallel: false,
+  },
   override?: Provider,
 ): Provider {
   if (override) return override
   if (flags.enableParallel) return "parallel"
   if (flags.enableExa) return "exa"
+  if (flags.enablePerplexity) return "perplexity"
   return Number.parseInt(checksum(sessionID) ?? "0", 36) % 2 === 0 ? "exa" : "parallel"
 }
 
@@ -209,30 +227,42 @@ export const layer = Layer.effectDiscard(
               })
 
               const text =
-                provider === "exa"
-                  ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
+                provider === "perplexity"
+                  ? yield* PerplexitySearch.search(http, {
+                      apiKey: config.perplexityApiKey ?? "",
                       query: input.query,
-                      type: input.type || "auto",
-                      numResults: input.numResults || 8,
-                      livecrawl: input.livecrawl || "fallback",
-                      contextMaxCharacters: input.contextMaxCharacters,
-                    })
-                  : yield* callMcp(
-                      http,
-                      PARALLEL_URL,
-                      "web_search",
-                      ParallelArgs,
-                      {
-                        objective: input.query,
-                        search_queries: [input.query],
-                        session_id: context.sessionID,
-                        // V2 invocation context does not safely expose the model yet.
-                      },
-                      {
-                        "User-Agent": `opencode/${InstallationVersion}`,
-                        ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
-                      },
+                      numResults: input.numResults,
+                      maxCharacters: input.contextMaxCharacters,
+                    }).pipe(
+                      Effect.timeoutOrElse({
+                        duration: Duration.seconds(25),
+                        orElse: () => Effect.fail(new Error("Perplexity search request timed out")),
+                      }),
                     )
+                  : provider === "exa"
+                    ? yield* callMcp(http, exaUrl(config.exaApiKey), "web_search_exa", ExaArgs, {
+                        query: input.query,
+                        type: input.type || "auto",
+                        numResults: input.numResults || 8,
+                        livecrawl: input.livecrawl || "fallback",
+                        contextMaxCharacters: input.contextMaxCharacters,
+                      })
+                    : yield* callMcp(
+                        http,
+                        PARALLEL_URL,
+                        "web_search",
+                        ParallelArgs,
+                        {
+                          objective: input.query,
+                          search_queries: [input.query],
+                          session_id: context.sessionID,
+                          // V2 invocation context does not safely expose the model yet.
+                        },
+                        {
+                          "User-Agent": `opencode/${InstallationVersion}`,
+                          ...(config.parallelApiKey ? { Authorization: `Bearer ${config.parallelApiKey}` } : {}),
+                        },
+                      )
               return {
                 provider,
                 text: text ?? NO_RESULTS,
