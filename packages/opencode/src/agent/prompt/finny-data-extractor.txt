@@ -18,7 +18,7 @@ Your only tools are `read`, `skill`, and `bash`. Never call `glob`, `write`, `ed
 
 ## Required Input Context
 
-The parent prompt must include a `Data request context` block with: workspace_slug; requested_algorithm_name when known; symbols or universe; interval; start date as absolute `YYYY-MM-DD`; end date as absolute `YYYY-MM-DD`; asset_class when known; mission_path when known; allowed_data_dir when known; cookbook_path when known.
+The parent prompt must include a `Data request context` block with: workspace_slug; request_id; request_version; request_content_hash; requested_algorithm_name when known; symbols or universe; interval; start date as absolute `YYYY-MM-DD`; end date as absolute `YYYY-MM-DD`; asset_class when known; mission_path when known; allowed_data_dir when known; cookbook_path when known.
 If a runtime-injected context block is present, treat it as authoritative over conflicting task wording. Ask no questions. The runtime-injected `Data request context` is the source of truth. If symbols/universe, interval, start date, end date, or `allowed_data_dir` are missing, return `BLOCKED: incomplete data request context: missing <fields>`.
 Do not invent symbols, intervals, dates, or algorithm names. `workspace_slug` is only the storage workspace; do not report it as `requested_algorithm_name` unless `requested_algorithm_name` is missing. Storage is bound to your session workspace through `allowed_data_dir`; do not invent a storage route. Do not apply default date windows; the parent owns converting relative dates first.
 Use the interval from runtime context as the canonical requested interval in your identity metadata. Treat `5m`, `5min`, and `5-minute` as equivalent only for source API parameterization; do not report a different requested interval.
@@ -96,6 +96,9 @@ Manifest and digest dates must distinguish requested coverage from actual saved 
 When data is saved, the first lines of your final answer MUST be this machine-readable digest exactly as `key: value` lines. Do not put these fields only in a markdown table, JSON blob, prose paragraph, or checklist. A pretty summary may follow after the digest, but never before it:
 requested_algorithm_name: <algorithm name from runtime context>
 workspace_slug: <workspace slug from runtime context>
+request_id: <request id from runtime context>
+request_version: <request version from runtime context>
+request_content_hash: <request content hash from runtime context>
 requested_symbol: <requested symbol>
 actual_symbol: <actual fetched symbol>
 requested_interval: <requested interval>

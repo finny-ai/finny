@@ -3,6 +3,8 @@ import path from "path"
 import crypto from "crypto"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
+import { readRequestSpec } from "@/agent/request-spec"
+import { requestSpecContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol, type RequestFacts } from "@/agent/request-identity"
 import { STRICT_DATA_QUALITY_LABELS } from "./data-quality-vocab"
 import type { DataProviderFailureLayer } from "./data-provider-capabilities"
@@ -72,6 +74,9 @@ export interface DataExtractorManifest {
   output_path?: string
   rows?: number
   run_id?: string
+  request_id?: string
+  request_version?: number
+  request_content_hash?: string
   coverage?: string
   coverage_note?: string
   usable_for_parent?: string | boolean
@@ -327,28 +332,6 @@ async function findManifestCandidates(root: string): Promise<string[]> {
   await walk(root, 4)
   found.sort()
   return found
-}
-
-async function readWorkspaceRequestContext(workspaceSlug: string): Promise<WorkspaceRequestContext | undefined> {
-  try {
-    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspaceSlug), "request.json"), "utf8"))
-    return {
-      requested_symbol: typeof parsed.requested_symbol === "string" ? parsed.requested_symbol : undefined,
-      requested_symbols: Array.isArray(parsed.requested_symbols)
-        ? parsed.requested_symbols.filter((value: unknown): value is string => typeof value === "string")
-        : undefined,
-      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
-      requested_asset_class:
-        typeof parsed.requested_asset_class === "string" ? parsed.requested_asset_class : undefined,
-      requested_algorithm_name:
-        typeof parsed.requested_algorithm_name === "string" ? parsed.requested_algorithm_name : undefined,
-      requested_start: typeof parsed.requested_start === "string" ? parsed.requested_start : undefined,
-      requested_end: typeof parsed.requested_end === "string" ? parsed.requested_end : undefined,
-      request_id: typeof parsed.request_id === "string" ? parsed.request_id : "",
-    }
-  } catch {
-    return undefined
-  }
 }
 
 function evidenceRequiredBlock(reason: string, workspaceSlug?: string): RequireVerifiedEvidenceResult {
@@ -643,6 +626,9 @@ function manifestDigestMismatches(
     ["requested_end", digest.requested_end, "date"],
     ["actual_start", digest.actual_start, undefined],
     ["actual_end", digest.actual_end, undefined],
+    ["request_id", digest.request_id, undefined],
+    ["request_version", digest.request_version, undefined],
+    ["request_content_hash", digest.request_content_hash, undefined],
   ]
   return pairs.flatMap(([key, digestValue, kind]) => {
     const manifestValue = manifest[key]
@@ -675,6 +661,10 @@ function effectiveDigestFromManifest(
     actual_end: digest.actual_end ?? manifest.actual_end,
     artifact_paths: artifactPaths ?? digest.artifact_paths,
     run_id: manifest.run_id ?? digest.run_id,
+    request_id: digest.request_id ?? manifest.request_id,
+    request_version:
+      digest.request_version ?? (manifest.request_version === undefined ? undefined : String(manifest.request_version)),
+    request_content_hash: digest.request_content_hash ?? manifest.request_content_hash,
     usable_for_parent: normalizeUsableForParent(
       digest.usable_for_parent ??
         manifest.usable_for_parent ??
@@ -863,7 +853,7 @@ async function hydrateRuntimeManifest(input: {
 }
 
 function digestContextIssues(digest: Record<string, string | undefined>, context?: WorkspaceRequestContext): string[] {
-  return [
+  const issues = [
     ...contextSymbolIssues(digest, context),
     contextMismatch(
       digest.requested_interval,
@@ -885,6 +875,24 @@ function digestContextIssues(digest: Record<string, string | undefined>, context
     ),
     contextMismatch(digest.requested_end, context?.requested_end, "requested_end differs from runtime context", "date"),
   ].filter((issue): issue is string => Boolean(issue))
+  if (context?.request_version !== undefined && context.request_id && digest.request_id !== context.request_id) {
+    issues.push(
+      `request_id differs from runtime context (artifact=${digest.request_id ?? "MISSING"}, expected=${context.request_id})`,
+    )
+  }
+  if (context?.request_version !== undefined && digest.request_version !== String(context.request_version)) {
+    issues.push(
+      `request_version differs from runtime context (artifact=${digest.request_version ?? "MISSING"}, expected=${context.request_version})`,
+    )
+  }
+  if (
+    context?.request_version !== undefined &&
+    context?.request_content_hash &&
+    digest.request_content_hash !== context.request_content_hash
+  ) {
+    issues.push("request_content_hash differs from runtime context")
+  }
+  return issues
 }
 
 function contextMismatch(
@@ -976,6 +984,9 @@ function renderManifestBlock(manifest: DataExtractorManifest, digest: Record<str
     ["artifact_paths", digest.artifact_paths],
     ["output_path", manifest.output_path],
     ["run_id", digest.run_id],
+    ["request_id", digest.request_id],
+    ["request_version", digest.request_version],
+    ["request_content_hash", digest.request_content_hash],
     ["source", manifest.source],
     ["coverage", manifest.coverage],
     ["rows", manifest.rows],
@@ -1044,7 +1055,12 @@ function rejectedPreamble(text: string): DigestPreamble | undefined {
 }
 
 function digestFields(text: string): Record<string, string | undefined> {
-  return Object.fromEntries(REQUIRED_DIGEST_FIELDS.map((field) => [field, digestFieldValue(text, field)]))
+  return Object.fromEntries(
+    [...REQUIRED_DIGEST_FIELDS, "request_id", "request_version", "request_content_hash"].map((field) => [
+      field,
+      digestFieldValue(text, field),
+    ]),
+  )
 }
 
 function digestFieldsFromContext(
@@ -1066,6 +1082,9 @@ function digestFieldsFromContext(
     actual_end: undefined,
     artifact_paths: undefined,
     run_id: undefined,
+    request_id: context?.request_id,
+    request_version: context?.request_version === undefined ? undefined : String(context.request_version),
+    request_content_hash: context?.request_content_hash,
     usable_for_parent: undefined,
   }
 }
@@ -1101,6 +1120,16 @@ async function validateLoadedEvidence(input: {
   const { manifest, artifacts, preamble } = input
   const { text, textUsable, workspaceSlug, dataRoot, digest, issues } = preamble
   issues.push(...manifestIdentityIssues(manifest, digest))
+  if (input.context?.request_version !== undefined) {
+    if (manifest.request_id !== input.context.request_id)
+      issues.push("manifest request_id does not match runtime RequestSpec")
+    if (manifest.request_version !== input.context.request_version) {
+      issues.push("manifest request_version does not match runtime RequestSpec")
+    }
+    if (manifest.request_content_hash !== input.context.request_content_hash) {
+      issues.push("manifest request_content_hash does not match runtime RequestSpec")
+    }
+  }
   const effectiveDigest = effectiveDigestFromManifest(manifest, digest, workspaceSlug, artifacts)
   const missingFields = REQUIRED_DIGEST_FIELDS.filter((field) => !effectiveDigest[field])
   const effectiveUsable = normalizeUsableForParent(effectiveDigest.usable_for_parent)
@@ -1270,7 +1299,9 @@ export async function requireVerifiedDataExtractorEvidenceForSession(
   const workspaceSlug = await getSessionWorkspace(sessionID)
   if (!workspaceSlug) return evidenceRequiredBlock("no session workspace is bound")
 
-  const context = await readWorkspaceRequestContext(workspaceSlug)
+  const spec = await readRequestSpec({ requestID: sessionID })
+  if (!spec) return evidenceRequiredBlock("runtime RequestSpec is missing", workspaceSlug)
+  const context = requestSpecContext(spec)
   const roots: Array<string | undefined> = [undefined, ...(await linkedAlgorithmDataRoots(workspaceSlug))]
   let blockedText: string | undefined
   for (const dataRoot of roots) {

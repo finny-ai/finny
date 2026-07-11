@@ -12,6 +12,23 @@ import {
   validateExistingDataExtractorEvidence,
 } from "../../src/data/data-extractor-evidence"
 import { classifyText, gradeSessions } from "../../script/phoenix-trace-grader"
+import { commitRequestSpec } from "../../src/agent/request-spec"
+import { requestSpecContext } from "../../src/agent/finny-workspace-context"
+
+async function seedRequestSpec(sessionID: string, slug: string, end = "2026-07-02") {
+  return commitRequestSpec({
+    requestID: sessionID,
+    identity: {
+      requested_symbol: "QQQ",
+      requested_interval: "15m",
+      requested_asset_class: "equity",
+      requested_algorithm_name: slug,
+      requested_start: "2026-04-03",
+      requested_end: end,
+    },
+    actor: "user",
+  })
+}
 
 const questionnaire = () =>
   Mission.CORE8_IDS.map((id) => ({
@@ -211,6 +228,11 @@ describe("validateDataExtractorTaskText", () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-gate-"))
     process.env.XDG_DATA_HOME = root
     await bindSessionWorkspace("ses_no_evidence", "sol-1d-strategy")
+    await commitRequestSpec({
+      requestID: "ses_no_evidence",
+      identity: { requested_symbol: "SOL", requested_interval: "1d", requested_asset_class: "crypto" },
+      actor: "user",
+    })
     try {
       const result = await requireVerifiedDataExtractorEvidenceForSession("ses_no_evidence")
       expect(result.ok).toBe(false)
@@ -244,6 +266,7 @@ describe("validateDataExtractorTaskText", () => {
         request_id: sessionID,
       }),
     )
+    const requestSpec = await seedRequestSpec(sessionID, slug)
     const csvRel = "stock/QQQ_15m_2026-04-03_2026-07-01.csv"
     const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
     await fs.writeFile(
@@ -276,6 +299,9 @@ describe("validateDataExtractorTaskText", () => {
         output_path: csvRel,
         rows: 2,
         run_id: "clamped-end-run",
+        request_id: requestSpec.request_id,
+        request_version: requestSpec.request_version,
+        request_content_hash: requestSpec.content_hash,
         coverage: "trading_day_complete",
         coverage_note: "requested_end session still open; clamped to last completed session",
         usable_for_parent: "yes",
@@ -338,6 +364,7 @@ describe("validateDataExtractorTaskText", () => {
         request_id: sessionID,
       }),
     )
+    const requestSpec = await seedRequestSpec(sessionID, slug)
     const csvRel = "stock/QQQ_15m_2026-04-03_2026-07-01.csv"
     const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
     await fs.writeFile(
@@ -370,6 +397,9 @@ describe("validateDataExtractorTaskText", () => {
         output_path: csvRel,
         rows: 2,
         run_id: "relocated-run",
+        request_id: requestSpec.request_id,
+        request_version: requestSpec.request_version,
+        request_content_hash: requestSpec.content_hash,
         coverage: "trading_day_complete",
         usable_for_parent: "yes",
       }),
@@ -522,6 +552,91 @@ describe("validateDataExtractorTaskText", () => {
     })
     expect(result.ok).toBe(false)
     expect(result.text).toContain("BLOCKED: data_extractor returned incomplete evidence artifacts")
+  })
+
+  test("fails closed when an artifact reuses a stale request version", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-stale-request-"))
+    process.env.XDG_DATA_HOME = root
+    const slug = "spy-1d-sma"
+    const sessionID = "ses_stale_request_version"
+    const dataDir = path.join(root, "finny", "algos", slug, "data")
+    await fs.mkdir(path.join(dataDir, "stock"), { recursive: true })
+    const first = await commitRequestSpec({
+      requestID: sessionID,
+      identity: {
+        requested_symbol: "SPY",
+        requested_interval: "1d",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2025-01-01",
+        requested_end: "2025-12-30",
+      },
+      actor: "user",
+    })
+    const current = await commitRequestSpec({
+      requestID: sessionID,
+      identity: { requested_end: "2025-12-31" },
+      actor: "user",
+      reason: "approve final session",
+    })
+    const csvRel = "stock/SPY_1d_2025.csv"
+    const manifestRel = "stock/SPY_1d_2025.manifest.json"
+    await fs.writeFile(
+      path.join(dataDir, csvRel),
+      "timestamp,open,high,low,close,volume\n2025-12-31,100,101,99,100.5,1000\n",
+    )
+    await fs.writeFile(
+      path.join(dataDir, manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "test",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2025-01-01",
+        requested_end: "2025-12-31",
+        actual_start: "2025-12-31",
+        actual_end: "2025-12-31",
+        output_path: csvRel,
+        rows: 1,
+        run_id: "stale-version-run",
+        usable_for_parent: "yes",
+        request_id: first.request_id,
+        request_version: first.request_version,
+        request_content_hash: first.content_hash,
+      }),
+    )
+    const text = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2025-01-01",
+      "requested_end: 2025-12-31",
+      "actual_start: 2025-12-31",
+      "actual_end: 2025-12-31",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: stale-version-run",
+      "usable_for_parent: yes",
+      `request_id: ${first.request_id}`,
+      `request_version: ${first.request_version}`,
+      `request_content_hash: ${first.content_hash}`,
+    ].join("\n")
+    const result = await validateDataExtractorTaskText({
+      text,
+      workspaceSlug: slug,
+      context: requestSpecContext(current),
+    })
+    expect(result.ok).toBe(false)
+    expect(result.text).toContain("request_version")
   })
 
   test("accepts matching CSV, manifest, and digest identity fields", async () => {

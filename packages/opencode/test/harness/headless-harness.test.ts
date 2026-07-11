@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { createBundleWriter, publishBundle, writeBundleText } from "../../script/headless/artifacts"
-import { runHeadlessHarness, semanticHash } from "../../script/headless/orchestrator"
+import { runHeadlessHarness, semanticEventHash, semanticHash } from "../../script/headless/orchestrator"
 import { canonicalScenarioJson, scenarioSha256 } from "../../script/headless/scenario"
 import { classifyOutcome, observeRun } from "../../script/headless/semantic-verdict"
 import type { HeadlessScenarioV1, RunManifestV1 } from "../../script/headless/types"
@@ -143,6 +143,63 @@ describe("headless semantic verdict", () => {
     expect(semanticHash(left)).toBe(semanticHash(right))
     expect(semanticHash(left)).not.toBe(
       semanticHash(event("another-snapshot", "spy-5m-strategy.10.7.04.28.abcdef12", "QQQ")),
+    )
+  })
+
+  test("semantic hashes ignore generated strict-run manifest bindings", () => {
+    const result = (algorithmId: string, manifestHash: string) => [
+      {
+        artifactPath: `algorithms/${algorithmId}/v01/runs/20260711T013417Z-f021d7eb68be46d4/run.json`,
+        runId: "20260711T013417Z-f021d7eb68be46d4",
+        identity: {
+          algorithmId,
+          strategyHash: "fixed-strategy",
+          rawDataHash: "fixed-fixture-data",
+          manifestHash,
+        },
+        validationStatus: "passed",
+        unifiedVerdict: "failed",
+      },
+    ]
+    const left = result("d4806b58-6fd5-4f3c-8385-11e3cef5df4e", "a".repeat(64))
+    const right = result("cfa716f8-fe03-483a-83f1-61d2b54b9847", "b".repeat(64))
+
+    expect(semanticHash(left)).toBe(semanticHash(right))
+    expect(semanticHash(left)).not.toBe(semanticHash([{ ...left[0], unifiedVerdict: "passed" }]))
+  })
+
+  test("semantic event hashes ignore runtime RequestSpec bindings", () => {
+    const event = (sessionID: string, contentHash: string, conceptId: string, configHash: string) => [
+      {
+        type: "tool_use",
+        sessionID,
+        part: {
+          tool: "finny_workspace_prepare",
+          state: {
+            output: `request_id: ${sessionID}\nrequest_content_hash: sha256:${contentHash}`,
+            metadata: { request_id: sessionID, request_content_hash: `sha256:${contentHash}`, conceptId, configHash },
+          },
+        },
+      },
+    ]
+    const left = event("ses_one", "a".repeat(64), "b".repeat(64), "c".repeat(64))
+    const right = event("ses_two", "d".repeat(64), "e".repeat(64), "f".repeat(64))
+
+    expect(semanticHash(left)).toBe(semanticHash(right))
+  })
+
+  test("semantic event hash ignores generated event bindings but retains observed behavior", () => {
+    const events = (sessionID: string, contentHash: string) => [
+      tool(
+        "finny_workspace_prepare",
+        requestInput(),
+        `request_id: ${sessionID}\nrequest_content_hash: sha256:${contentHash}`,
+        { sessionId: sessionID, request_content_hash: `sha256:${contentHash}` },
+      ),
+      { type: "text", part: { text: "Return: measured. Sharpe: measured. Max drawdown: measured. Eligibility: backtested. Next step: review." } },
+    ]
+    expect(semanticEventHash(observeRun(events("ses_one", "a".repeat(64)), scenario))).toBe(
+      semanticEventHash(observeRun(events("ses_two", "b".repeat(64)), scenario)),
     )
   })
 

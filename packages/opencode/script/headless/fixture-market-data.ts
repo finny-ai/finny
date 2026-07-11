@@ -87,6 +87,11 @@ export async function startFixtureMarketDataProvider(input: {
 
       const output = url.searchParams.get("output_dir")
       const algorithm = url.searchParams.get("algorithm") || "spy-sma-crossover"
+      const requestId = url.searchParams.get("request_id") || undefined
+      const requestVersionRaw = url.searchParams.get("request_version")
+      const requestVersion =
+        requestVersionRaw && Number.isInteger(Number(requestVersionRaw)) ? Number(requestVersionRaw) : undefined
+      const requestContentHash = url.searchParams.get("request_content_hash") || undefined
       if (!output) return Response.json({ ok: false, error: "output_dir is required" }, { status: 400 })
       const outputDir = path.resolve(output)
       if (!contained(allowedRoot, outputDir)) {
@@ -117,6 +122,9 @@ export async function startFixtureMarketDataProvider(input: {
         output_path: relativeCsv,
         rows,
         run_id: `fixture-${csvSha256.slice(0, 16)}`,
+        ...(requestId ? { request_id: requestId } : {}),
+        ...(requestVersion !== undefined ? { request_version: requestVersion } : {}),
+        ...(requestContentHash ? { request_content_hash: requestContentHash } : {}),
         coverage: "complete",
         coverage_note: "deterministic continuous 5-minute harness fixture",
         usable_for_parent: "yes",

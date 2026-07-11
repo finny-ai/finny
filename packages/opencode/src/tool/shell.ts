@@ -31,6 +31,7 @@ import {
   redactSensitiveOutput,
   workerShellEnv,
 } from "@/security/worker-shell"
+import { assertNoRuntimeRequestSpecPath, readRequestSpecForSession } from "@/agent/request-spec"
 
 export { Parameters } from "./shell/prompt"
 
@@ -271,7 +272,12 @@ function parseIsoDateDay(input: unknown) {
   return Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 86_400_000
 }
 
-function isEquityIntraday5mOverPublicLimit(request: Record<string, unknown>) {
+function isEquityIntraday5mOverPublicLimit(request: {
+  requested_asset_class?: unknown
+  requested_interval?: unknown
+  requested_start?: unknown
+  requested_end?: unknown
+}) {
   const asset = String(request.requested_asset_class ?? "").toLowerCase()
   if (asset !== "equity" && asset !== "equities" && asset !== "stock" && asset !== "stocks" && asset !== "etf") {
     return false
@@ -985,16 +991,8 @@ export const ShellTool = Tool.define(
       }
       const dataRoot = yield* dataExtractorDataRoot(ctx)
       if (!dataRoot) return
-      const raw = yield* fs
-        .readFileString(path.join(dataRoot.workspacePath, "request.json"))
-        .pipe(Effect.catch(() => Effect.succeed("")))
-      if (!raw) return
-      let request: Record<string, unknown>
-      try {
-        request = JSON.parse(raw)
-      } catch {
-        return
-      }
+      const request = yield* Effect.promise(() => readRequestSpecForSession({ sessionID: ctx.sessionID }))
+      if (!request) throw new Error("Data Agent bash blocked: runtime RequestSpec is missing.")
       if (!isEquityIntraday5mOverPublicLimit(request) || hasEnterpriseIntradaySource(env)) return
       throw new Error(
         [
@@ -1035,9 +1033,7 @@ export const ShellTool = Tool.define(
         const baseEnv = { ...fileEnv, ...process.env }
         runtimeEnv.BINANCE_BASE_URL = resolveBinanceBaseUrl(baseEnv)
         if (!baseEnv.ALPACA_API_KEY_ID || !baseEnv.ALPACA_API_SECRET_KEY) {
-          const brokerEnv = yield* Effect.promise(() =>
-            resolveAlpacaMarketDataEnv(baseEnv),
-          )
+          const brokerEnv = yield* Effect.promise(() => resolveAlpacaMarketDataEnv(baseEnv))
           if (brokerEnv) Object.assign(runtimeEnv, brokerEnv)
         }
         if (dataRoot) {
@@ -1294,6 +1290,7 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
+              assertNoRuntimeRequestSpecPath({ command: params.command })
               const instanceCtx = yield* InstanceState.context
               const dataRoot = yield* dataExtractorDataRoot(ctx)
               if (ctx.agent === "data_extractor" && !dataRoot) {

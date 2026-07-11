@@ -57,6 +57,10 @@ function normalizeSemanticValue(value: unknown, volatile: string[]): unknown {
               "run_id",
               "identityHash",
               "identity_hash",
+              "manifestHash",
+              "manifest_hash",
+              "artifactPath",
+              "artifact_path",
               "workflowId",
               "workflow_id",
               "experimentId",
@@ -74,9 +78,15 @@ function normalizeSemanticValue(value: unknown, volatile: string[]): unknown {
               "messageID",
               "messageId",
               "request_id",
+              "request_content_hash",
+              "content_hash",
               "parentSessionId",
               "algorithmId",
               "algorithm_id",
+              "conceptId",
+              "concept_id",
+              "replayKey",
+              "replay_key",
               "updated",
               "createdAt",
               "finishedAt",
@@ -95,6 +105,11 @@ function normalizeSemanticValue(value: unknown, volatile: string[]): unknown {
   normalized = normalized.replace(/(?:msg|prt)_[A-Za-z0-9_-]+/g, "<message-part>")
   normalized = normalized.replace(/wf_[a-f0-9]{32}/gi, "<workflow>")
   normalized = normalized.replace(/(?:evt|approval)_[a-z0-9_-]*[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<workflow-event>")
+  normalized = normalized.replace(
+    /((?:request_)?content_hash\s*[:=]\s*)(?:sha256:)?[a-f0-9]{64}/gi,
+    "$1<request-content-hash>",
+  )
+  normalized = normalized.replace(/\b(?:sha256:)?[a-f0-9]{64}\b/gi, "<content-hash>")
   normalized = normalized.replace(/[a-z0-9-]+\.\d+\.\d+\.\d+\.\d+\.[a-f0-9]{8}/gi, "<workspace>")
   normalized = normalized.replace(/\d{8}T\d{6}Z-[a-f0-9]+/gi, "<artifact-run>")
   normalized = normalized.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, "<uuid>")
@@ -103,6 +118,21 @@ function normalizeSemanticValue(value: unknown, volatile: string[]): unknown {
 
 export function semanticHash(value: unknown, volatile: string[] = []): string {
   return sha256Bytes(stable(normalizeSemanticValue(value, volatile)))
+}
+
+export function semanticEventHash(observation: ReturnType<typeof observeRun>): string {
+  return semanticHash({
+    toolCalls: observation.toolCalls,
+    modelTurns: observation.modelTurns,
+    algorithms: observation.algorithms,
+    versionsByAlgorithm: observation.versionsByAlgorithm,
+    requestIdentity: observation.requestIdentity,
+    stages: observation.stages,
+    finalText: observation.finalText,
+    recoveries: observation.recoveries,
+    errors: observation.errors,
+    violations: observation.violations,
+  })
 }
 
 async function missingDependencies(source: string, required: string[]): Promise<string[]> {
@@ -744,7 +774,7 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
           scenarioSha256,
         }),
         ...(fixtureMarketData ? { fixtureData: fixtureMarketData.csvSha256 } : {}),
-        normalizedEvents: semanticHash(events, [id, isolation.root, isolation.source]),
+        normalizedEvents: semanticEventHash(observation),
         contract: semanticHash({
           scenarioSha256,
           stages: observation.stages,

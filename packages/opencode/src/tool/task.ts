@@ -31,9 +31,11 @@ import {
   algorithmNameFromWorkspaceSlug,
   extractDateWindow,
   inferBacktestWindow,
+  requestSpecContext,
   syncWorkspaceRequestContext,
   type WorkspaceRequestContext,
 } from "@/agent/finny-workspace-context"
+import { bindSessionRequest, readRequestSpec } from "@/agent/request-spec"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
 import { validateDataExtractorTaskText, validateExistingDataExtractorEvidence } from "@/data/data-extractor-evidence"
 import { validateNewsAgentTaskText } from "@/data/news-evidence"
@@ -141,6 +143,14 @@ async function installedDataProviderSkillIDs(configDirectories: string[], agent:
   return installed
 }
 
+function requestLineageFields(context?: WorkspaceRequestContext): string[] {
+  return [
+    field("request_id", context?.request_id),
+    field("request_version", context?.request_version === undefined ? undefined : String(context.request_version)),
+    field("request_content_hash", context?.request_content_hash),
+  ]
+}
+
 function isIntradayInterval(interval: string | undefined) {
   return Boolean(interval && /^(\d+)(m|h|min)$/i.test(interval.trim()))
 }
@@ -206,21 +216,17 @@ function dataExtractorValidationContext(
   }
 }
 
-async function readWorkspaceDateWindow(workspace: string | null): Promise<{
+async function readWorkspaceDateWindow(requestID: string): Promise<{
   requested_start?: string
   requested_end?: string
   requested_interval?: string
 }> {
-  if (!workspace) return {}
-  try {
-    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspace), "request.json"), "utf8"))
-    return {
-      requested_start: typeof parsed.requested_start === "string" ? parsed.requested_start : undefined,
-      requested_end: typeof parsed.requested_end === "string" ? parsed.requested_end : undefined,
-      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
-    }
-  } catch {
-    return {}
+  const spec = await readRequestSpec({ requestID })
+  if (!spec) return {}
+  return {
+    requested_start: spec.requested_start,
+    requested_end: spec.requested_end,
+    requested_interval: spec.requested_interval,
   }
 }
 
@@ -386,25 +392,15 @@ function workspaceMatchesPromptFacts(workspace: string | null, facts: RequestFac
   return symbols.every((symbol) => base.includes(symbol))
 }
 
-async function readWorkspaceRequestFacts(workspace: string | null): Promise<RequestFacts> {
-  if (!workspace) return {}
-  try {
-    const parsed = JSON.parse(await fs.readFile(path.join(algoDir(workspace), "request.json"), "utf8"))
-    return {
-      requested_symbol: typeof parsed.requested_symbol === "string" ? parsed.requested_symbol : undefined,
-      requested_symbols: Array.isArray(parsed.requested_symbols)
-        ? parsed.requested_symbols.filter((value: unknown): value is string => typeof value === "string")
-        : undefined,
-      requested_interval: typeof parsed.requested_interval === "string" ? parsed.requested_interval : undefined,
-      requested_asset_class:
-        parsed.requested_asset_class === "crypto" || parsed.requested_asset_class === "equity"
-          ? parsed.requested_asset_class
-          : undefined,
-      requested_algorithm_name:
-        typeof parsed.requested_algorithm_name === "string" ? parsed.requested_algorithm_name : undefined,
-    }
-  } catch {
-    return {}
+async function readRuntimeRequestFacts(requestID: string): Promise<RequestFacts> {
+  const spec = await readRequestSpec({ requestID })
+  if (!spec) return {}
+  return {
+    requested_symbol: spec.requested_symbol,
+    requested_symbols: spec.requested_symbols,
+    requested_interval: spec.requested_interval,
+    requested_asset_class: spec.requested_asset_class,
+    requested_algorithm_name: spec.requested_algorithm_name,
   }
 }
 
@@ -502,6 +498,7 @@ export function withFinnySubagentContext(
       "Authoritative runtime context. It overrides conflicting task wording.",
       "Data request context:",
       field("workspace_slug", workspace),
+      ...requestLineageFields(context),
       field("requested_algorithm_name", algorithmName),
       field("symbols or universe", symbolsOrUniverse),
       field("interval", interval),
@@ -536,6 +533,7 @@ export function withFinnySubagentContext(
       "Authoritative runtime context. It overrides conflicting task wording.",
       "SEC EDGAR request context:",
       field("workspace_slug", workspace),
+      ...requestLineageFields(context),
       field("workspace_name", humanNameOf(workspace)),
       field("requested_company_or_ticker", secContext.requested_company_or_ticker ?? symbolsOrUniverse),
       field("resolved_symbol when known", secContext.resolved_symbol ?? symbolsOrUniverse),
@@ -568,6 +566,7 @@ export function withFinnySubagentContext(
       "Authoritative runtime context. It overrides conflicting task wording.",
       "Social sentiment request context:",
       field("workspace_slug", workspace),
+      ...requestLineageFields(context),
       field("workspace_name", humanNameOf(workspace)),
       field("requested_algorithm_name", algorithmName),
       field("requested_symbol", symbolsOrUniverse),
@@ -598,6 +597,7 @@ export function withFinnySubagentContext(
     "<finny-subagent-context>",
     "Authoritative runtime context. It overrides conflicting task wording.",
     field("workspace_slug", workspace),
+    ...requestLineageFields(context),
     field("workspace_name", humanNameOf(workspace)),
     field("requested_algorithm_name", context?.requested_algorithm_name ?? facts.requested_algorithm_name),
     field("requested_symbol", symbolsOrUniverse),
@@ -830,7 +830,7 @@ const taskExecutor = Effect.gen(function* () {
         const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
         const childWorkspace = await getSessionWorkspace(nextSession.id).catch(() => null)
         const promptFacts = parseRequestFacts(params.prompt)
-        const parentFacts = await readWorkspaceRequestFacts(parentWorkspace)
+        const parentFacts = await readRuntimeRequestFacts(ctx.sessionID)
         const inParentUniverse = finnySubagentType(params.subagent_type)
           ? childSymbolWithinRequestUniverse(promptFacts.requested_symbol, parentFacts)
           : undefined
@@ -875,6 +875,7 @@ const taskExecutor = Effect.gen(function* () {
         if (workspace) {
           await bindSessionWorkspace(ctx.sessionID, workspace).catch(() => {})
           await bindSessionWorkspace(nextSession.id, workspace).catch(() => {})
+          await bindSessionRequest({ sessionID: nextSession.id, requestID: ctx.sessionID })
         }
         return {
           slug: workspace,
@@ -956,7 +957,7 @@ const taskExecutor = Effect.gen(function* () {
           return "BLOCKED: incomplete data request context: missing workspace_slug, allowed_data_dir"
         }
         if (params.subagent_type === "data_extractor") {
-          const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(workspace))
+          const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(ctx.sessionID))
           const dateBlock = unapprovedExtendedDataWindowBlock({
             prompt: params.prompt,
             workspace,
@@ -973,14 +974,18 @@ const taskExecutor = Effect.gen(function* () {
             params.subagent_type === "sec_agent" ||
             params.subagent_type === "sentiment_agent")
         ) {
-          workspaceContext = yield* Effect.promise(() =>
-            syncWorkspaceRequestContext({
+          workspaceContext = yield* Effect.promise(async () => {
+            const spec = await readRequestSpec({ requestID: ctx.sessionID })
+            if (spec && workspaceState.preserveExistingContext) return requestSpecContext(spec)
+            return syncWorkspaceRequestContext({
               sessionID: ctx.sessionID,
               slug: workspace,
               prompt: params.prompt,
               preserveExisting: workspaceState.preserveExistingContext,
-            }).catch(() => undefined),
-          )
+              actor: "runtime",
+              reason: "validated child task context",
+            })
+          })
         }
         const validationContext =
           params.subagent_type === "data_extractor"

@@ -1,4 +1,3 @@
-import fs from "node:fs/promises"
 import path from "node:path"
 import z from "zod"
 import { Effect } from "effect"
@@ -10,6 +9,8 @@ import {
   researchBriefIdentity,
   updateResearchBrief,
 } from "../agent/research-brief"
+import { readRequestSpec, requestSpecProjection } from "../agent/request-spec"
+import type { RequestFacts } from "../agent/request-identity"
 import { Tool } from "./tool"
 
 const parameters = z.object({
@@ -84,26 +85,29 @@ export function promptFromParams(params: z.infer<typeof parameters>, fallback: s
   ]
   const lines = fields.flatMap(([label, value]) => (value ? [`${label} ${value}`] : []))
   if (params.requestSummary?.trim()) {
-    // Preserve structured fields even when the caller supplies a summary. In
-    // particular, approved start/end dates must reach bootstrapWorkspace on
-    // the first call so the Data Agent never starts without its date context.
+    // Structured tool inputs are the validated request identity. Put every
+    // supplied field before the lossy prose summary so parsers can never let a
+    // strategy detail (for example SMA(200)) replace an explicit 1d interval.
     const summary = params.requestSummary.trim()
-    const dateWindow = params.startDate && params.endDate ? `${params.startDate} to ${params.endDate}` : undefined
-    // Put the structured window first: extractDateWindow intentionally uses
-    // the first valid ascending pair, so summary prose must not override it.
-    if (dateWindow && !summary.includes(dateWindow)) return `date window ${dateWindow}; ${summary}`
-    return summary
+    return lines.length ? `${lines.join("; ")}; request summary ${summary}` : summary
   }
   if (lines.length) return lines.join("; ")
   return fallback
 }
 
-async function readRequestContext(workspacePath: string): Promise<Record<string, unknown> | undefined> {
-  try {
-    return JSON.parse(await fs.readFile(path.join(workspacePath, "request.json"), "utf8"))
-  } catch {
-    return undefined
+function structuredRequestFacts(params: z.infer<typeof parameters>): RequestFacts {
+  return {
+    requested_symbol: params.symbol,
+    requested_symbols: params.symbols,
+    requested_asset_class: params.assetClass,
+    requested_interval: params.interval,
+    requested_algorithm_name: params.algorithmName,
   }
+}
+
+async function readRequestContext(requestID: string): Promise<Record<string, unknown> | undefined> {
+  const spec = await readRequestSpec({ requestID })
+  return spec ? requestSpecProjection(spec) : undefined
 }
 
 export const WorkspacePrepareTool = Tool.define<
@@ -135,7 +139,7 @@ export const WorkspacePrepareTool = Tool.define<
           }
         }
 
-        const prepared = await bootstrapWorkspace(ctx.sessionID, prompt)
+        const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(params))
         if (!prepared) {
           return {
             title: "Workspace prepare skipped",
@@ -145,7 +149,7 @@ export const WorkspacePrepareTool = Tool.define<
         }
 
         const workspacePath = prepared.dir || algoDir(prepared.slug)
-        const requestContext = await readRequestContext(workspacePath)
+        const requestContext = await readRequestContext(ctx.sessionID)
         // Models cannot self-approve Research→Build handoffs. Approval is a user decision.
         if (params.transition === "approved") {
           await ctx.ask({

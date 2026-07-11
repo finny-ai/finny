@@ -11,6 +11,13 @@ import {
 import { assetClassForSymbol, parseRequestFacts, type RequestFacts } from "./request-identity"
 import { requestJsonProjection } from "@/algorithm/build-workflow/state"
 import type { BuildWorkflowState, RequestJsonProjection } from "@/algorithm/build-workflow/types"
+import {
+  commitRequestSpec,
+  migrateLegacyWorkspaceRequest,
+  writeRequestSpecProjection,
+  type RequestApprovalState,
+  type RequestSpec,
+} from "./request-spec"
 
 const ISO_DATE_RE = /(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)/g
 const MONTHS: Record<string, string> = {
@@ -51,11 +58,13 @@ export interface WorkspaceRequestContext {
   requested_symbol?: string
   requested_symbols?: string[]
   requested_interval?: string
-  requested_asset_class?: string
+  requested_asset_class?: "equity" | "crypto"
   requested_algorithm_name?: string
   requested_start?: string
   requested_end?: string
   request_id: string
+  request_version?: number
+  request_content_hash?: string
 }
 
 export function extractDateWindow(prompt: string): DateWindow {
@@ -132,7 +141,7 @@ export function workspaceRequestContext(
   sessionID: string,
   prompt: string,
   facts: RequestFacts = parseRequestFacts(prompt),
-): WorkspaceRequestContext {
+): Omit<WorkspaceRequestContext, "request_version" | "request_content_hash"> {
   const window = inferBacktestWindow(prompt)
   return {
     requested_symbol: facts.requested_symbol,
@@ -180,6 +189,8 @@ function renderContextBody(context: WorkspaceRequestContext) {
     `- requested_start: ${context.requested_start ?? "MISSING"}`,
     `- requested_end: ${context.requested_end ?? "MISSING"}`,
     `- request_id: ${context.request_id}`,
+    `- request_version: ${context.request_version ?? "MISSING"}`,
+    `- request_content_hash: ${context.request_content_hash ?? "MISSING"}`,
     "",
     "<!-- Bootstrap context. Replaced when the strategy is saved with a full mission. -->",
     "",
@@ -226,18 +237,21 @@ async function readWorkflowRequestProjection(dir: string): Promise<RequestJsonPr
 }
 
 function contextFromWorkflowProjection(projection: RequestJsonProjection): WorkspaceRequestContext {
+  const requestedAssetClass =
+    projection.requested_asset_class === "equity" || projection.requested_asset_class === "crypto"
+      ? projection.requested_asset_class
+      : undefined
   return {
     requested_symbol: projection.requested_symbol,
     requested_symbols: projection.requested_symbols,
     requested_interval: projection.requested_interval,
-    requested_asset_class: projection.requested_asset_class,
+    requested_asset_class: requestedAssetClass,
     requested_algorithm_name: projection.requested_algorithm_name,
     requested_start: projection.requested_start,
     requested_end: projection.requested_end,
     request_id: projection.request_id,
   }
 }
-
 async function updatePlaceholderMission(dir: string, context: WorkspaceRequestContext): Promise<boolean> {
   const missionPath = path.join(dir, MISSION_FILE)
   let mission: ReturnType<typeof parseMission>
@@ -273,52 +287,29 @@ export async function syncWorkspaceRequestContext(input: {
   prompt: string
   facts?: RequestFacts
   preserveExisting?: boolean
+  actor?: "user" | "runtime" | "migration"
+  reason?: string
+  approvalState?: RequestApprovalState
 }): Promise<WorkspaceRequestContext> {
   const ensured = await ensureAlgoWorkspace(input.slug)
   const dir = ensured.dir
   const workflowProjection = await readWorkflowRequestProjection(dir)
   if (workflowProjection) return contextFromWorkflowProjection(workflowProjection)
   const next = workspaceRequestContext(input.sessionID, input.prompt, input.facts)
-  const existing = await readExistingRequestContext(dir)
-  const requestedSymbols = input.preserveExisting
-    ? (existing.requested_symbols ?? next.requested_symbols)
-    : (next.requested_symbols ?? existing.requested_symbols)
-  const context = {
-    requested_symbol: requestedSymbols?.length
-      ? undefined
-      : input.preserveExisting
-        ? (existing.requested_symbol ?? next.requested_symbol)
-        : (next.requested_symbol ?? existing.requested_symbol),
-    requested_symbols: requestedSymbols,
-    requested_interval: input.preserveExisting
-      ? (existing.requested_interval ?? next.requested_interval)
-      : (next.requested_interval ?? existing.requested_interval),
-    requested_asset_class: input.preserveExisting
-      ? (existing.requested_asset_class ?? next.requested_asset_class)
-      : (next.requested_asset_class ?? existing.requested_asset_class),
-    requested_algorithm_name:
-      next.requested_algorithm_name ?? existing.requested_algorithm_name ?? algorithmNameFromWorkspaceSlug(input.slug),
-    requested_start: input.preserveExisting
-      ? (existing.requested_start ?? next.requested_start)
-      : (next.requested_start ?? existing.requested_start),
-    requested_end: input.preserveExisting
-      ? (existing.requested_end ?? next.requested_end)
-      : (next.requested_end ?? existing.requested_end),
-    request_id: input.sessionID,
-  }
-
-  await fs.writeFile(
-    path.join(dir, "request.json"),
-    JSON.stringify(
-      {
-        ...context,
-        updated: new Date().toISOString(),
-      },
-      null,
-      2,
-    ) + "\n",
-    "utf8",
-  )
+  await migrateLegacyWorkspaceRequest({ requestID: input.sessionID, workspaceDir: dir })
+  const spec = await commitRequestSpec({
+    requestID: input.sessionID,
+    identity: {
+      ...next,
+      requested_algorithm_name: next.requested_algorithm_name ?? algorithmNameFromWorkspaceSlug(input.slug),
+    },
+    preserveExisting: input.preserveExisting,
+    actor: input.actor,
+    reason: input.reason,
+    approvalState: input.approvalState,
+  })
+  const context = requestSpecContext(spec)
+  await writeRequestSpecProjection({ workspaceDir: dir, spec })
   await updatePlaceholderMission(dir, context)
 
   return context
@@ -327,11 +318,32 @@ export async function syncWorkspaceRequestContext(input: {
 /**
  * Materialize the controller-owned compatibility view consumed by existing
  * evidence tools. Once present, prompt/subagent context syncs will not mutate it.
+ *
+ * request.json may already be mode 0444 from writeRequestSpecProjection; runtime
+ * must unlock, rewrite, then re-lock so model shells stay read-only.
  */
 export async function writeWorkflowRequestProjection(state: BuildWorkflowState): Promise<RequestJsonProjection> {
   const ensured = await ensureAlgoWorkspace(state.workspaceSlug)
   const projection = requestJsonProjection(state)
-  await fs.writeFile(path.join(ensured.dir, "request.json"), `${JSON.stringify(projection, null, 2)}\n`, "utf8")
+  const file = path.join(ensured.dir, "request.json")
+  await fs.chmod(file, 0o600).catch(() => undefined)
+  await fs.writeFile(file, `${JSON.stringify(projection, null, 2)}\n`, "utf8")
+  await fs.chmod(file, 0o444)
   await updatePlaceholderMission(ensured.dir, contextFromWorkflowProjection(projection))
   return projection
+}
+
+export function requestSpecContext(spec: RequestSpec): WorkspaceRequestContext {
+  return {
+    requested_symbol: spec.requested_symbol,
+    requested_symbols: spec.requested_symbols,
+    requested_interval: spec.requested_interval,
+    requested_asset_class: spec.requested_asset_class,
+    requested_algorithm_name: spec.requested_algorithm_name,
+    requested_start: spec.requested_start,
+    requested_end: spec.requested_end,
+    request_id: spec.request_id,
+    request_version: spec.request_version,
+    request_content_hash: spec.content_hash,
+  }
 }

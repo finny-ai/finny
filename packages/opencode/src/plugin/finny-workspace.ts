@@ -231,8 +231,16 @@ export interface BootstrapResult {
  * is still consistent with the request facts; provisions + rebinds when the
  * request targets a different symbol/asset.
  */
-export async function bootstrapWorkspace(sessionID: string, prompt: string): Promise<BootstrapResult | undefined> {
-  const facts = parseRequestFacts(prompt)
+export async function bootstrapWorkspace(
+  sessionID: string,
+  prompt: string,
+  structuredFacts?: RequestFacts,
+): Promise<BootstrapResult | undefined> {
+  const parsedFacts = parseRequestFacts(prompt)
+  const facts: RequestFacts = {
+    ...parsedFacts,
+    ...Object.fromEntries(Object.entries(structuredFacts ?? {}).filter(([, value]) => value !== undefined)),
+  }
   const existing = await getSessionWorkspace(sessionID)
   const strategyOrigin = existing && isResearchWorkspace(existing) ? await readStrategyOrigin(existing) : null
   const continuation = hasStrategyContinuationIntent(prompt)
@@ -241,21 +249,21 @@ export async function bootstrapWorkspace(sessionID: string, prompt: string): Pro
 
   if (!research && strategyOrigin && (continuation || strategyFollowup)) {
     await bindSessionWorkspace(sessionID, strategyOrigin)
-    await syncWorkspaceRequestContext({ sessionID, slug: strategyOrigin, prompt, facts })
+    await syncWorkspaceRequestContext({ sessionID, slug: strategyOrigin, prompt, facts, actor: "user" })
     return { slug: strategyOrigin, dir: algoDir(strategyOrigin), created: false, rebound: true }
   }
 
   if (research) {
     const researchName = deriveResearchWorkspaceName(prompt)
     if (existing && existingResearchSlugMatches(existing, researchName)) {
-      await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
+      await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts, actor: "user" })
       return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
     }
 
     const ensured = await ensureAlgoWorkspace(researchName)
     await writeStrategyOrigin(ensured.dir, strategyOrigin ?? existing)
     await bindSessionWorkspace(sessionID, ensured.slug)
-    await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts })
+    await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts, actor: "user" })
     return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, rebound: Boolean(existing) }
   }
 
@@ -264,7 +272,7 @@ export async function bootstrapWorkspace(sessionID: string, prompt: string): Pro
     (hasRequestIdentity(facts) || continuation || strategyFollowup) &&
     slugMatchesRequest(existing, facts)
   ) {
-    await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
+    await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts, actor: "user" })
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }
 
@@ -275,7 +283,7 @@ export async function bootstrapWorkspace(sessionID: string, prompt: string): Pro
   // Identity-less prompts without retry intent (conceptual questions and the
   // like) still fall through and provision their own workspace.
   if (existing && !hasRequestIdentity(facts) && isRetryFollowupPrompt(prompt) && slugMatchesRequest(existing, facts)) {
-    await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts })
+    await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts, actor: "user" })
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }
 
@@ -285,9 +293,9 @@ export async function bootstrapWorkspace(sessionID: string, prompt: string): Pro
   const ensured = await ensureAlgoWorkspace(name)
   await bindSessionWorkspace(sessionID, ensured.slug)
 
-  // request.json and placeholder mission.md are the workspace identity ground
-  // truth before the strategy is authored.
-  await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts })
+  // The runtime RequestSpec is authoritative. request.json and mission.md are
+  // replaceable projections for model context only.
+  await syncWorkspaceRequestContext({ sessionID, slug: ensured.slug, prompt, facts, actor: "user" })
 
   return { slug: ensured.slug, dir: ensured.dir, created: ensured.created, rebound: Boolean(existing) }
 }

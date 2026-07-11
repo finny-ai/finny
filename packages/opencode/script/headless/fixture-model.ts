@@ -229,10 +229,16 @@ function contextValue(text: string, field: string, fallback: string): string {
 function dataDigest(context: string) {
   const workspaceSlug = contextValue(context, "workspace_slug", ALGORITHM_NAME)
   const algorithmName = contextValue(context, "requested_algorithm_name", ALGORITHM_NAME)
+  const requestId = contextValue(context, "request_id", "MISSING")
+  const requestVersion = contextValue(context, "request_version", "MISSING")
+  const requestContentHash = contextValue(context, "request_content_hash", "MISSING")
   return [
     "<data-extractor-manifest>",
     `requested_algorithm_name: ${algorithmName}`,
     `workspace_slug: ${workspaceSlug}`,
+    `request_id: ${requestId}`,
+    `request_version: ${requestVersion}`,
+    `request_content_hash: ${requestContentHash}`,
     "requested_symbol: SPY",
     "actual_symbol: SPY",
     "requested_interval: 5m",
@@ -273,11 +279,22 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     if (turn === 0) {
       const workdir = contextValue(text, "allowed_data_dir", ".")
       const algorithm = contextValue(text, "requested_algorithm_name", ALGORITHM_NAME)
+      const requestId = contextValue(text, "request_id", "")
+      const requestVersion = contextValue(text, "request_version", "")
+      const requestContentHash = contextValue(text, "request_content_hash", "")
+      const lineage = [
+        `algorithm=${encodeURIComponent(algorithm)}`,
+        requestId ? `request_id=${encodeURIComponent(requestId)}` : "",
+        requestVersion ? `request_version=${encodeURIComponent(requestVersion)}` : "",
+        requestContentHash ? `request_content_hash=${encodeURIComponent(requestContentHash)}` : "",
+      ]
+        .filter(Boolean)
+        .join("&")
       return {
         type: "tool",
         name: "bash",
         arguments: {
-          command: `curl -fsS "$FINNY_HARNESS_MARKET_DATA_URL/v1/materialize?output_dir=$ALLOWED_DATA_DIR&algorithm=${encodeURIComponent(algorithm)}"`,
+          command: `curl -fsS "$FINNY_HARNESS_MARKET_DATA_URL/v1/materialize?output_dir=$ALLOWED_DATA_DIR&${lineage}"`,
           workdir,
           timeout: 30_000,
           description: "Materializes deterministic harness market evidence",
