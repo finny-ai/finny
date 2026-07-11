@@ -277,9 +277,15 @@ describe("data-agent instructions contract", () => {
 
   test("commits project-local provider skills for data sources", async () => {
     const skillRoot = path.resolve(import.meta.dir, "../../../..", ".opencode/skills")
+    const alpaca = await Bun.file(path.join(skillRoot, "finny-provider-alpaca/SKILL.md")).text()
     const binance = await Bun.file(path.join(skillRoot, "finny-provider-binance/SKILL.md")).text()
     const polygon = await Bun.file(path.join(skillRoot, "finny-provider-polygon/SKILL.md")).text()
     const yfinance = await Bun.file(path.join(skillRoot, "finny-provider-yfinance/SKILL.md")).text()
+
+    expect(alpaca).toContain("name: finny-provider-alpaca")
+    expect(alpaca).toContain("ALPACA_API_KEY_ID")
+    expect(alpaca).toContain("next_page_token")
+    expect(alpaca).toContain('source: "alpaca"')
 
     expect(binance).toContain("name: finny-provider-binance")
     expect(binance).toContain("BTC/USD")

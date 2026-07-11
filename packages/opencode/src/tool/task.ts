@@ -9,9 +9,10 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
+import { Permission } from "@/permission"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Schema, Scope } from "effect"
+import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
@@ -39,6 +40,13 @@ import { validateNewsAgentTaskText } from "@/data/news-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
 import { renderSubagentArtifactPointer } from "@/agent/subagent-artifact"
 import { TaskState } from "@/task/state"
+import {
+  discoverDataProviderCapabilities,
+  renderDataProviderCapabilities,
+  type DataProviderCapability,
+} from "@/data/data-provider-capabilities"
+import { resolveAlpacaMarketDataEnv } from "@/data/alpaca-market-data-env"
+import { Plugin } from "@/plugin"
 
 /**
  * Substituted when a subagent's final turn produced no text. Uses the BLOCKED:
@@ -90,6 +98,39 @@ function isBusyError(error: unknown): boolean {
 
 function field(label: string, value: string | undefined) {
   return `- ${label}: ${value ?? "MISSING"}`
+}
+
+const DATA_PROVIDER_SKILL_IDS = [
+  "finny-provider-alpaca",
+  "finny-provider-polygon",
+  "finny-provider-yfinance",
+  "finny-provider-binance",
+] as const
+
+async function installedDataProviderSkillIDs(configDirectories: string[], agent: Agent.Info) {
+  const installed = new Set<string>()
+  for (const skillID of DATA_PROVIDER_SKILL_IDS) {
+    if (Permission.evaluate("skill", skillID, agent.permission).action === "deny") continue
+    for (const configDir of configDirectories) {
+      const candidates = ["skill", "skills"].map((folder) => path.join(configDir, folder, skillID, "SKILL.md"))
+      if (
+        (
+          await Promise.all(
+            candidates.map((candidate) =>
+              fs
+                .access(candidate)
+                .then(() => true)
+                .catch(() => false),
+            ),
+          )
+        ).some(Boolean)
+      ) {
+        installed.add(skillID)
+        break
+      }
+    }
+  }
+  return installed
 }
 
 function isIntradayInterval(interval: string | undefined) {
@@ -388,11 +429,12 @@ function childSymbolWithinContextUniverse(
   return universe.includes(normalized) ? normalized : undefined
 }
 
-function withFinnySubagentContext(
+export function withFinnySubagentContext(
   params: { subagent_type: string },
   prompt: string,
   workspace: string | null,
   context?: WorkspaceRequestContext,
+  providerCapabilities: readonly DataProviderCapability[] = [],
 ) {
   if (!finnySubagentType(params.subagent_type)) return prompt
   // News agents still need a wall-clock retrieval anchor when no workspace is bound,
@@ -451,8 +493,10 @@ function withFinnySubagentContext(
       field("mission_path when known", path.join(workspacePath, "mission.md")),
       field("allowed_data_dir when known", dataDir),
       "- cookbook_path: data-agent/instructions.md",
-      "- provider_skill_policy: after selecting a provider, load the matching provider skill before the first provider fetch when available.",
-      "- provider_skill_map: binance=finny-provider-binance; polygon/massive=finny-provider-polygon; yfinance/yahoo=finny-provider-yfinance.",
+      ...renderDataProviderCapabilities(providerCapabilities),
+      "- provider_skill_policy: load only the runtime-advertised skill_id for the selected provider; never probe guessed skill IDs or cookbook paths.",
+      "- provider_outcomes: retrieval_success | provider_failure | coverage_failure | schema_failure; preserve this exact failure layer in the parent result.",
+      "- runtime_owned_manifest_fields: output_path (derived from the emitted CSV artifact), manifest path, and canonical artifact_paths are normalized by the evidence runtime.",
       "- end_date_semantics: the end date is INCLUSIVE; its bars are part of the window. Provider end/endTime params are timestamp bounds, so pass end date + 1 day as the fetch bound (e.g. end 2026-07-02 -> end=2026-07-03T00:00:00Z for Alpaca/yfinance/Binance; Polygon /range/ is date-inclusive, pass as-is). Passing the bare end date drops the final session and falsely reads as partial coverage.",
       dataWindow.adjusted
         ? "- window_adjustment: intraday rolling window capped at the last fully completed UTC date; do not require future bars from the current UTC day."
@@ -698,6 +742,8 @@ export const TaskTool = Tool.define(
     const sessions = yield* Session.Service
     const scope = yield* Scope.Scope
     const database = yield* Database.Service
+    // Optional so unit tests that construct TaskTool without a full plugin stack still run.
+    const plugin = yield* Effect.serviceOption(Plugin.Service)
 
     const runSingle = Effect.fn("TaskTool.executeSingle")(function* (
       params: SingleTaskParameters,
@@ -928,8 +974,53 @@ export const TaskTool = Tool.define(
           )
           if (existing.found && existing.result?.ok) return existing.result.text
         }
+        const providerCapabilities =
+          params.subagent_type === "data_extractor"
+            ? yield* Effect.gen(function* () {
+                const configDirectories = yield* config.directories()
+                // Match ShellTool.shellEnv: process.env + workspace/.env + shell.env plugins.
+                // Without plugin env, preflight can hide providers the worker can actually call.
+                const shellExtra = Option.isSome(plugin)
+                  ? yield* plugin.value.trigger(
+                      "shell.env",
+                      {
+                        cwd: workspace ? algoDir(workspace) : process.cwd(),
+                        sessionID: ctx.sessionID,
+                        callID: ctx.callID,
+                      },
+                      { env: {} },
+                    )
+                  : { env: {} as Record<string, string> }
+                const credentialEnv: NodeJS.ProcessEnv = {
+                  ...process.env,
+                  ...shellExtra.env,
+                }
+                if (workspace) {
+                  const envText = yield* Effect.promise(() =>
+                    fs.readFile(path.join(algoDir(workspace), ".env"), "utf8").catch(() => ""),
+                  )
+                  for (const match of envText.matchAll(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+?)\s*$/gm)) {
+                    if (match[2] && !/^['"]?['"]?$/.test(match[2])) credentialEnv[match[1]] = "configured"
+                  }
+                }
+                const alpaca = yield* Effect.promise(() => resolveAlpacaMarketDataEnv(credentialEnv))
+                if (alpaca) Object.assign(credentialEnv, alpaca)
+                return discoverDataProviderCapabilities({
+                  request: {
+                    assetClass: validationContext?.requested_asset_class,
+                    interval: validationContext?.requested_interval,
+                    start: validationContext?.requested_start,
+                    end: validationContext?.requested_end,
+                  },
+                  availableSkillIDs: yield* Effect.promise(() =>
+                    installedDataProviderSkillIDs(configDirectories, next),
+                  ),
+                  credentialEnv,
+                })
+              })
+            : []
         const parts = yield* ops.resolvePromptParts(
-          withFinnySubagentContext(params, params.prompt, workspace, workspaceContext),
+          withFinnySubagentContext(params, params.prompt, workspace, workspaceContext, providerCapabilities),
         )
         const result = yield* ops.prompt({
           messageID: MessageID.ascending(),

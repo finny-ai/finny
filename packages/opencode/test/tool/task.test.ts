@@ -379,6 +379,9 @@ describe("tool.task", () => {
           expect(text).toContain("Do not read `algos/_template/README.md`")
           expect(text).toContain("requested_start/requested_end")
           expect(text).toContain("actual_start/actual_end")
+          expect(text).toContain("provider_capabilities: NONE")
+          expect(text).toContain("never probe guessed skill IDs or cookbook paths")
+          expect(text).not.toContain("skill_id=finny-provider-yfinance")
 
           const missionRaw = yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "mission.md"), "utf8"))
           const mission = parseMission(missionRaw)

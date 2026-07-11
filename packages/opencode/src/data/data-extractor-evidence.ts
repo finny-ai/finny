@@ -5,6 +5,7 @@ import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol, type RequestFacts } from "@/agent/request-identity"
 import { STRICT_DATA_QUALITY_LABELS } from "./data-quality-vocab"
+import type { DataProviderFailureLayer } from "./data-provider-capabilities"
 
 const BLOCKED_INCOMPLETE = "BLOCKED: data_extractor returned incomplete evidence artifacts"
 
@@ -92,6 +93,7 @@ export interface ValidateDataExtractorResult {
   ok: boolean
   text: string
   issues: string[]
+  failureLayer?: DataProviderFailureLayer
 }
 
 export interface ExistingDataExtractorEvidenceResult {
@@ -708,8 +710,13 @@ function isOpenCurrentCandlePartial(manifest: DataExtractorManifest, digest: Rec
   return /partial/.test(note) && /(current|open|not closed|still open|not yet|unavailable)/.test(note)
 }
 
-function blocked(issues: string[]): ValidateDataExtractorResult {
-  return { ok: false, text: `${BLOCKED_INCOMPLETE}: ${issues.join("; ")}`, issues }
+function blocked(issues: string[], failureLayer: DataProviderFailureLayer = "schema"): ValidateDataExtractorResult {
+  return {
+    ok: false,
+    text: `${BLOCKED_INCOMPLETE}: ${issues.join("; ")}\nfailure_layer: ${failureLayer}`,
+    issues,
+    failureLayer,
+  }
 }
 
 type ManifestDigest = Record<string, string | undefined>
@@ -810,6 +817,49 @@ async function readManifestFile(
     issues.push(`manifest unreadable at ${manifestFile}: ${err?.message ?? String(err)}`)
     return { result: blocked(issues) }
   }
+}
+
+function insideDataRoot(file: string, dataRoot: string) {
+  const relative = path.relative(path.resolve(dataRoot), path.resolve(file))
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
+}
+
+/**
+ * `output_path` identifies the CSV artifact and is owned by the runtime, not by
+ * provider/model prose. Upgrade legacy hand-written manifests when the emitted
+ * artifact pair identifies exactly one workspace-local CSV.
+ */
+async function hydrateRuntimeManifest(input: {
+  manifest: DataExtractorManifest
+  manifestFile: string
+  artifacts: string[]
+  dataRoot: string
+}): Promise<{ manifest?: DataExtractorManifest; issue?: string }> {
+  if (input.manifest.output_path) return { manifest: input.manifest }
+
+  const sibling = input.manifestFile.replace(/\.manifest\.json$/i, ".csv")
+  const candidates = [
+    ...input.artifacts
+      .filter((artifact) => artifact.toLowerCase().endsWith(".csv"))
+      .map((artifact) => (path.isAbsolute(artifact) ? artifact : path.join(input.dataRoot, artifact))),
+    sibling,
+  ]
+    .map((candidate) => path.resolve(candidate))
+    .filter((candidate, index, all) => all.indexOf(candidate) === index)
+    .filter((candidate) => insideDataRoot(candidate, input.dataRoot))
+
+  const existing: string[] = []
+  for (const candidate of candidates) {
+    if (await fileExists(candidate)) existing.push(candidate)
+  }
+  if (existing.length !== 1) {
+    return { issue: `manifest missing output_path and runtime resolved ${existing.length} CSV artifacts` }
+  }
+
+  const outputPath = path.relative(input.dataRoot, existing[0]).replaceAll(path.sep, "/")
+  const manifest = { ...input.manifest, output_path: outputPath }
+  await fs.writeFile(input.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+  return { manifest }
 }
 
 function digestContextIssues(digest: Record<string, string | undefined>, context?: WorkspaceRequestContext): string[] {
@@ -924,6 +974,7 @@ function renderManifestBlock(manifest: DataExtractorManifest, digest: Record<str
     ["actual_start", digest.actual_start],
     ["actual_end", digest.actual_end],
     ["artifact_paths", digest.artifact_paths],
+    ["output_path", manifest.output_path],
     ["run_id", digest.run_id],
     ["source", manifest.source],
     ["coverage", manifest.coverage],
@@ -975,7 +1026,21 @@ type DigestPreamble =
 
 function rejectedPreamble(text: string): DigestPreamble | undefined {
   if (text && !text.startsWith("BLOCKED:")) return undefined
-  return { result: { ok: false, text: text || BLOCKED_INCOMPLETE, issues: [] } }
+  const failureLayer: DataProviderFailureLayer = /coverage|window unavailable|provider limit/i.test(text)
+    ? "coverage"
+    : /provider|credential|entitlement|source unavailable/i.test(text)
+      ? "provider"
+      : /schema|manifest|digest/i.test(text)
+        ? "schema"
+        : "retrieval"
+  return {
+    result: {
+      ok: false,
+      text: `${text || BLOCKED_INCOMPLETE}\nfailure_layer: ${failureLayer}`,
+      issues: [],
+      failureLayer,
+    },
+  }
 }
 
 function digestFields(text: string): Record<string, string | undefined> {
@@ -1066,7 +1131,14 @@ export async function validateDataExtractorTaskText(
 
   const loaded = await readManifestFile(manifestFile, resolved.artifacts, dataRoot, issues)
   if (loaded.result) return loaded.result
-  const manifest = loaded.manifest!
+  const hydrated = await hydrateRuntimeManifest({
+    manifest: loaded.manifest!,
+    manifestFile,
+    artifacts: resolved.artifacts,
+    dataRoot,
+  })
+  if (hydrated.issue) return blocked([...issues, hydrated.issue], "schema")
+  const manifest = hydrated.manifest!
   const artifacts = canonicalArtifacts(manifestFile, manifest, dataRoot)
   return validateLoadedEvidence({ manifest, artifacts, preamble, context: input.context })
 }
@@ -1110,6 +1182,27 @@ export async function validateExistingDataExtractorEvidence(input: {
   }
 
   const manifestFile = matches[0]
+  // Hydrate legacy manifests missing only runtime-owned output_path before
+  // snapshot reuse, matching validateDataExtractorTaskText.
+  try {
+    const rawBytes = await fs.readFile(manifestFile, "utf8")
+    const rawManifest = JSON.parse(rawBytes) as DataExtractorManifest
+    const hydrated = await hydrateRuntimeManifest({
+      manifest: rawManifest,
+      manifestFile,
+      artifacts: [],
+      dataRoot,
+    })
+    if (hydrated.issue) {
+      return { found: true, result: blocked([hydrated.issue], "schema") }
+    }
+  } catch (error: any) {
+    return {
+      found: true,
+      result: blocked([`failed to load identity-matching manifest: ${error?.message ?? String(error)}`], "schema"),
+    }
+  }
+
   let snapshot: VerifiedDatasetSnapshot
   try {
     snapshot = await readVerifiedDatasetSnapshot({ manifestFile, dataRoot })

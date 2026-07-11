@@ -78,6 +78,128 @@ describe("Mission.renderV3", () => {
 })
 
 describe("validateDataExtractorTaskText", () => {
+  test("hydrates runtime-owned output_path for a valid 2,011-row SPY artifact", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-runtime-output-path-"))
+    const slug = "spy-1d-runtime-manifest"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_1d_2018-01-02_2025-12-31.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    const dataRoot = path.join(root, "finny", "algos", slug, "data")
+    await fs.mkdir(path.join(dataRoot, "stock"), { recursive: true })
+    const rows = Array.from({ length: 2_011 }, (_, index) => {
+      const timestamp =
+        index === 2_010
+          ? "2025-12-31T00:00:00Z"
+          : new Date(Date.UTC(2018, 0, 2 + index)).toISOString().replace(".000Z", "Z")
+      return `${timestamp},100,101,99,100.5,1000000`
+    })
+    await fs.writeFile(path.join(dataRoot, csvRel), ["timestamp,open,high,low,close,volume", ...rows].join("\n"))
+    await fs.writeFile(
+      path.join(dataRoot, manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "yfinance",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2018-01-02",
+        requested_end: "2025-12-31",
+        actual_start: "2018-01-02T00:00:00Z",
+        actual_end: "2025-12-31T00:00:00Z",
+        rows: 2_011,
+        run_id: "spy-2011-runtime-owned-path",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+    const text = [
+      `requested_algorithm_name: ${slug}`,
+      `workspace_slug: ${slug}`,
+      "requested_symbol: SPY",
+      "actual_symbol: SPY",
+      "requested_interval: 1d",
+      "actual_interval: 1d",
+      "requested_asset_class: equity",
+      "actual_asset_class: equity",
+      "requested_start: 2018-01-02",
+      "requested_end: 2025-12-31",
+      "actual_start: 2018-01-02T00:00:00Z",
+      "actual_end: 2025-12-31T00:00:00Z",
+      `artifact_paths: ${csvRel}, ${manifestRel}`,
+      "run_id: spy-2011-runtime-owned-path",
+      "usable_for_parent: yes",
+    ].join("\n")
+
+    const result = await validateDataExtractorTaskText({ text, workspaceSlug: slug })
+
+    expect(result.ok).toBe(true)
+    expect(result.text).toContain(`output_path: ${csvRel}`)
+    const persisted = JSON.parse(await fs.readFile(path.join(dataRoot, manifestRel), "utf8"))
+    expect(persisted.output_path).toBe(csvRel)
+  })
+
+  test("reuse path hydrates legacy manifests missing only output_path", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-reuse-hydrate-"))
+    const slug = "spy-1d-reuse-hydrate"
+    process.env.XDG_DATA_HOME = root
+    const csvRel = "stock/SPY_1d_2018-01-02_2025-12-31.csv"
+    const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+    const dataRoot = path.join(root, "finny", "algos", slug, "data")
+    await fs.mkdir(path.join(dataRoot, "stock"), { recursive: true })
+    const rows = Array.from({ length: 2_011 }, (_, index) => {
+      const timestamp =
+        index === 2_010
+          ? "2025-12-31T00:00:00Z"
+          : new Date(Date.UTC(2018, 0, 2 + index)).toISOString().replace(".000Z", "Z")
+      return `${timestamp},100,101,99,100.5,1000000`
+    })
+    await fs.writeFile(path.join(dataRoot, csvRel), ["timestamp,open,high,low,close,volume", ...rows].join("\n"))
+    await fs.writeFile(
+      path.join(dataRoot, manifestRel),
+      JSON.stringify({
+        schema_version: 1,
+        source: "yfinance",
+        requested_symbol: "SPY",
+        actual_symbol: "SPY",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "equity",
+        actual_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2018-01-02",
+        requested_end: "2025-12-31",
+        actual_start: "2018-01-02T00:00:00Z",
+        actual_end: "2025-12-31T00:00:00Z",
+        rows: 2_011,
+        run_id: "spy-reuse-hydrate",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+
+    const existing = await validateExistingDataExtractorEvidence({
+      workspaceSlug: slug,
+      context: {
+        requested_symbol: "SPY",
+        requested_interval: "1d",
+        requested_asset_class: "equity",
+        requested_algorithm_name: slug,
+        requested_start: "2018-01-02",
+        requested_end: "2025-12-31",
+      },
+    })
+
+    expect(existing.found).toBe(true)
+    expect(existing.result?.ok).toBe(true)
+    expect(existing.result?.text).toContain(`output_path: ${csvRel}`)
+    const persisted = JSON.parse(await fs.readFile(path.join(dataRoot, manifestRel), "utf8"))
+    expect(persisted.output_path).toBe(csvRel)
+  })
+
   test("session build gate blocks when no workspace is bound", async () => {
     const result = await requireVerifiedDataExtractorEvidenceForSession("ses_no_workspace")
     expect(result.ok).toBe(false)
