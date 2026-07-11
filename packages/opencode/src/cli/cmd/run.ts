@@ -529,20 +529,12 @@ export const RunCommand = effectCmd({
           agentSvc.get(name).pipe(Effect.provideService(InstanceRef, localInstance)),
         )
         if (!entry) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
-          return undefined
+          UI.error(`Agent "${name}" not found. Choose a primary agent returned by \`finny agent list\`.`)
+          process.exit(1)
         }
         if (entry.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
-          return undefined
+          UI.error(`Agent "${name}" is a subagent and cannot be used as an execution route. Choose a primary agent.`)
+          process.exit(1)
         }
         return name
       }
@@ -557,31 +549,21 @@ export const RunCommand = effectCmd({
           .catch(() => undefined)
 
         if (!modes) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `failed to list agents from ${args.attach}. Falling back to default agent`,
+          UI.error(
+            `Failed to validate agent "${name}" against ${args.attach}. Refusing to fall back to a default agent.`,
           )
-          return undefined
+          process.exit(1)
         }
 
         const agent = modes.find((a) => a.name === name)
         if (!agent) {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" not found. Falling back to default agent`,
-          )
-          return undefined
+          UI.error(`Agent "${name}" not found on ${args.attach}. Choose a primary agent exposed by that server.`)
+          process.exit(1)
         }
 
         if (agent.mode === "subagent") {
-          UI.println(
-            UI.Style.TEXT_WARNING_BOLD + "!",
-            UI.Style.TEXT_NORMAL,
-            `agent "${name}" is a subagent, not a primary agent. Falling back to default agent`,
-          )
-          return undefined
+          UI.error(`Agent "${name}" is a subagent and cannot be used as an execution route. Choose a primary agent.`)
+          process.exit(1)
         }
 
         return name
@@ -597,12 +579,34 @@ export const RunCommand = effectCmd({
       }
 
       async function execute(sdk: OpencodeClient) {
+        // Resolve the semantic execution route before creating or resuming a
+        // session when possible. Invalid routes must never fall back to a more
+        // privileged default agent or trigger downstream workspace provisioning.
+        //
+        // Attach mode is directory-routed: with --session/--continue and no
+        // --dir, validate the agent only after the session directory is known
+        // so app.agents hits the same workspace as the run.
+        let agent: string | undefined
+        if (!args.attach) {
+          agent = await pickAgent(sdk)
+        } else if (args.agent && !args.session && !args.continue) {
+          // Creating a new attached session: validate against --dir or the
+          // attach server's current directory before session.create.
+          const attachDir = directory ?? (await current(sdk))
+          agent = await attachAgent(attachSDK(attachDir))
+        }
+
         const sess = await session(sdk)
         if (!sess?.id) {
           return die("Session not found")
         }
         const sessionID = sess.id
         if (process.env.FINNY_RUN_ID) process.env.FINNY_MAIN_SESSION_ID = sessionID
+
+        if (args.attach && args.agent && agent === undefined) {
+          const attachDir = directory ?? sess.directory ?? (await current(sdk))
+          agent = await attachAgent(attachSDK(attachDir))
+        }
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -754,9 +758,6 @@ export const RunCommand = effectCmd({
         }
         const cwd = args.attach ? (directory ?? sess.directory ?? (await current(sdk))) : (directory ?? root)
         const client = args.attach ? attachSDK(cwd) : sdk
-
-        // Validate agent if specified
-        const agent = await pickAgent(client)
 
         await share(client, sessionID)
 

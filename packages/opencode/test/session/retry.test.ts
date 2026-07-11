@@ -17,12 +17,17 @@ const providerID = ProviderV2.ID.make("test")
 const retryProvider = "test"
 const it = testEffect(Layer.mergeAll(SessionStatus.defaultLayer, CrossSpawnSpawner.defaultLayer))
 
-function apiError(headers?: Record<string, string>): SessionV1.APIError {
+function apiError(
+  headers?: Record<string, string>,
+  fields: { message?: string; statusCode?: number; responseBody?: string } = {},
+): SessionV1.APIError {
   return Schema.decodeUnknownSync(SessionV1.APIError.Schema)(
     new SessionV1.APIError({
-      message: "boom",
+      message: fields.message ?? "boom",
       isRetryable: true,
       responseHeaders: headers,
+      statusCode: fields.statusCode,
+      responseBody: fields.responseBody,
     }).toObject(),
   )
 }
@@ -114,9 +119,72 @@ describe("session.retry.delay", () => {
       })
     }),
   )
+
+  it.instance("policy stops after the attempt budget", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-retry-budget-test")
+      const error = apiError({ "retry-after-ms": "0" })
+      const status = yield* SessionStatus.Service
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            status.set(sessionID, {
+              type: "retry",
+              attempt: info.attempt,
+              message: info.message,
+              next: info.next,
+            }),
+        }),
+      )
+      for (let attempt = 0; attempt < SessionRetry.RETRY_MAX_ATTEMPTS; attempt++) yield* step(error)
+      yield* step(error).pipe(Effect.exit)
+
+      expect(yield* status.get(sessionID)).toMatchObject({ type: "retry", attempt: SessionRetry.RETRY_MAX_ATTEMPTS })
+    }),
+  )
+
+  it.instance("policy refuses a retry that exceeds the elapsed-time budget", () =>
+    Effect.gen(function* () {
+      const sessionID = SessionID.make("session-retry-elapsed-test")
+      const error = apiError({ "retry-after-ms": String(SessionRetry.RETRY_MAX_ELAPSED_MS + 1) })
+      const status = yield* SessionStatus.Service
+      const step = yield* Schedule.toStepWithMetadata(
+        SessionRetry.policy({
+          provider: "test",
+          parse: Schema.decodeUnknownSync(SessionV1.APIError.Schema),
+          set: (info) =>
+            status.set(sessionID, {
+              type: "retry",
+              attempt: info.attempt,
+              message: info.message,
+              next: info.next,
+            }),
+        }),
+      )
+      yield* step(error).pipe(Effect.exit)
+
+      expect(yield* status.get(sessionID)).toEqual({ type: "idle" })
+    }),
+  )
 })
 
 describe("session.retry.retryable", () => {
+  test("classifies authentication and hard quota failures as terminal", () => {
+    const auth = apiError(undefined, { statusCode: 401 })
+    const quota = apiError(undefined, { message: "The usage limit has been reached" })
+
+    expect(SessionRetry.classify(auth, retryProvider)).toBe("terminal")
+    expect(SessionRetry.classify(quota, retryProvider)).toBe("terminal")
+  })
+
+  test("classifies retry-after rate limits separately from transient failures", () => {
+    const delayed = apiError({ "retry-after": "5" }, { statusCode: 429 })
+    expect(SessionRetry.classify(delayed, retryProvider)).toBe("delayed")
+    expect(SessionRetry.classify(apiError(), retryProvider)).toBe("transient")
+  })
+
   test("maps too_many_requests json messages", () => {
     const error = wrap(JSON.stringify({ type: "error", error: { type: "too_many_requests" } }))
     expect(SessionRetry.retryable(error, retryProvider)).toEqual({ message: "Too Many Requests" })

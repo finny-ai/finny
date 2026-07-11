@@ -65,6 +65,8 @@ import { decodeMessageInfo, decodeMessagePart, isOrphanedInterruptedTool } from 
 import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
+import { ProviderPreflight } from "./provider-preflight"
+import { Auth } from "@/auth"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -637,13 +639,38 @@ export const layer = Layer.effect(
         .get()
         .pipe(Effect.orDie)
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
+      yield* status.set(input.sessionID, {
+        type: "preflight",
+        phase: "provider",
+        message: `Checking ${model.providerID}/${model.modelID}…`,
+      })
+      const resolvedModel = yield* getModel(model.providerID, model.modelID, input.sessionID).pipe(
+        Effect.onExit((exit) => (Exit.isFailure(exit) ? status.set(input.sessionID, { type: "idle" }) : Effect.void)),
+      )
+      const providerInfo = yield* provider.getProvider(model.providerID)
+      const authInfo = yield* Effect.promise(() => Auth.get(model.providerID))
+      const credential = ProviderPreflight.credentialMode(providerInfo, authInfo)
+      const incompatibility = ProviderPreflight.compatibilityError({
+        agent: ag,
+        model: resolvedModel,
+        tools: input.tools,
+      })
+      yield* Effect.logInfo("provider preflight", {
+        sessionID: input.sessionID,
+        providerID: resolvedModel.providerID,
+        modelID: resolvedModel.id,
+        agent: ag.name,
+        credential,
+        compatible: incompatibility === undefined,
+      })
+      if (incompatibility) {
+        const error = new NamedError.Unknown({ message: incompatibility })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        yield* status.set(input.sessionID, { type: "idle" })
+        throw error
+      }
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
-      const full =
-        !input.variant && ag.variant && same
-          ? yield* provider
-              .getModel(model.providerID, model.modelID)
-              .pipe(Effect.catchIf(Provider.ModelNotFoundError.isInstance, () => Effect.succeed(undefined)))
-          : undefined
+      const full = !input.variant && ag.variant && same ? resolvedModel : undefined
       const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
 
       const info: SessionV1.User = {
@@ -1143,7 +1170,13 @@ export const layer = Layer.effect(
         yield* sessions.setPermission({ sessionID: session.id, permission: permissions })
       }
 
-      if (input.noReply === true) return message
+      // createUserMessage leaves status as provider preflight on success; the
+      // reply loop sets busy next. noReply turns never start the loop, so clear
+      // preflight here or API/CLI callers get stuck on "Checking provider…".
+      if (input.noReply === true) {
+        yield* status.set(input.sessionID, { type: "idle" })
+        return message
+      }
       return yield* loop({ sessionID: input.sessionID })
     })
 

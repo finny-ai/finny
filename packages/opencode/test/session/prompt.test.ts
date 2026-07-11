@@ -2174,6 +2174,29 @@ it.instance(
 
 // Agent variant
 
+noLLMServer.instance("rejects unknown models before saving the user prompt", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const status = yield* SessionStatus.Service
+    const session = yield* sessions.create({})
+
+    const exit = yield* prompt
+      .prompt({
+        sessionID: session.id,
+        agent: "build",
+        model: { providerID: ProviderV2.ID.make("google"), modelID: ModelV2.ID.make("gemini-3.1-pro") },
+        noReply: true,
+        parts: [{ type: "text", text: "hello" }],
+      })
+      .pipe(Effect.exit)
+
+    expect(Exit.isFailure(exit)).toBe(true)
+    expect(yield* sessions.messages({ sessionID: session.id })).toEqual([])
+    expect(yield* status.get(session.id)).toEqual({ type: "idle" })
+  }),
+)
+
 noLLMServer.instance(
   "applies agent variant only when using agent model",
   () =>
@@ -2185,7 +2208,7 @@ noLLMServer.instance(
       const other = yield* prompt.prompt({
         sessionID: session.id,
         agent: "build",
-        model: { providerID: ProviderV2.ID.make("opencode"), modelID: ModelV2.ID.make("kimi-k2.5-free") },
+        model: { providerID: ProviderV2.ID.make("opencode"), modelID: ModelV2.ID.make("deepseek-v4-flash-free") },
         noReply: true,
         parts: [{ type: "text", text: "hello" }],
       })

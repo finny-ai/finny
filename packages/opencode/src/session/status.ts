@@ -6,7 +6,7 @@ import { Effect, Layer, Context, Schema } from "effect"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 
-export const PreflightPhase = Schema.Literals(["workspace", "python", "install", "ready"])
+export const PreflightPhase = Schema.Literals(["provider", "workspace", "python", "install", "ready"])
 export type PreflightPhase = Schema.Schema.Type<typeof PreflightPhase>
 
 export const Info = Schema.Union([

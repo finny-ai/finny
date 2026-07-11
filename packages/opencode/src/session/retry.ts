@@ -1,6 +1,6 @@
 import type { NamedError } from "@opencode-ai/core/util/error"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
-import { Cause, Clock, Duration, Effect, Schedule } from "effect"
+import { Cause, Duration, Effect, Schedule } from "effect"
 import { MessageV2 } from "./message-v2"
 import { iife } from "@/util/iife"
 import { isRecord } from "@/util/record"
@@ -27,6 +27,10 @@ export const RETRY_INITIAL_DELAY = 2000
 export const RETRY_BACKOFF_FACTOR = 2
 export const RETRY_MAX_DELAY_NO_HEADERS = 30_000 // 30 seconds
 export const RETRY_MAX_DELAY = 2_147_483_647 // max 32-bit signed integer for setTimeout
+export const RETRY_MAX_ATTEMPTS = 3
+export const RETRY_MAX_ELAPSED_MS = 60_000
+
+export type RetryClass = "terminal" | "delayed" | "transient"
 
 function cap(ms: number) {
   return Math.min(ms, RETRY_MAX_DELAY)
@@ -151,6 +155,51 @@ export function retryable(error: Err, provider: string) {
   return undefined
 }
 
+function retryHint(error: SessionV1.APIError) {
+  const headers = error.data.responseHeaders
+  if (!headers) return false
+  const milliseconds = num(headers["retry-after-ms"])
+  if (milliseconds !== undefined && milliseconds >= 0) return true
+  const seconds = num(headers["retry-after"])
+  if (seconds !== undefined && seconds >= 0) return true
+  const date = headers["retry-after"] ? Date.parse(headers["retry-after"]) : Number.NaN
+  return !Number.isNaN(date) && date > Date.now()
+}
+
+export function classify(error: Err, provider: string): RetryClass {
+  if (SessionV1.ContextOverflowError.isInstance(error)) return "terminal"
+  if (SessionV1.APIError.isInstance(error)) {
+    const status = error.data.statusCode
+    if (status !== undefined && [400, 401, 402, 403, 404].includes(status)) return "terminal"
+
+    const text = `${error.data.message} ${error.data.responseBody ?? ""}`.toLowerCase()
+    if (
+      [
+        "invalid api key",
+        "invalid credentials",
+        "authentication failed",
+        "unauthorized",
+        "insufficient balance",
+        "account disabled",
+        "billing hard limit",
+        "freeusagelimiterror",
+        "the usage limit has been reached",
+      ].some((pattern) => text.includes(pattern))
+    ) {
+      return "terminal"
+    }
+    if (
+      !retryHint(error) &&
+      ["quota exceeded", "resource_exhausted", "usage limit reached"].some((x) => text.includes(x))
+    ) {
+      return "terminal"
+    }
+    if (!retryable(error, provider)) return "terminal"
+    return retryHint(error) || status === 429 ? "delayed" : "transient"
+  }
+  return retryable(error, provider) ? "transient" : "terminal"
+}
+
 function str(value: unknown) {
   if (value === undefined || value === null) return ""
   return String(value)
@@ -178,14 +227,29 @@ export function policy(opts: {
   parse: (error: unknown) => Err
   set: (input: { attempt: number; message: string; action?: Retryable["action"]; next: number }) => Effect.Effect<void>
 }) {
+  let startedAt: number | undefined
   return Schedule.fromStepWithMetadata(
     Effect.succeed((meta: Schedule.InputMetadata<unknown>) => {
       const error = opts.parse(meta.input)
+      const decision = classify(error, opts.provider)
+      if (decision === "terminal") return Cause.done(meta.attempt)
       const retry = retryable(error, opts.provider)
       if (!retry) return Cause.done(meta.attempt)
+      const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
+      const now = Date.now()
+      startedAt ??= now
+      const elapsed = now - startedAt
+      if (meta.attempt > RETRY_MAX_ATTEMPTS || elapsed + wait > RETRY_MAX_ELAPSED_MS) {
+        return Cause.done(meta.attempt)
+      }
       return Effect.gen(function* () {
-        const wait = delay(meta.attempt, SessionV1.APIError.isInstance(error) ? error : undefined)
-        const now = yield* Clock.currentTimeMillis
+        yield* Effect.logInfo("provider retry decision", {
+          provider: opts.provider,
+          decision,
+          attempt: meta.attempt,
+          elapsed,
+          wait,
+        })
         yield* opts.set({
           attempt: meta.attempt,
           message: retry.message,
