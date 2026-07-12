@@ -34,6 +34,22 @@ const parameters = z.object({
     .default("1h")
     .describe("Bar interval"),
   capital: z.string().default("10000").describe("Starting capital in USD"),
+  walkForwardFolds: z
+    .number()
+    .int()
+    .min(2)
+    .default(10)
+    .describe("Number of rolling walk-forward folds to run for each parameter combination. Defaults to 10; use any integer of at least 2."),
+  feeBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional taker fee in basis points for each run. Overrides the saved execution fee without changing the algorithm."),
+  slippageBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional base slippage in basis points for each run. Overrides the saved execution slippage without changing the algorithm."),
 })
 
 type Combo = Record<string, number | string | boolean>
@@ -168,9 +184,19 @@ export const BacktestSweepTool = Tool.define(
             duration: input.duration,
             interval: input.interval,
             capital: input.capital,
-            configOverrides: { params: combo },
+            configOverrides: {
+              params: combo,
+              ...(input.feeBps === undefined && input.slippageBps === undefined
+                ? {}
+                : {
+                    execution: {
+                      ...(input.feeBps === undefined ? {} : { taker_fee_bps: input.feeBps }),
+                      ...(input.slippageBps === undefined ? {} : { slippage_bps: input.slippageBps }),
+                    },
+                  }),
+            },
             source: "sweep",
-            robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: 5 },
+            robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: input.walkForwardFolds },
             sessionID: ctx.sessionID,
             dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
           })

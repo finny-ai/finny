@@ -2,7 +2,7 @@
 
   python -m engine_v2.cli --csv ohlcv.csv --config config.json \
       --interval 15m --capital 10000 [--out results/] [--seed 42] \
-      [--mc-paths 1000] [--wf-folds 5]
+      [--mc-paths 1000] [--wf-folds 10]
 """
 
 from __future__ import annotations

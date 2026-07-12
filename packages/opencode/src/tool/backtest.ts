@@ -159,6 +159,22 @@ const parameters = z.object({
     .string()
     .default("10000")
     .describe("Starting capital in USD (e.g. '10000')"),
+  walkForwardFolds: z
+    .number()
+    .int()
+    .min(2)
+    .default(10)
+    .describe("Number of rolling walk-forward folds to run. Defaults to 10; use any integer of at least 2."),
+  feeBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional taker fee in basis points for this run. Overrides the saved execution fee without changing the algorithm."),
+  slippageBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional base slippage in basis points for this run. Overrides the saved execution slippage without changing the algorithm."),
   startDate: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}$/, "startDate must be YYYY-MM-DD")
@@ -626,10 +642,19 @@ export const BacktestTool = Tool.define(
           startDate: effectiveStartDate,
           endDate: effectiveEndDate,
           dataQualityMode: params.dataQualityMode,
+          configOverrides:
+            params.feeBps === undefined && params.slippageBps === undefined
+              ? undefined
+              : {
+                  execution: {
+                    ...(params.feeBps === undefined ? {} : { taker_fee_bps: params.feeBps }),
+                    ...(params.slippageBps === undefined ? {} : { slippage_bps: params.slippageBps }),
+                  },
+                },
           robustness: {
             monteCarloPaths: 500,
             regimes: true,
-            walkForwardFolds: 5,
+            walkForwardFolds: params.walkForwardFolds,
             priorSelectionTrials: experiment?.trials.priorUniqueTrials ?? 0,
             currentSelectionTrials: experiment?.trials.currentGridTrials ?? 1,
           },
