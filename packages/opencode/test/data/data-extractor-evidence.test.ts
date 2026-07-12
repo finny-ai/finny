@@ -193,6 +193,9 @@ describe("validateDataExtractorTaskText", () => {
         actual_end: "2025-12-31T00:00:00Z",
         rows: 2_011,
         run_id: "spy-reuse-hydrate",
+        request_id: "ses_spy_reuse_hydrate",
+        request_version: 1,
+        request_content_hash: "sha256:spy-reuse-hydrate",
         coverage: "complete",
         usable_for_parent: "yes",
       }),
@@ -207,6 +210,9 @@ describe("validateDataExtractorTaskText", () => {
         requested_algorithm_name: slug,
         requested_start: "2018-01-02",
         requested_end: "2025-12-31",
+        request_id: "ses_spy_reuse_hydrate",
+        request_version: 1,
+        request_content_hash: "sha256:spy-reuse-hydrate",
       },
     })
 

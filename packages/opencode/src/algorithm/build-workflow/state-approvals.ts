@@ -65,14 +65,6 @@ export function unambiguousApprovalDecision(text: string): "approve" | "reject" 
   return approves ? "approve" : "reject"
 }
 
-export function hasFailureBudgetApproval(state: BuildWorkflowState, conceptId: string): boolean {
-  return state.approvals.some((approval) => {
-    if (approval.kind !== "failure_budget_override") return false
-    const challenge = state.approvalChallenges.find((item) => item.id === approval.challengeId)
-    return challenge?.scope.conceptId === conceptId && challenge.scopeHash === approval.scopeHash
-  })
-}
-
 function realUserSource(event: Extract<WorkflowEvent, { type: "approval.granted" | "approval.rejected" }>) {
   if (event.source.actor !== "user" || event.source.synthetic === true) return false
   if (event.source.structuredResponse === true) return !!event.source.questionRequestId

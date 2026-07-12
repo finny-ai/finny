@@ -1,135 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import {
-  countConsecutiveFailedBacktests,
   inferSavedBacktestDates,
-  MAX_CONSECUTIVE_FAILED_BACKTESTS,
   paperApprovalRequestForWorkflow,
   parseDataQualityFailure,
   repairOutliersBlockMessage,
   strictDataQualityNextSteps,
 } from "../../src/tool/backtest"
-import { classifyConceptExhaustedFailure } from "../../src/tool/backtest-failure-diagnosis"
-
-function backtestPart(algorithmName: string, output: string) {
-  return {
-    parts: [
-      {
-        type: "tool",
-        tool: "finny_backtest",
-        state: {
-          status: "completed",
-          input: { algorithmName },
-          output,
-          metadata: {},
-        },
-      },
-    ],
-  }
-}
-
-describe("backtest failure budget", () => {
-  test("allows a full optimization loop before requiring explicit approval", () => {
-    expect(MAX_CONSECUTIVE_FAILED_BACKTESTS).toBe(5)
-  })
-
-  test("counts consecutive failed backtests for the same algorithm", () => {
-    const messages = [
-      backtestPart("btc-trend-follower", "Verdict: failed"),
-      backtestPart("btc-trend-follower", "Verdict: failed"),
-    ]
-
-    expect(countConsecutiveFailedBacktests(messages, "btc-trend-follower")).toBe(2)
-  })
-
-  test("counts a single failed backtest as one, not two", () => {
-    const messages = [backtestPart("spy-15m-mean-reversion", "Verdict: failed")]
-    expect(countConsecutiveFailedBacktests(messages, "spy-15m-mean-reversion")).toBe(1)
-  })
-
-  test("does not count validation-only or non-backtest parts as failures", () => {
-    const messages = [
-      { parts: [{ type: "tool", tool: "finny_algorithm_validate", state: { status: "completed", input: { algorithmName: "spy-15m-mean-reversion" }, output: "Verdict: failed", metadata: {} } }] },
-      backtestPart("spy-15m-mean-reversion", "Verdict: failed"),
-    ]
-    expect(countConsecutiveFailedBacktests(messages, "spy-15m-mean-reversion")).toBe(1)
-  })
-
-  test("resets after a non-failed backtest", () => {
-    const messages = [
-      backtestPart("btc-trend-follower", "Verdict: failed"),
-      backtestPart("btc-trend-follower", "Verdict: weak_positive"),
-      backtestPart("btc-trend-follower", "Verdict: failed"),
-    ]
-
-    expect(countConsecutiveFailedBacktests(messages, "btc-trend-follower")).toBe(1)
-  })
-
-  test("ignores other algorithms", () => {
-    const messages = [
-      backtestPart("btc-trend-follower", "Verdict: failed"),
-      backtestPart("eth-trend-follower", "Verdict: failed"),
-    ]
-
-    expect(countConsecutiveFailedBacktests(messages, "btc-trend-follower")).toBe(1)
-  })
-
-  function scopedPart(algorithmName: string, symbol: string, interval: string, output: string) {
-    return {
-      parts: [
-        {
-          type: "tool",
-          tool: "finny_backtest",
-          state: {
-            status: "completed",
-            input: { algorithmName, interval },
-            output,
-            metadata: { results: { v2: { symbols: [symbol] } } },
-          },
-        },
-      ],
-    }
-  }
-
-  test("renaming the algorithm does not reset the budget for the same symbol+interval", () => {
-    // The observed loophole: after 2 failures on spy-daily-trend, the agent
-    // saved the same concept as spy-daily-golden-cross to bypass the block.
-    const messages = [
-      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
-      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
-    ]
-    expect(
-      countConsecutiveFailedBacktests(messages, "spy-daily-golden-cross", { symbol: "SPY", interval: "1d" }),
-    ).toBe(2)
-  })
-
-  test("a different symbol does not share the budget", () => {
-    const messages = [
-      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
-      scopedPart("spy-daily-trend", "SPY", "1d", "Verdict: failed"),
-    ]
-    expect(
-      countConsecutiveFailedBacktests(messages, "btc-daily-trend", { symbol: "BTC/USD", interval: "1d" }),
-    ).toBe(0)
-  })
-
-  test("a different interval does not share the budget", () => {
-    const messages = [
-      scopedPart("spy-15m-mean-reversion", "SPY", "15min", "Verdict: failed"),
-      scopedPart("spy-15m-mean-reversion", "SPY", "15min", "Verdict: failed"),
-    ]
-    expect(
-      countConsecutiveFailedBacktests(messages, "spy-1h-trend", { symbol: "SPY", interval: "1h" }),
-    ).toBe(0)
-  })
-
-  test("interval comparison is normalized (15min vs 15m)", () => {
-    const messages = [
-      scopedPart("a", "SPY", "15min", "Verdict: failed"),
-      scopedPart("b", "SPY", "15m", "Verdict: failed"),
-    ]
-    expect(countConsecutiveFailedBacktests(messages, "c", { symbol: "SPY", interval: "15min" })).toBe(2)
-  })
-})
 
 describe("backtest paper approval challenge", () => {
   const hashes = {
@@ -250,24 +126,6 @@ describe("strict data quality next steps", () => {
     expect(output).toContain("Only after explicit user approval")
     expect(output.indexOf("Verify the flagged candles first")).toBeLessThan(output.indexOf("Only after explicit user approval"))
     expect(output).toContain("before changing the backtest window, interval, provider, or data-quality strictness")
-  })
-})
-
-describe("backtest failure budget stop message", () => {
-  test("concept exhaustion distinguishes engine success from blockers", () => {
-    const withMetrics = classifyConceptExhaustedFailure({
-      consecutiveFailures: 5,
-      algorithmName: "btc-daily-rsi",
-      priorRunsHadMetrics: true,
-    })
-    expect(withMetrics.summary).toContain("Backtest engine ran successfully")
-
-    const withoutMetrics = classifyConceptExhaustedFailure({
-      consecutiveFailures: 5,
-      algorithmName: "btc-daily-rsi",
-      priorRunsHadMetrics: false,
-    })
-    expect(withoutMetrics.summary).toContain("Backtest did not run")
   })
 })
 

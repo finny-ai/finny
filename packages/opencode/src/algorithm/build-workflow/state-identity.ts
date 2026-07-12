@@ -103,8 +103,6 @@ export function experimentTrialSummary(
     priorUniqueTrials,
     currentGridTrials,
     totalDsrTrials: Math.max(1, totalDsrTrials),
-    remainingTrials: Math.max(0, 5 - priorUniqueTrials),
     replayOfAttemptId: replay?.id,
-    budgetExceeded: !replay && totalDsrTrials > 5,
   }
 }

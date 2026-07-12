@@ -211,9 +211,7 @@ export interface ExperimentTrialSummary {
   priorUniqueTrials: number
   currentGridTrials: number
   totalDsrTrials: number
-  remainingTrials: number
   replayOfAttemptId?: string
-  budgetExceeded: boolean
 }
 
 export interface WorkflowEventSource {

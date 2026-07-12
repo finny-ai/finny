@@ -250,7 +250,9 @@ export const RunCommand = effectCmd({
     const localInstance = yield* InstanceRef
     yield* Effect.promise(async () => {
       const rawMessage = [...args.message, ...(args["--"] || [])].join(" ")
-      const thinking = args.interactive ? (args.thinking ?? true) : (args.thinking ?? false)
+      // The split-footer renderer intentionally suppresses raw provider reasoning,
+      // but non-interactive output must continue to honor --thinking.
+      const thinking = args.interactive ? false : (args.thinking ?? false)
       const die = (message: string): never => {
         throw new CliError({ message, exitCode: 1 })
       }
@@ -831,7 +833,9 @@ export const RunCommand = effectCmd({
             initialInput,
             createSession: createFreshSession,
             thinking,
-            backgroundSubagents: flags.experimentalBackgroundSubagents,
+            // Background work is a primary Finny workflow surface, not an
+            // opt-in experiment: always expose its tabs in the TUI.
+            backgroundSubagents: true,
             demo: args.demo,
           })
         } catch (error) {
@@ -865,7 +869,7 @@ export const RunCommand = effectCmd({
             files,
             initialInput,
             thinking,
-            backgroundSubagents: flags.experimentalBackgroundSubagents,
+            backgroundSubagents: true,
             demo: args.demo,
           })
         } catch (error) {

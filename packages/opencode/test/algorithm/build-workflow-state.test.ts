@@ -465,14 +465,13 @@ describe("algorithm build workflow experiment ledger", () => {
       outcome: "metrics",
       createdAt: 4_000,
     })
-    expect(
-      transition(state, {
-        id: "event_attempt_variant_6",
-        type: "experiment.recorded",
-        occurredAt: 4_000,
-        source: { actor: "tool" },
-        attempt: sixth,
-      }),
-    ).toMatchObject({ allowed: false, code: "experiment_failure_budget_exceeded" })
+    const decision = transition(state, {
+      id: "event_attempt_variant_6",
+      type: "experiment.recorded",
+      occurredAt: 4_000,
+      source: { actor: "tool" },
+      attempt: sixth,
+    })
+    expect(decision.allowed).toBe(true)
   })
 })

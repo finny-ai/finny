@@ -270,6 +270,14 @@ const EXPLICIT_SYMBOL_RES: Array<{
   capture?: number
 }> = [
   {
+    // Exchange-qualified Canadian tickers must bind to the ticker, not the
+    // exchange code (for example, TSXV:PNG → PNG).
+    re: /\b(?:TSXV|TSX|CSE|NASDAQ|NYSE|AMEX)\s*:\s*([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    score: 130,
+    allowUnknown: true,
+    requireUppercaseForUnknown: true,
+  },
+  {
     re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
     score: 120,
     allowUnknown: true,

@@ -1,13 +1,11 @@
 import {
   grantApproval,
-  hasFailureBudgetApproval,
   rejectApproval,
   requestApproval,
 } from "./state-approvals"
 import {
   backtestIdentityHash,
   experimentReplayKey,
-  experimentTrialSummary,
 } from "./state-identity"
 import type {
   BacktestHashes,
@@ -196,26 +194,6 @@ function gridTrialsInvalid(gridTrials: number): boolean {
   return gridTrials < 1
 }
 
-function metricsBudgetBlocked(state: BuildWorkflowState, attempt: ExperimentAttempt): boolean {
-  if (attempt.outcome !== "metrics") return false
-  const summary = experimentTrialSummary(state, {
-    conceptId: attempt.conceptId,
-    replayKey: attempt.replayKey,
-    currentGridTrials: attempt.gridTrials,
-  })
-  if (!summary.budgetExceeded) return false
-  return !hasFailureBudgetApproval(state, attempt.conceptId)
-}
-
-function experimentBudgetMessage(state: BuildWorkflowState, attempt: ExperimentAttempt): string {
-  const summary = experimentTrialSummary(state, {
-    conceptId: attempt.conceptId,
-    replayKey: attempt.replayKey,
-    currentGridTrials: attempt.gridTrials,
-  })
-  return `This concept already consumed ${summary.priorUniqueTrials} unique metric-producing trials; a scoped user approval is required to exceed five.`
-}
-
 function recordExperimentIssue(
   state: BuildWorkflowState,
   event: Extract<WorkflowEvent, { type: "experiment.recorded" }>,
@@ -239,9 +217,6 @@ function recordExperimentIssue(
   }
   if (state.experimentAttempts.some((item) => item.id === attempt.id)) {
     return rejected(state, "experiment_attempt_exists", `Experiment attempt ${attempt.id} already exists.`)
-  }
-  if (metricsBudgetBlocked(state, attempt)) {
-    return rejected(state, "experiment_failure_budget_exceeded", experimentBudgetMessage(state, attempt))
   }
   return undefined
 }

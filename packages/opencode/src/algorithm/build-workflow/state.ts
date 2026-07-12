@@ -2,7 +2,6 @@ import { normalizeInterval, normalizeSymbol } from "@/agent/request-identity"
 import {
   approvalScopeHash,
   grantApproval,
-  hasFailureBudgetApproval,
   makeApprovalChallenge,
   paperTradingApprovalScope,
   rejectApproval,
@@ -37,7 +36,6 @@ export {
   experimentReplayKey,
   experimentTrialSummary,
   grantApproval,
-  hasFailureBudgetApproval,
   makeApprovalChallenge,
   makeExperimentAttempt,
   paperTradingApprovalScope,

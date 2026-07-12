@@ -6,7 +6,6 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
-import { normalizeInterval } from "../agent/request-identity"
 import { evaluateBacktestQuality } from "../backtest/evaluation"
 import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../backtest/verdict"
 import { generateReviewPacket } from "../backtest/review-packet"
@@ -15,12 +14,10 @@ import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-ext
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
-  classifyConceptExhaustedFailure,
   classifyDataBlockedFailure,
   classifyEngineFailedFailure,
   classifyValidationFailedFailure,
   formatFailureDiagnosisBlock,
-  priorBacktestsHadMetrics,
   zeroTradeLikelyCause,
   type FailureDiagnosis,
 } from "./backtest-failure-diagnosis"
@@ -46,9 +43,6 @@ import {
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
 import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
-
-export const MAX_CONSECUTIVE_FAILED_BACKTESTS = 5
-export const BACKTEST_TOOL_IDS = new Set(["finny_backtest", "finny_backtest_run"])
 
 type WfMeta = {
   n_folds: number
@@ -188,24 +182,9 @@ const parameters = z.object({
   userApproved: z
     .boolean()
     .optional()
-    .describe(
-      `Deprecated compatibility hint. It never bypasses the ${MAX_CONSECUTIVE_FAILED_BACKTESTS}-trial budget; use finny_workflow_request_approval for the controller-created scope.`,
-    ),
+    .describe("Deprecated compatibility hint. It does not grant any workflow approval."),
   experiment: experimentParameters.optional().describe("Durable scientific experiment contract; boundaries are required for validation or confirmatory holdout access."),
 })
-
-type BacktestMessageLike = {
-  parts?: Array<{
-    type?: string
-    tool?: string
-    state?: {
-      status?: string
-      input?: Record<string, any>
-      output?: string
-      metadata?: Record<string, any>
-    }
-  }>
-}
 
 export type DataQualityFailureMetadata = {
   kind: "data_quality_failed"
@@ -240,48 +219,6 @@ export type DataQualityFailureMetadata = {
     z_score: number
     provider?: string
   }>
-}
-
-/**
- * Count consecutive failed backtest runs that belong to the same attempt
- * stream. A prior run matches when it ran the SAME algorithm name, or — when
- * `scope` is known — the same symbol+interval under any name. The
- * symbol+interval match closes the rename loophole: saving the same concept
- * under a fresh algorithm name must not reset the failure budget.
- */
-export function countConsecutiveFailedBacktests(
-  messages: BacktestMessageLike[],
-  algorithmName: string,
-  scope?: { symbol?: string; interval?: string },
-) {
-  const scopeSymbol = scope?.symbol?.toUpperCase()
-  const scopeInterval = scope?.interval && normalizeInterval(scope.interval)
-  let count = 0
-  for (const msg of [...messages].reverse()) {
-    for (const part of [...(msg.parts ?? [])].reverse()) {
-      if (part.type !== "tool" || !BACKTEST_TOOL_IDS.has(String(part.tool))) continue
-      if (part.state?.status !== "completed") continue
-
-      const input = part.state.input
-      const metadata = part.state.metadata
-      const sameName = input?.algorithmName === algorithmName
-      const partSymbol = (metadata?.results?.v2?.symbols?.[0] as string | undefined)?.toUpperCase()
-      const partInterval = input?.interval && normalizeInterval(input.interval)
-      const sameScope =
-        Boolean(scopeSymbol && scopeInterval && partSymbol && partInterval) &&
-        partSymbol === scopeSymbol &&
-        partInterval === scopeInterval
-      if (!sameName && !sameScope) continue
-
-      const output = part.state.output ?? ""
-      if (output.includes("Verdict: failed")) {
-        count++
-        continue
-      }
-      return count
-    }
-  }
-  return count
 }
 
 export function repairOutliersBlockMessage(input: {
@@ -657,64 +594,6 @@ export const BacktestTool = Tool.define(
           }))
           workflow = candidate.workflow
           experiment = candidate.experiment
-        }
-        let configSymbol: string | undefined
-        try {
-          const parsed = algo.config ? JSON.parse(algo.config) : {}
-          configSymbol = typeof parsed.symbol === "string" ? parsed.symbol : undefined
-        } catch {}
-        const consecutiveFailures = countConsecutiveFailedBacktests(ctx.messages, params.algorithmName, {
-          symbol: configSymbol,
-          interval: params.interval,
-        })
-        const budgetReached = Boolean(experiment?.trials.budgetExceeded) || consecutiveFailures >= MAX_CONSECUTIVE_FAILED_BACKTESTS
-        const priorTrials = Math.max(experiment?.trials.priorUniqueTrials ?? 0, consecutiveFailures)
-        const budgetScope: ApprovalScope | undefined = experiment
-          ? {
-              conceptId: experiment.conceptId,
-              priorUniqueTrials: priorTrials,
-              currentGridTrials: experiment.trials.currentGridTrials,
-            }
-          : undefined
-        const budgetApproved = Boolean(
-          budgetScope && exactApproval(workflow, "failure_budget_override", budgetScope),
-        )
-        if (budgetReached && !budgetApproved) {
-          const challengeId = budgetScope
-            ? await ensureChallenge(
-                "failure_budget_override",
-                budgetScope,
-                "Continue this exact strategy concept after five unique metric-producing selections.",
-              )
-            : undefined
-          const hadMetrics = priorBacktestsHadMetrics(ctx.messages, {
-            symbol: configSymbol,
-            interval: params.interval,
-          })
-          const failureDiagnosis = classifyConceptExhaustedFailure({
-            consecutiveFailures: priorTrials,
-            algorithmName: params.algorithmName,
-            priorRunsHadMetrics: hadMetrics || (experiment?.trials.priorUniqueTrials ?? 0) > 0,
-          })
-          const diagnosisLines = formatFailureDiagnosisBlock(failureDiagnosis)
-          return {
-            title: "Backtest blocked by failure budget",
-            output:
-              `Backtest blocked: this concept already has ${priorTrials} unique metric-producing trials.\n\n` +
-              `${failureDiagnosis.summary}\n` +
-              `Renaming or versioning the algorithm does not reset this budget. ` +
-              `The deprecated userApproved boolean cannot grant approval.` +
-              (challengeId
-                ? ` Call finny_workflow_request_approval with challengeId=${challengeId}.\n`
-                : " This legacy session has no authoritative workflow challenge.\n") +
-              diagnosisLines.join("\n"),
-            metadata: {
-              ...emptyMeta,
-              failure_diagnosis: failureDiagnosis,
-              approvalChallengeId: challengeId,
-              experiment: experiment?.trials,
-            },
-          }
         }
         const totalDays = BacktestRunner.parseDurationDays(params.duration)
         if (!totalDays || totalDays < 14) {

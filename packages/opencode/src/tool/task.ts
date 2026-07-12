@@ -716,12 +716,12 @@ function renderBatchOutput(
     index: number
     subagentType: string
     description: string
-    state: "completed" | "error"
+    state: "completed" | "error" | "running"
     text: string
   }>,
 ) {
   return [
-    '<task_batch state="completed">',
+    `<task_batch state="${results.some((result) => result.state === "running") ? "running" : "completed"}">`,
     ...results.flatMap((result) => [
       `<batch_item index="${result.index}" subagent_type="${result.subagentType}" state="${result.state}">`,
       `<summary>${result.description}</summary>`,
@@ -784,6 +784,9 @@ const taskExecutor = Effect.gen(function* () {
               : undefined
           })
         : undefined
+      // Mandatory evidence is part of the parent build turn. It must finish
+      // before a non-interactive `finny run` observes the parent as idle and
+      // exits; ordinary task_start calls remain background work.
       const runInBackground = mandatoryEvidence ? false : options.mode === "background"
       // Permission and agent resolution precede workflow registration so a
       // denied or unknown task cannot create a running fingerprint.
@@ -1479,6 +1482,25 @@ const taskExecutor = Effect.gen(function* () {
         if (bootstrapped?.slug) {
           yield* Effect.promise(() => bindSessionWorkspace(ctx.sessionID, bootstrapped.slug).catch(() => {}))
         }
+      }
+
+      // Establish one immutable parent request context before background
+      // children start. Letting each child rewrite the shared request spec
+      // races the atomic writer and can make sibling evidence agents appear to
+      // belong to different symbols.
+      const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
+      const parentFacts = yield* Effect.promise(() => readRuntimeRequestFacts(ctx.sessionID))
+      const canonicalTask = params.tasks.find((task) => task.subagent_type === "data_extractor") ?? params.tasks[0]
+      if (workspace && canonicalTask && !requestHasIdentity(parentFacts)) {
+        yield* Effect.promise(() =>
+          syncWorkspaceRequestContext({
+            sessionID: ctx.sessionID,
+            slug: workspace,
+            prompt: canonicalTask.prompt,
+            actor: "runtime",
+            reason: "batch evidence request context",
+          }),
+        )
       }
 
       const runningSubagents = new Map<string, NonNullable<TaskMetadata["subagents"]>[number]>()

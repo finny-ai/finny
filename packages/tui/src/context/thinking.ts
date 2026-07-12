@@ -55,6 +55,14 @@ export function useThinkingMode() {
 
   if ((stored() as string) === "minimal") set("hide")
 
+  // Existing installations may have persisted the old expanded default. Reset
+  // it once so reasoning starts collapsed after the disclosure UI migration,
+  // while still allowing the user to explicitly toggle and persist it later.
+  if (kv.get("thinking_collapsed_default_v2") !== true) {
+    set("hide")
+    kv.set("thinking_collapsed_default_v2", true)
+  }
+
   const mode = createMemo<ThinkingMode>(() => {
     const value = stored()
     return isThinkingMode(value) ? value : "hide"

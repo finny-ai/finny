@@ -4,7 +4,6 @@ import type { BacktestRunner } from "../../src/backtest/runner"
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
-  classifyConceptExhaustedFailure,
   classifyDataBlockedFailure,
   classifyEngineFailedFailure,
   classifyValidationFailedFailure,
@@ -122,16 +121,6 @@ describe("failure classification", () => {
     expect(diagnosis.engineRan).toBe(false)
   })
 
-  test("concept exhaustion with prior metrics => engine success wording", () => {
-    const diagnosis = classifyConceptExhaustedFailure({
-      consecutiveFailures: 5,
-      algorithmName: "btc-daily-rsi-v5",
-      priorRunsHadMetrics: true,
-    })
-    expect(diagnosis.classification).toBe("concept_exhausted")
-    expect(diagnosis.summary).toContain("Backtest engine ran successfully")
-    expect(diagnosis.likelyCause).toBe("concept")
-  })
 })
 
 describe("code pattern preflight", () => {
@@ -210,22 +199,6 @@ class Strategy:
     expect(diagnosis?.engineRan).toBe(true)
   })
 
-  test("final stop message distinguishes engine success from blockers", () => {
-    const exhausted = classifyConceptExhaustedFailure({
-      consecutiveFailures: 5,
-      algorithmName: "btc-daily-rsi-v5",
-      priorRunsHadMetrics: true,
-    })
-    expect(exhausted.summary).toContain("strategy variants lost money")
-    expect(exhausted.guidance.join(" ")).toContain("not backtest/data when metrics were produced")
-
-    const blocked = classifyConceptExhaustedFailure({
-      consecutiveFailures: 5,
-      algorithmName: "btc-daily-rsi-v5",
-      priorRunsHadMetrics: false,
-    })
-    expect(blocked.summary).toContain("Backtest did not run")
-  })
 })
 
 describe("priorBacktestsHadMetrics", () => {

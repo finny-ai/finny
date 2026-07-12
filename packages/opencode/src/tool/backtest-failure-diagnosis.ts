@@ -392,33 +392,6 @@ export function classifyValidationFailedFailure(): FailureDiagnosis {
   }
 }
 
-export function classifyConceptExhaustedFailure(input: {
-  consecutiveFailures: number
-  algorithmName: string
-  priorRunsHadMetrics: boolean
-}): FailureDiagnosis {
-  const summary = input.priorRunsHadMetrics
-    ? `Backtest engine ran successfully; ${input.consecutiveFailures} strategy variants lost money or failed quality gates for this symbol/interval.`
-    : `Backtest did not run to completion ${input.consecutiveFailures} times for this symbol/interval — inspect blockers before trying more variants.`
-
-  return {
-    classification: "concept_exhausted",
-    likelyCause: input.priorRunsHadMetrics ? "concept" : "backtest_data",
-    engineRan: input.priorRunsHadMetrics,
-    summary,
-    guidance: input.priorRunsHadMetrics
-      ? [
-          "Summarize concept failure before trying a new strategy family.",
-          "Likely cause: strategy code/design — not backtest/data when metrics were produced.",
-          "Renaming the algorithm does not reset the failure budget.",
-        ]
-      : [
-          "Likely cause: backtest/data or validation — resolve blockers before more variants.",
-          "Renaming the algorithm does not reset the failure budget.",
-        ],
-  }
-}
-
 export function formatFailureDiagnosisBlock(d: FailureDiagnosis): string[] {
   const lines = [
     ``,

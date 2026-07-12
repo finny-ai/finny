@@ -1544,7 +1544,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+      <Show when={props.parts.some((x) => x.type === "tool" && toolDisplay(x.tool) === "task")}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {childShortcut()}
@@ -1553,7 +1553,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
               when={props.parts.some(
                 (x) =>
                   x.type === "tool" &&
-                  x.tool === "task" &&
+                  toolDisplay(x.tool) === "task" &&
                   x.state.status === "running" &&
                   x.state.metadata?.background !== true,
               )}
@@ -2340,6 +2340,8 @@ function WebSearch(props: ToolProps) {
 }
 
 function Task(props: ToolProps) {
+  if (Array.isArray(props.metadata.subagents)) return <TaskBatch {...props} />
+
   const { theme } = useTheme()
   const { navigate } = useRoute()
   const sync = useSync()
@@ -2432,6 +2434,58 @@ function Task(props: ToolProps) {
     >
       {content()}
     </InlineTool>
+  )
+}
+
+function TaskBatch(props: ToolProps) {
+  const { theme } = useTheme()
+  const { navigate } = useRoute()
+  const sync = useSync()
+
+  const subagents = createMemo(() => {
+    if (!Array.isArray(props.metadata.subagents)) return []
+    return props.metadata.subagents.flatMap((value) => {
+      const item = recordValue(value)
+      const sessionId = stringValue(item?.sessionId)
+      if (!item || !sessionId) return []
+      return [{
+        sessionId,
+        subagentType: stringValue(item.subagentType) ?? "general",
+        description: stringValue(item.description) ?? "Delegated task",
+        state: stringValue(item.state) ?? "running",
+      }]
+    })
+  })
+
+  createEffect(() => {
+    for (const item of subagents()) {
+      if (!sync.data.message[item.sessionId]?.length) void sync.session.sync(item.sessionId)
+    }
+  })
+
+  return (
+    <box flexDirection="column" gap={1}>
+      <For each={subagents()}>
+        {(item) => {
+          const status = createMemo(() => sync.data.session_status[item.sessionId])
+          const running = createMemo(() => item.state === "running" && status()?.type !== "idle")
+          return (
+            <InlineTool
+              icon={running() ? "│" : "✓"}
+              subagent={true}
+              color={item.state === "error" ? theme.error : undefined}
+              spinner={running()}
+              complete={item.description}
+              pending="Delegating..."
+              part={props.part}
+              onClick={() => navigate({ type: "session", sessionID: item.sessionId })}
+            >
+              {formatSubagentTitle(Locale.titlecase(item.subagentType), item.description, true)}
+            </InlineTool>
+          )
+        }}
+      </For>
+    </box>
   )
 }
 
@@ -2704,7 +2758,10 @@ const toolDisplays = new Set([
   "skill",
 ])
 
+const taskToolAliases = new Set(["task_run", "task_start", "task_batch_run"])
+
 export function toolDisplay(tool: string) {
+  if (taskToolAliases.has(tool)) return "task"
   return toolDisplays.has(tool) ? tool : "generic"
 }
 

@@ -182,6 +182,9 @@ export async function createRuntimeLifecycle(input: LifecycleInput): Promise<Lif
       stdin: source.stdin,
       targetFps: 30,
       maxFps: 60,
+      // OpenTUI's macOS render worker can crash under the current macOS runtime.
+      // Rendering on the CLI event loop remains functional and avoids that native path.
+      useThread: false,
       useMouse: false,
       autoFocus: false,
       openConsoleOnError: false,
