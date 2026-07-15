@@ -23,4 +23,4 @@ Known public constraints:
 - Current-session quotes on free endpoints may be delayed; never expect
   real-time or in-progress bars.
 
-Write exactly one OHLCV CSV and one `.manifest.json` sidecar under `allowed_data_dir` only when rows are usable for the requested source attempt. Manifest `source` should be `yfinance` or `yahoo_v8_chart` as appropriate, with requested versus actual coverage, source attempts, quality counts, and `usable_for_parent`.
+Write exactly one OHLCV CSV and one `.manifest.json` sidecar under `allowed_data_dir` only when rows are usable for the requested source attempt. The sidecar must be `DatasetEvidenceV2` (`schema: finny.dataset_evidence`, `version: 2`) plus the legacy identity fields. Record the exact Yahoo feed/venue, provider/canonical symbol, `auto_adjust` setting and split/dividend treatment, calendar/version/session/timezone, exact expected/actual/missing/extra timestamp counts and ranges, incomplete-final-bar state, raw/semantic/processed SHA-256 values, transformation versions, and qualification reason codes. Any repair, even if it changes zero rows, creates a new evidence ID with lineage and is permanently research-only.

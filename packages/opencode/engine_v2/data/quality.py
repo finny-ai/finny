@@ -35,6 +35,17 @@ class QualityReport:
     outlier_details: List[OutlierDetail] = field(default_factory=list)
     repaired_outliers: int = 0
     repair_applied: bool = False
+    expected_timestamp_count: int = 0
+    actual_timestamp_count: int = 0
+    missing_timestamp_count: int = 0
+    extra_timestamp_count: int = 0
+    missing_timestamps: List[str] = field(default_factory=list)
+    extra_timestamps: List[str] = field(default_factory=list)
+    missing_ranges: List[Dict[str, object]] = field(default_factory=list)
+    incomplete_final_bar_count: int = 0
+    calendar_id: str | None = None
+    calendar_version: str | None = None
+    session_type: str | None = None
 
 
 def expected_step(interval: str) -> pd.Timedelta:
@@ -332,7 +343,64 @@ def repair_isolated_outliers(
     return repaired, details
 
 
-def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", provider: str = "unknown") -> QualityReport:
+def _timestamp_ranges(timestamps: pd.DatetimeIndex, step: pd.Timedelta) -> List[Dict[str, object]]:
+    if len(timestamps) == 0:
+        return []
+    ranges: List[Dict[str, object]] = []
+    range_start = timestamps[0]
+    previous = timestamps[0]
+    count = 1
+    for current in timestamps[1:]:
+        if current - previous == step:
+            count += 1
+        else:
+            ranges.append({"start": range_start.isoformat(), "end": previous.isoformat(), "count": count})
+            range_start, count = current, 1
+        previous = current
+    ranges.append({"start": range_start.isoformat(), "end": previous.isoformat(), "count": count})
+    return ranges
+
+
+def _expected_timestamp_set(
+    ts: pd.Series,
+    interval: str,
+    asset_class: str,
+    requested_start: str | None,
+    requested_end: str | None,
+    calendar_id: str | None,
+    session_type: str | None,
+) -> tuple[pd.DatetimeIndex, str, str, str]:
+    from .calendars import CALENDAR_VERSION, ExpectedTimestampRequest, default_calendar_policy, expected_timestamps
+
+    policy = default_calendar_policy(asset_class, session_type)
+    start = requested_start or ts.iloc[0].date().isoformat()
+    end = requested_end or ts.iloc[-1].date().isoformat()
+    expected = expected_timestamps(
+        ExpectedTimestampRequest(
+            requested_start=start,
+            requested_end=end,
+            interval=interval,
+            asset_class=asset_class,
+            calendar_id=calendar_id,
+            session_type=session_type,
+        )
+    )
+    if requested_start is None and requested_end is None and policy.calendar_id in {"24/7", "FX_24_5"}:
+        expected = expected[(expected >= ts.iloc[0]) & (expected <= ts.iloc[-1])]
+    return expected, policy.calendar_id, CALENDAR_VERSION, policy.session_type
+
+
+def analyze(
+    df: pd.DataFrame,
+    interval: str,
+    asset_class: str = "crypto_spot",
+    provider: str = "unknown",
+    requested_start: str | None = None,
+    requested_end: str | None = None,
+    calendar_id: str | None = None,
+    session_type: str | None = None,
+    incomplete_final_bar_count: int = 0,
+) -> QualityReport:
     if df.empty:
         return QualityReport(0, 0.0, 0, 0, 0, 0, 0, ["empty input"])
     # Sort by timestamp first — gap/coverage/outlier math is sequential and
@@ -355,25 +423,19 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", p
     # Zero volume
     zero_vol = int((v <= 0).sum())
 
-    # Gaps and coverage.
-    gaps = 0
-    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
-        diffs = ts.diff().dropna()
-        step = expected_step(interval)
-        gaps = int((diffs > step * 1.5).sum())
-    if asset_class in {"equity", "future", "option"} and len(ts) > 1:
-        diffs = ts.diff().dropna()
-        step = expected_step(interval)
-        continuous = _continuous_return_mask(ts, interval, asset_class)
-        gaps = int(((diffs > step * 1.5).to_numpy() & continuous).sum())
-    coverage = 1.0
-    if asset_class in {"crypto", "crypto_spot", "crypto_perp", "fx"} and len(ts) > 1:
-        actual = len(ts)
-        expected = max(1, int((ts.iloc[-1] - ts.iloc[0]) / expected_step(interval)) + 1)
-        coverage = min(1.0, actual / expected)
-    if asset_class in {"equity", "future", "option"} and len(ts) > 1:
-        expected = _exchange_expected_count(ts, interval, asset_class)
-        coverage = min(1.0, len(ts) / expected)
+    # Exact calendar reconciliation. Duplicate rows are counted separately by
+    # the schema check but collapse to one actual timestamp for completeness.
+    step = expected_step(interval)
+    expected_ts, effective_calendar, calendar_version, effective_session = _expected_timestamp_set(
+        ts, interval, asset_class, requested_start, requested_end, calendar_id, session_type
+    )
+    actual_ts = pd.DatetimeIndex(ts).drop_duplicates().sort_values()
+    missing_ts = expected_ts.difference(actual_ts)
+    extra_ts = actual_ts.difference(expected_ts)
+    expected_count = len(expected_ts)
+    actual_in_window = len(actual_ts.intersection(expected_ts))
+    coverage = actual_in_window / expected_count if expected_count else 0.0
+    gaps = len(missing_ts)
 
     notes: List[str] = []
     if dupes:
@@ -385,13 +447,28 @@ def analyze(df: pd.DataFrame, interval: str, asset_class: str = "crypto_spot", p
     if zero_vol > len(ts) * 0.05:
         notes.append(f"{zero_vol} zero-volume bars ({zero_vol/len(ts):.1%})")
     if gaps:
-        notes.append(f"{gaps} gap(s) > 1.5×expected step")
+        notes.append(f"{gaps} expected timestamp(s) missing from {effective_calendar}")
+    if len(extra_ts):
+        notes.append(f"{len(extra_ts)} timestamp(s) outside the expected calendar/session")
+    if incomplete_final_bar_count:
+        notes.append(f"{incomplete_final_bar_count} incomplete final bar(s)")
 
     return QualityReport(
         n_bars=len(ts), coverage_pct=float(coverage), gap_count=gaps,
         duplicate_ts_count=dupes, ohlc_violations=ohlc_viol,
         outlier_bars=outliers, zero_volume_bars=zero_vol, notes=notes,
         outlier_details=outlier_details,
+        expected_timestamp_count=expected_count,
+        actual_timestamp_count=len(actual_ts),
+        missing_timestamp_count=len(missing_ts),
+        extra_timestamp_count=len(extra_ts),
+        missing_timestamps=[value.isoformat() for value in missing_ts],
+        extra_timestamps=[value.isoformat() for value in extra_ts],
+        missing_ranges=_timestamp_ranges(missing_ts, step),
+        incomplete_final_bar_count=incomplete_final_bar_count,
+        calendar_id=effective_calendar,
+        calendar_version=calendar_version,
+        session_type=effective_session,
     )
 
 
@@ -414,6 +491,12 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
         reasons.append(f"{report.ohlc_violations} invalid OHLC bar(s)")
     if report.coverage_pct < missing_threshold:
         reasons.append(f"coverage {report.coverage_pct:.1%} below {missing_threshold:.0%} threshold")
+    if report.missing_timestamp_count > 0:
+        reasons.append(f"{report.missing_timestamp_count} expected timestamp(s) missing")
+    if report.extra_timestamp_count > 0:
+        reasons.append(f"{report.extra_timestamp_count} timestamp(s) outside expected calendar/session")
+    if report.incomplete_final_bar_count > 0:
+        reasons.append("final candle is incomplete")
     if report.outlier_bars > 0:
         reasons.append(f"{report.outlier_bars} severe outlier bar(s)")
     if asset_class in {"crypto_spot", "crypto_perp"} and report.zero_volume_bars > 0:

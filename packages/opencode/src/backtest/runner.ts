@@ -440,6 +440,9 @@ with open("_data_provider.txt", "w") as f:
           artifact: typeof RAW_OHLCV_ARTIFACT
         }
         identity: {
+          evidence_id: string
+          evidence_version: number
+          qualification: string
           schema_version?: number
           source?: string
           requested_algorithm_name: string
@@ -533,6 +536,17 @@ with open("_data_provider.txt", "w") as f:
     }
   }
 
+  function strictDatasetEvidenceIssue(dataset: VerifiedDatasetRef): string | undefined {
+    if (dataset.identity.evidenceVersion !== 2 || !dataset.identity.evidenceId) {
+      return "strict runs require DatasetEvidenceV2; legacy evidence is research_only_legacy"
+    }
+    if (dataset.identity.repaired) return "repaired evidence is permanently non-promotable"
+    if (dataset.identity.qualification !== "strict_qualified") {
+      return `dataset evidence is ${dataset.identity.qualification}, not strict_qualified`
+    }
+    return undefined
+  }
+
   async function prepareBacktestData(input: {
     dataSource: BacktestDataSource
     tmpDir: string
@@ -547,6 +561,8 @@ with open("_data_provider.txt", "w") as f:
     if (!isVerifiedDatasetRef(dataset)) {
       throw new Error("verified data reference was not issued by the data_extractor evidence gate")
     }
+    const strictIssue = strictDatasetEvidenceIssue(dataset)
+    if (strictIssue) throw new Error(strictIssue)
     const manifestSize = await rehashAndCopyExact({
       source: dataset.manifestPath,
       destination: path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
@@ -586,6 +602,9 @@ with open("_data_provider.txt", "w") as f:
           artifact: RAW_OHLCV_ARTIFACT,
         },
         identity: {
+          evidence_id: identity.evidenceId!,
+          evidence_version: identity.evidenceVersion,
+          qualification: identity.qualification,
           schema_version: identity.schemaVersion,
           source: identity.source,
           requested_algorithm_name: identity.requestedAlgorithmName,
@@ -643,6 +662,8 @@ with open("_data_provider.txt", "w") as f:
     assetClass: string
   }): string | undefined {
     const identity = input.dataset.identity
+    const strictIssue = strictDatasetEvidenceIssue(input.dataset)
+    if (strictIssue) return strictIssue
     const expectedSymbol = normalizeRequestSymbol(input.symbol)
     const actualSymbol = normalizeRequestSymbol(identity.actualSymbol)
     if (actualSymbol !== expectedSymbol) {
@@ -2136,6 +2157,7 @@ if __name__ == "__main__":
     seed: number
     startDate: string
     endDate: string
+    dataset: VerifiedDatasetRef
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2178,6 +2200,11 @@ if __name__ == "__main__":
         engineTreeHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(engineTree)),
         assetProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(assetSpec)),
         executionProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(executionProfile)),
+        datasetEvidence: {
+          id: input.dataset.identity.evidenceId!,
+          version: 2,
+          qualification: "strict_qualified",
+        },
         seed: input.seed,
         dateWindow: { start: input.startDate, end: input.endDate, interval: input.interval },
       },
@@ -2709,7 +2736,11 @@ if __name__ == "__main__":
           benchmark,
           calendar: assetSpec.calendar,
         })
-        if (dataSource.kind === "verified_artifact" && hasProductRiskContract(config)) {
+        if (
+          dataSource.kind === "verified_artifact" &&
+          hasProductRiskContract(config) &&
+          dataQualityMode === "strict"
+        ) {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -2723,6 +2754,7 @@ if __name__ == "__main__":
             seed: effectiveSeed,
             startDate: start,
             endDate: end,
+            dataset: dataSource.dataset,
           })
         } else {
           // Internal provider fetches remain useful for research, but they do
@@ -2736,6 +2768,7 @@ if __name__ == "__main__":
             product_eligibility_blockers: [
               ...(dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
               ...(!hasProductRiskContract(config) ? ["schema_v4_risk_contract_required"] : []),
+              ...(dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
             ],
           }
         }
@@ -2758,6 +2791,12 @@ if __name__ == "__main__":
             benchmarkReturn: results.benchmarkReturn,
             alpha: results.alpha,
             evidenceDir: results.evidenceDir,
+            datasetEvidenceId:
+              dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.evidenceId : undefined,
+            datasetEvidenceVersion:
+              dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.evidenceVersion : undefined,
+            datasetQualification:
+              dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.qualification : "research_only",
             evidenceError: results.evidenceError,
             eligibilityStatus: results.eligibilityStatus,
             diagnostics: {

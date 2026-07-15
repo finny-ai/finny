@@ -32,4 +32,4 @@ Free Stocks Basic is mainly useful for end-of-day aggregate bars. Intraday aggre
 source_attempts: polygon=http_status 403 entitlement/plan limit
 ```
 
-Do not write a Polygon CSV for entitlement or plan-limit failures. Fall back to the next configured provider. If bars are returned, write the standard Finny OHLCV CSV and manifest with `source: "polygon"`, requested versus actual coverage, `source_attempts`, quality counts, and `usable_for_parent`.
+Do not write a Polygon CSV for entitlement or plan-limit failures. Fall back to the next configured provider. If bars are returned, write the standard Finny OHLCV CSV and a `DatasetEvidenceV2` manifest (`schema: finny.dataset_evidence`, `version: 2`) plus legacy identity fields. Record the actual feed/venue, canonical and provider symbol, adjustment and corporate-action treatment, calendar/version/session/timezone, exact timestamp counts/ranges, incomplete-final-bar state, all three hashes, transformation versions, qualification reasons, and permanent research-only lineage for any repair (including no-op repair).

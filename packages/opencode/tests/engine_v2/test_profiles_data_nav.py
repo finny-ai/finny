@@ -195,12 +195,11 @@ def test_requested_start_on_holiday_does_not_block_equity():
 
 
 def test_exchange_coverage_skips_market_holiday():
-    # Full 15min sessions on Jul 3 and Jul 5 2024 (13:30 UTC = 9:30 ET in
-    # DST); the Jul 4 holiday must contribute zero expected bars, so
-    # coverage stays complete instead of dropping to ~2/3.
+    # Jul 3 is a scheduled 13:00 ET half-day (14 x 15min bars) and Jul 5 is a
+    # full session (26 bars). Jul 4 contributes no expected timestamps.
     df = pd.concat(
         [
-            _equity_intraday_rows("2024-07-03 13:30", 26),
+            _equity_intraday_rows("2024-07-03 13:30", 14),
             _equity_intraday_rows("2024-07-05 13:30", 26),
         ],
         ignore_index=True,

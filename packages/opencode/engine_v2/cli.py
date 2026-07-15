@@ -757,7 +757,19 @@ def main() -> None:
 
     df = _load_csv(Path(args.csv))
     if args.start_date:
-        df = df[df["timestamp"] >= pd.to_datetime(args.start_date, utc=True)]
+        filter_start = pd.to_datetime(args.start_date, utc=True)
+        if asset_spec.assetClass == "future":
+            from engine_v2.data.calendars import ExpectedTimestampRequest, requested_input_start
+
+            filter_start = requested_input_start(
+                ExpectedTimestampRequest(
+                    requested_start=args.start_date,
+                    requested_end=args.start_date,
+                    interval=args.interval,
+                    asset_class=asset_spec.assetClass,
+                )
+            )
+        df = df[df["timestamp"] >= filter_start]
     if args.end_date:
         end = pd.to_datetime(args.end_date, utc=True) + pd.Timedelta(days=1)
         df = df[df["timestamp"] < end]
@@ -770,7 +782,10 @@ def main() -> None:
         raise SystemExit("No bars after regular-hours filter")
     provider = str(asset_spec.dataProvider or cfg.get("data_provider") or "unknown")
     repaired_details_total = []
-    raw_dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+    raw_dq = DQ.analyze(
+        df, args.interval, asset_spec.assetClass, provider=provider,
+        requested_start=args.start_date, requested_end=args.end_date,
+    )
     raw_blocking = [
         reason for reason in DQ.blocking_reasons(raw_dq, asset_spec.assetClass)
         if "duplicate timestamp" in reason or "invalid OHLC" in reason or "severe outlier" in reason
@@ -794,7 +809,10 @@ def main() -> None:
                 repaired_details_total.extend(repaired_details)
                 df = repaired_df
                 raw_dq = DQ.report_with_repair(
-                    DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider),
+                    DQ.analyze(
+                        df, args.interval, asset_spec.assetClass, provider=provider,
+                        requested_start=args.start_date, requested_end=args.end_date,
+                    ),
                     repaired_details,
                 )
                 raw_blocking = [
@@ -831,7 +849,10 @@ def main() -> None:
         df, args.interval, asset_spec.assetClass, args.start_date, args.end_date,
     )
     if args.data_quality_mode == "strict" and window_reasons:
-        truncated_report = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+        truncated_report = DQ.analyze(
+            df, args.interval, asset_spec.assetClass, provider=provider,
+            requested_start=args.start_date, requested_end=args.end_date,
+        )
         raise SystemExit(_quality_failure(
             "Data quality failed requested window coverage",
             window_reasons,
@@ -847,7 +868,10 @@ def main() -> None:
     bars_per_year = calendar_bars_per_year(args.interval, asset_spec.calendar)
 
     # Data quality is a hard gate for strict engine runs.
-    dq = DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider)
+    dq = DQ.analyze(
+        df, args.interval, asset_spec.assetClass, provider=provider,
+        requested_start=args.start_date, requested_end=args.end_date,
+    )
     if repaired_details_total:
         dq = DQ.report_with_repair(dq, repaired_details_total)
     blocking_quality = DQ.blocking_reasons(dq, asset_spec.assetClass)
@@ -870,7 +894,10 @@ def main() -> None:
                 repaired_details_total.extend(repaired_details)
                 df = repaired_df
                 dq = DQ.report_with_repair(
-                    DQ.analyze(df, args.interval, asset_spec.assetClass, provider=provider),
+                    DQ.analyze(
+                        df, args.interval, asset_spec.assetClass, provider=provider,
+                        requested_start=args.start_date, requested_end=args.end_date,
+                    ),
                     repaired_details_total,
                 )
                 blocking_quality = DQ.blocking_reasons(dq, asset_spec.assetClass)

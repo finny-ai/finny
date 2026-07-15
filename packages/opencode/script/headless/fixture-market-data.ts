@@ -1,6 +1,8 @@
 import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
+import { expectedEvidenceTimestamps } from "../../src/data/dataset-evidence-calendar"
+import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
 
 const SYMBOL = "SPY"
 const INTERVAL = "5m"
@@ -14,11 +16,15 @@ function sha256(input: string | Uint8Array): string {
 
 function deterministicCsv(): string {
   const lines = ["timestamp,open,high,low,close,volume"]
-  const start = Date.parse(`${START}T00:00:00.000Z`)
-  const end = Date.parse(`${END}T23:55:00.000Z`)
-  const step = 5 * 60_000
+  const expected = expectedEvidenceTimestamps({
+    calendarId: "XNYS",
+    sessionType: "regular",
+    interval: INTERVAL,
+    requestedStartInclusive: START,
+    requestedEndInclusive: END,
+  })
   let index = 0
-  for (let timestamp = start; timestamp <= end; timestamp += step) {
+  for (const timestamp of expected) {
     // A slow downward drift with a deterministic oscillation creates repeated
     // SMA crosses. The fixture is deliberately not profitable after costs;
     // profitability is not a harness success condition.
@@ -104,8 +110,20 @@ export async function startFixtureMarketDataProvider(input: {
       const relativeManifest = `stock/${FILE_STEM}.manifest.json`
       await fs.writeFile(path.join(outputDir, relativeCsv), csv, "utf8")
       const manifest = {
-        schema_version: 1,
+        schema: "finny.dataset_evidence",
+        version: 2,
+        schema_version: 2,
+        evidence_id: `fixture-${csvSha256.slice(0, 16)}`,
         source: "finny-harness-fixture",
+        provider: { id: "finny-harness-fixture", feed: "deterministic", venue: "NYSE" },
+        instrument: { asset_class: "equity", canonical_symbol: SYMBOL, provider_symbol: SYMBOL },
+        calendar: {
+          id: "XNYS",
+          version: "finny-calendars-2026.1",
+          timezone: "America/New_York",
+          session_type: "regular",
+          half_day_policy: "scheduled_early_close",
+        },
         symbols: [SYMBOL],
         interval: INTERVAL,
         requested_symbol: SYMBOL,
@@ -117,8 +135,38 @@ export async function startFixtureMarketDataProvider(input: {
         requested_algorithm_name: algorithm,
         requested_start: START,
         requested_end: END,
-        actual_start: `${START}T00:00:00.000Z`,
-        actual_end: `${END}T23:55:00.000Z`,
+        actual_start: csv.split("\n")[1].split(",")[0],
+        actual_end: csv.trim().split("\n").at(-1)!.split(",")[0],
+        window: {
+          requested_start_inclusive: START,
+          requested_end_inclusive: END,
+          actual_start_inclusive: csv.split("\n")[1].split(",")[0],
+          actual_end_inclusive: csv.trim().split("\n").at(-1)!.split(",")[0],
+        },
+        timestamps: { expected_count: rows, actual_count: rows, missing_count: 0, extra_count: 0, missing_ranges: [] },
+        quality: {
+          duplicate_count: 0,
+          ohlc_violation_count: 0,
+          outlier_count: 0,
+          zero_volume_count: 0,
+          invalid_volume_count: 0,
+          incomplete_final_bar_count: 0,
+        },
+        price_basis: {
+          basis: "adjusted",
+          split_treatment: "back_adjusted",
+          dividend_treatment: "not_in_price",
+          corporate_action_status: "resolved",
+          events: [],
+        },
+        hashes: {
+          raw_bytes_sha256: csvSha256,
+          normalized_semantic_sha256: normalizedCsvSemanticHash(csv),
+          processed_bytes_sha256: csvSha256,
+          transformation_versions: { fixture_generation: "finny-harness-xnys-1" },
+        },
+        repair_lineage: null,
+        qualification: { status: "strict_qualified", reason_codes: [] },
         output_path: relativeCsv,
         rows,
         run_id: `fixture-${csvSha256.slice(0, 16)}`,
@@ -126,7 +174,7 @@ export async function startFixtureMarketDataProvider(input: {
         ...(requestVersion !== undefined ? { request_version: requestVersion } : {}),
         ...(requestContentHash ? { request_content_hash: requestContentHash } : {}),
         coverage: "complete",
-        coverage_note: "deterministic continuous 5-minute harness fixture",
+        coverage_note: "deterministic complete XNYS regular-session 5-minute harness fixture",
         usable_for_parent: "yes",
         csv_sha256: csvSha256,
       }

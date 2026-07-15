@@ -29,4 +29,4 @@ Write exactly one CSV under `allowed_data_dir` with:
 timestamp,open,high,low,close,volume
 ```
 
-Write a `.manifest.json` sidecar with `source: "binance"`, requested versus actual coverage, `source_attempts`, `run_id`, quality counts, and `usable_for_parent`. Do not mark a first 1000-row page as partial provider coverage; continue pagination first.
+Write a `DatasetEvidenceV2` `.manifest.json` sidecar (`schema: finny.dataset_evidence`, `version: 2`) plus legacy identity fields. Record the Binance host/feed/venue, canonical and provider symbol, raw price basis, 24/7 calendar/version/session/timezone, exact expected/actual/missing/extra timestamp counts and ranges, incomplete-final-candle state, raw/semantic/processed SHA-256 values, transformation versions, and qualification reason codes. Any repair, including a no-op, creates a new evidence ID with lineage and remains research-only. Do not mark a first 1000-row page as partial provider coverage; continue pagination first.

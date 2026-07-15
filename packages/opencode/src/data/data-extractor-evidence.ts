@@ -8,6 +8,15 @@ import { requestSpecContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol, type RequestFacts } from "@/agent/request-identity"
 import { STRICT_DATA_QUALITY_LABELS } from "./data-quality-vocab"
 import type { DataProviderFailureLayer } from "./data-provider-capabilities"
+import { emit } from "@/analytics/emit"
+import {
+  DATASET_EVIDENCE_SCHEMA,
+  DATASET_EVIDENCE_VERSION,
+  evidenceQualification,
+  validateDatasetEvidenceV2,
+  type DatasetEvidenceV2,
+  type DatasetQualification,
+} from "./dataset-evidence-v2"
 
 const BLOCKED_INCOMPLETE = "BLOCKED: data_extractor returned incomplete evidence artifacts"
 
@@ -56,6 +65,19 @@ const ESTIMATED_METRIC_PATTERNS = [
 ]
 
 export interface DataExtractorManifest {
+  schema?: string
+  version?: number
+  evidence_id?: string
+  provider?: DatasetEvidenceV2["provider"]
+  instrument?: DatasetEvidenceV2["instrument"]
+  calendar?: DatasetEvidenceV2["calendar"]
+  window?: DatasetEvidenceV2["window"]
+  timestamps?: DatasetEvidenceV2["timestamps"]
+  quality?: DatasetEvidenceV2["quality"]
+  price_basis?: DatasetEvidenceV2["price_basis"]
+  hashes?: DatasetEvidenceV2["hashes"]
+  repair_lineage?: DatasetEvidenceV2["repair_lineage"]
+  qualification?: DatasetEvidenceV2["qualification"]
   schema_version?: number
   source?: string
   symbols?: string[]
@@ -123,6 +145,10 @@ export interface VerifiedDatasetIdentity {
   readonly actualStart: string
   readonly actualEnd: string
   readonly rows?: number
+  readonly evidenceId?: string
+  readonly evidenceVersion: number
+  readonly qualification: DatasetQualification
+  readonly repaired: boolean
 }
 
 const VERIFIED_DATASET_REF = Symbol("finny.verified-dataset-ref")
@@ -299,6 +325,13 @@ function buildVerifiedDatasetRef(snapshot: VerifiedDatasetSnapshot): VerifiedDat
     actualStart: requiredManifestString(manifest, "actual_start"),
     actualEnd: requiredManifestString(manifest, "actual_end"),
     rows: manifest.rows,
+    evidenceId: manifest.evidence_id,
+    evidenceVersion:
+      manifest.schema === DATASET_EVIDENCE_SCHEMA && manifest.version === DATASET_EVIDENCE_VERSION
+        ? DATASET_EVIDENCE_VERSION
+        : 1,
+    qualification: evidenceQualification(manifest),
+    repaired: Boolean(manifest.repair_lineage),
   })
   return Object.freeze({
     [VERIFIED_DATASET_REF]: true as const,
@@ -393,6 +426,10 @@ function parseCsvTimestamp(raw?: string): number {
 
 interface CsvInspection {
   rows: number
+  uniqueTimestamps: number
+  duplicates: number
+  invalidRows: number
+  invalidOhlc: number
   firstTimestamp?: string
   lastTimestamp?: string
   issues: string[]
@@ -486,13 +523,18 @@ function csvBoundaryIssue(
 
 function inspectCsvEvidenceText(text: string, manifest: DataExtractorManifest): CsvInspection {
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
-  if (lines.length === 0) return { rows: 0, issues: ["CSV is empty"] }
+  if (lines.length === 0)
+    return { rows: 0, uniqueTimestamps: 0, duplicates: 0, invalidRows: 0, invalidOhlc: 0, issues: ["CSV is empty"] }
 
   const header = lines[0].split(",").map((value) => value.trim().toLowerCase())
   const missingColumns = REQUIRED_CSV_COLUMNS.filter((column) => !header.includes(column))
   if (missingColumns.length > 0) {
     return {
       rows: Math.max(0, lines.length - 1),
+      uniqueTimestamps: 0,
+      duplicates: 0,
+      invalidRows: Math.max(0, lines.length - 1),
+      invalidOhlc: 0,
       issues: [`CSV missing required columns: ${missingColumns.join(", ")}`],
     }
   }
@@ -516,6 +558,10 @@ function inspectCsvEvidenceText(text: string, manifest: DataExtractorManifest): 
 
   return {
     rows,
+    uniqueTimestamps: scan.seen.size,
+    duplicates: scan.duplicates,
+    invalidRows: scan.invalidRows,
+    invalidOhlc: scan.invalidOhlc,
     firstTimestamp: first?.raw,
     lastTimestamp: last?.raw,
     issues,
@@ -935,10 +981,33 @@ async function csvEvidenceIssues(manifest: DataExtractorManifest, dataRoot: stri
   const csvFile = csvPathFromManifest(manifest, dataRoot)
   if (!csvFile) return ["manifest missing output_path for CSV"]
   try {
-    return csvInspectionIssues(manifest, await inspectCsvEvidence(csvFile, manifest))
+    const csvBytes = await fs.readFile(csvFile)
+    const csvText = csvBytes.toString("utf8")
+    const inspection = inspectCsvEvidenceText(csvText, manifest)
+    return csvEvidenceIssuesFromSnapshot({ manifest, csvBytes, csvText, inspection })
   } catch (err: any) {
     return [`CSV unreadable at ${csvFile}: ${err?.message ?? String(err)}`]
   }
+}
+
+function csvEvidenceIssuesFromSnapshot(input: {
+  manifest: DataExtractorManifest
+  csvBytes: Uint8Array
+  csvText: string
+  inspection: CsvInspection
+}): string[] {
+  const issues = csvInspectionIssues(input.manifest, input.inspection)
+  if (input.manifest.schema === DATASET_EVIDENCE_SCHEMA || input.manifest.version === DATASET_EVIDENCE_VERSION) {
+    issues.push(
+      ...validateDatasetEvidenceV2({
+        manifest: input.manifest,
+        csvBytes: input.csvBytes,
+        csvText: input.csvText,
+        csvFacts: input.inspection,
+      }),
+    )
+  }
+  return issues
 }
 
 function csvInspectionIssues(manifest: DataExtractorManifest, inspection: CsvInspection): string[] {
@@ -988,6 +1057,9 @@ function renderManifestBlock(manifest: DataExtractorManifest, digest: Record<str
     ["request_version", digest.request_version],
     ["request_content_hash", digest.request_content_hash],
     ["source", manifest.source],
+    ["evidence_id", manifest.evidence_id],
+    ["evidence_version", manifest.version],
+    ["qualification", evidenceQualification(manifest)],
     ["coverage", manifest.coverage],
     ["rows", manifest.rows],
     ["usable_for_parent", digest.usable_for_parent],
@@ -1018,6 +1090,39 @@ function usabilityBlocker(
     text: `BLOCKED: data_extractor marked evidence unusable_for_parent — ${effectiveDigest.usable_for_parent}`,
     issues: ["usable_for_parent: no"],
   }
+}
+
+function emitQualificationTelemetry(manifest: DataExtractorManifest, issues: string[]): void {
+  if (manifest.schema !== DATASET_EVIDENCE_SCHEMA || manifest.version !== DATASET_EVIDENCE_VERSION) return
+  emit({
+    eventType: "data_evidence.qualified",
+    source: "data_extractor_evidence",
+    payload: {
+      provider: manifest.provider?.id,
+      feed: manifest.provider?.feed,
+      venue: manifest.provider?.venue,
+      evidenceId: manifest.evidence_id,
+      evidenceVersion: manifest.version,
+      calendar: manifest.calendar?.id,
+      calendarVersion: manifest.calendar?.version,
+      requestedStart: manifest.window?.requested_start_inclusive,
+      requestedEnd: manifest.window?.requested_end_inclusive,
+      actualStart: manifest.window?.actual_start_inclusive,
+      actualEnd: manifest.window?.actual_end_inclusive,
+      expectedCount: manifest.timestamps?.expected_count,
+      actualCount: manifest.timestamps?.actual_count,
+      missingCount: manifest.timestamps?.missing_count,
+      extraCount: manifest.timestamps?.extra_count,
+      duplicateCount: manifest.quality?.duplicate_count,
+      repaired: Boolean(manifest.repair_lineage),
+      incompleteCount: manifest.quality?.incomplete_final_bar_count,
+      priceBasis: manifest.price_basis?.basis,
+      corporateActionStatus: manifest.price_basis?.corporate_action_status,
+      qualification: issues.length === 0 ? manifest.qualification?.status : "blocked",
+      reasonCodes: issues.length === 0 ? manifest.qualification?.reason_codes : issues,
+      evidenceHash: manifest.hashes?.normalized_semantic_sha256,
+    },
+  })
 }
 
 /**
@@ -1137,11 +1242,15 @@ async function validateLoadedEvidence(input: {
   if (effectiveUsable && !/^(yes|no)\b/.test(effectiveUsable)) issues.push("usable_for_parent must be yes/no")
 
   const unusable = usabilityBlocker(textUsable, effectiveDigest, isOpenCurrentCandlePartial(manifest, effectiveDigest))
-  if (unusable) return unusable
+  if (unusable) {
+    emitQualificationTelemetry(manifest, unusable.issues)
+    return unusable
+  }
   issues.push(
     ...(input.csvIssues ?? (await csvEvidenceIssues(manifest, dataRoot))),
     ...digestContextIssues(digest, input.context),
   )
+  emitQualificationTelemetry(manifest, issues)
   return issues.length > 0
     ? blocked(issues)
     : { ok: true, text: `${text}\n\n${renderManifestBlock(manifest, effectiveDigest)}`, issues: [] }
@@ -1261,7 +1370,12 @@ export async function validateExistingDataExtractorEvidence(input: {
     artifacts,
     preamble,
     context: input.context,
-    csvIssues: csvInspectionIssues(manifest, snapshot.csvInspection),
+    csvIssues: csvEvidenceIssuesFromSnapshot({
+      manifest,
+      csvBytes: snapshot.csvBytes,
+      csvText: snapshot.csvBytes.toString("utf8"),
+      inspection: snapshot.csvInspection,
+    }),
   })
   if (!result.ok) return { found: true, result }
 

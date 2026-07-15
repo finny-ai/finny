@@ -161,6 +161,18 @@ export async function verifyPromotion(input: {
 }): Promise<{ ok: boolean; status: string | null; errors: string[]; run?: StrictRunV1 }> {
   const integrity = await verifyRunForAlgorithm(input.algorithm, input.runId)
   if (!integrity.ok || !integrity.run) return { ok: false, status: null, errors: integrity.errors, run: integrity.run }
+  if (
+    integrity.run.identity.datasetEvidence?.version !== 2 ||
+    integrity.run.identity.datasetEvidence.qualification !== "strict_qualified" ||
+    !integrity.run.identity.datasetEvidence.id
+  ) {
+    return {
+      ok: false,
+      status: null,
+      errors: ["promotion requires immutable strict_qualified DatasetEvidenceV2"],
+      run: integrity.run,
+    }
+  }
   if (input.symbol) {
     const config = await readJson<{ symbol?: unknown }>({
       file: path.join(strictRunDir(input.algorithm, input.runId), "effective_config.json"),

@@ -78,6 +78,13 @@ function pushIdentityFieldErrors(errors: string[], identity: RunIdentityV1) {
   if (invalidAlgorithmVersion(identity)) errors.push("algorithmVersion must be positive")
   if (invalidSeed(identity)) errors.push("seed must be a non-negative safe integer")
   if (incompleteDateWindow(identity)) errors.push("date window is incomplete")
+  if (identity.datasetEvidence) {
+    if (!identity.datasetEvidence.id) errors.push("datasetEvidence.id is required")
+    if (identity.datasetEvidence.version !== 2) errors.push("datasetEvidence.version must be 2")
+    if (identity.datasetEvidence.qualification !== "strict_qualified") {
+      errors.push("datasetEvidence must be strict_qualified")
+    }
+  }
 }
 
 export function validateRunIdentity(identity: RunIdentityV1 | null | undefined): string[] {

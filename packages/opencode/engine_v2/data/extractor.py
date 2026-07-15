@@ -367,7 +367,7 @@ def extract(
             sources_tried.append(SourceResult(provider=prov.name, bars=0, quality=None, error=err))
             continue
 
-        qr = analyze(df, interval, asset_class)
+        qr = analyze(df, interval, asset_class, provider=prov.name, requested_start=start, requested_end=end)
         sources_tried.append(SourceResult(provider=prov.name, bars=qr.n_bars, quality=qr))
 
         if best_df is None or qr.n_bars > (best_quality.n_bars if best_quality else 0):
@@ -395,7 +395,10 @@ def extract(
         raw_path = parquet_path.with_name(f"{parquet_path.stem}_raw{parquet_path.suffix}")
         raw_written = _write_frame(best_df, raw_path)
         best_df, roll_boundaries = _roll_adjust_futures(best_df)
-        best_quality = analyze(best_df, interval, asset_class)
+        best_quality = analyze(
+            best_df, interval, asset_class, provider=best_provider or "unknown",
+            requested_start=start, requested_end=end,
+        )
     parquet_path = _write_frame(best_df, parquet_path)
 
     digest = _build_digest(best_df, symbol, interval, asset_class)
@@ -403,6 +406,14 @@ def extract(
     digest["quality"] = {
         "coverage_pct": round(best_quality.coverage_pct * 100, 2) if best_quality else 0,
         "gaps": best_quality.gap_count if best_quality else 0,
+        "expected_timestamps": best_quality.expected_timestamp_count if best_quality else 0,
+        "actual_timestamps": best_quality.actual_timestamp_count if best_quality else 0,
+        "missing_timestamps": best_quality.missing_timestamp_count if best_quality else 0,
+        "extra_timestamps": best_quality.extra_timestamp_count if best_quality else 0,
+        "missing_ranges": best_quality.missing_ranges if best_quality else [],
+        "calendar_id": best_quality.calendar_id if best_quality else None,
+        "calendar_version": best_quality.calendar_version if best_quality else None,
+        "session_type": best_quality.session_type if best_quality else None,
         "ohlc_violations": best_quality.ohlc_violations if best_quality else 0,
         "outlier_bars": best_quality.outlier_bars if best_quality else 0,
         "notes": best_quality.notes if best_quality else [],

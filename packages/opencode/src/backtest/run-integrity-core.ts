@@ -51,6 +51,11 @@ export interface RunIdentityV1 {
   engineTreeHash: Sha256
   assetProfileHash: Sha256
   executionProfileHash: Sha256
+  datasetEvidence?: {
+    id: string
+    version: 2
+    qualification: "strict_qualified"
+  }
   seed: number
   dateWindow: {
     start: string

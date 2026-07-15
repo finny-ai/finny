@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import crypto from "crypto"
 import { BacktestRunner } from "../../src/backtest/runner"
 import type { Algorithm } from "../../src/algorithm"
 import { validateExistingDataExtractorEvidence, type VerifiedDatasetRef } from "../../src/data/data-extractor-evidence"
+import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
 
 function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
   return {
@@ -32,8 +34,53 @@ async function verifiedDataset(root: string): Promise<VerifiedDatasetRef> {
       "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000",
     ].join("\n"),
   )
+  const csvText = csv.toString("utf8")
+  const csvHash = crypto.createHash("sha256").update(csv).digest("hex")
   const manifest = Buffer.from(
     JSON.stringify({
+      schema: "finny.dataset_evidence",
+      version: 2,
+      evidence_id: "dsv2-strict-runner-fixture",
+      provider: { id: "alpaca", feed: "sip", venue: "NYSE" },
+      instrument: { asset_class: "equity", canonical_symbol: "SPY", provider_symbol: "SPY" },
+      interval: "5m",
+      calendar: {
+        id: "XNYS",
+        version: "finny-calendars-2026.1",
+        timezone: "America/New_York",
+        session_type: "regular",
+        half_day_policy: "scheduled_early_close",
+      },
+      window: {
+        requested_start_inclusive: "2026-01-09T14:30:00Z",
+        requested_end_inclusive: "2026-01-09T14:35:00Z",
+        actual_start_inclusive: "2026-01-09T14:30:00Z",
+        actual_end_inclusive: "2026-01-09T14:35:00Z",
+      },
+      timestamps: { expected_count: 2, actual_count: 2, missing_count: 0, extra_count: 0, missing_ranges: [] },
+      quality: {
+        duplicate_count: 0,
+        ohlc_violation_count: 0,
+        outlier_count: 0,
+        zero_volume_count: 0,
+        invalid_volume_count: 0,
+        incomplete_final_bar_count: 0,
+      },
+      price_basis: {
+        basis: "adjusted",
+        split_treatment: "back_adjusted",
+        dividend_treatment: "not_in_price",
+        corporate_action_status: "resolved",
+        events: [],
+      },
+      hashes: {
+        raw_bytes_sha256: csvHash,
+        normalized_semantic_sha256: normalizedCsvSemanticHash(csvText),
+        processed_bytes_sha256: csvHash,
+        transformation_versions: { normalization: "finny-ohlcv-1" },
+      },
+      repair_lineage: null,
+      qualification: { status: "strict_qualified", reason_codes: [] },
       schema_version: 1,
       source: "alpaca",
       requested_symbol: "SPY",
@@ -71,6 +118,57 @@ async function verifiedDataset(root: string): Promise<VerifiedDatasetRef> {
   if (!evidence.found || !evidence.result?.ok || !evidence.dataset) {
     throw new Error(evidence.result?.text ?? "verified fixture was not accepted")
   }
+  return evidence.dataset
+}
+
+async function legacyDataset(root: string): Promise<VerifiedDatasetRef> {
+  const csvPath = path.join(root, "SPY_5m.csv")
+  const manifestPath = path.join(root, "SPY_5m.manifest.json")
+  await fs.writeFile(
+    csvPath,
+    [
+      "timestamp,open,high,low,close,volume",
+      "2026-01-09T14:30:00Z,590,591,589,590.5,100000",
+      "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000",
+    ].join("\n"),
+  )
+  await fs.writeFile(
+    manifestPath,
+    JSON.stringify({
+      schema_version: 1,
+      source: "alpaca",
+      requested_symbol: "SPY",
+      actual_symbol: "SPY",
+      requested_interval: "5m",
+      actual_interval: "5m",
+      requested_asset_class: "equity",
+      actual_asset_class: "equity",
+      requested_algorithm_name: "spy-5m",
+      requested_start: "2026-01-09",
+      requested_end: "2026-01-09",
+      request_id: "legacy-test-request",
+      actual_start: "2026-01-09T14:30:00Z",
+      actual_end: "2026-01-09T14:35:00Z",
+      output_path: path.basename(csvPath),
+      rows: 2,
+      run_id: "legacy-extractor-run",
+      usable_for_parent: "yes",
+    }),
+  )
+  const evidence = await validateExistingDataExtractorEvidence({
+    workspaceSlug: "spy-5m",
+    dataRoot: root,
+    context: {
+      requested_symbol: "SPY",
+      requested_interval: "5m",
+      requested_asset_class: "equity",
+      requested_algorithm_name: "spy-5m",
+      requested_start: "2026-01-09",
+      requested_end: "2026-01-09",
+      request_id: "legacy-test-request",
+    },
+  })
+  if (!evidence.dataset) throw new Error(evidence.result?.text ?? "legacy fixture was not readable")
   return evidence.dataset
 }
 
@@ -243,6 +341,26 @@ describe("BacktestRunner strict_v2 guardrails", () => {
         await fs.readFile(dataset.manifestPath),
       )
       await expect(fs.access(path.join(runDir, "_fetch_data.py"))).rejects.toThrow()
+    } finally {
+      await Promise.all([
+        fs.rm(sourceDir, { recursive: true, force: true }),
+        fs.rm(runDir, { recursive: true, force: true }),
+      ])
+    }
+  })
+
+  test("keeps V1 readable but refuses it for strict staging", async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-legacy-evidence-source-"))
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-legacy-evidence-run-"))
+    try {
+      const dataset = await legacyDataset(sourceDir)
+      expect(dataset.identity.qualification).toBe("research_only_legacy")
+      await expect(
+        BacktestRunner._internalForTests.prepareBacktestData({
+          dataSource: { kind: "verified_artifact", dataset },
+          tmpDir: runDir,
+        }),
+      ).rejects.toThrow("strict runs require DatasetEvidenceV2")
     } finally {
       await Promise.all([
         fs.rm(sourceDir, { recursive: true, force: true }),

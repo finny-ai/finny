@@ -140,6 +140,7 @@ function identity(overrides: Record<string, unknown> = {}) {
     engineTreeHash: hash(stableStringify(ENGINE_TREE)),
     assetProfileHash: hash(stableStringify({})),
     executionProfileHash: hash(stableStringify({})),
+    datasetEvidence: { id: "dsv2-run-integrity-fixture", version: 2, qualification: "strict_qualified" },
     seed: 42,
     dateWindow: { start: "2026-01-09", end: "2026-07-08", interval: "5min" },
     ...overrides,
