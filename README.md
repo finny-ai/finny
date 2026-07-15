@@ -19,7 +19,14 @@ Build, backtest, and iterate on trading algorithms using natural language. Built
 ### Quick Start
 
 ```bash
-npm i -g finny-pro
+curl -fsSL https://finnyai.tech/cli/install | bash
+finny --license-key finny_...
+```
+
+Or via npm:
+
+```bash
+npm i -g @finny-ai/finny-pro
 finny-pro --license-key finny_...
 ```
 

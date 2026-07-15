@@ -37,3 +37,7 @@ tsconfig.tsbuildinfo
 # Claude Code per-developer state — permission allowlists, local commands, etc.
 .claude/settings.local.json
 .claude/commands/
+
+# Python bytecode
+__pycache__/
+*.pyc
