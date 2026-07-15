@@ -44,6 +44,7 @@ import {
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
 import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
+import { qualificationInputForResearch } from "../backtest/qualification-policy"
 
 type WfMeta = {
   n_folds: number
@@ -128,16 +129,13 @@ export function formatWalkForwardLines(input: {
   ].filter((line): line is string => line !== null)
 }
 
-const experimentDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "experiment boundary must be YYYY-MM-DD")
 const experimentParameters = z.object({
   experimentId: z.string().optional(), parentExperimentId: z.string().optional(), hypothesis: z.string().optional(),
   falsificationCriteria: z.string().optional(), dataSnapshot: z.string().optional(), corporateActionPolicy: z.string().optional(),
   costs: z.string().optional(), featureTiming: z.string().optional(), executionSemantics: z.string().optional(),
-  boundaries: z.object({ trainStart: experimentDate, trainEnd: experimentDate, validationEnd: experimentDate, testEnd: experimentDate }).optional(),
   permittedSearchSpace: z.string().optional(), optimizationBudget: z.number().int().positive().max(10000).optional(),
   primaryMetric: z.string().optional(), riskConstraints: z.string().optional(), benchmark: z.string().optional(),
   qualityGates: z.object({ minDeflatedSharpe: z.number().min(0).max(1).optional(), minProbabilisticSharpe: z.number().min(0).max(1).optional(), minOosCoverage: z.number().min(0).max(1).optional(), minTrades: z.number().int().positive().optional(), requireCostSensitivity: z.boolean().optional() }).optional(),
-  phase: z.enum(["exploratory", "validation", "confirmatory"]).optional(), holdoutApproved: z.boolean().optional(), approvalReason: z.string().optional(),
 })
 
 const parameters = z.object({
@@ -200,7 +198,7 @@ const parameters = z.object({
     .boolean()
     .optional()
     .describe("Deprecated compatibility hint. It does not grant any workflow approval."),
-  experiment: experimentParameters.optional().describe("Durable scientific experiment contract; boundaries are required for validation or confirmatory holdout access."),
+  experiment: experimentParameters.optional().describe("Scientific intent and constraints only. Runtime code compiles phase windows and sealed-holdout transitions; do not calculate phase timestamps."),
 })
 
 export type DataQualityFailureMetadata = {
@@ -412,7 +410,7 @@ export const BacktestTool = Tool.define(
 
     return {
     description:
-      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. A recommended run creates a controller challenge; use finny_workflow_request_approval for that exact scope.",
+      "Run the full research-only backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. A recommended research result may create a controller-scoped paper-approval challenge, but this operation cannot qualify a candidate or create a promotable run. For qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {
@@ -787,7 +785,11 @@ export const BacktestTool = Tool.define(
           }
         }
         const representativeRerun = representativeRerunForAlgorithm(algo.name)
-        const quality = evaluateBacktestQuality(r)
+        const qualification = qualificationInputForResearch({
+          dataQualityMode: params.dataQualityMode,
+          phase: trial.reference.phase,
+        })
+        const quality = evaluateBacktestQuality(r, qualification)
         const walkForwardVerdict = deriveWalkForwardVerdict(walkForward)
         const unified = composeBacktestVerdict({
           quality,

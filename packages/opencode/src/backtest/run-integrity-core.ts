@@ -5,9 +5,10 @@ import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import type { Algorithm } from "@/algorithm"
 import type { ControllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
 import type { BacktestRunner } from "./runner"
+import type { QualificationInputV1 } from "./qualification-policy"
 
 export const RUN_IDENTITY_SCHEMA = "finny.run_identity" as const
-export const RUN_BUNDLE_SCHEMA = "finny.strict_run" as const
+export const RUN_BUNDLE_SCHEMA = "finny.qualification_bundle" as const
 export const RUN_MANIFEST_SCHEMA = "finny.run_manifest" as const
 export const RUN_APPROVAL_SCHEMA = "finny.run_approval" as const
 export const STRICT_REQUIRED_ARTIFACTS = [
@@ -19,6 +20,8 @@ export const STRICT_REQUIRED_ARTIFACTS = [
   "effective_config.json",
   "engine_tree.json",
   "asset_spec.json",
+  "qualification_policy.json",
+  "qualification_context.json",
   "results.json",
   "ohlcv.csv",
   "data_extractor.manifest.json",
@@ -51,11 +54,13 @@ export interface RunIdentityV1 {
   engineTreeHash: Sha256
   assetProfileHash: Sha256
   executionProfileHash: Sha256
-  datasetEvidence?: {
-    id: string
-    version: 2
-    qualification: "strict_qualified"
-  }
+  experimentPlanId: string
+  experimentPlanHash: Sha256
+  qualificationPolicyId: string
+  qualificationPolicyHash: Sha256
+  datasetEvidenceId: string
+  datasetQualification: "strict_qualified" | "research_only" | "unqualified"
+  dataQualityMode: "strict" | "repair_outliers"
   seed: number
   dateWindow: {
     start: string
@@ -71,7 +76,7 @@ export type RunRecommendation = {
   reasons: string[]
 }
 
-export interface StrictRunV1 {
+export interface QualificationBundleV1 {
   schema: typeof RUN_BUNDLE_SCHEMA
   version: 1
   runId: string
@@ -80,9 +85,12 @@ export interface StrictRunV1 {
   createdAt: string
   identity: RunIdentityV1
   identityHash: Sha256
+  qualification: QualificationInputV1
   recommendation: RunRecommendation
   validationStatus: "passed"
 }
+
+export type StrictRunV1 = QualificationBundleV1
 
 export interface RunManifestFileV1 {
   path: string
@@ -126,6 +134,7 @@ export interface PublishStrictRunInput {
   runId: string
   identity: RunIdentityInputV1
   recommendation: RunRecommendation
+  qualification: QualificationInputV1
   artifacts: ArtifactSource[]
   jsonArtifacts?: Record<string, unknown>
   requiredArtifacts: string[]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Dict, List, Tuple
@@ -252,14 +253,29 @@ def completed_window_exclusive_end(
     return min(end, _completed_bar_exclusive_end(now, expected_step(interval)))
 
 
-def _end_window_reason(
+def _timestamp_end_window_reason(
+    last: pd.Timestamp,
+    requested_end: str,
+    step: pd.Timedelta,
+    now: pd.Timestamp,
+) -> str | None:
+    requested = pd.to_datetime(requested_end, utc=True)
+    effective_end = min(requested, _completed_bar_exclusive_end(now, step))
+    if last < effective_end:
+        return (
+            f"last bar {last} is before requested timestamp end {requested_end}"
+            f" (completed-bar cutoff {effective_end})"
+        )
+    return None
+
+
+def _date_end_window_reason(
     last: pd.Timestamp,
     requested_end: str,
     step: pd.Timedelta,
     asset_class: str,
-    now: pd.Timestamp | None = None,
+    now: pd.Timestamp,
 ) -> str | None:
-    now = now if now is not None else pd.Timestamp.now(tz="UTC")
     end = pd.to_datetime(requested_end, utc=True) + pd.Timedelta(days=1)
     if asset_class in {"equity", "future", "option"}:
         effective_end = _effective_trading_end(end - pd.Timedelta(days=1), asset_class, now)
@@ -276,6 +292,19 @@ def _end_window_reason(
             f" (completed-bar cutoff {effective_exclusive})"
         )
     return None
+
+
+def _end_window_reason(
+    last: pd.Timestamp,
+    requested_end: str,
+    step: pd.Timedelta,
+    asset_class: str,
+    now: pd.Timestamp | None = None,
+) -> str | None:
+    now = now if now is not None else pd.Timestamp.now(tz="UTC")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", requested_end):
+        return _date_end_window_reason(last, requested_end, step, asset_class, now)
+    return _timestamp_end_window_reason(last, requested_end, step, now)
 
 
 def _outlier_indexes_and_details(

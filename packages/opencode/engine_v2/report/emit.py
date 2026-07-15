@@ -181,6 +181,7 @@ def assemble(
     walk_forward: Optional[Any] = None,
     regimes: Optional[List[Any]] = None,
     data_quality: Optional[Any] = None,
+    cost_sensitivity: Optional[Dict[str, Any]] = None,
     execution_config: Optional[Dict[str, Any]] = None,
     run_metadata: Optional[Dict[str, Any]] = None,
 ) -> S.Results:
@@ -467,6 +468,8 @@ def assemble(
             value=worst_regime,
             explanation="Volatility-regime slices show whether one market state carries the result.",
         ))
+    if cost_sensitivity is not None:
+        sens.append(S.SensitivityOutcome(**cost_sensitivity))
 
     return S.Results(
         schema_version=S.SCHEMA_VERSION,
@@ -529,7 +532,7 @@ def assemble(
             liquidation_nav="Liquidation NAV is the stress NAV after reserving margin pressure for forced-close risk.",
             cost_attribution="Cost attribution separates fees, funding, and borrow from trading P&L.",
             profile_identity="Profile identity shows the immutable run fingerprint used for comparison and reruns.",
-            sensitivity_outcomes="Sensitivity outcomes summarize Monte Carlo, walk-forward, and regime checks when requested.",
+            sensitivity_outcomes="Sensitivity outcomes summarize Monte Carlo, walk-forward, regime, and cost/fee/slippage stress checks when requested.",
         ),
     )
 

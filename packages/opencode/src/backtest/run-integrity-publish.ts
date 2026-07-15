@@ -19,7 +19,12 @@ import {
   type RunManifestV1,
   type StrictRunV1,
 } from "./run-integrity-core"
-import { identityArtifactErrors, recommendationArtifactErrors, validateRunIdentity } from "./run-integrity-identity"
+import {
+  identityArtifactErrors,
+  qualificationIdentityErrors,
+  recommendationArtifactErrors,
+  validateRunIdentity,
+} from "./run-integrity-identity"
 
 interface TreeWalk {
   root: string
@@ -138,7 +143,10 @@ async function buildValidatedIdentity(input: {
   }
   const identityErrors = validateRunIdentity(identity)
   identityErrors.push(...(await identityArtifactErrors(input.staging, identity, input.payloadFiles)))
-  identityErrors.push(...(await recommendationArtifactErrors(input.staging, input.request.recommendation)))
+  identityErrors.push(...qualificationIdentityErrors(identity, input.request.qualification))
+  identityErrors.push(
+    ...(await recommendationArtifactErrors(input.staging, input.request.recommendation, input.request.qualification)),
+  )
   if (identityErrors.length) throw invalidIdentityError(identityErrors)
   return { identity, identityHash: sha256Text(stableStringify(identity)) }
 }
@@ -171,6 +179,7 @@ async function finalizeStrictBundle(ctx: StagingContext): Promise<{ run: StrictR
     createdAt: ctx.input.createdAt ?? new Date().toISOString(),
     identity,
     identityHash,
+    qualification: ctx.input.qualification,
     recommendation: ctx.input.recommendation,
     validationStatus: "passed",
   }

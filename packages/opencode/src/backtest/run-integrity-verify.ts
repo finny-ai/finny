@@ -15,9 +15,13 @@ import {
   type RunManifestV1,
   type StrictRunV1,
 } from "./run-integrity-core"
-import { identityArtifactErrors, recommendationArtifactErrors, validateRunIdentity } from "./run-integrity-identity"
+import {
+  identityArtifactErrors,
+  qualificationIdentityErrors,
+  recommendationArtifactErrors,
+  validateRunIdentity,
+} from "./run-integrity-identity"
 import { listFiles } from "./run-integrity-publish"
-
 
 function emptyErrors(): string[] {
   return []
@@ -163,7 +167,9 @@ function pushRequiredPresence(errors: string[], byPath: Map<string, RunManifestF
   }
 }
 
-async function loadStrictMetadata(dir: string): Promise<{ run: StrictRunV1; manifest: RunManifestV1 } | { errors: string[] }> {
+async function loadStrictMetadata(
+  dir: string,
+): Promise<{ run: StrictRunV1; manifest: RunManifestV1 } | { errors: string[] }> {
   try {
     const run = await readJson<StrictRunV1>({ file: path.join(dir, "run.json") })
     const manifest = await readJson<RunManifestV1>({ file: path.join(dir, "artifact-manifest.json") })
@@ -206,7 +212,8 @@ async function verifyCanonicalHashes(ctx: BundleContext, expectedFiles: RunManif
     ctx.errors.push("run.json hash mismatch")
   }
   ctx.errors.push(...(await identityArtifactErrors(ctx.dir, ctx.run.identity, expectedFiles)))
-  ctx.errors.push(...(await recommendationArtifactErrors(ctx.dir, ctx.run.recommendation)))
+  ctx.errors.push(...qualificationIdentityErrors(ctx.run.identity, ctx.run.qualification))
+  ctx.errors.push(...(await recommendationArtifactErrors(ctx.dir, ctx.run.recommendation, ctx.run.qualification)))
 }
 
 export async function verifyStrictRunDir(dir: string): Promise<IntegrityResult> {

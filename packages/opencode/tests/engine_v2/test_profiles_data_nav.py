@@ -243,6 +243,27 @@ def test_truncated_crypto_daily_still_blocks():
     assert len(reasons) == 1 and "before requested end" in reasons[0]
 
 
+def _crypto_intraday_end_reasons(requested_end: str) -> list[str]:
+    rows = _equity_intraday_rows("2024-01-09 00:00", 5)
+    return DQ.requested_window_reasons(
+        rows,
+        "15min",
+        "crypto_spot",
+        requested_start="2024-01-09T00:00:00Z",
+        requested_end=requested_end,
+        now=pd.Timestamp("2024-01-10 00:00", tz="UTC"),
+    )
+
+
+def test_exact_crypto_end_accepts_the_requested_last_bar():
+    assert _crypto_intraday_end_reasons("2024-01-09T01:00:00Z") == []
+
+
+def test_exact_crypto_end_rejects_a_missing_requested_bar():
+    reasons = _crypto_intraday_end_reasons("2024-01-09T01:15:00Z")
+    assert len(reasons) == 1 and "before requested timestamp end" in reasons[0]
+
+
 def _fetch_end(requested_end: str, interval: str, asset_class: str, now: str) -> str:
     ts = DQ.completed_window_exclusive_end(requested_end, interval, asset_class, now=pd.Timestamp(now, tz="UTC"))
     return ts.isoformat()

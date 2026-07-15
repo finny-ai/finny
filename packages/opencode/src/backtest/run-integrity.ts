@@ -19,6 +19,7 @@ export {
   type ArtifactSource,
   type IntegrityResult,
   type PublishStrictRunInput,
+  type QualificationBundleV1,
   type RunApprovalV1,
   type RunIdentityInputV1,
   type RunIdentityV1,
@@ -31,13 +32,10 @@ export {
 export {
   identityArtifactErrors,
   recommendationArtifactErrors,
+  qualificationIdentityErrors,
   validateRunIdentity,
 } from "./run-integrity-identity"
-export {
-  directoryTreeManifest,
-  hashDirectoryTree,
-  publishStrictRun,
-} from "./run-integrity-publish"
+export { directoryTreeManifest, hashDirectoryTree, publishStrictRun } from "./run-integrity-publish"
 export { verifyStrictRunDir } from "./run-integrity-verify"
 export {
   currentAlgorithmHashes,

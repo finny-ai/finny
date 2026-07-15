@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { evaluateBacktestQuality } from "../../src/backtest/evaluation"
 import type { BacktestRunner } from "../../src/backtest/runner"
+import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
@@ -35,6 +36,8 @@ function result(overrides: Partial<BacktestRunner.Results>): BacktestRunner.Resu
   }
 }
 
+const evaluate = (results: BacktestRunner.Results) => evaluateBacktestQuality(results, qualificationInputForResearch())
+
 function diagnostics(overrides: Partial<NonNullable<BacktestRunner.Results["diagnostics"]>>) {
   return {
     barsProcessed: 180,
@@ -54,7 +57,7 @@ function diagnoseCryptoDaily(code: string, overrides: Partial<BacktestRunner.Res
   const results = result(overrides)
   return classifyCompletedBacktestFailure({
     results,
-    quality: evaluateBacktestQuality(results),
+    quality: evaluate(results),
     code,
     assetClass: "crypto",
     interval: "1d",
@@ -64,7 +67,7 @@ function diagnoseCryptoDaily(code: string, overrides: Partial<BacktestRunner.Res
 describe("failure classification", () => {
   test("negative ROI with trades => strategy_loss", () => {
     const r = result({ totalTrades: 12, totalReturn: -0.08, sharpeRatio: -0.2 })
-    const quality = evaluateBacktestQuality(r)
+    const quality = evaluate(r)
     const diagnosis = classifyCompletedBacktestFailure({ results: r, quality })
     expect(diagnosis?.classification).toBe("strategy_loss")
     expect(diagnosis?.engineRan).toBe(true)
@@ -120,7 +123,6 @@ describe("failure classification", () => {
     expect(diagnosis.classification).toBe("validation_failed")
     expect(diagnosis.engineRan).toBe(false)
   })
-
 })
 
 describe("code pattern preflight", () => {
@@ -136,10 +138,7 @@ class Strategy:
   })
 
   test("crypto code with max(1, ...) => sizing warning", () => {
-    const warnings = analyzeStrategyCodePatterns(
-      `qty = max(1, int(qty))`,
-      { assetClass: "crypto", interval: "1d" },
-    )
+    const warnings = analyzeStrategyCodePatterns(`qty = max(1, int(qty))`, { assetClass: "crypto", interval: "1d" })
     expect(warnings.some((w) => w.includes("max(1"))).toBe(true)
   })
 })
@@ -198,7 +197,6 @@ class Strategy:
     expect(diagnosis?.classification).toBe("strategy_loss")
     expect(diagnosis?.engineRan).toBe(true)
   })
-
 })
 
 describe("priorBacktestsHadMetrics", () => {

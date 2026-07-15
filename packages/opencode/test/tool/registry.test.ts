@@ -66,6 +66,15 @@ afterEach(async () => {
 })
 
 describe("tool.registry", () => {
+  it.instance("exposes the high-level qualify_candidate operation", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("qualify_candidate")
+    }),
+  )
+
   it.instance("does not expose task_status", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service

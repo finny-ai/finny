@@ -13,6 +13,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -190,6 +191,74 @@ def _build_broker(snap: MarketSnapshot, cfg: Dict, interval: str, mode: str, ass
         asset_specs={asset_spec.symbol: asset_spec},
         risk_contract=RiskContract.from_config(cfg),
     )
+
+
+def _fresh_snapshot(bar_array: Any, symbol: str) -> MarketSnapshot:
+    snap = MarketSnapshot({symbol: bar_array})
+    snap.attach_regime_labels(
+        symbol,
+        classify_bars(bar_array.close, lookback=30),
+        classify_trend(bar_array.close, lookback=50),
+    )
+    return snap
+
+
+def _cost_stress_config(cfg: Dict, asset_spec: AssetSpec) -> Dict:
+    stressed_cfg = json.loads(json.dumps(cfg))
+    profile = resolve_execution_profile(asset_spec.assetClass, cfg.get("execution", {}))
+    base = profile["effective"]
+    stressed = dict(profile["scenarios"]["stressed"])
+    for key in (
+        "maker_fee_bps",
+        "taker_fee_bps",
+        "commission_per_contract",
+        "option_per_contract_fee",
+        "slippage_bps",
+        "k_atr",
+        "k_vol",
+        "spread_k",
+    ):
+        base_value = float(base.get(key, 0.0) or 0.0)
+        stressed[key] = max(float(stressed.get(key, 0.0) or 0.0), base_value * 2.0)
+    stressed["profile_id"] = profile["profile"]["id"]
+    stressed_cfg["execution"] = stressed
+    return stressed_cfg
+
+
+def _run_cost_sensitivity(
+    bar_array: Any,
+    cfg: Dict,
+    interval: str,
+    asset_spec: AssetSpec,
+    strategy_path: Path,
+    symbol: str,
+    params: Any,
+    capital: float,
+) -> Dict[str, Any]:
+    stressed_snap = _fresh_snapshot(bar_array, symbol)
+    stressed_broker = _build_broker(
+        stressed_snap,
+        _cost_stress_config(cfg, asset_spec),
+        interval,
+        "v2",
+        asset_spec,
+    )
+    stressed_result = _run_shapec_strict_worker(
+        stressed_broker,
+        stressed_snap,
+        strategy_path,
+        symbol,
+        params,
+    )
+    equity = stressed_result.equity_curve
+    stressed_return = float((equity[-1] - capital) / capital) if equity.size else None
+    passed = stressed_return is not None and np.isfinite(stressed_return) and stressed_return > 0.0
+    return {
+        "name": "Cost/fee/slippage stress",
+        "status": "pass" if passed else "fail",
+        "value": stressed_return,
+        "explanation": "A deterministic replay doubles configured fees and slippage coefficients and applies the pinned execution-profile stress scenario; positive stressed return is required.",
+    }
 
 
 def _execution_config(cfg: Dict, mode: str, asset_spec: AssetSpec) -> Dict[str, Any]:
@@ -714,6 +783,18 @@ def _run_walk_forward_fold(
     }
 
 
+def _filter_requested_window(df: pd.DataFrame, start: Optional[str], end: Optional[str]) -> pd.DataFrame:
+    if start:
+        df = df[df["timestamp"] >= pd.to_datetime(start, utc=True)]
+    if end:
+        end_instant = pd.to_datetime(end, utc=True)
+        if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+            df = df[df["timestamp"] < end_instant + pd.Timedelta(days=1)]
+        else:
+            df = df[df["timestamp"] <= end_instant]
+    return df.reset_index(drop=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(prog="engine_v2")
     ap.add_argument("--csv", required=True)
@@ -735,6 +816,7 @@ def main() -> None:
                     help="New selections represented by this run; use zero for an exact replay")
     ap.add_argument("--data-quality-mode", choices=["strict", "repair_outliers"], default="strict")
     ap.add_argument("--regimes", action="store_true")
+    ap.add_argument("--cost-sensitivity", action="store_true")
     ap.add_argument("--start-date", default=None)
     ap.add_argument("--end-date", default=None)
     ap.add_argument("--strategy", default="strategy.py")
@@ -745,6 +827,8 @@ def main() -> None:
         raise SystemExit("--prior-selection-trials must be non-negative")
     if args.current_selection_trials is not None and args.current_selection_trials < 0:
         raise SystemExit("--current-selection-trials must be non-negative")
+    if args.cost_sensitivity and args.mode != "v2":
+        raise SystemExit("--cost-sensitivity requires strict v2 mode")
 
     cfg = json.loads(Path(args.config).read_text())
     cfg.setdefault("risk", {})["starting_equity_usd"] = float(args.capital)
@@ -756,12 +840,12 @@ def main() -> None:
         raise SystemExit(f"Options backtests are blocked: {asset_spec.blockingReason}")
 
     df = _load_csv(Path(args.csv))
-    if args.start_date:
-        filter_start = pd.to_datetime(args.start_date, utc=True)
-        if asset_spec.assetClass == "future":
-            from engine_v2.data.calendars import ExpectedTimestampRequest, requested_input_start
+    start_for_filter = args.start_date
+    if args.start_date and asset_spec.assetClass == "future":
+        from engine_v2.data.calendars import ExpectedTimestampRequest, requested_input_start
 
-            filter_start = requested_input_start(
+        start_for_filter = pd.Timestamp(
+            requested_input_start(
                 ExpectedTimestampRequest(
                     requested_start=args.start_date,
                     requested_end=args.start_date,
@@ -769,11 +853,8 @@ def main() -> None:
                     asset_class=asset_spec.assetClass,
                 )
             )
-        df = df[df["timestamp"] >= filter_start]
-    if args.end_date:
-        end = pd.to_datetime(args.end_date, utc=True) + pd.Timedelta(days=1)
-        df = df[df["timestamp"] < end]
-    df = df.reset_index(drop=True)
+        ).isoformat()
+    df = _filter_requested_window(df, start_for_filter, args.end_date)
     if df.empty:
         raise SystemExit("No bars after date filter")
     raw_rows = int(len(df))
@@ -927,14 +1008,9 @@ def main() -> None:
     )
 
     ba = from_dataframe(df, symbol=symbol, atr_period=14)
-    snap = MarketSnapshot({symbol: ba})
-
-    # Pre-compute regime labels so strategies can read bar["vol_regime"] and
-    # bar["trend_regime"] at decision time. Uses only settled data (lookback
-    # windows on prior closes) — no lookahead.
-    _vol_labels = classify_bars(ba.close, lookback=30)
-    _trend_labels = classify_trend(ba.close, lookback=50)
-    snap.attach_regime_labels(symbol, _vol_labels, _trend_labels)
+    # Pre-compute regime labels so strategies can read settled, decision-safe
+    # labels at each bar without lookahead.
+    snap = _fresh_snapshot(ba, symbol)
 
     seed = args.seed if args.seed else derive_seed(cfg, str(df["timestamp"].iloc[0]),
                                                    str(df["timestamp"].iloc[-1]),
@@ -958,6 +1034,16 @@ def main() -> None:
             result = run_loop(broker, snap, lambda: strat.on_bar())
     equity = result.equity_curve
     exposure_hist = result.gross_exposure
+    cost_sensitivity = _run_cost_sensitivity(
+        ba,
+        cfg,
+        args.interval,
+        asset_spec,
+        strategy_path,
+        symbol,
+        params,
+        args.capital,
+    ) if args.cost_sensitivity else None
     benchmark_returns = None
     benchmark_symbol = None
     benchmark_unavailable_reason = None
@@ -1028,6 +1114,7 @@ def main() -> None:
         benchmark_returns=benchmark_returns,
         benchmark_symbol=benchmark_symbol,
         monte_carlo=mc, walk_forward=wf, regimes=regimes, data_quality=dq,
+        cost_sensitivity=cost_sensitivity,
         execution_config=_execution_config(cfg, args.mode, asset_spec),
         run_metadata={
             "strategy_hash": _sha256_bytes(strategy_path.read_bytes()),

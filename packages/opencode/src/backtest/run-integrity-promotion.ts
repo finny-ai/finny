@@ -161,10 +161,12 @@ export async function verifyPromotion(input: {
 }): Promise<{ ok: boolean; status: string | null; errors: string[]; run?: StrictRunV1 }> {
   const integrity = await verifyRunForAlgorithm(input.algorithm, input.runId)
   if (!integrity.ok || !integrity.run) return { ok: false, status: null, errors: integrity.errors, run: integrity.run }
+  // Qualification identity binds datasetEvidenceId + datasetQualification (replaces
+  // the pre-#180 nested datasetEvidence object). Promotion still requires an
+  // immutable strict_qualified evidence binding.
   if (
-    integrity.run.identity.datasetEvidence?.version !== 2 ||
-    integrity.run.identity.datasetEvidence.qualification !== "strict_qualified" ||
-    !integrity.run.identity.datasetEvidence.id
+    !integrity.run.identity.datasetEvidenceId ||
+    integrity.run.identity.datasetQualification !== "strict_qualified"
   ) {
     return {
       ok: false,

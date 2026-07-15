@@ -7,8 +7,27 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pandas as pd
+
+from engine_v2.cli import _filter_requested_window
+
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_timestamp_window_is_exact_while_date_window_includes_the_day():
+    df = pd.DataFrame({
+        "timestamp": pd.to_datetime([
+            "2026-01-05T14:30:00Z",
+            "2026-01-05T14:35:00Z",
+            "2026-01-05T14:40:00Z",
+            "2026-01-06T14:30:00Z",
+        ], utc=True),
+    })
+    exact = _filter_requested_window(df, "2026-01-05T14:35:00Z", "2026-01-05T14:40:00Z")
+    whole_day = _filter_requested_window(df, "2026-01-05", "2026-01-05")
+    assert list(exact["timestamp"].dt.strftime("%H:%M")) == ["14:35", "14:40"]
+    assert list(whole_day["timestamp"].dt.strftime("%H:%M")) == ["14:30", "14:35", "14:40"]
 
 
 def _row_count(path: Path) -> int:
@@ -68,6 +87,7 @@ class Strategy:
             str(out),
             "--strategy",
             str(strategy),
+            "--cost-sensitivity",
         ],
         cwd=ROOT,
         env=env,
@@ -83,6 +103,13 @@ class Strategy:
     orders = list(csv.DictReader((out / "orders.csv").open(newline="")))
     assert {row["order_id"] for row in fills} <= {row["order_id"] for row in orders if row["order_id"]}
     assert {"submitted", "filled"} <= {row["status"] for row in orders}
+    results = json.loads((out / "results.json").read_text())
+    cost_sensitivity = next(
+        outcome for outcome in results["sensitivity_outcomes"]
+        if outcome["name"] == "Cost/fee/slippage stress"
+    )
+    assert cost_sensitivity["status"] == "pass"
+    assert cost_sensitivity["value"] > 0
 
 
 def test_strict_run_records_contract_drawdown_flatten(tmp_path):

@@ -6,6 +6,11 @@ import type { Algorithm } from "../../src/algorithm"
 import { evaluateBacktestQuality } from "../../src/backtest/evaluation"
 import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../../src/backtest/verdict"
 import {
+  makeHoldoutOpenEventV1,
+  makeQualificationPolicyV1,
+  type QualificationInputV1,
+} from "../../src/backtest/qualification-policy"
+import {
   currentAlgorithmHashes,
   publishStrictRun,
   sha256Text,
@@ -113,8 +118,38 @@ const METRICS = {
     },
   },
 } as any
+const POLICY = makeQualificationPolicyV1({
+  minDeflatedSharpe: 0.8,
+  minProbabilisticSharpe: 0.9,
+  requireCostSensitivity: false,
+  requireRiskContract: false,
+})
+const QUALIFICATION: QualificationInputV1 = {
+  policy: POLICY,
+  context: {
+    schema: "finny.qualification_context",
+    version: 1,
+    planId: "plan-run-integrity-test",
+    planHash: hash("plan"),
+    phase: "confirmatory",
+    holdoutOpenEvents: [
+      makeHoldoutOpenEventV1({
+        planId: "plan-run-integrity-test",
+        planHash: hash("plan"),
+        approvalHash: "c".repeat(64),
+        openedAt: "2026-07-14T00:00:00.000Z",
+      }),
+    ],
+    durableSelectionBudget: 20,
+    durableTrialCount: 1,
+    datasetEvidenceId: "dataset-run-integrity-test",
+    datasetHash: hash("id\n"),
+    datasetQualification: "strict_qualified",
+    dataQualityMode: "strict",
+  },
+}
 const RECOMMENDATION = composeBacktestVerdict({
-  quality: evaluateBacktestQuality(METRICS),
+  quality: evaluateBacktestQuality(METRICS, QUALIFICATION),
   walkForward: deriveWalkForwardVerdict(METRICS.v2.walk_forward),
   consistency: METRICS.v2.consistency,
   decay: METRICS.v2.alpha_decay,
@@ -140,7 +175,13 @@ function identity(overrides: Record<string, unknown> = {}) {
     engineTreeHash: hash(stableStringify(ENGINE_TREE)),
     assetProfileHash: hash(stableStringify({})),
     executionProfileHash: hash(stableStringify({})),
-    datasetEvidence: { id: "dsv2-run-integrity-fixture", version: 2, qualification: "strict_qualified" },
+    experimentPlanId: QUALIFICATION.context.planId,
+    experimentPlanHash: QUALIFICATION.context.planHash,
+    qualificationPolicyId: POLICY.policyId,
+    qualificationPolicyHash: POLICY.policyHash,
+    datasetEvidenceId: QUALIFICATION.context.datasetEvidenceId,
+    datasetQualification: QUALIFICATION.context.datasetQualification,
+    dataQualityMode: QUALIFICATION.context.dataQualityMode,
     seed: 42,
     dateWindow: { start: "2026-01-09", end: "2026-07-08", interval: "5min" },
     ...overrides,
@@ -172,6 +213,7 @@ async function publishFixture(root: string, identityInput = identity(), recommen
     runId: "run-1",
     identity: identityInput as any,
     recommendation,
+    qualification: QUALIFICATION,
     artifacts: [
       { source: path.join(source, "results.json"), path: "results.json" },
       { source: path.join(source, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
@@ -190,6 +232,8 @@ async function publishFixture(root: string, identityInput = identity(), recommen
       "effective_config.json": {},
       "engine_tree.json": ENGINE_TREE,
       "asset_spec.json": {},
+      "qualification_policy.json": POLICY,
+      "qualification_context.json": QUALIFICATION.context,
     },
     requiredArtifacts: [],
     createdAt: "2026-07-09T00:00:00.000Z",
@@ -264,6 +308,7 @@ describe("strict run integrity", () => {
         runId: "run-1",
         identity: identity() as any,
         recommendation: { verdict: "weak", reasons: [] },
+        qualification: QUALIFICATION,
         artifacts: [
           { source: path.join(missingSource, "results.json"), path: "results.json" },
           { source: path.join(missingSource, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
@@ -281,6 +326,8 @@ describe("strict run integrity", () => {
           "effective_config.json": {},
           "engine_tree.json": ENGINE_TREE,
           "asset_spec.json": {},
+          "qualification_policy.json": POLICY,
+          "qualification_context.json": QUALIFICATION.context,
         },
         requiredArtifacts: [],
       }),
@@ -313,74 +360,106 @@ describe("strict run integrity", () => {
     const tampered = await verifyStrictRunDir(published.dir)
     expect(tampered.ok).toBe(false)
     expect(tampered.errors.join(" ")).toContain("metrics.json")
+
+    const missingPolicyRoot = await tempDir("finny-run-missing-policy-")
+    const missingPolicy = await publishFixture(missingPolicyRoot)
+    const runFile = path.join(missingPolicy.dir, "run.json")
+    const runJson = JSON.parse(await fs.readFile(runFile, "utf8"))
+    delete runJson.qualification
+    await fs.writeFile(runFile, JSON.stringify(runJson))
+    const rejectedMissingPolicy = await verifyStrictRunDir(missingPolicy.dir)
+    expect(rejectedMissingPolicy.ok).toBe(false)
+    expect(rejectedMissingPolicy.errors.join(" ")).toContain("qualification policy and context are missing")
+
+    const wrongModeRoot = await tempDir("finny-run-wrong-mode-")
+    const wrongMode = await publishFixture(wrongModeRoot)
+    const wrongModeRunFile = path.join(wrongMode.dir, "run.json")
+    const wrongModeJson = JSON.parse(await fs.readFile(wrongModeRunFile, "utf8"))
+    wrongModeJson.qualification.context.dataQualityMode = "repair_outliers"
+    await fs.writeFile(wrongModeRunFile, JSON.stringify(wrongModeJson))
+    const rejectedWrongMode = await verifyStrictRunDir(wrongMode.dir)
+    expect(rejectedWrongMode.ok).toBe(false)
+    expect(rejectedWrongMode.errors.join(" ")).toContain("data quality mode")
+
+    const wrongHoldoutRoot = await tempDir("finny-run-wrong-holdout-")
+    const wrongHoldout = await publishFixture(wrongHoldoutRoot)
+    const contextFile = path.join(wrongHoldout.dir, "qualification_context.json")
+    const contextJson = JSON.parse(await fs.readFile(contextFile, "utf8"))
+    contextJson.holdoutOpenEvents[0].approvalHash = "d".repeat(64)
+    await fs.writeFile(contextFile, JSON.stringify(contextJson))
+    const rejectedWrongHoldout = await verifyStrictRunDir(wrongHoldout.dir)
+    expect(rejectedWrongHoldout.ok).toBe(false)
+    expect(rejectedWrongHoldout.errors.join(" ")).toContain("qualification_context.json")
   })
 
-
-async function preparePromotionFixture(home: string) {
-  const algorithm: Algorithm.Info = {
-    algorithmId: "algo-exact",
-    userId: "user-1",
-    name: "Exact Run",
-    code: "class Strategy:\n    pass\n",
-    language: "python",
-    version: 1,
-    status: "draft",
-    config: "{\"symbol\":\"SPY\"}",
-    reasoning: "original reasoning",
-    time_created: 1,
-    time_updated: 1,
+  async function preparePromotionFixture(home: string) {
+    const algorithm: Algorithm.Info = {
+      algorithmId: "algo-exact",
+      userId: "user-1",
+      name: "Exact Run",
+      code: "class Strategy:\n    pass\n",
+      language: "python",
+      version: 1,
+      status: "draft",
+      config: '{"symbol":"SPY"}',
+      reasoning: "original reasoning",
+      time_created: 1,
+      time_updated: 1,
+    }
+    const algoRoot = path.join(home, "algorithms", algorithm.algorithmId)
+    const versionRoot = path.join(algoRoot, "v01")
+    await fs.mkdir(versionRoot, { recursive: true })
+    await fs.writeFile(path.join(versionRoot, "strategy.py"), algorithm.code)
+    await fs.writeFile(path.join(versionRoot, "config.json"), algorithm.config!)
+    await fs.writeFile(path.join(versionRoot, "mission.md"), "mission")
+    await fs.writeFile(path.join(versionRoot, "prefs.md"), "preferences")
+    await fs.writeFile(path.join(versionRoot, "decisions.md"), "decisions")
+    await fs.writeFile(path.join(versionRoot, "reasoning.md"), algorithm.reasoning!)
+    await fs.writeFile(path.join(versionRoot, "risk.json"), "risk")
+    const current = await currentAlgorithmHashes(algorithm)
+    const source = await fixtureArtifacts(home)
+    const dir = strictRunDir(algorithm, "run-exact")
+    const published = await publishStrictRun({
+      finalDir: dir,
+      runId: "run-exact",
+      identity: {
+        ...identity({
+          algorithmId: algorithm.algorithmId,
+          algorithmVersion: 1,
+          effectiveConfigHash: hash(stableStringify({ symbol: "SPY" })),
+        }),
+        strategyHash: current.strategyHash,
+        savedConfigHash: current.savedConfigHash,
+        documentHashes: current.documentHashes,
+        riskContractHash: current.riskContractHash,
+      } as any,
+      recommendation: RECOMMENDATION,
+      qualification: QUALIFICATION,
+      artifacts: [
+        { source: path.join(source, "results.json"), path: "results.json" },
+        { source: path.join(source, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
+        { source: path.join(source, "ohlcv.csv"), path: "ohlcv.csv" },
+        { source: path.join(source, "processed_ohlcv.csv"), path: "processed_ohlcv.csv" },
+        { source: path.join(source, "orders.csv"), path: "orders.csv" },
+        { source: path.join(source, "fills.csv"), path: "fills.csv" },
+        { source: path.join(source, "rejections.csv"), path: "rejections.csv" },
+      ],
+      jsonArtifacts: {
+        "validation.json": { valid: true },
+        "metrics.json": METRICS,
+        "data_quality.json": {},
+        "execution_assumptions.json": {},
+        "execution_profile.json": {},
+        "effective_config.json": { symbol: "SPY" },
+        "engine_tree.json": ENGINE_TREE,
+        "asset_spec.json": {},
+        "qualification_policy.json": POLICY,
+        "qualification_context.json": QUALIFICATION.context,
+      },
+      requiredArtifacts: [],
+    })
+    return { algorithm, versionRoot, dir, published }
   }
-  const algoRoot = path.join(home, "algorithms", algorithm.algorithmId)
-  const versionRoot = path.join(algoRoot, "v01")
-  await fs.mkdir(versionRoot, { recursive: true })
-  await fs.writeFile(path.join(versionRoot, "strategy.py"), algorithm.code)
-  await fs.writeFile(path.join(versionRoot, "config.json"), algorithm.config!)
-  await fs.writeFile(path.join(versionRoot, "mission.md"), "mission")
-  await fs.writeFile(path.join(versionRoot, "prefs.md"), "preferences")
-  await fs.writeFile(path.join(versionRoot, "decisions.md"), "decisions")
-  await fs.writeFile(path.join(versionRoot, "reasoning.md"), algorithm.reasoning!)
-  await fs.writeFile(path.join(versionRoot, "risk.json"), "risk")
-  const current = await currentAlgorithmHashes(algorithm)
-  const source = await fixtureArtifacts(home)
-  const dir = strictRunDir(algorithm, "run-exact")
-  const published = await publishStrictRun({
-    finalDir: dir,
-    runId: "run-exact",
-    identity: {
-      ...identity({
-        algorithmId: algorithm.algorithmId,
-        algorithmVersion: 1,
-        effectiveConfigHash: hash(stableStringify({ symbol: "SPY" })),
-      }),
-      strategyHash: current.strategyHash,
-      savedConfigHash: current.savedConfigHash,
-      documentHashes: current.documentHashes,
-      riskContractHash: current.riskContractHash,
-    } as any,
-    recommendation: RECOMMENDATION,
-    artifacts: [
-      { source: path.join(source, "results.json"), path: "results.json" },
-      { source: path.join(source, "data_extractor.manifest.json"), path: "data_extractor.manifest.json" },
-      { source: path.join(source, "ohlcv.csv"), path: "ohlcv.csv" },
-      { source: path.join(source, "processed_ohlcv.csv"), path: "processed_ohlcv.csv" },
-      { source: path.join(source, "orders.csv"), path: "orders.csv" },
-      { source: path.join(source, "fills.csv"), path: "fills.csv" },
-      { source: path.join(source, "rejections.csv"), path: "rejections.csv" },
-    ],
-    jsonArtifacts: {
-      "validation.json": { valid: true },
-      "metrics.json": METRICS,
-      "data_quality.json": {},
-      "execution_assumptions.json": {},
-      "execution_profile.json": {},
-      "effective_config.json": { symbol: "SPY" },
-      "engine_tree.json": ENGINE_TREE,
-      "asset_spec.json": {},
-    },
-    requiredArtifacts: [],
-  })
-  return { algorithm, versionRoot, dir, published }
-}
 
   test("binds paper approval to the exact current version and fails live closed", async () => {
     const home = await tempDir("finny-run-promotion-")
@@ -414,10 +493,26 @@ async function preparePromotionFixture(home: string) {
       (await verifyPromotion({ algorithm, runId: "run-exact", mode: "paper", controllerApproval: authority })).ok,
     ).toBe(true)
     expect(
-      (await verifyPromotion({ algorithm, runId: "run-exact", symbol: "spy", mode: "paper", controllerApproval: authority })).ok,
+      (
+        await verifyPromotion({
+          algorithm,
+          runId: "run-exact",
+          symbol: "spy",
+          mode: "paper",
+          controllerApproval: authority,
+        })
+      ).ok,
     ).toBe(true)
     expect(
-      (await verifyPromotion({ algorithm, runId: "run-exact", symbol: "BTC/USDT", mode: "paper", controllerApproval: authority })).errors.join(" "),
+      (
+        await verifyPromotion({
+          algorithm,
+          runId: "run-exact",
+          symbol: "BTC/USDT",
+          mode: "paper",
+          controllerApproval: authority,
+        })
+      ).errors.join(" "),
     ).toContain("approved run market mismatch")
     const approvalFile = path.join(dir, "approval.json")
     const approvalReceipt = await fs.readFile(approvalFile, "utf8")

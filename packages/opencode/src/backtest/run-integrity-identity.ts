@@ -11,9 +11,9 @@ import {
   type RunRecommendation,
   type Sha256,
 } from "./run-integrity-core"
-import { evaluateBacktestQuality } from "./evaluation"
-import { composeBacktestVerdict, deriveWalkForwardVerdict } from "./verdict"
 import type { BacktestRunner } from "./runner"
+import { verifyQualificationPolicyV1, type QualificationInputV1 } from "./qualification-policy"
+import { qualifyCandidateV1 } from "./qualification"
 
 function requiredHashes(identity: RunIdentityV1): Array<[string, unknown]> {
   return [
@@ -31,6 +31,8 @@ function requiredHashes(identity: RunIdentityV1): Array<[string, unknown]> {
     ["engineTreeHash", identity.engineTreeHash],
     ["assetProfileHash", identity.assetProfileHash],
     ["executionProfileHash", identity.executionProfileHash],
+    ["experimentPlanHash", identity.experimentPlanHash],
+    ["qualificationPolicyHash", identity.qualificationPolicyHash],
   ]
 }
 
@@ -78,13 +80,11 @@ function pushIdentityFieldErrors(errors: string[], identity: RunIdentityV1) {
   if (invalidAlgorithmVersion(identity)) errors.push("algorithmVersion must be positive")
   if (invalidSeed(identity)) errors.push("seed must be a non-negative safe integer")
   if (incompleteDateWindow(identity)) errors.push("date window is incomplete")
-  if (identity.datasetEvidence) {
-    if (!identity.datasetEvidence.id) errors.push("datasetEvidence.id is required")
-    if (identity.datasetEvidence.version !== 2) errors.push("datasetEvidence.version must be 2")
-    if (identity.datasetEvidence.qualification !== "strict_qualified") {
-      errors.push("datasetEvidence must be strict_qualified")
-    }
-  }
+  if (!identity.experimentPlanId) errors.push("experimentPlanId is required")
+  if (!identity.qualificationPolicyId) errors.push("qualificationPolicyId is required")
+  if (!identity.datasetEvidenceId) errors.push("datasetEvidenceId is required")
+  if (!identity.datasetQualification) errors.push("datasetQualification is required")
+  if (!identity.dataQualityMode) errors.push("dataQualityMode is required")
 }
 
 export function validateRunIdentity(identity: RunIdentityV1 | null | undefined): string[] {
@@ -110,9 +110,17 @@ function csvHashMismatch(byPath: Map<string, RunManifestFileV1>, binding: HashBi
 }
 
 const SEMANTIC_BINDINGS: Array<(identity: RunIdentityV1) => HashBinding> = [
-  (identity) => ({ relative: "effective_config.json", expected: identity.effectiveConfigHash, label: "effectiveConfigHash" }),
+  (identity) => ({
+    relative: "effective_config.json",
+    expected: identity.effectiveConfigHash,
+    label: "effectiveConfigHash",
+  }),
   (identity) => ({ relative: "asset_spec.json", expected: identity.assetProfileHash, label: "assetProfileHash" }),
-  (identity) => ({ relative: "execution_profile.json", expected: identity.executionProfileHash, label: "executionProfileHash" }),
+  (identity) => ({
+    relative: "execution_profile.json",
+    expected: identity.executionProfileHash,
+    label: "executionProfileHash",
+  }),
   (identity) => ({ relative: "engine_tree.json", expected: identity.engineTreeHash, label: "engineTreeHash" }),
 ]
 
@@ -157,8 +165,19 @@ export async function identityArtifactErrors(
 export async function recommendationArtifactErrors(
   root: string,
   recommendation: RunRecommendation,
+  qualification: QualificationInputV1 | undefined,
 ): Promise<string[]> {
-  const errors: string[] = []
+  const errors: string[] = verifyQualificationPolicyV1(qualification?.policy)
+  try {
+    const policy = await readJson<unknown>({ file: path.join(root, "qualification_policy.json") })
+    const context = await readJson<unknown>({ file: path.join(root, "qualification_context.json") })
+    if (stableStringify(policy) !== stableStringify(qualification?.policy))
+      errors.push("qualification_policy.json does not match the bundle policy")
+    if (stableStringify(context) !== stableStringify(qualification?.context))
+      errors.push("qualification_context.json does not match the bundle context")
+  } catch (error) {
+    errors.push(`qualification artifacts are invalid: ${error instanceof Error ? error.message : String(error)}`)
+  }
   try {
     const validation = await readJson<{ valid?: boolean }>({ file: path.join(root, "validation.json") })
     if (validation.valid !== true) errors.push("validationStatus does not match validation.json")
@@ -166,18 +185,45 @@ export async function recommendationArtifactErrors(
     errors.push(`validation.json is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
   }
   try {
+    if (!qualification) throw new Error("qualification policy and context are missing")
     const results = await readJson<BacktestRunner.Results>({ file: path.join(root, "metrics.json") })
-    const recomputed = composeBacktestVerdict({
-      quality: evaluateBacktestQuality(results),
-      walkForward: deriveWalkForwardVerdict(results.v2?.walk_forward),
-      consistency: results.v2?.consistency,
-      decay: results.v2?.alpha_decay,
-    })
+    const recomputed = qualifyCandidateV1({
+      candidateId: "bundle-recomputation",
+      results,
+      qualification,
+    }).recommendation
     if (stableStringify(recomputed) !== stableStringify(recommendation)) {
       errors.push("computed recommendation does not match metrics.json")
     }
   } catch (error) {
-    errors.push(`metrics.json cannot reproduce recommendation: ${error instanceof Error ? error.message : String(error)}`)
+    errors.push(
+      `metrics.json cannot reproduce recommendation: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
+  return errors
+}
+
+export function qualificationIdentityErrors(
+  identity: RunIdentityV1,
+  qualification: QualificationInputV1 | undefined,
+): string[] {
+  const errors: string[] = []
+  if (!qualification?.policy || !qualification.context) return ["qualification policy and context are missing"]
+  if (identity.experimentPlanId !== qualification.context.planId)
+    errors.push("experiment plan id does not match qualification context")
+  if (identity.experimentPlanHash !== qualification.context.planHash)
+    errors.push("experiment plan hash does not match qualification context")
+  if (identity.qualificationPolicyId !== qualification.policy.policyId)
+    errors.push("qualification policy id does not match bundle")
+  if (identity.qualificationPolicyHash !== qualification.policy.policyHash)
+    errors.push("qualification policy hash does not match bundle")
+  if (identity.datasetEvidenceId !== qualification.context.datasetEvidenceId)
+    errors.push("dataset evidence id does not match qualification context")
+  if (identity.rawDataHash !== qualification.context.datasetHash)
+    errors.push("dataset hash does not match run raw data")
+  if (identity.datasetQualification !== qualification.context.datasetQualification)
+    errors.push("dataset qualification does not match context")
+  if (identity.dataQualityMode !== qualification.context.dataQualityMode)
+    errors.push("data quality mode does not match context")
   return errors
 }

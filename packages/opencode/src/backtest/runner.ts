@@ -23,8 +23,9 @@ import {
   normalizeInterval as normalizeRequestInterval,
   normalizeSymbol as normalizeRequestSymbol,
 } from "@/agent/request-identity"
-import { composeBacktestVerdict, deriveWalkForwardVerdict } from "./verdict"
 import * as RunIntegrity from "./run-integrity"
+import { qualifyCandidateV1 } from "./qualification"
+import { qualificationInputForResearch, type QualificationInputV1 } from "./qualification-policy"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
@@ -59,13 +60,18 @@ export namespace BacktestRunner {
       monteCarloPaths?: number
       regimes?: boolean
       walkForwardFolds?: number
-      parameterGrid?: Record<string, Array<number | string | boolean>> | Array<Record<string, number | string | boolean>>
+      costSensitivity?: boolean
+      parameterGrid?:
+        | Record<string, Array<number | string | boolean>>
+        | Array<Record<string, number | string | boolean>>
       /** Unique metric-producing selections completed before this run. */
       priorSelectionTrials?: number
       /** New grid selections in this run; zero for an exact deterministic replay. */
       currentSelectionTrials?: number
     }
     experiment?: ExperimentReference
+    /** Mandatory verdict inputs. Omit only for legacy/research-only runs. */
+    qualification?: QualificationInputV1
     sessionID?: string
     /**
      * Product/session strict runs must use the exact verified data_extractor
@@ -164,7 +170,13 @@ export namespace BacktestRunner {
     benchmarkSharpeRatio?: number | null
     alpha?: number
     /** Deployment gate state derived from validation and backtest diagnostics. */
-    eligibilityStatus?: "prototype" | "validated" | "backtested" | "robustness_passed" | "paper_eligible" | "live_eligible"
+    eligibilityStatus?:
+      | "prototype"
+      | "validated"
+      | "backtested"
+      | "robustness_passed"
+      | "paper_eligible"
+      | "live_eligible"
     productLabel?: string
     runKind?: "crucible_2_0" | "legacy"
     experiment?: ExperimentReference
@@ -224,10 +236,7 @@ export namespace BacktestRunner {
     readonly input: string
     readonly suggestions: string[]
     constructor(input: string, suggestions: string[]) {
-      super(
-        `Unknown symbol "${input}".` +
-          (suggestions.length ? ` Try one of: ${suggestions.join(", ")}.` : ""),
-      )
+      super(`Unknown symbol "${input}".` + (suggestions.length ? ` Try one of: ${suggestions.join(", ")}.` : ""))
       this.name = "UnknownSymbolError"
       this.input = input
       this.suggestions = suggestions
@@ -283,10 +292,14 @@ export namespace BacktestRunner {
     const n = parseInt(m[1], 10)
     if (!Number.isFinite(n) || n <= 0) return null
     switch (m[2]) {
-      case "d": return n
-      case "w": return n * 7
-      case "m": return n * 30
-      case "y": return n * 365
+      case "d":
+        return n
+      case "w":
+        return n * 7
+      case "m":
+        return n * 30
+      case "y":
+        return n * 365
     }
     return null
   }
@@ -299,10 +312,18 @@ export namespace BacktestRunner {
     if (m) {
       const n = parseInt(m[1], 10)
       switch (m[2]) {
-        case "d": start.setUTCDate(start.getUTCDate() - n); break
-        case "w": start.setUTCDate(start.getUTCDate() - n * 7); break
-        case "m": start.setUTCMonth(start.getUTCMonth() - n); break
-        case "y": start.setUTCFullYear(start.getUTCFullYear() - n); break
+        case "d":
+          start.setUTCDate(start.getUTCDate() - n)
+          break
+        case "w":
+          start.setUTCDate(start.getUTCDate() - n * 7)
+          break
+        case "m":
+          start.setUTCMonth(start.getUTCMonth() - n)
+          break
+        case "y":
+          start.setUTCFullYear(start.getUTCFullYear() - n)
+          break
       }
     } else {
       // Legacy fallback for any pre-existing tokens not matching <int><unit>.
@@ -712,7 +733,7 @@ with open("_data_provider.txt", "w") as f:
     const cfg = (v2 as any).execution_config ?? {}
     return {
       fill_model: cfg.fill_model ?? "engine_v2.next_open",
-      participation_cap_pct: Number(cfg.participation_pct ?? 0.10) * 100,
+      participation_cap_pct: Number(cfg.participation_pct ?? 0.1) * 100,
       maker_fee_bps: cfg.maker_fee_bps,
       taker_fee_bps: cfg.taker_fee_bps,
       slippage_bps: cfg.slippage_bps,
@@ -730,7 +751,8 @@ with open("_data_provider.txt", "w") as f:
       (sum, trade) => sum + (Number.isFinite(trade.unrealized_pnl) ? trade.unrealized_pnl : 0),
       0,
     )
-    const startingEquity = Number.isFinite(v2.starting_equity) && v2.starting_equity > 0 ? v2.starting_equity : undefined
+    const startingEquity =
+      Number.isFinite(v2.starting_equity) && v2.starting_equity > 0 ? v2.starting_equity : undefined
     return {
       totalReturn: v2.total_return,
       maxDrawdown: Math.abs(v2.max_drawdown),
@@ -804,7 +826,9 @@ with open("_data_provider.txt", "w") as f:
       }
       // Schema major mismatch — fall through to line parse; emit a marker so
       // telemetry can see this happened.
-      console.warn(`[backtest] results.json schema ${v2.schema_version} not v${EngineV2.SCHEMA_VERSION_MAJOR}; falling back to line parse`)
+      console.warn(
+        `[backtest] results.json schema ${v2.schema_version} not v${EngineV2.SCHEMA_VERSION_MAJOR}; falling back to line parse`,
+      )
     } catch {
       // No JSON — strategy probably ran via a legacy embedded backtest.py
     }
@@ -826,9 +850,14 @@ with open("_data_provider.txt", "w") as f:
         const tok = numMatch[2].toLowerCase()
         if (tok === "nan" || tok === "inf" || tok === "-inf") {
           parseWarnings.push(`${key}=${tok}`)
-          metrics[key] = key === "profit_factor"
-            ? null as any
-            : (tok === "nan" ? Number.NaN : (tok === "inf" ? Number.POSITIVE_INFINITY : Number.NEGATIVE_INFINITY))
+          metrics[key] =
+            key === "profit_factor"
+              ? (null as any)
+              : tok === "nan"
+                ? Number.NaN
+                : tok === "inf"
+                  ? Number.POSITIVE_INFINITY
+                  : Number.NEGATIVE_INFINITY
           continue
         }
         const val = parseFloat(numMatch[2])
@@ -848,11 +877,17 @@ with open("_data_provider.txt", "w") as f:
     let diagnostics: Diagnostics | undefined
     if (diagBars !== undefined) {
       let rejectionReasons: Record<string, number> = {}
-      try { if (strings["diag_rejection_reasons"]) rejectionReasons = JSON.parse(strings["diag_rejection_reasons"]) } catch {}
+      try {
+        if (strings["diag_rejection_reasons"]) rejectionReasons = JSON.parse(strings["diag_rejection_reasons"])
+      } catch {}
       let assumptions: Assumptions | undefined
-      try { if (strings["diag_assumptions"]) assumptions = JSON.parse(strings["diag_assumptions"]) as Assumptions } catch {}
+      try {
+        if (strings["diag_assumptions"]) assumptions = JSON.parse(strings["diag_assumptions"]) as Assumptions
+      } catch {}
       let killed: KillSwitch | undefined
-      try { if (strings["diag_killed"]) killed = JSON.parse(strings["diag_killed"]) as KillSwitch } catch {}
+      try {
+        if (strings["diag_killed"]) killed = JSON.parse(strings["diag_killed"]) as KillSwitch
+      } catch {}
       diagnostics = {
         barsProcessed: diagBars,
         buyAttempts: metrics["diag_buy_attempts"] ?? 0,
@@ -874,9 +909,16 @@ with open("_data_provider.txt", "w") as f:
       // No diag block but we did see nan/inf — surface a minimal diagnostics
       // payload so the parse_warnings aren't dropped.
       diagnostics = {
-        barsProcessed: 0, buyAttempts: 0, sellAttempts: 0, rejectedOrders: 0,
-        rejectionReasons: {}, priceFirst: 0, priceLast: 0, priceRangePct: 0,
-        strategyErrors: 0, parseWarnings,
+        barsProcessed: 0,
+        buyAttempts: 0,
+        sellAttempts: 0,
+        rejectedOrders: 0,
+        rejectionReasons: {},
+        priceFirst: 0,
+        priceLast: 0,
+        priceRangePct: 0,
+        strategyErrors: 0,
+        parseWarnings,
       }
     }
 
@@ -888,8 +930,12 @@ with open("_data_provider.txt", "w") as f:
     let v2: EngineV2.Results | undefined
     let stabilityParsed: EngineV2.StabilityMetrics | undefined
     let regimesParsed: EngineV2.RegimeBreakdown[] | undefined
-    try { if (strings["stability_json"]) stabilityParsed = JSON.parse(strings["stability_json"]) } catch {}
-    try { if (strings["regimes_json"]) regimesParsed = JSON.parse(strings["regimes_json"]) } catch {}
+    try {
+      if (strings["stability_json"]) stabilityParsed = JSON.parse(strings["stability_json"])
+    } catch {}
+    try {
+      if (strings["regimes_json"]) regimesParsed = JSON.parse(strings["regimes_json"])
+    } catch {}
     if (stabilityParsed || regimesParsed) {
       v2 = {
         // Mirror the legacy flat values so downstream consumers don't NPE on
@@ -1436,34 +1482,163 @@ if __name__ == "__main__":
     main()
 `
 
-
   // Tokens commonly seen in algo names that are NOT tickers. Anything else that
   // looks like a ticker shape (2-5 alnum chars) is treated as a candidate symbol.
   const NAME_STOPWORDS = new Set([
     // Strategy patterns
-    "INTRADAY", "HYBRID", "MOMENTUM", "MEAN", "REVERSION", "BREAKOUT", "DCA", "GOLDEN",
-    "CROSS", "SCALPING", "SCALP", "SWING", "TREND", "RANGE", "FOLLOW", "FOLLOWING",
-    "ARBITRAGE", "ARB", "PAIRS", "STAT", "GRID", "MARTINGALE", "ANTI",
+    "INTRADAY",
+    "HYBRID",
+    "MOMENTUM",
+    "MEAN",
+    "REVERSION",
+    "BREAKOUT",
+    "DCA",
+    "GOLDEN",
+    "CROSS",
+    "SCALPING",
+    "SCALP",
+    "SWING",
+    "TREND",
+    "RANGE",
+    "FOLLOW",
+    "FOLLOWING",
+    "ARBITRAGE",
+    "ARB",
+    "PAIRS",
+    "STAT",
+    "GRID",
+    "MARTINGALE",
+    "ANTI",
     // Indicators
-    "RSI", "SMA", "EMA", "MACD", "BB", "BOLLINGER", "ATR", "STOCH", "PIVOT", "FIB",
-    "FIBONACCI", "ICHIMOKU", "VWAP", "OBV", "ADX", "CCI", "WILLIAMS", "DONCHIAN",
+    "RSI",
+    "SMA",
+    "EMA",
+    "MACD",
+    "BB",
+    "BOLLINGER",
+    "ATR",
+    "STOCH",
+    "PIVOT",
+    "FIB",
+    "FIBONACCI",
+    "ICHIMOKU",
+    "VWAP",
+    "OBV",
+    "ADX",
+    "CCI",
+    "WILLIAMS",
+    "DONCHIAN",
     // Generic
-    "STRATEGY", "STRAT", "ALGO", "ALGORITHM", "BOT", "TRADER", "TRADING", "QUANT",
-    "SIMPLE", "ADVANCED", "BASIC", "ML", "AI", "ALPHA", "BETA", "GAMMA", "DELTA",
-    "FAST", "SLOW", "SHORT", "LONG", "HIGH", "LOW", "UP", "DOWN", "DAY", "NIGHT",
-    "TEST", "DEMO", "DRAFT", "PROD", "PROD", "PRO", "LITE", "PLUS", "MINI", "MAX",
-    "NEW", "OLD", "CUSTOM", "FINAL", "DRAFT", "WIP", "TMP",
+    "STRATEGY",
+    "STRAT",
+    "ALGO",
+    "ALGORITHM",
+    "BOT",
+    "TRADER",
+    "TRADING",
+    "QUANT",
+    "SIMPLE",
+    "ADVANCED",
+    "BASIC",
+    "ML",
+    "AI",
+    "ALPHA",
+    "BETA",
+    "GAMMA",
+    "DELTA",
+    "FAST",
+    "SLOW",
+    "SHORT",
+    "LONG",
+    "HIGH",
+    "LOW",
+    "UP",
+    "DOWN",
+    "DAY",
+    "NIGHT",
+    "TEST",
+    "DEMO",
+    "DRAFT",
+    "PROD",
+    "PROD",
+    "PRO",
+    "LITE",
+    "PLUS",
+    "MINI",
+    "MAX",
+    "NEW",
+    "OLD",
+    "CUSTOM",
+    "FINAL",
+    "DRAFT",
+    "WIP",
+    "TMP",
     // Version tokens
-    "V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8", "V9", "V10",
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
+    "V1",
+    "V2",
+    "V3",
+    "V4",
+    "V5",
+    "V6",
+    "V7",
+    "V8",
+    "V9",
+    "V10",
+    "1",
+    "2",
+    "3",
+    "4",
+    "5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
   ])
 
   // Crypto base tickers that need a `/USD` quote suffix when handed to yfinance.
   const CRYPTO_BASES = new Set([
-    "BTC", "ETH", "SOL", "ADA", "DOT", "LINK", "UNI", "AAVE", "MATIC", "AVAX",
-    "XRP", "DOGE", "SHIB", "LTC", "BCH", "ATOM", "NEAR", "FTM", "ALGO", "XLM",
-    "TRX", "ETC", "FIL", "ICP", "APT", "ARB", "OP", "INJ", "SEI", "TIA", "SUI",
-    "PEPE", "WLD", "RNDR", "IMX", "FET", "GRT", "STX", "MKR", "RUNE", "LDO",
+    "BTC",
+    "ETH",
+    "SOL",
+    "ADA",
+    "DOT",
+    "LINK",
+    "UNI",
+    "AAVE",
+    "MATIC",
+    "AVAX",
+    "XRP",
+    "DOGE",
+    "SHIB",
+    "LTC",
+    "BCH",
+    "ATOM",
+    "NEAR",
+    "FTM",
+    "ALGO",
+    "XLM",
+    "TRX",
+    "ETC",
+    "FIL",
+    "ICP",
+    "APT",
+    "ARB",
+    "OP",
+    "INJ",
+    "SEI",
+    "TIA",
+    "SUI",
+    "PEPE",
+    "WLD",
+    "RNDR",
+    "IMX",
+    "FET",
+    "GRT",
+    "STX",
+    "MKR",
+    "RUNE",
+    "LDO",
   ])
 
   function looksLikeTicker(token: string): boolean {
@@ -1519,7 +1694,12 @@ if __name__ == "__main__":
     if (lower.includes("externally-managed-environment") || lower.includes("no module named")) {
       return { kind: "python_env", detail: stderr.trim() }
     }
-    if (lower.includes("404") || lower.includes("delisted") || lower.includes("symbol may be delisted") || lower.includes("no data found")) {
+    if (
+      lower.includes("404") ||
+      lower.includes("delisted") ||
+      lower.includes("symbol may be delisted") ||
+      lower.includes("no data found")
+    ) {
       return { kind: "unknown_symbol", detail: stderr.trim() }
     }
     if (lower.includes("timeout") || lower.includes("connection") || lower.includes("network")) {
@@ -1641,7 +1821,10 @@ if __name__ == "__main__":
   }
 
   function makeRunId(date = new Date()): string {
-    const compact = date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z")
+    const compact = date
+      .toISOString()
+      .replace(/[-:]/g, "")
+      .replace(/\.\d{3}Z$/, "Z")
     return `${compact}-${crypto.randomBytes(8).toString("hex")}`
   }
 
@@ -1659,9 +1842,9 @@ if __name__ == "__main__":
     let quoted = false
     for (let i = 0; i < line.length; i++) {
       const ch = line[i]
-      if (ch === "\"") {
-        if (quoted && line[i + 1] === "\"") {
-          current += "\""
+      if (ch === '"') {
+        if (quoted && line[i + 1] === '"') {
+          current += '"'
           i++
         } else {
           quoted = !quoted
@@ -1682,7 +1865,7 @@ if __name__ == "__main__":
   function csvCell(value: string | number | null | undefined): string {
     if (value === null || value === undefined) return ""
     const raw = String(value)
-    return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, "\"\"")}"` : raw
+    return /[",\n\r]/.test(raw) ? `"${raw.replace(/"/g, '""')}"` : raw
   }
 
   async function readCsvObjects(file: string): Promise<Record<string, string>[]> {
@@ -1784,9 +1967,7 @@ if __name__ == "__main__":
     const sessionMinutes = calendarSessionMinutes(calendar)
     if (sessionMinutes !== null) {
       const minutes = intervalMinutes(normalized)
-      return minutes !== null
-        ? (sessionMinutes / minutes) * 252
-        : 252 / intervalDaySpan(normalized)
+      return minutes !== null ? (sessionMinutes / minutes) * 252 : 252 / intervalDaySpan(normalized)
     }
     if (calendar.toUpperCase() === "FX_24_5") return barsPerDay * 260
     return barsPerDay * 365
@@ -1953,11 +2134,7 @@ if __name__ == "__main__":
         const strategy = strategyByTs.get(key)
         const benchmark = benchmarkByTs.get(key)
         const timestamp = benchmark?.timestamp || strategy?.timestamp || key
-        lines.push([
-          csvCell(timestamp),
-          csvCell(strategy?.equity),
-          csvCell(benchmark?.benchmarkEquity),
-        ].join(","))
+        lines.push([csvCell(timestamp), csvCell(strategy?.equity), csvCell(benchmark?.benchmarkEquity)].join(","))
       }
     } else {
       const maxRows = Math.max(strategyRows.length, input.benchmarkRows.length)
@@ -1965,11 +2142,7 @@ if __name__ == "__main__":
         const strategy = strategyRows[i]
         const benchmark = input.benchmarkRows[i]
         const timestamp = benchmark?.timestamp || strategy?.timestamp || ""
-        lines.push([
-          csvCell(timestamp),
-          csvCell(strategy?.equity),
-          csvCell(benchmark?.benchmarkEquity),
-        ].join(","))
+        lines.push([csvCell(timestamp), csvCell(strategy?.equity), csvCell(benchmark?.benchmarkEquity)].join(","))
       }
     }
     const out = path.join(input.tmpDir, "finny_evidence_equity.csv")
@@ -2013,18 +2186,19 @@ if __name__ == "__main__":
 
   async function persistBacktestEvidence(input: PersistBacktestEvidenceInput): Promise<void> {
     const assumptions = benchmarkAssumptions(input.results)
-    const benchmark = input.benchmark === undefined
-      ? await attachBuyHoldBenchmark({
-          tmpDir: input.tmpDir,
-          algorithm: input.algorithm,
-          config: input.config,
-          results: input.results,
-          capital: input.capital,
-          interval: input.interval,
-          assumptions,
-          calendar: input.calendar,
-        })
-      : input.benchmark
+    const benchmark =
+      input.benchmark === undefined
+        ? await attachBuyHoldBenchmark({
+            tmpDir: input.tmpDir,
+            algorithm: input.algorithm,
+            config: input.config,
+            results: input.results,
+            capital: input.capital,
+            interval: input.interval,
+            assumptions,
+            calendar: input.calendar,
+          })
+        : input.benchmark
     if (benchmark) {
       input.results.benchmarkReturn = benchmark.summary.totalReturn
       input.results.benchmarkMaxDrawdown = benchmark.summary.maxDrawdown
@@ -2116,12 +2290,13 @@ if __name__ == "__main__":
     return resolveAssetSpec(config, detectSymbol(algorithm))
   }
 
-  function deriveEligibility(results: Results): Results["eligibilityStatus"] {
+  function deriveEligibility(results: Results, qualification: QualificationInputV1): Results["eligibilityStatus"] {
     const spec = results.v2?.run_metadata?.asset_spec as any
     if (spec?.assetClass === "option" || spec?.productionEligible === false) return "backtested"
     const exec = results.v2?.execution_config as any
-    if (spec?.assetClass === "crypto_perp" && (!exec?.funding_enabled || !exec?.liquidation_enabled)) return "backtested"
-    const quality = evaluateBacktestQuality(results)
+    if (spec?.assetClass === "crypto_perp" && (!exec?.funding_enabled || !exec?.liquidation_enabled))
+      return "backtested"
+    const quality = evaluateBacktestQuality(results, qualification)
     if (quality.label === "paper_eligible" || quality.label === "candidate") return "robustness_passed"
     return "backtested"
   }
@@ -2130,17 +2305,17 @@ if __name__ == "__main__":
     const risk = config.risk_contract
     return Boolean(
       risk &&
-      typeof risk === "object" &&
-      Number.isFinite(risk.sizing_stop_distance_pct) &&
-      risk.sizing_stop_distance_pct > 0 &&
-      risk.protective_stop &&
-      ["none", "strategy_next_open", "engine_stop"].includes(risk.protective_stop.mode) &&
-      risk.drawdown &&
-      ["evaluation_only", "halt_and_flatten_next_open"].includes(risk.drawdown.mode) &&
-      Number.isFinite(risk.drawdown.limit_pct) &&
-      risk.drawdown.limit_pct > 0 &&
-      Number.isSafeInteger(risk.max_positions) &&
-      risk.max_positions > 0
+        typeof risk === "object" &&
+        Number.isFinite(risk.sizing_stop_distance_pct) &&
+        risk.sizing_stop_distance_pct > 0 &&
+        risk.protective_stop &&
+        ["none", "strategy_next_open", "engine_stop"].includes(risk.protective_stop.mode) &&
+        risk.drawdown &&
+        ["evaluation_only", "halt_and_flatten_next_open"].includes(risk.drawdown.mode) &&
+        Number.isFinite(risk.drawdown.limit_pct) &&
+        risk.drawdown.limit_pct > 0 &&
+        Number.isSafeInteger(risk.max_positions) &&
+        risk.max_positions > 0,
     )
   }
 
@@ -2157,7 +2332,8 @@ if __name__ == "__main__":
     seed: number
     startDate: string
     endDate: string
-    dataset: VerifiedDatasetRef
+    dataQualityMode: "strict" | "repair_outliers"
+    qualification?: QualificationInputV1
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2169,16 +2345,48 @@ if __name__ == "__main__":
     )
     const assetSpec = buildArtifactAssetSpec(input.config, input.algorithm)
     if (!input.validation.valid) throw new Error("strict run cannot be published from failed validation")
-    const quality = evaluateBacktestQuality(input.results)
-    const walkForward = deriveWalkForwardVerdict(input.results.v2?.walk_forward)
-    const recommendation = composeBacktestVerdict({
-      quality,
-      walkForward,
-      consistency: input.results.v2?.consistency,
-      decay: input.results.v2?.alpha_decay,
+    const rawDataPath = path.join(input.tmpDir, "ohlcv.csv")
+    const rawDataHash = await RunIntegrity.sha256File(rawDataPath)
+    const fallback = qualificationInputForResearch({
+      dataQualityMode: input.dataQualityMode,
+      phase: input.results.experiment?.phase,
+    })
+    const qualification = input.qualification ?? {
+      ...fallback,
+      context: {
+        ...fallback.context,
+        datasetEvidenceId: `legacy-${rawDataHash.slice(0, 24)}`,
+        datasetHash: rawDataHash,
+      },
+    }
+    const qualificationDecision = qualifyCandidateV1({
+      candidateId: input.algorithm.algorithmId,
+      results: input.results,
+      qualification,
+    })
+    const recommendation = qualificationDecision.recommendation
+    emit({
+      eventType: "backtest.qualification_evaluated",
+      algorithmId: input.algorithm.algorithmId,
+      payload: {
+        runId: input.runId,
+        planId: qualification.context.planId,
+        planHash: qualification.context.planHash,
+        policyId: qualification.policy.policyId,
+        policyHash: qualification.policy.policyHash,
+        datasetEvidenceId: qualification.context.datasetEvidenceId,
+        datasetHash: qualification.context.datasetHash,
+        datasetQualification: qualification.context.datasetQualification,
+        dataQualityMode: qualification.context.dataQualityMode,
+        durableSelectionBudget: qualification.context.durableSelectionBudget,
+        durableTrialCount: qualification.context.durableTrialCount,
+        phase: qualification.context.phase,
+        verdict: recommendation.verdict,
+        blockerCode: qualificationDecision.ok ? undefined : qualificationDecision.blocker.code,
+        gateReasons: qualificationDecision.quality.reasons,
+      },
     })
     const current = await RunIntegrity.currentAlgorithmHashes(input.algorithm)
-    const rawDataPath = path.join(input.tmpDir, "ohlcv.csv")
     const processedDataPath = path.join(input.tmpDir, PROCESSED_OHLCV_CSV)
     const executionProfile = input.results.v2?.execution_config ?? input.config.execution ?? {}
     const engineTree = await RunIntegrity.directoryTreeManifest(path.join(input.tmpDir, "engine_v2"))
@@ -2194,22 +2402,27 @@ if __name__ == "__main__":
         effectiveConfigHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(input.config)),
         documentHashes: current.documentHashes,
         riskContractHash: current.riskContractHash,
-        rawDataHash: await RunIntegrity.sha256File(rawDataPath),
+        rawDataHash,
         processedDataHash: await RunIntegrity.sha256File(processedDataPath),
         manifestHash: await RunIntegrity.sha256File(path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT)),
         engineTreeHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(engineTree)),
         assetProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(assetSpec)),
         executionProfileHash: RunIntegrity.sha256Text(RunIntegrity.stableStringify(executionProfile)),
-        datasetEvidence: {
-          id: input.dataset.identity.evidenceId!,
-          version: 2,
-          qualification: "strict_qualified",
-        },
+        experimentPlanId: qualification.context.planId,
+        experimentPlanHash: qualification.context.planHash,
+        qualificationPolicyId: qualification.policy.policyId,
+        qualificationPolicyHash: qualification.policy.policyHash,
+        datasetEvidenceId: qualification.context.datasetEvidenceId,
+        datasetQualification: qualification.context.datasetQualification,
+        dataQualityMode: qualification.context.dataQualityMode,
         seed: input.seed,
         dateWindow: { start: input.startDate, end: input.endDate, interval: input.interval },
       },
       recommendation,
+      qualification,
       jsonArtifacts: {
+        "qualification_policy.json": qualification.policy,
+        "qualification_context.json": qualification.context,
         "validation.json": input.validation,
         "metrics.json": input.results,
         "data_quality.json": input.results.v2?.data_quality ?? {},
@@ -2225,7 +2438,11 @@ if __name__ == "__main__":
         { source: path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT), path: VERIFIED_MANIFEST_ARTIFACT },
         { source: processedDataPath, path: PROCESSED_OHLCV_CSV },
         { source: path.join(input.tmpDir, "equity.csv"), path: "equity.csv", required: false },
-        { source: path.join(input.tmpDir, "finny_evidence_equity.csv"), path: "finny_evidence_equity.csv", required: false },
+        {
+          source: path.join(input.tmpDir, "finny_evidence_equity.csv"),
+          path: "finny_evidence_equity.csv",
+          required: false,
+        },
         { source: path.join(input.tmpDir, "rolling_sharpe.csv"), path: "rolling_sharpe.csv", required: false },
         { source: path.join(input.tmpDir, "trades.csv"), path: "trades.csv", required: false },
         { source: path.join(input.tmpDir, "diagnostics.csv"), path: "diagnostics.csv", required: false },
@@ -2254,7 +2471,7 @@ if __name__ == "__main__":
 
     input.results.runId = input.runId
     input.results.artifactDir = base
-    input.results.eligibilityStatus = deriveEligibility(input.results)
+    input.results.eligibilityStatus = deriveEligibility(input.results, qualification)
     return base
   }
 
@@ -2264,15 +2481,17 @@ if __name__ == "__main__":
       const dir = os.tmpdir()
       const entries = await fs.readdir(dir)
       const cutoff = Date.now() - 60 * 60 * 1000
-      await Promise.all(entries
-        .filter(name => name.startsWith("finny-backtest-"))
-        .map(async name => {
-          const p = path.join(dir, name)
-          try {
-            const st = await fs.stat(p)
-            if (st.mtimeMs < cutoff) await fs.rm(p, { recursive: true, force: true })
-          } catch {}
-        }))
+      await Promise.all(
+        entries
+          .filter((name) => name.startsWith("finny-backtest-"))
+          .map(async (name) => {
+            const p = path.join(dir, name)
+            try {
+              const st = await fs.stat(p)
+              if (st.mtimeMs < cutoff) await fs.rm(p, { recursive: true, force: true })
+            } catch {}
+          }),
+      )
     } catch {}
   }
   let sweepDone = false
@@ -2292,11 +2511,15 @@ if __name__ == "__main__":
       source = "run",
       robustness = {},
       experiment,
+      qualification,
       sessionID,
       dataSource = { kind: "provider_fetch" },
     } = params
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
-    if (!sweepDone) { sweepDone = true; void sweepStaleTmpdirs() }
+    if (!sweepDone) {
+      sweepDone = true
+      void sweepStaleTmpdirs()
+    }
     const parsedCapital = parseCapital(capital)
     if (parsedCapital === null) {
       return { ok: false, error: `Invalid capital "${capital}". Use a positive finite number.`, kind: "invalid_input" }
@@ -2311,7 +2534,8 @@ if __name__ == "__main__":
     if (engineMode === "strict_v2" && algorithm.backtestCode && algorithm.backtestCode.trim().length > 0) {
       return {
         ok: false,
-        error: "This algorithm has custom backtestCode, which is disabled in strict_v2 mode because custom runners can forge metrics. Migrate the strategy to engine_v2 or explicitly use legacy_unsafe from an internal/dev caller.",
+        error:
+          "This algorithm has custom backtestCode, which is disabled in strict_v2 mode because custom runners can forge metrics. Migrate the strategy to engine_v2 or explicitly use legacy_unsafe from an internal/dev caller.",
         kind: "unsafe_custom_runner",
       }
     }
@@ -2326,12 +2550,10 @@ if __name__ == "__main__":
     }
 
     // Fallbacks: synthesize default backtest.py and config.json if the algo is missing them.
-    const backtestCode = algorithm.backtestCode && algorithm.backtestCode.trim().length > 0
-      ? algorithm.backtestCode
-      : DEFAULT_BACKTEST_PY
-    const algorithmConfig = algorithm.config && algorithm.config.trim().length > 0
-      ? algorithm.config
-      : synthesizeConfig(algorithm)
+    const backtestCode =
+      algorithm.backtestCode && algorithm.backtestCode.trim().length > 0 ? algorithm.backtestCode : DEFAULT_BACKTEST_PY
+    const algorithmConfig =
+      algorithm.config && algorithm.config.trim().length > 0 ? algorithm.config : synthesizeConfig(algorithm)
 
     let effectiveConfig: any
     try {
@@ -2442,10 +2664,7 @@ if __name__ == "__main__":
       // Copy engine_v2/ into the tmpdir — only needed by algorithms with
       // custom backtestCode that imports engine_v2. The default shim uses
       // finny_broker.py directly, so a missing engine_v2 is non-fatal.
-      const ENGINE_V2_SRC = path.resolve(
-        path.dirname(fileURLToPath(import.meta.url)),
-        "..", "..", "engine_v2",
-      )
+      const ENGINE_V2_SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "engine_v2")
       let engineV2Ready = false
       try {
         await fs.cp(ENGINE_V2_SRC, path.join(tmpDir, "engine_v2"), { recursive: true })
@@ -2490,7 +2709,8 @@ if __name__ == "__main__":
       }
       const effectiveSeed = fixtureCsv
         ? 424242
-        : seed ?? hashSeed(
+        : (seed ??
+          hashSeed(
             algorithm.algorithmId,
             String((algorithm as any).version ?? ""),
             duration,
@@ -2500,7 +2720,7 @@ if __name__ == "__main__":
             capital,
             stableStringify(configOverrides ?? {}),
             stableStringify(config.execution ?? {}),
-          )
+          ))
 
       // Bind and copy verified bytes before any Python environment work. A
       // stale/tampered artifact fails without installing packages or spawning
@@ -2547,10 +2767,7 @@ if __name__ == "__main__":
                 const actual = crypto.createHash("sha256").update(bytes).digest("hex")
                 const expected = process.env.FINNY_HARNESS_MARKET_DATA_SHA256?.toLowerCase()
                 if (!expected || actual !== expected) {
-                  throw new BacktestDataPreparationError(
-                    "Harness fixture market-data hash mismatch.",
-                    "data_evidence",
-                  )
+                  throw new BacktestDataPreparationError("Harness fixture market-data hash mismatch.", "data_evidence")
                 }
                 await fs.writeFile(path.join(tmpDir!, csvPath), bytes)
                 await fs.writeFile(path.join(tmpDir!, "_data_provider.txt"), "finny-harness-fixture\n")
@@ -2653,6 +2870,7 @@ if __name__ == "__main__":
           engineArgs.push("--end-date", end)
         }
         if (robustness.regimes ?? true) engineArgs.push("--regimes")
+        if (robustness.costSensitivity) engineArgs.push("--cost-sensitivity")
         if (robustness.walkForwardFolds && robustness.walkForwardFolds > 0) {
           engineArgs.push("--wf-folds", String(robustness.walkForwardFolds))
           engineArgs.push("--prior-selection-trials", String(Math.max(0, robustness.priorSelectionTrials ?? 0)))
@@ -2700,9 +2918,19 @@ if __name__ == "__main__":
           emit({
             eventType: "backtest.failed",
             algorithmId: algorithm.algorithmId,
-            payload: { error: "missing_engine_v2_results_json", kind: "results_unparseable", duration, interval, capital },
+            payload: {
+              error: "missing_engine_v2_results_json",
+              kind: "results_unparseable",
+              duration,
+              interval,
+              capital,
+            },
           })
-          return { ok: false, error: "Strict engine did not produce a valid engine_v2 results.json.", kind: "results_unparseable" }
+          return {
+            ok: false,
+            error: "Strict engine did not produce a valid engine_v2 results.json.",
+            kind: "results_unparseable",
+          }
         }
         attachDataSourceProvenance(results, preparedData.provenance)
         results.experiment = experiment
@@ -2754,7 +2982,8 @@ if __name__ == "__main__":
             seed: effectiveSeed,
             startDate: start,
             endDate: end,
-            dataset: dataSource.dataset,
+            dataQualityMode,
+            qualification,
           })
         } else {
           // Internal provider fetches remain useful for research, but they do
@@ -2812,7 +3041,19 @@ if __name__ == "__main__":
       // Pre-flight signal scan — fast dry run to detect 0-signal strategies
       // before spending time on a full backtest.
       const scanResult = await Process.run(
-        [pythonCmd, "backtest.py", "--csv", csvPath, "--config", "config.json", "--interval", interval, "--capital", capital, "--scan-only"],
+        [
+          pythonCmd,
+          "backtest.py",
+          "--csv",
+          csvPath,
+          "--config",
+          "config.json",
+          "--interval",
+          interval,
+          "--capital",
+          capital,
+          "--scan-only",
+        ],
         { cwd: tmpDir, nothrow: true, timeout: 60_000, env: childEnv },
       )
       if (scanResult.code === 0) {
@@ -2823,14 +3064,26 @@ if __name__ == "__main__":
         // Only short-circuit if zero signals AND no strategy errors (errors could mask real signals)
         if (scanBuys === 0 && scanBars > 0 && scanErrors === 0) {
           const results: Results = {
-            totalReturn: 0, maxDrawdown: 0, annualizedVolatility: 0, sharpeRatio: 0,
-            endingEquity: parsedCapital, totalTrades: 0, winRate: 0, profitFactor: 0,
+            totalReturn: 0,
+            maxDrawdown: 0,
+            annualizedVolatility: 0,
+            sharpeRatio: 0,
+            endingEquity: parsedCapital,
+            totalTrades: 0,
+            winRate: 0,
+            profitFactor: 0,
             engineVersion: ENGINE_VERSION,
             schemaVersion: 3,
             diagnostics: {
-              barsProcessed: scanBars, buyAttempts: 0, sellAttempts: 0,
-              rejectedOrders: 0, rejectionReasons: {},
-              priceFirst: 0, priceLast: 0, priceRangePct: 0, strategyErrors: 0,
+              barsProcessed: scanBars,
+              buyAttempts: 0,
+              sellAttempts: 0,
+              rejectedOrders: 0,
+              rejectionReasons: {},
+              priceFirst: 0,
+              priceLast: 0,
+              priceRangePct: 0,
+              strategyErrors: 0,
             },
             runId,
           }
@@ -2851,7 +3104,14 @@ if __name__ == "__main__":
           emit({
             eventType: "backtest.scan_zero_signals",
             algorithmId: algorithm.algorithmId,
-            payload: { scanBars, duration, interval, capital, benchmarkReturn: results.benchmarkReturn, alpha: results.alpha },
+            payload: {
+              scanBars,
+              duration,
+              interval,
+              capital,
+              benchmarkReturn: results.benchmarkReturn,
+              alpha: results.alpha,
+            },
           })
           return {
             ok: true,
@@ -2864,7 +3124,18 @@ if __name__ == "__main__":
       // with many bars. If a strategy infinite-loops on bad logic, this stops
       // the session from being held hostage.
       const backtestResult = await Process.run(
-        [pythonCmd, "backtest.py", "--csv", csvPath, "--config", "config.json", "--interval", interval, "--capital", capital],
+        [
+          pythonCmd,
+          "backtest.py",
+          "--csv",
+          csvPath,
+          "--config",
+          "config.json",
+          "--interval",
+          interval,
+          "--capital",
+          capital,
+        ],
         {
           cwd: tmpDir,
           nothrow: true,
