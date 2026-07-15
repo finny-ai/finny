@@ -18,8 +18,41 @@ import { License } from "@/license"
 import { NativeHedgeLedger, type NativeHedgeLiveEventInput, type NativeHedgeLiveEventType } from "./native-hedge-ledger"
 import { verifyPromotion } from "@/backtest/run-integrity"
 import type { ControllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
+import { Mission } from "@/algorithm/mission"
+import { readJson, sha256Text, stableStringify, strictRunDir } from "@/backtest/run-integrity-core"
+import {
+  EXECUTION_POLICY_SCHEMA,
+  EXECUTION_RISK_GATEWAY_PY,
+  accountScopeHash,
+  executionLedgerPath,
+  type ExecutionPolicyV1,
+  type PaperExecutionContractV1,
+} from "./execution-risk-gateway"
 
 const log = Log.create({ service: "live" })
+
+function isExecutionLimits(value: unknown): value is NonNullable<ExecutionPolicyV1["limits"]> {
+  if (!value || typeof value !== "object") return false
+  const input = value as Record<string, unknown>
+  const positive = (field: string) =>
+    typeof input[field] === "number" && Number.isFinite(input[field]) && input[field] > 0
+  return (
+    positive("maxGrossExposurePct") &&
+    positive("maxNetExposurePct") &&
+    positive("maxSymbolExposurePct") &&
+    positive("maxAccountSnapshotAgeMs") &&
+    positive("maxMarketDataAgeMs") &&
+    typeof input.flattenOnStop === "boolean"
+  )
+}
+
+function isBrokerCapabilities(value: unknown): value is NonNullable<ExecutionPolicyV1["capabilities"]> {
+  if (!value || typeof value !== "object") return false
+  const input = value as Record<string, unknown>
+  return ["marketOrders", "fractionalQty", "cancelAll", "positionSnapshot"].every(
+    (field) => typeof input[field] === "boolean",
+  )
+}
 
 export namespace LiveRunner {
   export type RunStatus = "starting" | "running" | "stopped" | "error"
@@ -50,6 +83,11 @@ export namespace LiveRunner {
 
   export interface BarUpdate {
     timestamp: string
+    bar_start?: string
+    bar_end?: string
+    is_final?: boolean
+    session_id?: string
+    source_timestamp?: string
     open: number
     high: number
     low: number
@@ -68,6 +106,7 @@ export namespace LiveRunner {
     accountProviderID: string
     accountLabel?: string
     mode?: BrokerMode
+    executionMode?: "shadow"
     /** Project directory this run belongs to (for multi-project isolation in the daemon). */
     directory?: string
     status: RunStatus
@@ -342,6 +381,23 @@ export namespace LiveRunner {
         ]
       case "error":
         return [{ ...base, eventType: "log", status: "error", payload: msg }]
+      case "execution_event": {
+        const eventType =
+          msg.event_type === "decision" || msg.event_type === "bar_rejected" ? "risk.decision" : "reconciliation"
+        return [
+          {
+            ...base,
+            eventType,
+            status:
+              typeof msg.reason_code === "string"
+                ? msg.reason_code
+                : typeof msg.status === "string"
+                  ? msg.status
+                  : undefined,
+            payload: msg,
+          },
+        ]
+      }
       case "stop":
         return [
           {
@@ -393,69 +449,19 @@ export namespace LiveRunner {
     return nativeEventsForMessage(state, msg)
   }
 
-  const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback, zlib
+  export const LIVE_WORKER_PY = String.raw`import sys, os, json, time, signal, traceback, zlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from finny_broker import load_strategy, emit, log_err
+from execution_risk_gateway import ExecutionRiskGateway, IntentBroker
 
 
 def _default_ibkr_client_id(run_id: str) -> int:
     if not run_id or run_id == "unknown":
         return 1
     return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
-
-
-class _OrderLoggingBroker:
-    """Transparent proxy around the real broker that emits an order event for
-    every buy/sell the strategy places (including rejections), so fills surface
-    in the run log and over SSE. Every other call passes straight through."""
-
-    def __init__(self, inner):
-        self._inner = inner
-
-    def __getattr__(self, name):
-        # Only reached for attributes not defined on this proxy (equity, cash,
-        # position, fetch_bar, market_is_open, set_price, ...).
-        return getattr(self._inner, name)
-
-    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
-        self._intent("buy", symbol, qty=qty, notional=notional, reason=reason, features=features)
-        return self._record(self._inner.buy(symbol, qty=qty, notional=notional, reason=reason, features=features), reason, features)
-
-    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
-        self._intent("sell", symbol, qty=qty, notional=notional, reason=reason, features=features)
-        return self._record(self._inner.sell(symbol, qty=qty, notional=notional, reason=reason, features=features), reason, features)
-
-    def _intent(self, side, symbol, qty=None, notional=None, reason=None, features=None):
-        try:
-            payload = {
-                "type": "order_intent",
-                "side": side,
-                "symbol": symbol,
-                "qty": qty if qty is not None else 0,
-                "notional": notional,
-                "reason": reason,
-                "features": features,
-                "ts": datetime.now(timezone.utc).isoformat(),
-            }
-            emit(payload)
-        except Exception as e:
-            log_err("order intent emit failed: {}".format(e))
-
-    def _record(self, rec, reason=None, features=None):
-        try:
-            if rec is not None and hasattr(rec, "to_dict"):
-                data = rec.to_dict()
-                if "reason" not in data and reason is not None:
-                    data["reason"] = reason
-                if "features" not in data and features is not None:
-                    data["features"] = features
-                emit({"type": "order", **data})
-        except Exception as e:
-            log_err("order emit failed: {}".format(e))
-        return rec
 
 
 def make_broker(kind: str, run_id: str):
@@ -538,8 +544,15 @@ def main():
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
 
-    # Wrap so every strategy buy/sell is logged as an order event.
-    broker = _OrderLoggingBroker(broker)
+    execution_contract = config.get("execution_contract")
+    if not isinstance(execution_contract, dict):
+        emit({"type": "error", "message": "Execution contract missing; paper worker fails closed"})
+        sys.exit(5)
+    gateway = ExecutionRiskGateway(execution_contract, broker, emit)
+    if not gateway.reconcile_start():
+        emit({"type": "error", "message": "Broker/ledger reconciliation failed; worker halted"})
+        sys.exit(6)
+    strategy_broker = IntentBroker(broker, gateway)
 
     try:
         cash_start = broker.cash()
@@ -549,13 +562,15 @@ def main():
         sys.exit(3)
 
     emit({"type": "init", "run_id": run_id, "symbol": symbol, "interval": interval,
-          "broker_kind": broker_kind, "cash": cash_start, "equity": eq_start})
+          "broker_kind": broker_kind, "execution_mode": "shadow", "cash": cash_start, "equity": eq_start})
     emit({"type": "log", "level": "info",
           "message": "Connected to {}. Cash: {:,.2f} Equity: {:,.2f}".format(broker_label, cash_start, eq_start)})
+    emit({"type": "log", "level": "warn",
+          "message": "ExecutionRiskGateway shadow mode: broker submission is disabled"})
 
     strategy_path = Path(__file__).parent / "strategy.py"
     try:
-        step = load_strategy(strategy_path, broker)
+        step = load_strategy(strategy_path, strategy_broker)
     except Exception as e:
         emit({"type": "error", "message": f"Strategy load failed: {e}"})
         sys.exit(4)
@@ -585,10 +600,14 @@ def main():
                 _sleep(poll_seconds, stopped)
                 continue
 
-            if bar["timestamp"] == last_ts:
+            if not gateway.begin_bar(bar):
                 _sleep(poll_seconds, stopped)
                 continue
-            last_ts = bar["timestamp"]
+
+            if bar["bar_end"] == last_ts:
+                _sleep(poll_seconds, stopped)
+                continue
+            last_ts = bar["bar_end"]
 
             emit({"type": "bar", "symbol": symbol, **bar})
             if prev_bar is None:
@@ -634,13 +653,8 @@ def main():
                   "trace": traceback.format_exc()})
             _sleep(poll_seconds, stopped)
 
-    try:
-        pos = broker.position(symbol)
-        if pos != 0:
-            emit({"type": "log", "level": "warn",
-                  "message": f"⚠ You have {pos} open {symbol} position(s). They remain at the broker. Close manually if needed."})
-    except Exception:
-        pass
+    if not gateway.safe_stop():
+        emit({"type": "error", "message": "Safe stop could not confirm the required final broker/ledger state"})
 
     emit({"type": "stop", "reason": "user_requested"})
 
@@ -679,11 +693,13 @@ if __name__ == "__main__":
     // Prevent duplicate workers for the same deployment while allowing the
     // same algorithm to trade several distinct markets/accounts concurrently.
     for (const existing of runs.values()) {
-      if (isActiveDeploymentConflict(existing, {
-        algorithmId: params.algorithm.algorithmId,
-        accountProviderID: params.accountProviderID,
-        symbol,
-      })) {
+      if (
+        isActiveDeploymentConflict(existing, {
+          algorithmId: params.algorithm.algorithmId,
+          accountProviderID: params.accountProviderID,
+          symbol,
+        })
+      ) {
         throw new StartRejectedError(
           `"${params.algorithm.name}" is already running ${symbol} on this account. Stop it before starting a duplicate run.`,
         )
@@ -733,6 +749,53 @@ if __name__ == "__main__":
       )
     }
 
+    const effectiveConfig = await readJson<Record<string, unknown>>({
+      file: path.join(strictRunDir(params.algorithm, params.runId), "effective_config.json"),
+    })
+    const parsedRisk = Mission.RiskContractSchema.safeParse(effectiveConfig.risk_contract)
+    if (!parsedRisk.success || !promotion.run) {
+      throw new StartRejectedError("Paper execution requires the exact schema-v4 risk contract from the verified run.")
+    }
+    const executionPolicy: ExecutionPolicyV1 = {
+      schema: EXECUTION_POLICY_SCHEMA,
+      version: 1,
+      riskContract: parsedRisk.data,
+      // Compatibility seam for #177. Its eventual signed limits can be copied
+      // here only after they are part of the immutable effective config.
+      ...(isExecutionLimits(effectiveConfig.execution_limits) ? { limits: effectiveConfig.execution_limits } : {}),
+      ...(isBrokerCapabilities(effectiveConfig.broker_capabilities)
+        ? { capabilities: effectiveConfig.broker_capabilities }
+        : {}),
+    }
+    const scopeHash = accountScopeHash({ brokerKind, accountProviderID: params.accountProviderID })
+    const executionContract: PaperExecutionContractV1 = {
+      schema: "finny.paper_execution_contract",
+      version: 1,
+      binding: {
+        runId: params.runId,
+        runIdentityHash: promotion.run.identityHash,
+        algorithmId: params.algorithm.algorithmId,
+        algorithmVersion: params.algorithm.version,
+        strategyHash: promotion.run.identity.strategyHash,
+        riskPolicyHash: promotion.run.identity.riskContractHash,
+        executionPolicyHash: sha256Text(stableStringify(executionPolicy)),
+        effectiveConfigHash: promotion.run.identity.effectiveConfigHash,
+        symbol,
+        interval: params.interval,
+        brokerKind,
+        brokerMode: accountMode,
+        accountScopeHash: scopeHash,
+      },
+      policy: executionPolicy,
+      ledgerPath: executionLedgerPath({
+        algorithmId: params.algorithm.algorithmId,
+        algorithmVersion: params.algorithm.version,
+        accountScopeHash: scopeHash,
+        symbol,
+      }),
+      submissionEnabled: false,
+    }
+
     // Create an initial "starting" run state IMMEDIATELY so the caller can open
     // the live-run dialog right away. The slow setup (venv, pip, spawn) happens
     // asynchronously below; progress streams through the normal event channel.
@@ -747,6 +810,7 @@ if __name__ == "__main__":
       accountProviderID: params.accountProviderID,
       accountLabel,
       mode: accountMode,
+      executionMode: "shadow",
       directory: params.directory,
       status: "starting",
       startedAt: Date.now(),
@@ -801,6 +865,7 @@ if __name__ == "__main__":
         notify(preState)
 
         await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_BROKER_PY)
+        await fs.writeFile(path.join(tmpDir, "execution_risk_gateway.py"), EXECUTION_RISK_GATEWAY_PY)
         await fs.writeFile(path.join(tmpDir, "strategy.py"), params.algorithm.code)
         await fs.writeFile(
           path.join(tmpDir, "config.json"),
@@ -810,6 +875,7 @@ if __name__ == "__main__":
               interval: params.interval,
               run_id: id,
               broker_kind: brokerKind,
+              execution_contract: executionContract,
             },
             null,
             2,
@@ -945,7 +1011,7 @@ if __name__ == "__main__":
         state.status = "running"
         if (typeof msg.cash === "number") state.cash = msg.cash
         if (typeof msg.equity === "number") state.equity = msg.equity
-        pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval}`)
+        pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval} · shadow execution`)
         emit({
           eventType: "live.started",
           algorithmId: state.algorithmId,
@@ -972,6 +1038,11 @@ if __name__ == "__main__":
       case "bar": {
         state.lastBar = {
           timestamp: msg.timestamp,
+          bar_start: msg.bar_start,
+          bar_end: msg.bar_end,
+          is_final: msg.is_final,
+          session_id: msg.session_id,
+          source_timestamp: msg.source_timestamp,
           open: msg.open,
           high: msg.high,
           low: msg.low,
@@ -1019,6 +1090,22 @@ if __name__ == "__main__":
         break
       }
       case "order_intent": {
+        break
+      }
+      case "execution_event": {
+        const reason = typeof msg.reason_code === "string" ? msg.reason_code : undefined
+        const status = typeof msg.status === "string" ? msg.status : undefined
+        if (reason && (reason !== "accepted_shadow" || status === "halted")) {
+          const level: LogEntry["level"] = status === "halted" ? "error" : "warn"
+          pushLog(state, level, `Execution gateway: ${reason}`)
+          emitLedger(state, {
+            kind: "log",
+            workerType: typeof msg.event_type === "string" ? msg.event_type : "execution_gateway",
+            status,
+            reason,
+            log: { level, message: `Execution gateway: ${reason}` },
+          })
+        }
         break
       }
       case "log": {
@@ -1126,5 +1213,4 @@ if __name__ == "__main__":
     if (removed) notifyAll()
     return removed
   }
-
 }

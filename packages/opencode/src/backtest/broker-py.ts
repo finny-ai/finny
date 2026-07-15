@@ -23,6 +23,7 @@ cash; sells close the full position.
 
 from __future__ import annotations
 import json
+import math
 import sys
 import traceback
 from datetime import datetime, timezone, timedelta
@@ -38,6 +39,53 @@ def emit(obj: Dict[str, Any]) -> None:
 def log_err(msg: str) -> None:
     sys.stderr.write(msg + "\n")
     sys.stderr.flush()
+
+
+_INTERVAL_SECONDS = {
+    "1min": 60, "5min": 300, "15min": 900, "30min": 1800,
+    "1h": 3600, "4h": 14400, "1d": 86400,
+}
+
+
+def finalized_bar_contract(timestamp, interval: str, *, session_id: Optional[str] = None) -> Dict[str, Any]:
+    """Conservative provider boundary: a bar is final only after its end time.
+
+    Provider timestamps are treated as bar starts. Unknown intervals never
+    become final, which keeps paper execution fail-closed.
+    """
+    if isinstance(timestamp, datetime):
+        start = timestamp
+    else:
+        try:
+            start = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+        except ValueError:
+            return {
+                "bar_start": str(timestamp), "bar_end": str(timestamp), "is_final": False,
+                "session_id": session_id or "unknown", "source_timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=timezone.utc)
+    else:
+        start = start.astimezone(timezone.utc)
+    seconds = _INTERVAL_SECONDS.get(interval)
+    end = start + timedelta(seconds=seconds or 0)
+    observed = datetime.now(timezone.utc)
+    return {
+        "bar_start": start.isoformat(),
+        "bar_end": end.isoformat(),
+        "is_final": seconds is not None and observed >= end,
+        "session_id": session_id or start.date().isoformat(),
+        "source_timestamp": observed.isoformat(),
+    }
+
+
+def newest_finalized_bar(candidates, interval: str, timestamp_of):
+    """Select the newest closed candle even when the provider returns an open tail."""
+    for candidate in reversed(list(candidates)):
+        finality = finalized_bar_contract(timestamp_of(candidate), interval)
+        if finality["is_final"]:
+            return candidate, finality
+    return None, None
 
 
 class OrderRecord:
@@ -99,6 +147,19 @@ class Broker:
         timestamp/open/high/low/close/volume (all floats except timestamp ISO str).
         """
         raise NotImplementedError
+
+    def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
+        """Strict account snapshot for the execution gateway.
+
+        Live adapters override this to avoid legacy display fallbacks that
+        translate transport failures into zero balances or flat positions.
+        """
+        qty = self.position(symbol)
+        mark = self.price(symbol)
+        if qty != 0 and (mark is None or float(mark) <= 0):
+            raise RuntimeError("execution snapshot cannot value the open position")
+        positions = {symbol: {"qty": qty, "mark": float(mark)}} if qty != 0 else {}
+        return {"cash": self.cash(), "equity": self.equity(), "positions": positions}
 
     def market_is_open(self, symbol: str) -> bool:
         """Whether trading the given symbol is allowed right now.
@@ -547,8 +608,9 @@ class AlpacaBroker(Broker):
             clock = self._trading.get_clock()
             return bool(clock.is_open)
         except Exception:
-            # Fail open: don't block the loop on a transient clock-endpoint error.
-            return True
+            # Execution safety is more important than liveness: an unknown
+            # calendar/session state cannot authorize a paper decision.
+            return False
 
     def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
         try:
@@ -597,7 +659,9 @@ class AlpacaBroker(Broker):
         bars = resp.data.get(norm, []) if hasattr(resp, "data") else []
         if not bars:
             return None
-        latest = bars[-1]
+        latest, finality = newest_finalized_bar(bars, interval, lambda item: item.timestamp)
+        if latest is None:
+            return None
         return {
             "timestamp": latest.timestamp.isoformat(),
             "open": float(latest.open),
@@ -605,6 +669,7 @@ class AlpacaBroker(Broker):
             "low": float(latest.low),
             "close": float(latest.close),
             "volume": float(latest.volume),
+            **finality,
         }
 
     def set_price(self, symbol: str, price: float) -> None:
@@ -674,6 +739,15 @@ class AlpacaBroker(Broker):
     def equity(self):
         acct = self._trading.get_account()
         return float(acct.portfolio_value)
+
+    def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
+        acct = self._trading.get_account()
+        positions = {
+            self.normalize_symbol(str(item.symbol)): {"qty": float(item.qty), "mark": float(item.current_price)}
+            for item in self._trading.get_all_positions()
+            if float(item.qty) != 0.0
+        }
+        return {"cash": float(acct.cash), "equity": float(acct.portfolio_value), "positions": positions}
 
     def price(self, symbol):
         return self._last_price.get(symbol)
@@ -826,6 +900,27 @@ class BinanceBroker(Broker):
         except Exception:
             return 0.0
 
+    def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
+        balance = self._exchange.fetch_balance()
+        quote = balance.get("USDT") or {}
+        cash = float(quote.get("free") or 0)
+        equity = float(quote.get("total") or 0)
+        positions: Dict[str, Dict[str, float]] = {}
+        for asset, value in balance.items():
+            if asset in {"info", "free", "used", "total", "USDT"} or not isinstance(value, dict):
+                continue
+            qty = float(value.get("total") or 0)
+            if qty == 0:
+                continue
+            market = f"{asset}/USDT"
+            ticker = self._exchange.fetch_ticker(market)
+            price = float(ticker.get("last") or ticker.get("close") or 0)
+            if price <= 0:
+                raise RuntimeError(f"Binance execution snapshot cannot value {market}")
+            positions[market] = {"qty": qty, "mark": price}
+            equity += qty * price
+        return {"cash": cash, "equity": equity, "positions": positions}
+
     def fetch_bar(self, symbol: str, interval: str) -> Optional[Dict[str, Any]]:
         tf_map = {
             "1min": "1m", "5min": "5m", "15min": "15m", "30min": "30m",
@@ -834,20 +929,25 @@ class BinanceBroker(Broker):
         tf = tf_map.get(interval, "1m")
         norm = BinanceBroker.normalize_symbol(symbol)
         try:
-            bars = self._exchange.fetch_ohlcv(norm, timeframe=tf, limit=1)
+            bars = self._exchange.fetch_ohlcv(norm, timeframe=tf, limit=2)
         except Exception as e:
             log_err(f"Binance fetch_bar error: {e}")
             return None
         if not bars:
             return None
-        ts, o, h, l, c, v = bars[-1]
+        latest, finality = newest_finalized_bar(bars, interval, lambda item: datetime.fromtimestamp(item[0] / 1000, tz=timezone.utc))
+        if latest is None:
+            return None
+        ts, o, h, l, c, v = latest
+        timestamp = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
         return {
-            "timestamp": datetime.fromtimestamp(ts / 1000, tz=timezone.utc).isoformat(),
+            "timestamp": timestamp.isoformat(),
             "open": float(o),
             "high": float(h),
             "low": float(l),
             "close": float(c),
             "volume": float(v),
+            **finality,
         }
 
     def _reject(self, symbol, side, reject_reason, reason=None, features=None):
@@ -1179,22 +1279,12 @@ class IBKRBroker(Broker):
 
     def market_is_open(self, symbol: str) -> bool:
         # Crypto trades ~24/7 on PAXOS. Equities follow standard US hours;
-        # rather than parse tradingHours we just attempt the order and let
-        # TWS reject after-hours — IBKR's rejection messages are clear.
+        # the paper gateway must not rely on a broker rejection after a side
+        # effect, so non-crypto stays closed until liquidHours is parsed by an
+        # authoritative adapter.
         if self.is_crypto(symbol):
             return True
-        # Best-effort: ask TWS for contract details once and read liquidHours.
-        try:
-            details = self._ib.reqContractDetails(self._contract(symbol))
-            if not details:
-                return True
-            now = datetime.now(timezone.utc)
-            # liquidHours is a ';'-separated list of YYYYMMDD:HHmm-YYYYMMDD:HHmm
-            # ranges in the contract's local tz. For a robust check we'd parse
-            # those; for now we trust TWS to reject if closed.
-            return True
-        except Exception:
-            return True
+        return False
 
     def greeks(self, symbol: str) -> Dict[str, Any]:
         """Return live Greeks from IBKR's option model (tick type 106)."""
@@ -1347,7 +1437,14 @@ class IBKRBroker(Broker):
 
         if not bars:
             return None
-        latest = bars[-1]
+        latest, finality = newest_finalized_bar(
+            bars,
+            interval,
+            lambda item: datetime.fromtimestamp(float(item.date), tz=timezone.utc)
+            if isinstance(item.date, (int, float)) else item.date,
+        )
+        if latest is None:
+            return None
         # ib_insync gives us a BarData with .date as a datetime when
         # formatDate=1 or as an int epoch when formatDate=2. Normalize to ISO.
         ts = latest.date
@@ -1364,6 +1461,7 @@ class IBKRBroker(Broker):
             "low": float(latest.low),
             "close": float(latest.close),
             "volume": float(latest.volume),
+            **finality,
         }
         if self.is_option(symbol):
             g = self.greeks(symbol)
@@ -1422,6 +1520,30 @@ class IBKRBroker(Broker):
 
     def equity(self) -> float:
         return self._account_summary().get(self._EQUITY_TAG, 0.0)
+
+    def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
+        summary: Dict[str, float] = {}
+        for value in self._ib.accountSummary(self._account):
+            if getattr(value, "tag", None) in (self._CASH_TAG, self._EQUITY_TAG):
+                summary[str(value.tag)] = float(value.value)
+        if self._CASH_TAG not in summary or self._EQUITY_TAG not in summary:
+            raise RuntimeError("IBKR account snapshot missing cash or equity")
+        position_rows = [item for item in self._ib.positions(self._account) if float(item.position) != 0]
+        tickers = self._ib.reqTickers(*(item.contract for item in position_rows)) if position_rows else []
+        if len(tickers) != len(position_rows):
+            raise RuntimeError("IBKR execution snapshot missing one or more position marks")
+        positions: Dict[str, Dict[str, float]] = {}
+        target_contract = self._contract(symbol)
+        for item, ticker in zip(position_rows, tickers):
+            qty = float(item.position)
+            mark = float(ticker.marketPrice())
+            if not math.isfinite(mark) or mark <= 0:
+                raise RuntimeError(f"IBKR execution snapshot cannot value conId={item.contract.conId}")
+            key = symbol if item.contract.conId == target_contract.conId else (
+                getattr(item.contract, "localSymbol", "") or getattr(item.contract, "symbol", "")
+            )
+            positions[str(key)] = {"qty": qty, "mark": mark}
+        return {"cash": summary[self._CASH_TAG], "equity": summary[self._EQUITY_TAG], "positions": positions}
 
     def position(self, symbol: str) -> float:
         try:

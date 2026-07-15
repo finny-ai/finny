@@ -20,6 +20,8 @@ export type NativeHedgeLiveEventType =
   | "order.rejected"
   | "equity.snapshot"
   | "position.snapshot"
+  | "risk.decision"
+  | "reconciliation"
   | "log"
   | "run.stopped"
 
