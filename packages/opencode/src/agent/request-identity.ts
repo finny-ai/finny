@@ -616,7 +616,9 @@ function parseExplicitUniverse(prompt: string): { list: string[]; keyed: boolean
 
   const single =
     /\b(?:symbol|ticker|stock)\b\s*(?:is|=|:)?\s*([A-Z][A-Z0-9.]{0,5})\b/.exec(prompt)?.[1] ??
-    (/(\bbuild\b|\bstrategy\b|\bbacktest\b|\bportfolio\b|\bstock\b|\bequity\b|\b\d+\s*[mhd]\b)/i.test(prompt)
+    (/(\bbuild\b|\bstrategy\b|\bbacktest\b|\bportfolio\b|\bstock\b|\bequity\b|\b\d+\s*(?:m(?:in(?:ute)?s?)?|h(?:ours?|rs?)?|d(?:ays?)?|w(?:eeks?)?)\b)/i.test(
+      prompt,
+    )
       ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,5})\b/g), (match) => cleanTickerToken(match[1]!)).find(
           (token) => Boolean(token) && !AMBIGUOUS_TICKER_TOKENS.has(token!),
         )

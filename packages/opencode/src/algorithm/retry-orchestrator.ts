@@ -42,6 +42,8 @@ export namespace RetryOrchestrator {
     attempts: number
     /** Final report from the last failed attempt. */
     report: string
+    /** Structured blockers from the final attempt. */
+    diagnostics: Validate.Diagnostic[]
   }
 
   export interface PassedSignal {
@@ -67,7 +69,7 @@ export namespace RetryOrchestrator {
     const report = Validate.format(result)
 
     if (currentAttempt >= MAX_ATTEMPTS) {
-      return { kind: "exhausted", attempts: currentAttempt, report }
+      return { kind: "exhausted", attempts: currentAttempt, report, diagnostics: blockingDiagnostics }
     }
 
     return {
@@ -124,20 +126,33 @@ export namespace RetryOrchestrator {
    * the prompt can evolve without touching the orchestrator state machine.
    */
   export function buildRetryInstruction(signal: RetrySignal): string {
-    const diagnostics = signal.diagnostics.map((d) => {
-      const loc = d.line ? ` (line ${d.line})` : ""
-      const fix = d.fix ? `  Fix: ${d.fix}` : ""
-      return `- ${d.code}${loc}: ${d.message}\n${fix}`
-    }).join("\n")
-
     return [
-      `Validation rejected attempt ${signal.attempt}/${signal.maxAttempts}.`,
-      ``,
-      `Blocking diagnostics:`,
-      diagnostics,
-      ``,
-      `Rewrite the full strategy fixing every error. Do not apologise. Do not narrate.`,
-      `Call finny_algorithm_save again with the corrected code.`,
+      formatSaveFailure(signal.diagnostics),
+      `Automatic fix attempt ${signal.attempt}/${signal.maxAttempts}: correct the strategy and call finny_algorithm_save again.`,
+    ].join("\n")
+  }
+
+  /** Compact user/agent-facing failure: causes first, then concrete fixes. */
+  export function formatSaveFailure(diagnostics: Validate.Diagnostic[]): string {
+    if (diagnostics.length === 0) return "Failed to save strategy: validation did not return a specific cause.\nFix: review the strategy contract and retry."
+    if (diagnostics.length === 1) {
+      const diagnostic = diagnostics[0]
+      const loc = diagnostic.line ? ` (line ${diagnostic.line})` : ""
+      return [
+        `Failed to save strategy: ${diagnostic.code}${loc} — ${diagnostic.message}`,
+        `Fix: ${diagnostic.fix ?? "Correct this validator error, then retry."}`,
+      ].join("\n")
+    }
+    const causes = diagnostics.map((d) => {
+      const loc = d.line ? ` (line ${d.line})` : ""
+      return `- ${d.code}${loc}: ${d.message}`
+    })
+    const fixes = diagnostics.map((d) => `- ${d.code}: ${d.fix ?? "Correct this validator error, then retry."}`)
+    return [
+      `Failed to save strategy because validation found ${diagnostics.length} blocking issues:`,
+      ...causes,
+      `Fix:`,
+      ...fixes,
     ].join("\n")
   }
 
@@ -158,12 +173,8 @@ export namespace RetryOrchestrator {
 
   export function buildExhaustedMessage(signal: ExhaustedSignal): string {
     return [
-      `Validation stopped after ${signal.attempts} failed save attempts.`,
-      ``,
-      `Do not call finny_algorithm_save again for this request. Stop and report the final validator blockers to the user.`,
-      ``,
-      `Last validator report:`,
-      signal.report,
+      formatSaveFailure(signal.diagnostics),
+      `Automatic fixing stopped after ${signal.attempts} attempts. Do not retry this save again in the current request.`,
     ].join("\n")
   }
 }

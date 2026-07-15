@@ -135,65 +135,20 @@ export function countUniqueAlgorithms(algos: ReadonlyArray<{ name: string }>): n
 
 /**
  * Corrective message for an invalid/missing mission.md on save. Leads with the
- * concrete issues, then shows the full v3 template so the agent can fix the
- * mission in one pass instead of discovering enum constraints one save at a time.
+ * concrete issues, then routes the agent to structured input so a retry does
+ * not depend on hand-authored YAML.
  */
 export function missionRejectionMessage(issues: string[]): string {
   return [
     "Invalid mission.md for this save:",
     ...issues.map((i) => `  - ${i}`),
     "",
-    "The `mission` parameter must be a `schema_version: 4` mission.md markdown string starting with a YAML frontmatter block enclosed in `---`. Required shape:",
+    "Retry with the structured `docsInput` parameter and omit raw `mission` and `riskContract`. Finny will render valid schema-v4 YAML, canonical Core 8 records, frontmatter delimiters, safe quoting, and matching risk JSON.",
     "",
-    "```markdown",
-    "---",
-    "schema_version: 4",
-    "name: <kebab-case-algorithm-name>",
-    "status: research | backtested | paper | live | retired",
-    "created: YYYY-MM-DD",
-    "hypothesis: |",
-    "  <detailed hypothesis; use a block scalar for prose>",
-    "scope:",
-    "  asset_class: equities | crypto | futures | fx | options | mixed",
-    "  universe:",
-    "    - <SYMBOL>",
-    "  horizon: intraday | days | weeks | months",
-    "strategy:",
-    "  bar_interval: <e.g., 5min, 1h, 1d>",
-    "  type: <strategy type/family>",
-    "  direction: long | short | both",
-    "  entry_signal: |",
-    "    <summary of entry; use a block scalar for prose>",
-    "  risk_profile: |",
-    "    <risk profile description; use a block scalar for prose>",
-    "  max_drawdown_pct: <maximum drawdown percent>",
-    "  backtest_window: <duration/window description>",
-    "  success_metric: |",
-    "    <success criteria description; use a block scalar for prose>",
-    "risk_contract:",
-    "  sizing_stop_distance_pct: <positive percent used by sizing>",
-    "  protective_stop:",
-    "    mode: none | strategy_next_open | engine_stop  # engine_stop is reserved and currently fails closed",
-    "  drawdown:",
-    "    mode: evaluation_only | halt_and_flatten_next_open",
-    "    limit_pct: <positive percent, at most 100>",
-    "  max_positions: <positive integer>",
-    "exit_conditions: |",
-    "  <detailed exit conditions>",
-    "questionnaire:",
-    ...Mission.CORE8_IDS.flatMap((id) => [
-      `  - id: ${id}`,
-      "    question: <the Core 8 question>",
-      "    answer: |",
-      "      <user answer, or empty string if skipped>",
-      "    status: answered | skipped",
-    ]),
-    "---",
+    "Under `docsInput.mission.questionnaire`, provide exactly these answer keys (string values; empty means explicitly skipped):",
+    ...Mission.CORE8_IDS.map((id) => `  - ${id}`),
     "",
-    "YAML safety: never put prose containing `:`, `#`, `{}`, `[]`, commas, or multiple sentences on the same line as a YAML key. Use block scalars (`|` or `>-`) for prose fields and long questionnaire answers.",
-    "",
-    "Any user preferences (capital, sizing, data sources/depth, custom numbers) belong in a `## User Preferences` section at the bottom of the markdown body.",
-    "```",
+    "Raw YAML remains available only for legacy callers. If you must use it, it must be a complete schema_version: 4 mission document.",
   ].join("\n")
 }
 
@@ -254,11 +209,8 @@ export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
   const blockers = warnings.filter((warning) => Validate.diagnosticDisposition(warning) === "blocking")
   if (blockers.length === 0) return undefined
   return {
-    title: "Save blocked — validation diagnostics",
-    output:
-      "Blocking validator diagnostics must be fixed before saving or backtesting.\n\n" +
-      Validate.format({ valid: false, errors: blockers, warnings: [] }) +
-      "\n\nRewrite the strategy to clear every blocker, then call finny_algorithm_save again.",
+    title: "Failed to save strategy",
+    output: RetryOrchestrator.formatSaveFailure(blockers),
     metadata: {
       blocked: true,
       retry: true,
@@ -266,6 +218,91 @@ export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
       diagnosticCodes: blockers.map((w) => w.code),
     },
   }
+}
+
+const questionnaireInput = z
+  .object({
+    market_universe: z.string(),
+    timeframe_bar_interval: z.string(),
+    strategy_family: z.string(),
+    directional_thesis_regime: z.string(),
+    entry_signal_idea: z.string(),
+    exit_invalidation_rules: z.string(),
+    risk_tolerance_max_drawdown: z.string(),
+    backtest_window_success_metric: z.string(),
+  })
+  .describe("Answers to the Core 8. Use an empty string for an explicitly skipped answer.")
+
+const missionInput = z.object({
+  status: z.enum(["research", "backtested", "paper", "live", "retired"]).optional(),
+  created: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD").optional(),
+  hypothesis: z.string().min(1),
+  scope: z.object({
+    asset_class: z.enum(["equities", "crypto", "futures", "fx", "options", "mixed"]),
+    universe: z.array(z.string().min(1)).min(1),
+    horizon: z.enum(["intraday", "days", "weeks", "months"]),
+  }),
+  strategy: z.object({
+    bar_interval: z.union([z.string().min(1), z.number()]),
+    type: z.string().min(1),
+    direction: z.enum(["long", "short", "both"]),
+    entry_signal: z.string().min(1),
+    risk_profile: z.string().min(1),
+    max_drawdown_pct: z.union([z.string().min(1), z.number()]),
+    backtest_window: z.union([z.string().min(1), z.number()]),
+    success_metric: z.string().min(1),
+  }),
+  risk_contract: Mission.RiskContractSchema,
+  exit_conditions: z.string().min(1),
+  questionnaire: questionnaireInput,
+  user_preferences: z.string().optional(),
+  body: z.string().optional(),
+})
+
+const docsInput = z
+  .object({
+    mission: missionInput,
+    prefs: z.string().optional(),
+    decisions: z.string().optional(),
+  })
+  .describe(
+    "Preferred structured document input. Finny renders valid schema-v4 mission YAML and matching risk JSON; do not hand-author YAML when using this.",
+  )
+
+const CORE8_QUESTIONS: Record<(typeof Mission.CORE8_IDS)[number], string> = {
+  market_universe: "What market and universe should the strategy trade?",
+  timeframe_bar_interval: "What timeframe and bar interval should the strategy use?",
+  strategy_family: "What strategy family should it use?",
+  directional_thesis_regime: "What is the directional thesis and target regime?",
+  entry_signal_idea: "What should trigger an entry?",
+  exit_invalidation_rules: "What should trigger an exit or invalidate the thesis?",
+  risk_tolerance_max_drawdown: "What is the risk tolerance and maximum drawdown?",
+  backtest_window_success_metric: "What backtest window and success metric should be used?",
+}
+
+type DocumentParams = {
+  name: string
+  docsInput?: z.infer<typeof docsInput>
+  mission?: string
+  prefs?: string
+  decisions?: string
+  riskContract?: string
+}
+
+/** Resolve documents once so structured input cannot be overridden by stale/raw YAML. */
+export function resolveSaveDocuments(params: DocumentParams) {
+  if (!params.docsInput) return { mission: params.mission, prefs: params.prefs, decisions: params.decisions, riskContract: params.riskContract }
+  const input = params.docsInput.mission
+  const questionnaire = Mission.CORE8_IDS.map((id) => {
+    const answer = input.questionnaire[id]
+    return { id, question: CORE8_QUESTIONS[id], answer, status: answer.trim().length > 0 ? ("answered" as const) : ("skipped" as const) }
+  })
+  const mission = Mission.renderV4({
+    name: params.name, status: input.status, created: input.created, hypothesis: input.hypothesis,
+    scope: input.scope, strategy: input.strategy, risk_contract: input.risk_contract,
+    exit_conditions: input.exit_conditions, questionnaire, userPreferences: input.user_preferences, body: input.body,
+  })
+  return { mission, prefs: params.docsInput.prefs, decisions: params.docsInput.decisions, riskContract: `${JSON.stringify(input.risk_contract, null, 2)}\n` }
 }
 
 const parameters = z.object({
@@ -286,6 +323,7 @@ const parameters = z.object({
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
   reasoning: z.string().optional().describe("Markdown explaining why this version exists — what changed and why. Written to reasoning.md inside the version directory."),
+  docsInput: docsInput.optional(),
   mission: z.string().optional().describe("WHO: the hypothesis, scope, and exit conditions. Version replacements write mission.md in the new version."),
   prefs: z.string().optional().describe("HOW: sizing, risk constraints, interval, target asset. Version replacements write prefs.md in the new version."),
   decisions: z.string().optional().describe("Design decisions to append to the immutable decisions.md history for the new version."),
@@ -421,22 +459,23 @@ export const AlgorithmSaveTool = Tool.define(
             // peeling them one save round-trip at a time. New algorithms
             // require a complete v4 mission.md; a mission passed on a version
             // bump must also be valid.
+            const documents = resolveSaveDocuments(params)
             const normalizedConfig = bindMissionRiskContract(
               normalizeConfigForSave({ incoming: params.config }),
-              params.mission,
+              documents.mission,
             )
-            const missionRiskContract = Mission.riskContract(params.mission)
+            const missionRiskContract = Mission.riskContract(documents.mission)
             const normalizedRiskContract = missionRiskContract
               ? `${JSON.stringify(missionRiskContract, null, 2)}\n`
-              : params.riskContract
+              : documents.riskContract
             const missionIssues =
-              params.saveMode === "new" || params.docsMode === "replace" || params.mission !== undefined
-                ? Mission.validateForNewSave(params.mission)
+              params.saveMode === "new" || params.docsMode === "replace" || documents.mission !== undefined
+                ? Mission.validateForNewSave(documents.mission)
                 : []
             const configIssues: string[] = []
-            if (missionRiskContract && params.riskContract) {
+            if (missionRiskContract && documents.riskContract) {
               try {
-                if (canonicalJson(JSON.parse(params.riskContract)) !== canonicalJson(missionRiskContract)) {
+                if (canonicalJson(JSON.parse(documents.riskContract)) !== canonicalJson(missionRiskContract)) {
                   configIssues.push("riskContract must exactly match mission.risk_contract")
                 }
               } catch {
@@ -449,7 +488,7 @@ export const AlgorithmSaveTool = Tool.define(
             if (
               params.saveMode === "version" &&
               params.docsMode === "inherit" &&
-              (params.mission !== undefined || params.prefs !== undefined || params.riskContract !== undefined)
+              (documents.mission !== undefined || documents.prefs !== undefined || documents.riskContract !== undefined)
             ) {
               configIssues.push(
                 'docsMode "inherit" cannot replace mission, preferences, or riskContract; use docsMode: "replace"',
@@ -519,7 +558,7 @@ export const AlgorithmSaveTool = Tool.define(
               const errorCodes = validation.diagnostics.map((d) => d.code)
               return {
                 result: {
-                  title: `Validation failed — regenerating (${validation.attempt}/${validation.maxAttempts})`,
+                  title: "Failed to save strategy — fixing",
                   output: RetryOrchestrator.buildRetryInstruction(validation),
                   metadata: {
                     blocked: true,
@@ -545,7 +584,7 @@ export const AlgorithmSaveTool = Tool.define(
             if (validation.kind === "exhausted") {
               return {
                 result: {
-                  title: "Generation failed after 3 attempts",
+                  title: "Failed to save strategy",
                   output: RetryOrchestrator.buildExhaustedMessage(validation),
                   metadata: {
                     blocked: true,
@@ -581,9 +620,9 @@ export const AlgorithmSaveTool = Tool.define(
                 description: params.description,
                 config: normalizedConfig,
                 reasoning: params.reasoning,
-                mission: params.mission,
-                prefs: params.prefs,
-                decisions: params.decisions,
+                mission: documents.mission,
+                prefs: documents.prefs,
+                decisions: documents.decisions,
                 riskContract: normalizedRiskContract,
                 docsMode: params.docsMode,
                 brokerKind: activeBrokerKind ?? undefined,

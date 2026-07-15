@@ -286,6 +286,7 @@ export async function syncWorkspaceRequestContext(input: {
   slug: string
   prompt: string
   facts?: RequestFacts
+  recordExplicitRequestContext?: boolean
   preserveExisting?: boolean
   actor?: "user" | "runtime" | "migration"
   reason?: string
@@ -294,8 +295,36 @@ export async function syncWorkspaceRequestContext(input: {
   const ensured = await ensureAlgoWorkspace(input.slug)
   const dir = ensured.dir
   const workflowProjection = await readWorkflowRequestProjection(dir)
-  if (workflowProjection) return contextFromWorkflowProjection(workflowProjection)
   const next = workspaceRequestContext(input.sessionID, input.prompt, input.facts)
+  if (workflowProjection) {
+    const workflowContext = contextFromWorkflowProjection(workflowProjection)
+    if (!input.recordExplicitRequestContext) return workflowContext
+
+    // The workflow projection owns immutable request facts, but an explicit
+    // finny_workspace_prepare call is also the runtime boundary that records
+    // user-approved dates and fills facts the original prose did not expose.
+    // Only fill missing workflow facts here; never let later prompt text pivot
+    // an already-bound symbol, interval, asset class, or algorithm identity.
+    const spec = await commitRequestSpec({
+      requestID: input.sessionID,
+      identity: {
+        requested_symbol: workflowContext.requested_symbol ?? next.requested_symbol,
+        requested_symbols: workflowContext.requested_symbols ?? next.requested_symbols,
+        requested_interval: workflowContext.requested_interval ?? next.requested_interval,
+        requested_asset_class: workflowContext.requested_asset_class ?? next.requested_asset_class,
+        requested_algorithm_name:
+          workflowContext.requested_algorithm_name ??
+          next.requested_algorithm_name ??
+          algorithmNameFromWorkspaceSlug(input.slug),
+        requested_start: workflowContext.requested_start ?? next.requested_start,
+        requested_end: workflowContext.requested_end ?? next.requested_end,
+      },
+      actor: input.actor,
+      reason: input.reason ?? "explicit workspace request context",
+      approvalState: input.approvalState,
+    })
+    return requestSpecContext(spec)
+  }
   await migrateLegacyWorkspaceRequest({ requestID: input.sessionID, workspaceDir: dir })
   const spec = await commitRequestSpec({
     requestID: input.sessionID,

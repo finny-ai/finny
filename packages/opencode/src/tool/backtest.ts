@@ -412,7 +412,7 @@ export const BacktestTool = Tool.define(
 
     return {
     description:
-      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, durability report, and review packet. A recommended run creates a controller challenge; use finny_workflow_request_approval for that exact scope.",
+      "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. A recommended run creates a controller challenge; use finny_workflow_request_approval for that exact scope.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {
@@ -1144,6 +1144,7 @@ export const BacktestTool = Tool.define(
           lines.push(``, `── ENGINE & ASSUMPTIONS ────────────────────────────`)
           if (r.engineVersion) lines.push(`Engine: ${r.engineVersion} (schema_version=${r.schemaVersion ?? "?"})`)
           if (r.runId) lines.push(`Run ID: ${r.runId}`)
+          lines.push(`Review experiment ID: ${trial.reference.experimentId}`)
           if (r.artifactDir) lines.push(`Artifacts: ${r.artifactDir}`)
           if (r.evidenceDir) lines.push(`Evidence: ${r.evidenceDir}`)
           if (r.evidenceError) lines.push(`Evidence error: ${r.evidenceError}`)
@@ -1209,7 +1210,8 @@ export const BacktestTool = Tool.define(
               ? {
                   experiment: {
                     ...experiment.trials,
-                    experimentId: experiment.workflow.workflowId,
+                    experimentId: trial.reference.experimentId,
+                    workflowId: experiment.workflow.workflowId,
                     conceptId: experiment.conceptId,
                     replayKey: experiment.replayKey,
                     workflowStage: workflow?.stage,

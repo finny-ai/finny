@@ -4,6 +4,7 @@ import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir } from "@finny-ai/core/algo"
 import { bootstrapWorkspace } from "../plugin/finny-workspace"
+import { syncWorkspaceRequestContext, writeWorkflowRequestProjection } from "../agent/finny-workspace-context"
 import {
   ResearchBriefContentSchema,
   inspectResearchBrief,
@@ -11,10 +12,9 @@ import {
   updateResearchBrief,
 } from "../agent/research-brief"
 import { readRequestSpec, requestSpecProjection } from "../agent/request-spec"
-import type { RequestFacts } from "../agent/request-identity"
+import { normalizeInterval, normalizeSymbol, parseRequestFacts, type RequestFacts } from "../agent/request-identity"
 import { BuildWorkflowStore } from "../algorithm/build-workflow/store"
 import { transitionWorkflowIdentity } from "../algorithm/build-workflow/lifecycle"
-import { writeWorkflowRequestProjection } from "../agent/finny-workspace-context"
 import { Tool } from "./tool"
 
 const parameters = z.object({
@@ -65,6 +65,7 @@ type WorkspacePrepareMetadata = {
 
 function latestUserText(messages: Tool.Context["messages"]): string {
   for (const message of [...messages].reverse()) {
+    if (message.info.role !== "user") continue
     const parts = Array.isArray((message as any).parts) ? (message as any).parts : []
     const text = parts
       .filter((part: any) => part?.type === "text" && typeof part.text === "string" && !part.synthetic)
@@ -109,6 +110,51 @@ function structuredRequestFacts(params: z.infer<typeof parameters>): RequestFact
   }
 }
 
+export function workspacePrepareIdentityConflict(
+  params: Pick<z.infer<typeof parameters>, "symbol" | "symbols" | "assetClass" | "interval">,
+  userPrompt: string,
+): string | undefined {
+  const user = parseRequestFacts(userPrompt)
+  const requested = structuredRequestFacts(params as z.infer<typeof parameters>)
+  const userSymbol = normalizeSymbol(user.requested_symbol)
+  const toolSymbol = normalizeSymbol(requested.requested_symbol)
+  const userSymbols = user.requested_symbols?.map(normalizeSymbol).filter((value): value is string => Boolean(value))
+  const toolSymbols = requested.requested_symbols
+    ?.map(normalizeSymbol)
+    .filter((value): value is string => Boolean(value))
+  const userInterval = normalizeInterval(user.requested_interval)
+  const toolInterval = normalizeInterval(requested.requested_interval)
+
+  const conflicts: string[] = []
+  if (userSymbol && toolSymbol && userSymbol !== toolSymbol) {
+    conflicts.push(`symbol ${toolSymbol} conflicts with the user's ${userSymbol}`)
+  }
+  if (userSymbols?.length && toolSymbols?.length) {
+    const left = [...new Set(userSymbols)].sort().join(",")
+    const right = [...new Set(toolSymbols)].sort().join(",")
+    if (left !== right) conflicts.push(`symbols ${right} conflict with the user's ${left}`)
+  }
+  if (userInterval && toolInterval && userInterval !== toolInterval) {
+    conflicts.push(`interval ${toolInterval} conflicts with the user's ${userInterval}`)
+  }
+  if (
+    user.requested_asset_class &&
+    requested.requested_asset_class &&
+    user.requested_asset_class !== requested.requested_asset_class
+  ) {
+    conflicts.push(
+      `asset class ${requested.requested_asset_class} conflicts with the user's ${user.requested_asset_class}`,
+    )
+  }
+  if (conflicts.length === 0) return undefined
+
+  return [
+    `Request identity rejected: ${conflicts.join("; ")}.`,
+    "Preserve the exact symbol, interval, and asset class from the latest user request.",
+    "Do not substitute a proxy ticker. Call finny_workspace_prepare again with the user's identity, or ask the user for explicit permission to change it.",
+  ].join(" ")
+}
+
 async function readRequestContext(requestID: string): Promise<Record<string, unknown> | undefined> {
   const spec = await readRequestSpec({ requestID })
   return spec ? requestSpecProjection(spec) : undefined
@@ -129,6 +175,16 @@ export const WorkspacePrepareTool = Tool.define<
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
+        const userText = latestUserText(ctx.messages)
+        const identityConflict = workspacePrepareIdentityConflict(params, userText)
+        if (identityConflict) {
+          return {
+            title: "Workspace prepare rejected",
+            output: identityConflict,
+            metadata: {},
+          }
+        }
+
         await ctx.ask({
           permission: "finny_workspace_prepare",
           patterns: ["*"],
@@ -136,7 +192,7 @@ export const WorkspacePrepareTool = Tool.define<
           metadata: {},
         })
 
-        const prompt = promptFromParams(params, latestUserText(ctx.messages))
+        const prompt = promptFromParams(params, userText)
         if (!prompt.trim()) {
           return {
             title: "Workspace prepare failed",
@@ -145,39 +201,46 @@ export const WorkspacePrepareTool = Tool.define<
           }
         }
 
+        const workflows = await Effect.runPromise(
+          BuildWorkflowStore.listBySession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database)),
+        )
+        const workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
         let workflowProjection: Record<string, unknown> | undefined
-        if (params.symbol || params.symbols?.length) {
-          const workflows = await Effect.runPromise(
-            BuildWorkflowStore.listBySession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database)),
-          )
-          const workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
-          if (workflow) {
-            const source = {
-              kind: "structured_tool" as const,
-              tool: "finny_workspace_prepare",
-              callId: String(ctx.callID),
-            }
-            const symbols = params.symbols?.length ? params.symbols : params.symbol ? [params.symbol] : undefined
-            const transitioned = await Effect.runPromise(
-              transitionWorkflowIdentity({
-                sessionId: ctx.sessionID,
-                source: { actor: "tool" },
-                reason: "structured workspace identity confirmation",
-                identity: {
-                  ...workflow.identity,
-                  ...(symbols ? { symbols: { value: symbols, source } } : {}),
-                  ...(params.assetClass ? { assetClass: { value: params.assetClass, source } } : {}),
-                  ...(params.interval ? { interval: { value: params.interval, source } } : {}),
-                  ...(params.algorithmName ? { algorithmName: { value: params.algorithmName, source } } : {}),
-                  ...(params.strategyIntent ? { strategyFamily: { value: params.strategyIntent, source } } : {}),
-                  ...(params.startDate && params.endDate
-                    ? { window: { value: { start: params.startDate, end: params.endDate }, source } }
-                    : {}),
-                },
-              }).pipe(Effect.provideService(Database.Service, database)),
-            )
-            if (transitioned) workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
+        const hasStructuredIdentity = Boolean(
+          params.symbol ||
+          params.symbols?.length ||
+          params.assetClass ||
+          params.interval ||
+          params.algorithmName ||
+          params.strategyIntent ||
+          (params.startDate && params.endDate),
+        )
+        if (workflow && hasStructuredIdentity) {
+          const source = {
+            kind: "structured_tool" as const,
+            tool: "finny_workspace_prepare",
+            callId: String(ctx.callID),
           }
+          const symbols = params.symbols?.length ? params.symbols : params.symbol ? [params.symbol] : undefined
+          const transitioned = await Effect.runPromise(
+            transitionWorkflowIdentity({
+              sessionId: ctx.sessionID,
+              source: { actor: "tool" },
+              reason: "structured workspace identity confirmation",
+              identity: {
+                ...workflow.identity,
+                ...(symbols ? { symbols: { value: symbols, source } } : {}),
+                ...(params.assetClass ? { assetClass: { value: params.assetClass, source } } : {}),
+                ...(params.interval ? { interval: { value: params.interval, source } } : {}),
+                ...(params.algorithmName ? { algorithmName: { value: params.algorithmName, source } } : {}),
+                ...(params.strategyIntent ? { strategyFamily: { value: params.strategyIntent, source } } : {}),
+                ...(params.startDate && params.endDate
+                  ? { window: { value: { start: params.startDate, end: params.endDate }, source } }
+                  : {}),
+              },
+            }).pipe(Effect.provideService(Database.Service, database)),
+          )
+          if (transitioned) workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
         }
 
         const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(params))
@@ -190,7 +253,21 @@ export const WorkspacePrepareTool = Tool.define<
         }
 
         const workspacePath = prepared.dir || algoDir(prepared.slug)
-        const requestContext = workflowProjection ?? (await readRequestContext(ctx.sessionID))
+        // WorkflowRun owns request identity when present. Legacy sessions still
+        // persist the explicit, permissioned tool inputs through RequestSpec.
+        const requestContext: Record<string, unknown> | undefined = workflow
+          ? workflowProjection ?? (await readRequestContext(ctx.sessionID))
+          : {
+              ...(await syncWorkspaceRequestContext({
+                sessionID: ctx.sessionID,
+                slug: prepared.slug,
+                prompt,
+                facts: structuredRequestFacts(params),
+                recordExplicitRequestContext: true,
+                actor: "user",
+                reason: "finny_workspace_prepare explicit request context",
+              })),
+            }
         // Models cannot self-approve Research→Build handoffs. Approval is a user decision.
         if (params.transition === "approved") {
           await ctx.ask({

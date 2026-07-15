@@ -15,14 +15,20 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.
 - Finny generates the trusted strict-v2 backtest runner internally. Do not provide custom runner code.
 - **reasoning**: Markdown explaining why this version exists — what hypothesis it tests, what changed from the prior version and why. Written to `reasoning.md` inside the version directory. ALWAYS provide this on every save.
-- **mission**: WHO: hypothesis, scope, exit conditions, and the machine-enforced risk contract. Required for new algorithms and `docsMode: "replace"`. Must be valid `schema_version: 4` with all Core 8 questionnaire records plus `risk_contract` (`sizing_stop_distance_pct`, `protective_stop.mode`, `drawdown.mode`, `drawdown.limit_pct`, and `max_positions`). `engine_stop` is reserved and currently fails closed; use `strategy_next_open` only when the strategy contains validator-verifiable stop logic.
+- **docsInput**: Preferred for every new algorithm and `docsMode: "replace"`. Pass structured `mission`, optional `prefs`, and optional `decisions`; Finny renders the schema-v4 YAML, Core 8 records, frontmatter delimiters, and matching `risk.json`. In `docsInput.mission.questionnaire`, provide one string value for each named Core 8 key; use an empty string only when the answer was explicitly skipped. Do not also hand-author `mission`, `prefs`, `decisions`, or `riskContract` when using `docsInput` because the structured values are authoritative.
+- **mission**: Legacy raw-document compatibility for existing callers. If `docsInput` is omitted, this must be complete valid `schema_version: 4` YAML with all Core 8 records and `risk_contract`. Prefer `docsInput` so Finny owns YAML quoting and formatting.
 - **prefs**: HOW: sizing, risk, constraints, interval, asset. Included in each version snapshot.
 - **decisions**: New design-decision entries. Existing decisions are preserved and these entries are appended.
 - **riskContract**: JSON risk contract saved as `risk.json` in each version.
 
-## Mission YAML Safety
+## Mission Documents
 
-Mission frontmatter is parsed as strict YAML before save. Any prose that may
+For normal saves, use `docsInput`; do not construct YAML. Finny supplies the
+schema version, algorithm name, default status/date, canonical Core 8 questions,
+frontmatter delimiters, safe quoting, and matching risk JSON.
+
+Raw `mission` remains supported for compatibility and is parsed as strict YAML.
+Any prose that may
 contain `:`, `#`, `{}`, `[]`, commas, or multiple sentences must use a block
 scalar (`|` or `>-`) instead of an inline value. Use block scalars for
 `hypothesis`, `strategy.entry_signal`, `strategy.risk_profile`,

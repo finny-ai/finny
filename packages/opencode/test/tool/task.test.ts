@@ -1027,6 +1027,27 @@ describe("tool.task", () => {
           expect(result.output).toContain("SMH 1h equity")
           expect(result.output).toContain(`workspace_slug=${slug}`)
           expect(result.output).toContain("do not reuse existing workspace artifacts")
+          expect(result.output).toContain("did not terminalize this Build run")
+
+          let correctedPrompted = false
+          yield* def.execute(
+            {
+              description: "SPY data extraction retry",
+              prompt: "Extract SPY 1h equity data from 2026-03-30 to 2026-06-30.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: () => (correctedPrompted = true) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          expect(correctedPrompted).toBe(true)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

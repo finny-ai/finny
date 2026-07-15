@@ -64,6 +64,45 @@ export function svgHeatmap(monthly: Record<string, Record<string, number>>, widt
   return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="monthly heatmap"><rect width="${width}" height="${height}" fill="#fff"/>${rects}</svg>`
 }
 
+export function svgReportLineChart(input: {
+  series: Array<{ label: string; values: number[]; color: string }>
+  labels?: string[]
+  format?: "percent" | "ratio" | "number"
+  width?: number
+  height?: number
+}): string {
+  const width = input.width ?? 640
+  const height = input.height ?? 170
+  const pad = { left: 52, right: 16, top: 24, bottom: 34 }
+  const all = input.series.flatMap((item) => item.values).filter(Number.isFinite)
+  if (!all.length) return `<p class="empty">No meaningful series available.</p>`
+  const rawMin = Math.min(...all)
+  const rawMax = Math.max(...all)
+  const margin = rawMin === rawMax ? Math.max(Math.abs(rawMin) * 0.1, 1) : (rawMax - rawMin) * 0.08
+  const min = Math.min(rawMin - margin, 0)
+  const max = Math.max(rawMax + margin, 0)
+  const plotWidth = width - pad.left - pad.right
+  const plotHeight = height - pad.top - pad.bottom
+  const x = (index: number, count: number) => pad.left + (count <= 1 ? plotWidth / 2 : index / (count - 1) * plotWidth)
+  const y = (value: number) => pad.top + (max - value) / Math.max(max - min, 1e-12) * plotHeight
+  const formatted = (value: number) => input.format === "percent" ? `${(value * 100).toFixed(1)}%` : input.format === "ratio" ? value.toFixed(2) : value.toLocaleString(undefined, { maximumFractionDigits: 1 })
+  const ticks = [min, (min + max) / 2, max]
+  const axes = ticks.map((tick) => `<line x1="${pad.left}" y1="${y(tick).toFixed(1)}" x2="${width - pad.right}" y2="${y(tick).toFixed(1)}" stroke="#e4e1da"/><text x="${pad.left - 7}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end">${esc(formatted(tick))}</text>`).join("")
+  const zero = min <= 0 && max >= 0 ? `<line class="baseline" x1="${pad.left}" y1="${y(0).toFixed(1)}" x2="${width - pad.right}" y2="${y(0).toFixed(1)}"/>` : ""
+  const bodies = input.series.map((item) => {
+    const points = item.values.map((value, index) => `${x(index, item.values.length).toFixed(1)},${y(value).toFixed(1)}`)
+    const shape = points.length === 1
+      ? `<circle cx="${points[0]!.split(",")[0]}" cy="${points[0]!.split(",")[1]}" r="4" fill="${esc(item.color)}"/>`
+      : `<polyline fill="none" stroke="${esc(item.color)}" stroke-width="2" points="${points.join(" ")}"/>`
+    return `${shape}<title>${esc(item.label)}</title>`
+  }).join("")
+  const count = Math.max(...input.series.map((item) => item.values.length))
+  const labelAt = (index: number) => input.labels?.[index] ?? String(index + 1)
+  const xLabels = count ? [0, Math.max(0, Math.floor((count - 1) / 2)), count - 1].filter((value, index, items) => items.indexOf(value) === index).map((index) => `<text x="${x(index, count).toFixed(1)}" y="${height - 10}" text-anchor="middle">${esc(labelAt(index))}</text>`).join("") : ""
+  const legend = input.series.map((item, index) => `<g transform="translate(${pad.left + index * 130},12)"><line x2="18" stroke="${esc(item.color)}" stroke-width="2"/><text x="24" y="4">${esc(item.label)}</text></g>`).join("")
+  return `<svg class="report-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="${esc(input.series.map((item) => item.label).join(" and "))}">${axes}${zero}${bodies}${xLabels}${legend}</svg>`
+}
+
 const BARS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"]
 
 export function sparkline(values: number[]): string {

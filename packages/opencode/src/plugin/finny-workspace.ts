@@ -17,8 +17,8 @@ const log = Log.create({ service: "plugin.finny-workspace" })
 const STRATEGY_ORIGIN_FILE = ".strategy-origin"
 
 /**
- * Per-request workspace bootstrap — the "startup script" that runs the moment
- * a prompt arrives.
+ * Session workspace bootstrap — the startup routine for the first prompt and
+ * any later prompt that explicitly changes request identity.
  *
  * When a Build/Research prompt comes in, this plugin parses the immutable
  * request facts (symbol, interval, asset class), provisions a dedicated algo
@@ -30,16 +30,6 @@ const STRATEGY_ORIGIN_FILE = ".strategy-origin"
 
 const CONTINUATION_RE =
   /\b(continue|pick\s+up|where\s+you\s+left\s+off|tighten|save\s+it|re-?run|run\s+(the\s+)?backtest|backtest\s+it|update\s+(the\s+)?stops?|fix\s+(the\s+)?strategy|validate\s+it)\b/i
-
-// Retry/parameter phrasing for follow-ups that adjust a prior run (dates,
-// provider, repair mode) without restating the request identity — typically
-// the unblock actions a blocked backtest suggests verbatim.
-const RETRY_FOLLOWUP_RE =
-  /\b(re-?run|try\s+again|retry|go\s+again|once\s+more|start\s+date|end\s+date|date\s+range|(?:other|another|different)\s+provider|repair[_\s-]?outliers?)\b/i
-
-export function isRetryFollowupPrompt(prompt: string): boolean {
-  return RETRY_FOLLOWUP_RE.test(prompt)
-}
 
 const RESEARCH_RE =
   /\b(search|look\s+up|find\s+out|news|headline|ipo|earnings|current\s+event|latest\s+on|what(?:'s|\s+is)\s+happening|status\s+of|when\s+is|who\s+is|tell\s+me\s+about)\b/i
@@ -276,13 +266,13 @@ export async function bootstrapWorkspace(
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }
 
-  // A retry/parameter follow-up that names no symbol/interval/asset (e.g.
-  // "Re-run with end date 2026-07-01") continues this session's work rather
-  // than declaring a new request identity — reuse the binding instead of
-  // minting a generically named sibling workspace from the prompt words.
-  // Identity-less prompts without retry intent (conceptual questions and the
-  // like) still fall through and provision their own workspace.
-  if (existing && !hasRequestIdentity(facts) && isRetryFollowupPrompt(prompt) && slugMatchesRequest(existing, facts)) {
+  // Once a session has a workspace, any identity-less follow-up belongs to
+  // that same workspace. This covers retries as well as terse prompts such as
+  // "why?", "fix it", or conceptual questions, and prevents prompt-in from
+  // provisioning a generic sibling workspace on every turn. An explicit new
+  // symbol/universe/interval still follows the identity checks above and may
+  // intentionally rebind the session.
+  if (existing && !hasRequestIdentity(facts) && slugMatchesRequest(existing, facts)) {
     await syncWorkspaceRequestContext({ sessionID, slug: existing, prompt, facts, actor: "user" })
     return { slug: existing, dir: algoDir(existing), created: false, rebound: false }
   }

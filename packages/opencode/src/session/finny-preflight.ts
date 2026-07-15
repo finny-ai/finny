@@ -70,8 +70,19 @@ function preflightResultForWorkspace(slug: string): PreflightResult {
   }
 }
 
-function shouldRunPreflight(agent: string): boolean {
-  return PREFLIGHT_AGENTS.has(agent) && process.env.FINNY_DISABLE_SESSION_PREFLIGHT !== "1"
+const EXISTING_REVIEW_PACKET_RE =
+  /\b(?:open|show|view|find|locate|where(?:'s|\s+is)|give\s+me)\b[^\n]{0,100}\b(?:existing|saved|latest|its|the)?\s*(?:final\s+)?review\s+packet\b|\b(?:existing|saved|latest|its|the)?\s*(?:final\s+)?review\s+packet\b[^\n]{0,100}\b(?:open|show|view|find|locate)\b/i
+
+export function isExistingReviewPacketRequest(prompt: string): boolean {
+  return EXISTING_REVIEW_PACKET_RE.test(prompt)
+}
+
+function shouldRunPreflight(agent: string, prompt: string): boolean {
+  return (
+    PREFLIGHT_AGENTS.has(agent) &&
+    process.env.FINNY_DISABLE_SESSION_PREFLIGHT !== "1" &&
+    !isExistingReviewPacketRequest(prompt)
+  )
 }
 
 function asError(error: unknown): Error {
@@ -197,7 +208,7 @@ function resolveSessionEnv(publish: PreflightPublish, workspace: BootstrappedWor
 
 export function runFinnyPreflight(input: PreflightInput) {
   return Effect.gen(function* () {
-    if (!shouldRunPreflight(input.agent)) return undefined
+    if (!shouldRunPreflight(input.agent, input.prompt)) return undefined
 
     if (input.agent === "research") {
       const workspace = yield* bootstrapResearchWorkspace(input)

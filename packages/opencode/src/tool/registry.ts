@@ -27,6 +27,7 @@ import { WorkspacePrepareTool } from "./workspace-prepare"
 import { BacktestTool } from "./backtest"
 import { BacktestHistoryTool } from "./backtest-history"
 import { PaperApproveTool } from "./paper-approve"
+import { ReviewPacketTool } from "./review-packet"
 import { WorkflowRequestApprovalTool } from "./workflow-request-approval"
 import { BacktestSweepTool } from "./backtest-sweep"
 import { MonitorSnapshotTool } from "./monitor-snapshot"
@@ -154,6 +155,7 @@ export const layer = Layer.effect(
     const backtest = yield* BacktestTool
     const backtestHistory = yield* BacktestHistoryTool
     const paperApprove = yield* PaperApproveTool
+    const reviewPacket = yield* ReviewPacketTool
     const workflowRequestApproval = yield* WorkflowRequestApprovalTool
     const backtestSweep = yield* BacktestSweepTool
     const monitorSnapshot = yield* MonitorSnapshotTool
@@ -296,6 +298,7 @@ export const layer = Layer.effect(
           backtest: Tool.init(backtest),
           backtestHistory: Tool.init(backtestHistory),
           paperApprove: Tool.init(paperApprove),
+          reviewPacket: Tool.init(reviewPacket),
           workflowRequestApproval: Tool.init(workflowRequestApproval),
           backtestSweep: Tool.init(backtestSweep),
           monitorSnapshot: Tool.init(monitorSnapshot),
@@ -342,6 +345,7 @@ export const layer = Layer.effect(
             tool.backtest,
             tool.backtestHistory,
             tool.paperApprove,
+            tool.reviewPacket,
             tool.workflowRequestApproval,
             tool.backtestSweep,
             tool.monitorSnapshot,

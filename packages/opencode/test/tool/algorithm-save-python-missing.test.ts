@@ -96,7 +96,9 @@ describe("validationWarningsBlock", () => {
       } as any,
     ])
 
-    expect(block?.title).toBe("Save blocked — validation diagnostics")
+    expect(block?.title).toBe("Failed to save strategy")
+    expect(block?.output).toContain("Failed to save strategy:")
+    expect(block?.output).toContain("Fix:")
     expect(block?.metadata.blocked).toBe(true)
     expect(block?.metadata.diagnosticCodes).toEqual(["SMOKE_TEST_INCONCLUSIVE"])
   })

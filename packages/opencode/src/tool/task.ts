@@ -803,6 +803,39 @@ const taskExecutor = Effect.gen(function* () {
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
+      const preflightConflict = mandatoryEvidence
+        ? yield* Effect.promise(async () => {
+            const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+            if (!parentWorkspace) return undefined
+            const promptFacts = parseRequestFacts(params.prompt)
+            const parentFacts = await readRuntimeRequestFacts(ctx.sessionID)
+            if (parentFacts.requested_symbols?.length) {
+              return promptConflictWithParentRequest(parentFacts, promptFacts)
+            }
+            if (!requestHasIdentity(parentFacts) || promptFacts.requested_symbols?.length) return undefined
+            return dataRequestContextMismatchBlock({
+              prompt: params.prompt,
+              workspace: parentWorkspace,
+              context: parentFacts as WorkspaceRequestContext,
+            })
+          })
+        : undefined
+      if (preflightConflict) {
+        return {
+          title: params.description,
+          metadata: { parentSessionId: ctx.sessionID, sessionId: ctx.sessionID },
+          output: renderOutput({
+            sessionID: ctx.sessionID,
+            state: "completed",
+            summary: "Evidence request rejected before launch",
+            text: [
+              preflightConflict,
+              "The invalid task was not registered and did not terminalize this Build run.",
+              "Retry once with the exact authoritative request identity shown above; do not substitute a proxy symbol.",
+            ].join("\n"),
+          }),
+        }
+      }
       const durableFingerprint = mandatoryEvidence
         ? BuildWorkflow.taskFingerprint({
             role: params.subagent_type,

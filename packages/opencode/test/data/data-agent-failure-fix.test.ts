@@ -81,18 +81,18 @@ describe("data_extractor prompt hardening", () => {
 })
 
 describe("build prompt state machine ordering", () => {
-  test("never scaffolds before mandatory subagents return verified evidence", () => {
-    expect(PROMPT_BUILD).toContain("Do not call `finny_algorithm_scaffold` or `finny_algorithm_save` before mandatory subagents")
-    expect(PROMPT_BUILD).toMatch(/Run all mandatory pre-build subagents[\s\S]*Verify each result's identity metadata[\s\S]*usable evidence[\s\S]*then scaffold\/save/)
-    expect(PROMPT_BUILD).toContain("never short-circuit another mandatory child")
-    expect(PROMPT_BUILD).toContain("Build the `mission` string with the deterministic Core 8 helper shape")
+  test("keeps selected evidence ahead of dependent scaffolding without a universal gate", () => {
+    expect(PROMPT_BUILD).toContain("Recommended Pre-Build Evidence")
+    expect(PROMPT_BUILD).toContain("highly recommended but not universally mandatory")
+    expect(PROMPT_BUILD).toMatch(/Decide whether pre-build evidence materially improves[\s\S]*If evidence was launched[\s\S]*Then scaffold\/save\/validate\/backtest/)
+    expect(PROMPT_BUILD).toContain("Do not call `finny_algorithm_scaffold` or `finny_algorithm_save` in parallel with selected evidence")
+    expect(PROMPT_BUILD).toContain("A fixed `data_extractor` plus `news_agent` pair is never required")
+    expect(PROMPT_BUILD).toContain("Build structured `docsInput` for `finny_algorithm_save`")
+    expect(PROMPT_BUILD).toContain("never hand-author mission YAML")
   })
 
-  test("requires sec_agent for filing-dependent builds", () => {
-    expect(PROMPT_BUILD).toContain('subagent_type: "sec_agent"')
-    expect(PROMPT_BUILD).toContain("SEC/EDGAR evidence")
-    expect(PROMPT_BUILD).toContain("Form 3/4/5")
-    expect(PROMPT_BUILD).toContain("Form 13F")
-    expect(PROMPT_BUILD).toContain("mandatory for filing-dependent builds")
+  test("selects sec_agent for filing-dependent builds", () => {
+    expect(PROMPT_BUILD).toContain("Use `sec_agent` when the strategy depends on filings")
+    expect(PROMPT_BUILD).toContain("ownership, insider activity, or institutional holdings")
   })
 })

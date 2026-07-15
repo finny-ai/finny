@@ -56,6 +56,7 @@ const ALL_TOOL_IDS = [
   "finny_workspace_prepare",
   "finny_backtest",
   "finny_backtest_history",
+  "finny_review_packet",
   "finny_paper_approve",
   "finny_workflow_request_approval",
   "finny_backtest_sweep",
@@ -86,6 +87,7 @@ const EXPECTED_TOOLS = {
     "finny_get_quote",
     "finny_paper_approve",
     "finny_portfolio_backtest",
+    "finny_review_packet",
     "finny_workflow_request_approval",
     "finny_workspace_prepare",
     "question",
@@ -113,6 +115,7 @@ const EXPECTED_TOOLS = {
     "finny_get_quote",
     "finny_paper_approve",
     "finny_portfolio_backtest",
+    "finny_review_packet",
     "finny_workflow_request_approval",
     "finny_workspace_prepare",
     "question",
@@ -319,10 +322,11 @@ describe("Finny debloat", () => {
     expect(PROMPT_FINNY).toContain("expert trading-strategy research and implementation agent")
     expect(PROMPT_FINNY).toContain("todowrite")
     expect(PROMPT_FINNY).toContain("Do not silently assume horizon")
-    expect(PROMPT_FINNY).toContain("launch at least two evidence subagents before strategy synthesis")
-    expect(PROMPT_FINNY).toContain("data_extractor` plus one context agent")
-    expect(PROMPT_FINNY).toContain("The visible todo list must include this hard gate")
-    expect(PROMPT_FINNY).toContain("until both required evidence agents have returned or blocked")
+    expect(PROMPT_FINNY).toContain("launching `data_extractor` plus a relevant context agent is highly recommended")
+    expect(PROMPT_FINNY).toContain("This is not a universal hard gate")
+    expect(PROMPT_FINNY).toContain("Do not launch `news_agent` merely to satisfy a fixed two-agent count")
+    expect(PROMPT_FINNY).toContain("simple revisions")
+    expect(PROMPT_FINNY).not.toContain("launch at least two evidence subagents before strategy synthesis")
     expect(PROMPT_FINNY).toContain("finny_workspace_prepare")
     expect(PROMPT_FINNY).toContain("The session-bound workspace is the source of truth")
     expect(PROMPT_FINNY).toContain("finny_algorithm_save`")
@@ -339,26 +343,23 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("do not print a plain-text questionnaire")
     expect(PROMPT_BUILD).toContain("noninteractive/tool-unavailable runs")
     expect(PROMPT_BUILD).toContain("`BLOCKED: missing build facts")
-    expect(PROMPT_BUILD).toContain("concrete symbol, universe, tradable")
     expect(PROMPT_BUILD).toContain("Bare strategy slugs that embed symbol, interval, and intent")
     expect(PROMPT_BUILD).toContain("`spy-5m-momentum`")
     expect(PROMPT_BUILD).toContain("Deterministic Build State Machine")
     expect(PROMPT_BUILD).toContain("Parse immutable request facts")
-    expect(PROMPT_BUILD).toContain("Mandatory Pre-Build Subagents")
+    expect(PROMPT_BUILD).toContain("Recommended Pre-Build Evidence")
+    expect(PROMPT_BUILD).toContain("highly recommended but not universally mandatory")
+    expect(PROMPT_BUILD).toContain("Do not launch agents solely to satisfy a fixed agent count")
+    expect(PROMPT_BUILD).toContain("review-packet requests should not automatically launch evidence agents")
     expect(PROMPT_BUILD).toContain("Use `read` only under `algos/_template/`")
     expect(PROMPT_BUILD).toContain("Never read `.env` files")
     expect(PROMPT_BUILD).toContain("Read `algos/_template/README.md`")
     expect(PROMPT_BUILD).toContain("Do not use scaffold as a")
     expect(PROMPT_BUILD).toContain("BLOCKED: template read failed")
     expect(PROMPT_BUILD).toContain("never proceed without the template contract")
-    expect(PROMPT_BUILD).toContain('task_batch_run({ tasks: [{subagent_type: "data_extractor"')
-    expect(PROMPT_BUILD).toContain('{subagent_type: "news_agent"')
-    expect(PROMPT_BUILD).toContain("never prevent news_agent")
     expect(PROMPT_BUILD).toContain("Do not call `finny_algorithm_scaffold`")
-    expect(PROMPT_BUILD).toContain("in parallel with mandatory")
-    expect(PROMPT_BUILD).toContain("If either result starts with `BLOCKED:`")
-    expect(PROMPT_BUILD).toContain("evidence-window blockers")
-    expect(PROMPT_BUILD).toContain("Finny refused incomplete data")
+    expect(PROMPT_BUILD).toContain("in parallel with selected evidence")
+    expect(PROMPT_BUILD).toContain("Treat an optional agent blocker as a caveat")
     expect(PROMPT_BUILD).toContain("Pass concrete symbol, interval, asset class, strategy intent")
     expect(PROMPT_BUILD).toContain("Build itself must not read data-agent instruction files")
     expect(PROMPT_BUILD).toContain("never backfill or re-patch a complete new save")
@@ -367,7 +368,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("Offer next steps")
     expect(PROMPT_BUILD).toContain("explicit research-only repair")
     expect(PROMPT_BUILD).toContain("provider lookback limit")
-    expect(PROMPT_BUILD).toContain("status: research")
+    expect(PROMPT_BUILD).toContain("default status/date")
     expect(PROMPT_BUILD).toContain("Never infer entry signal, exit/invalidation rules, risk tolerance, or max drawdown")
     expect(PROMPT_BUILD).toContain("ask one concise `question` round before launching subagents")
     expect(PROMPT_BUILD).not.toContain("discovery is complete; do not ask for thesis/regime wording")
@@ -378,7 +379,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("Do not add a question")
     expect(PROMPT_BUILD).toContain("No performance metrics produced")
     expect(PROMPT_BUILD).toContain("Avoid promotional regime language")
-    expect(PROMPT_BUILD).toContain("historical bars must come from `data_extractor` using")
+    expect(PROMPT_BUILD).toContain("Do not call `finny_get_history` as a substitute")
     expect(PROMPT_BUILD).toContain("Drift Control")
     expect(PROMPT_BUILD).toContain("`BLOCKED: requested crypto, proposed equity proxy requires approval`")
     expect(PROMPT_BUILD).toContain("Do not save a QQQ/SPY strategy under a BTC/crypto name")
@@ -403,22 +404,22 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("if save returns `name_taken`")
     expect(PROMPT_BUILD).toContain("Use `version` only to update/improve/fix a named existing algorithm")
 
-    // Mandatory subagent result must be usable or an explicit unusable/BLOCKED.
-    expect(PROMPT_BUILD).toContain("BLOCKED: mandatory subagent result unusable")
-    expect(PROMPT_BUILD).toContain("no material current context found")
-    // Failure-budget wording: count only completed backtest tool failures.
-    expect(PROMPT_BUILD).toContain("Count only completed backtest tool failures")
-    expect(PROMPT_BUILD).toContain('never "two failures"')
-    expect(PROMPT_BUILD).toContain("Stop after five consecutive failed")
+    // Selected evidence must be verified before use without becoming a universal gate.
+    expect(PROMPT_BUILD).toContain("If evidence was launched, verify each result's identity metadata")
+    expect(PROMPT_BUILD).toContain("Treat an optional agent blocker as a caveat")
+    expect(PROMPT_BUILD).toContain("identity mismatch that would make it unsafe to use")
+    // Failed variants pivot from evidence without a fixed trial budget.
+    expect(PROMPT_BUILD).toContain("After failed variants, summarize the evidence")
+    expect(PROMPT_BUILD).toContain("Do not claim a fixed trial budget")
     expect(PROMPT_BUILD).toContain("do not present the build as complete")
     expect(PROMPT_BUILD).toContain("total return is positive")
     // Regime mismatch: build the requested concept first, diagnose after.
     expect(PROMPT_BUILD).toContain("Do not ask to pivot away from the requested strategy type")
-    // Walk-forward honesty + failure-budget rename loophole.
-    expect(PROMPT_BUILD).toContain("If the unified verdict is `recommended_for_paper`")
+    // Walk-forward honesty + terminal review packet.
+    expect(PROMPT_BUILD).toContain("Do not produce a final review packet after each iteration")
+    expect(PROMPT_BUILD).toContain("alpha vs buy-and-hold")
+    expect(PROMPT_BUILD).toContain("Review packet not produced")
     expect(PROMPT_BUILD).toContain("Do not call the run positive")
-    expect(PROMPT_BUILD).toContain("does NOT reset the failure budget")
-    expect(PROMPT_BUILD).toContain("`userApproved: true`")
     expect(PROMPT_BUILD).toContain("After 3 failed save/validation attempts, stop")
     expect(PROMPT_BUILD).toContain("discovery is closed for this request")
     expect(PROMPT_BUILD).toContain("Do not ask the Core")
@@ -465,9 +466,6 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("`strategy_loss`")
     expect(PROMPT_BUILD).toContain("do NOT blame data/backtest")
     expect(PROMPT_BUILD).toContain("never ask backtest vs strategy when metrics exist")
-    expect(PROMPT_BUILD).toContain("`concept_exhausted`")
-    expect(PROMPT_BUILD).toContain("Backtest did not run")
-    expect(PROMPT_BUILD).toContain("variants lost money")
     expect(PROMPT_BUILD).toContain("failed runs include `failure_diagnosis`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("Only write through guarded `bash`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("pagination/cursor plan")

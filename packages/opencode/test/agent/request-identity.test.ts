@@ -65,6 +65,14 @@ describe("request identity proposals", () => {
 })
 
 describe("parseRequestFacts", () => {
+  test("parses terse ticker and compact minute requests", () => {
+    expect(parseRequestFacts("VFV 15min")).toMatchObject({
+      requested_symbol: "VFV",
+      requested_interval: "15m",
+      requested_asset_class: "equity",
+    })
+  })
+
   test("extracts immutable facts from the vague SPY prompt", () => {
     const facts = parseRequestFacts(
       "Build a new SPY 15-minute mean reversion strategy with $10,000 over 3 months. Keep it clean and validate/backtest it in strict mode.",

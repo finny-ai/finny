@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Mission } from "../../src/algorithm/mission"
-import { bindMissionRiskContract, contractRejectionBlock, missionRejectionMessage } from "../../src/tool/algorithm-save"
+import { bindMissionRiskContract, contractRejectionBlock, missionRejectionMessage, resolveSaveDocuments } from "../../src/tool/algorithm-save"
 
 const questionnaire = (overrides: Record<string, Partial<{ answer: string; status: string }>> = {}) =>
   Mission.CORE8_IDS.map((id) => {
@@ -181,7 +181,7 @@ describe("contractRejectionBlock", () => {
     expect(block!.output).toContain("Config issues:")
     expect(block!.output).toContain("missing required config field(s): symbol, interval")
     expect(block!.output).toContain("status: Invalid option")
-    expect(block!.output).toContain("schema_version: 4")
+    expect(block!.output).toContain("structured `docsInput`")
     expect(block!.metadata).toMatchObject({ blocked: true, missionInvalid: true, configRequired: true })
   })
 
@@ -192,22 +192,46 @@ describe("contractRejectionBlock", () => {
   test("config-only rejection skips the mission template", () => {
     const block = contractRejectionBlock([], ["symbol must be one tradable symbol"])
     expect(block!.output).toContain("Config issues:")
-    expect(block!.output).not.toContain("schema_version: 4")
+    expect(block!.output).not.toContain("structured `docsInput`")
     expect(block!.metadata).toMatchObject({ missionInvalid: false, configRequired: true })
   })
 })
 
 describe("missionRejectionMessage", () => {
-  test("leads with the issues and includes the full v4 template", () => {
+  test("leads with the issues and routes retries away from raw YAML", () => {
     const message = missionRejectionMessage(["status: Invalid option"])
     expect(message).toContain("  - status: Invalid option")
-    expect(message).toContain("schema_version: 4")
-    expect(message).toContain("risk_contract:")
-    expect(message).toContain("hypothesis: |")
-    expect(message).toContain("YAML safety")
-    expect(message).toContain("status: research | backtested | paper | live | retired")
+    expect(message).toContain("structured `docsInput`")
+    expect(message).toContain("Finny will render valid schema-v4 YAML")
     for (const id of Mission.CORE8_IDS) {
-      expect(message).toContain(`- id: ${id}`)
+      expect(message).toContain(`- ${id}`)
     }
+  })
+})
+
+describe("resolveSaveDocuments", () => {
+  test("renders safe v4 YAML, skipped answers, and matching risk JSON from structured input", () => {
+    const answers = Object.fromEntries(Mission.CORE8_IDS.map((id) => [id, `Answer: ${id}`])) as Record<(typeof Mission.CORE8_IDS)[number], string>
+    answers.strategy_family = ""
+    const riskContract = { sizing_stop_distance_pct: 2, protective_stop: { mode: "strategy_next_open" as const }, drawdown: { mode: "halt_and_flatten_next_open" as const, limit_pct: 15 }, max_positions: 1 }
+    const documents = resolveSaveDocuments({
+      name: "btc-colon-safe",
+      mission: "malformed raw YAML is ignored",
+      docsInput: { mission: {
+        created: "2026-07-14",
+        hypothesis: "Regime rule: enter only after confirmation # no YAML failure",
+        scope: { asset_class: "crypto", universe: ["BTCUSDT"], horizon: "days" },
+        strategy: { bar_interval: "1h", type: "trend", direction: "long", entry_signal: "Entry: EMA cross", risk_profile: "Moderate: capped sizing", max_drawdown_pct: 15, backtest_window: "6 months", success_metric: "Sharpe > 1: drawdown < 15%" },
+        risk_contract: riskContract,
+        exit_conditions: "Exit: trend invalidates",
+        questionnaire: answers,
+        user_preferences: "Starting Capital: $10,000",
+      }, prefs: "# Preferences", decisions: "# Decisions" },
+    })
+    expect(Mission.validateForNewSave(documents.mission)).toEqual([])
+    expect(documents.mission).toContain("schema_version: 4")
+    expect(documents.mission).toContain('hypothesis: "Regime rule: enter only after confirmation # no YAML failure"')
+    expect(documents.mission).toMatch(/id: strategy_family[\s\S]*?answer: ""[\s\S]*?status: skipped/)
+    expect(JSON.parse(documents.riskContract!)).toEqual(riskContract)
   })
 })

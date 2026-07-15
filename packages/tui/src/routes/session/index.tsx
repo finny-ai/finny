@@ -85,6 +85,9 @@ import { DialogRetryAction } from "../../component/dialog-retry-action"
 import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { PathFormatterProvider, usePathFormatter } from "../../context/path-format"
+import { Link } from "../../ui/link"
+import { algorithmSaveFailureDisplay } from "../../util/algorithm-save-display"
+import { keepCompletedToolVisible, quantReviewPacketHref } from "../../util/quant-review-packet"
 
 addDefaultParsers(parsers.parsers)
 
@@ -1748,7 +1751,7 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
     if (ctx.showDetails()) return false
-    if (props.part.state.status !== "completed") return false
+    if (props.part.state.status !== "completed" || keepCompletedToolVisible(props.part.tool)) return false
     return true
   })
 
@@ -1815,11 +1818,31 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "finny_algorithm_save"}>
           <AlgorithmSave {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "finny_review_packet"}>
+          <QuantReviewPacket {...toolprops} />
+        </Match>
         <Match when={true}>
           <GenericTool {...toolprops} />
         </Match>
       </Switch>
     </Show>
+  )
+}
+
+function QuantReviewPacket(props: ToolProps) {
+  const { theme } = useTheme()
+  const reviewPath = createMemo(() => quantReviewPacketHref(props.metadata))
+  return (
+    <BlockTool title="# Quant review packet" part={props.part}>
+      <box flexDirection="column" gap={1}>
+        <Show when={reviewPath()} fallback={<text fg={theme.error}>{props.output ?? "Review packet unavailable"}</text>}>
+          <text fg={theme.text}>Final experiment-lineage packet is ready. Paper approval remains separate.</text>
+          <Link href={reviewPath()!} fg={theme.primary} width="100%" wrapMode="word">
+            Open quant review packet
+          </Link>
+        </Show>
+      </box>
+    </BlockTool>
   )
 }
 
@@ -1879,9 +1902,10 @@ function AlgorithmSave(props: ToolProps) {
   const meta = createMemo(() => props.metadata as { algorithmId?: string; name?: string; version?: number })
   const completed = createMemo(() => props.part.state.status === "completed")
   // A completed call with no algorithmId is a blocked/failed save (validation,
-  // missing evidence, etc.) — fall back to the generic renderer so the user
-  // sees the actual reason instead of a misleading "Saved" header.
+  // missing evidence, etc.). Render only the concise reason; the generic
+  // renderer would echo the full strategy code, config, and mission input.
   const blocked = createMemo(() => completed() && !meta().algorithmId)
+  const failure = createMemo(() => algorithmSaveFailureDisplay(props.input, props.output))
 
   const [algo] = createResource(
     () => (completed() ? meta().algorithmId : undefined),
@@ -1919,7 +1943,11 @@ function AlgorithmSave(props: ToolProps) {
             </InlineTool>
           }
         >
-          <GenericTool {...props} />
+          <BlockTool title={`◆ ${failure().title}`} part={props.part}>
+            <box gap={1}>
+              <text fg={theme.error}>{failure().output}</text>
+            </box>
+          </BlockTool>
         </Show>
       }
     >

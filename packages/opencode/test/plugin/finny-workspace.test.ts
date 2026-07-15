@@ -30,6 +30,7 @@ import {
   writeWorkflowRequestProjection,
 } from "../../src/agent/finny-workspace-context"
 import { createBuildWorkflow } from "../../src/algorithm/build-workflow/state"
+import { readRequestSpec } from "../../src/agent/request-spec"
 
 const SPY_PROMPT =
   "Build a new SPY 15-minute mean reversion strategy with $10,000 over 3 months. Keep it clean and validate/backtest it in strict mode."
@@ -189,6 +190,64 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     })
   })
 
+  test("explicit workspace preparation fills missing workflow facts in the runtime request spec", async () => {
+    const result = await bootstrapWorkspace("ses_workflow_prepare", "Build a SPY equity strategy.")
+    const source = { kind: "user_message" as const, messageId: "msg_workflow_prepare" }
+    const state = createBuildWorkflow({
+      workflowId: "wf_prepare",
+      sessionId: "ses_workflow_prepare",
+      workspaceSlug: result!.slug,
+      intent: "build",
+      identity: {
+        symbols: { value: ["SPY"], source },
+        assetClass: { value: "equity", source },
+        algorithmName: { value: "spy-strategy", source },
+      },
+      now: 1_000,
+    })
+    await writeWorkflowRequestProjection(state)
+
+    const context = await syncWorkspaceRequestContext({
+      sessionID: "ses_workflow_prepare",
+      slug: result!.slug,
+      prompt: "symbol SPY; asset class equity; interval 1d; date window 2023-07-01 to 2026-07-13",
+      facts: {
+        requested_symbol: "SPY",
+        requested_asset_class: "equity",
+        requested_interval: "1d",
+        requested_algorithm_name: "different-name-must-not-pivot",
+      },
+      recordExplicitRequestContext: true,
+      actor: "user",
+    })
+
+    expect(context).toMatchObject({
+      requested_symbol: "SPY",
+      requested_interval: "1d",
+      requested_algorithm_name: "spy-strategy",
+      requested_start: "2023-07-01",
+      requested_end: "2026-07-13",
+    })
+    expect(await readRequestSpec({ requestID: "ses_workflow_prepare" })).toMatchObject({
+      requested_symbol: "SPY",
+      requested_interval: "1d",
+      requested_algorithm_name: "spy-strategy",
+      requested_start: "2023-07-01",
+      requested_end: "2026-07-13",
+    })
+
+    const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
+    expect(request).toMatchObject({
+      source_of_truth: "algorithm_build_workflow",
+      workflow_id: "wf_prepare",
+      requested_symbol: "SPY",
+      requested_algorithm_name: "spy-strategy",
+    })
+    expect(request.requested_interval).toBeUndefined()
+    expect(request.requested_start).toBeUndefined()
+    expect(request.requested_end).toBeUndefined()
+  })
+
   test("compact strategy slug provisions and binds a workspace", async () => {
     const result = await bootstrapWorkspace("ses_spy_slug", "spy-5m-momentum")
     expect(result).toBeDefined()
@@ -198,6 +257,17 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
     expect(request.requested_symbol).toBe("SPY")
     expect(request.requested_interval).toBe("5m")
+    expect(request.requested_asset_class).toBe("equity")
+  })
+
+  test("terse ticker and compact interval preserve the exact request identity", async () => {
+    const result = await bootstrapWorkspace("ses_vfv_compact", "VFV 15min")
+    expect(result).toBeDefined()
+    expect(result!.slug.startsWith("vfv-15m-strategy.")).toBe(true)
+
+    const request = JSON.parse(await fs.readFile(path.join(result!.dir, "request.json"), "utf8"))
+    expect(request.requested_symbol).toBe("VFV")
+    expect(request.requested_interval).toBe("15m")
     expect(request.requested_asset_class).toBe("equity")
   })
 
@@ -265,11 +335,12 @@ describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
     expect(await getSessionWorkspace("ses_rerun")).toBe(first!.slug)
   })
 
-  test("identity-less prompts without retry intent still provision their own workspace", async () => {
+  test("identity-less prompts without retry intent reuse the session workspace", async () => {
     const first = await bootstrapWorkspace("ses_concept_after", SPY_PROMPT)
     const second = await bootstrapWorkspace("ses_concept_after", "what is a sharpe ratio and why does it matter?")
-    expect(second!.slug).not.toBe(first!.slug)
-    expect(second!.rebound).toBe(true)
+    expect(second!.slug).toBe(first!.slug)
+    expect(second!.created).toBe(false)
+    expect(second!.rebound).toBe(false)
   })
 
   test("generic strategy follow-ups stay in the existing strategy workspace", async () => {
@@ -466,12 +537,8 @@ describe("session consolidation", () => {
       version: 1,
     })
 
-    await expect(fs.readFile(path.join(storeData, "stock", "SPY_15m.csv"), "utf8")).resolves.toBe(
-      "timestamp,open\n",
-    )
-    await expect(fs.readFile(path.join(storeData, "news", "spy-context.md"), "utf8")).resolves.toBe(
-      "# news\n",
-    )
+    await expect(fs.readFile(path.join(storeData, "stock", "SPY_15m.csv"), "utf8")).resolves.toBe("timestamp,open\n")
+    await expect(fs.readFile(path.join(storeData, "news", "spy-context.md"), "utf8")).resolves.toBe("# news\n")
     await expect(fs.readFile(path.join(storeData, "sentiment", "SPY_sentiment.csv"), "utf8")).resolves.toBe(
       "date,symbol\n",
     )

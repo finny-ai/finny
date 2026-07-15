@@ -1,8 +1,6 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { finnyHomeArtifacts } from "@finny-ai/core/prefs"
 import type { Algorithm } from "@/algorithm"
-import { resolveAlgorithmFolder } from "@/algorithm/folder"
 import type { BacktestRunner } from "./runner"
 import type { UnifiedVerdict } from "./verdict"
 import { sparkline, svgAreaChart, svgBarChart, svgHeatmap, svgLineChart } from "./svg-charts"
@@ -244,26 +242,10 @@ async function writeDurability(input: ReviewInput): Promise<string | undefined> 
   return durabilityPath
 }
 
-async function writeReviewDocs(data: ReviewData): Promise<string | undefined> {
-  const artifacts = finnyHomeArtifacts()
-  const resolved = await resolveAlgorithmFolder({
-    algorithmId: data.algorithm.algorithmId,
-    name: data.algorithm.name,
-    algosRoot: artifacts.algos,
-    algorithmsRoot: artifacts.algorithms,
-  })
-  if (!resolved.found) return undefined
-  await fs.writeFile(path.join(resolved.path, "review.md"), renderReviewMarkdown(data), "utf8")
-  await fs.writeFile(path.join(resolved.path, "review.html"), renderReviewHtml(data), "utf8")
-  return resolved.path
-}
-
 export async function generateReviewPacket(input: ReviewInput): Promise<{ reviewDir?: string; durabilityPath?: string; error?: string }> {
   try {
-    const data = await loadReviewData(input)
     const durabilityPath = await writeDurability(input)
-    const reviewDir = await writeReviewDocs(data)
-    return reviewDir ? { reviewDir, durabilityPath } : { durabilityPath, error: "algorithm folder unresolved; review.md/review.html not written" }
+    return { durabilityPath }
   } catch (error: any) {
     return { error: error?.message ?? String(error) }
   }

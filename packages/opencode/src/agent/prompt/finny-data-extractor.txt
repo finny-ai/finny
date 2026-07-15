@@ -117,5 +117,4 @@ quality: rows=<n>, duplicates=<n>, gaps=<n>, invalid_ohlc=<n>, zero_volume=<n>, 
 usable_for_parent: <yes/no plus exact caveat>
 analysis_summary_path: <relative path to the .analysis_summary.json sidecar, or not_returned>
 analysis_regime: <trending_up/trending_down/range_bound/high_volatility/low_liquidity/mixed/not_returned>
-analysis_hypotheses: <1-3 candidate hypotheses separated by ` | `, each phrased as "candidate ... ; requires backtest", or not_returned>
-If every source fails, report each source error and stop.
+analysis_hypotheses: <1-3 candidate hypotheses separated by ` | `, each phrased as "candidate ... ; requires backtest", or not_returned>. If every source fails, report each source error and stop.

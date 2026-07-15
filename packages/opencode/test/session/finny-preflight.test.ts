@@ -4,7 +4,7 @@ import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { getSessionWorkspace } from "@finny-ai/core/algo"
-import { runFinnyPreflight, extractPromptText, PREFLIGHT_AGENTS } from "../../src/session/finny-preflight"
+import { runFinnyPreflight, extractPromptText, isExistingReviewPacketRequest, PREFLIGHT_AGENTS } from "../../src/session/finny-preflight"
 import { workspaceEnvDir } from "../../src/python/session-env"
 import { Python } from "../../src/python/env"
 import type { SessionStatus } from "../../src/session/status"
@@ -90,6 +90,15 @@ describe("finny preflight", () => {
     expect(result).toBeUndefined()
   })
 
+  test("skips workspace and environment setup for existing review packet lookup", async () => {
+    const prompt = "eth-daily-mean-reversion, I want you to open its review packet"
+    expect(isExistingReviewPacketRequest(prompt)).toBe(true)
+    const { result, statuses } = await runPreflight(prompt, "ses_open_review")
+    expect(result).toBeUndefined()
+    expect(statuses).toHaveLength(0)
+    expect(await getSessionWorkspace("ses_open_review")).toBeNull()
+  })
+
   test(
     "market prompt provisions workspace and workspace venv before returning",
     async () => {
@@ -169,6 +178,24 @@ describe("finny preflight", () => {
       )
       expect(second).toBeDefined()
       expect(secondStatuses).toHaveLength(0)
+    },
+    180_000,
+  )
+
+  test(
+    "arbitrary identity-less follow-up reuses the ready session without setup",
+    async () => {
+      if (!(await pythonAvailable())) return
+
+      await runPreflight("SPY 15-minute mean reversion strategy", "ses_identityless")
+      const { result, statuses } = await runPreflight(
+        "why did that fail and can you fix it?",
+        "ses_identityless",
+      )
+
+      expect(result).toBeDefined()
+      expect(result!.workspaceSlug.startsWith("spy-15m-mean-reversion.")).toBe(true)
+      expect(statuses).toHaveLength(0)
     },
     180_000,
   )
