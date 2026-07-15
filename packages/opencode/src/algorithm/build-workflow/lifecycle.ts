@@ -10,7 +10,7 @@ import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
 import { experimentRunContext, sha256Text, type ExperimentRunContext } from "./experiment"
 import { backtestIdentityHash } from "./state"
 import { BuildWorkflowStore } from "./store"
-import type { BacktestHashes, BuildWorkflowState, WorkflowEvent } from "./types"
+import type { BacktestHashes, BuildWorkflowState, RequestIdentity, WorkflowEvent, WorkflowEventSource } from "./types"
 
 function eventID(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`
@@ -27,10 +27,212 @@ function appendRequired(workflowId: string, event: WorkflowEvent, expectedRevisi
   })
 }
 
-export const activeWorkflowForSession = Effect.fn("BuildWorkflowLifecycle.activeForSession")(function* (sessionId: string) {
+export const activeWorkflowForSession = Effect.fn("BuildWorkflowLifecycle.activeForSession")(function* (
+  sessionId: string,
+) {
   return (yield* BuildWorkflowStore.listBySession(sessionId)).find(
     (state) => state.status === "active" || state.status === "blocked",
   )
+})
+
+export const transitionWorkflowIdentity = Effect.fn("BuildWorkflowLifecycle.transitionIdentity")(function* (input: {
+  sessionId: string
+  identity: RequestIdentity
+  source: WorkflowEventSource
+  reason: string
+}) {
+  const workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return undefined
+  const type = workflow.identityStatus === "confirmed" ? ("identity.amended" as const) : ("identity.confirmed" as const)
+  const event: WorkflowEvent =
+    type === "identity.amended"
+      ? {
+          id: eventID("evt_identity_amended"),
+          type,
+          occurredAt: Date.now(),
+          source: input.source,
+          identity: input.identity,
+          reason: input.reason,
+        }
+      : {
+          id: eventID("evt_identity_confirmed"),
+          type,
+          occurredAt: Date.now(),
+          source: input.source,
+          identity: input.identity,
+        }
+  const result = yield* BuildWorkflowStore.append({
+    workflowId: workflow.workflowId,
+    expectedRevision: workflow.revision,
+    event,
+  })
+  if (result.kind === "applied") return result.decision.state
+  if (result.kind === "rejected" && result.decision.code === "identity_unchanged") return workflow
+  const code = result.kind === "rejected" ? result.decision.code : result.kind
+  return yield* Effect.fail(new Error(`workflow identity transition failed: ${code}`))
+})
+
+export const recordWorkflowAttempt = Effect.fn("BuildWorkflowLifecycle.recordAttempt")(function* (input: {
+  sessionId: string
+  operation: string
+  fingerprint: string
+  idempotencyKey: string
+  outcome: "accepted" | "rejected" | "blocked" | "failed"
+  lifecycle?: "in_progress" | "terminal"
+  blockerCode?: string
+  requiredChanges?: string[]
+  artifactIds?: string[]
+  evidenceIds?: string[]
+  trialIds?: string[]
+}) {
+  const workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return { allowed: true as const, workflow: undefined }
+  const id = `attempt_${sha256Text(`${workflow.workflowId}:${input.idempotencyKey}`).slice(0, 32)}`
+  yield* Effect.annotateCurrentSpan({
+    "finny.workflow.run_id": workflow.workflowId,
+    "finny.workflow.request_id": workflow.sessionId,
+    "finny.workflow.request_version": workflow.requestVersion,
+    "finny.workflow.prior_phase": workflow.phase,
+    "finny.workflow.requested_operation": input.operation,
+    "finny.workflow.attempt_outcome": input.outcome,
+    "finny.workflow.blocker_code": input.blockerCode ?? "",
+    "finny.workflow.retry_disposition":
+      input.outcome === "blocked" || input.outcome === "rejected" ? "deny_unchanged" : "record",
+    "finny.workflow.idempotency_key_hash": sha256Text(input.idempotencyKey),
+    "finny.workflow.artifact_ids": (input.artifactIds ?? []).join(","),
+    "finny.workflow.evidence_ids": (input.evidenceIds ?? []).join(","),
+    "finny.workflow.trial_ids": (input.trialIds ?? []).join(","),
+    "finny.workflow.resume_token_hash": sha256Text(workflow.resumeToken),
+  })
+  const result = yield* BuildWorkflowStore.append({
+    workflowId: workflow.workflowId,
+    expectedRevision: workflow.revision,
+    event: {
+      id: `evt_${id}`,
+      type: "attempt.recorded",
+      occurredAt: Date.now(),
+      source: { actor: "tool" },
+      attempt: {
+        id,
+        idempotencyKey: input.idempotencyKey,
+        fingerprint: input.fingerprint,
+        operation: input.operation,
+        outcome: input.outcome,
+        lifecycle: input.lifecycle ?? (input.outcome === "accepted" ? "in_progress" : "terminal"),
+        blockerCode: input.blockerCode,
+        requiredChanges: input.requiredChanges ?? [],
+        requestVersion: workflow.requestVersion,
+        artifactIds: input.artifactIds ?? [],
+        evidenceIds: input.evidenceIds ?? [],
+        trialIds: input.trialIds ?? [],
+        createdAt: Date.now(),
+      },
+    },
+  })
+  if (result.kind === "applied") {
+    return { allowed: true as const, disposition: "recorded" as const, workflow: result.decision.state }
+  }
+  if (result.kind === "idempotent_replay") {
+    const terminalBlocker = [...result.state.attempts]
+      .reverse()
+      .find(
+        (attempt) =>
+          attempt.fingerprint === input.fingerprint &&
+          attempt.lifecycle === "terminal" &&
+          (attempt.outcome === "blocked" || attempt.outcome === "rejected" || attempt.outcome === "failed"),
+      )
+    if (terminalBlocker) {
+      return {
+        allowed: false as const,
+        code: "unchanged_blocker_retry_denied",
+        message: `Attempt ${terminalBlocker.id} already terminalized this fingerprint; change ${terminalBlocker.requiredChanges.join(", ") || "the fingerprinted inputs"}.`,
+        workflow: result.state,
+      }
+    }
+    return { allowed: true as const, disposition: "resumed" as const, workflow: result.state }
+  }
+  if (result.kind === "rejected") {
+    return {
+      allowed: false as const,
+      code: result.decision.code,
+      message: result.decision.message,
+      workflow: result.decision.state,
+    }
+  }
+  return {
+    allowed: false as const,
+    code: result.kind,
+    message: `workflow attempt append failed: ${result.kind}`,
+    workflow,
+  }
+})
+
+export const finishWorkflowRun = Effect.fn("BuildWorkflowLifecycle.finishRun")(function* (input: {
+  sessionId: string
+  classification: "completed" | "failed" | "interrupted"
+  reason?: string
+}) {
+  let workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return undefined
+  const occurredAt = Date.now()
+  const terminalEvent: WorkflowEvent =
+    input.classification === "completed"
+      ? {
+          id: eventID("evt_workflow_completed"),
+          type: "workflow.completed",
+          occurredAt,
+          source: { actor: "system" },
+        }
+      : input.classification === "failed"
+        ? {
+            id: eventID("evt_workflow_failed"),
+            type: "workflow.failed",
+            occurredAt,
+            source: { actor: "system" },
+            reason: input.reason ?? "workflow execution failed",
+          }
+        : {
+            id: eventID("evt_workflow_interrupted"),
+            type: "workflow.blocked",
+            occurredAt,
+            source: { actor: "system" },
+            blocker: {
+              code: "workflow_interrupted",
+              message: input.reason ?? "workflow execution was interrupted",
+              fingerprint: `${workflow.requestVersion}:${workflow.revision}:${workflow.phase}`,
+              requiredChanges: ["resume the workflow with the stable resume token"],
+            },
+          }
+  let result = yield* BuildWorkflowStore.append({
+    workflowId: workflow.workflowId,
+    expectedRevision: workflow.revision,
+    event: terminalEvent,
+  })
+  if (result.kind === "applied") return result.decision.state.terminal
+  if (input.classification !== "completed" || result.kind !== "rejected") return workflow.terminal
+
+  const blockerEvent: WorkflowEvent = {
+    id: eventID("evt_workflow_incomplete"),
+    type: "workflow.blocked",
+    occurredAt: Date.now(),
+    source: { actor: "system" },
+    blocker: {
+      code: result.decision.code,
+      message: result.decision.message,
+      fingerprint: `${workflow.requestVersion}:${workflow.revision}:${workflow.phase}`,
+      requiredChanges:
+        workflow.phase === "strict_blocked"
+          ? ["fingerprinted strict blocker inputs"]
+          : ["durable workflow phase", "required evidence or qualified strict result"],
+    },
+  }
+  result = yield* BuildWorkflowStore.append({
+    workflowId: workflow.workflowId,
+    expectedRevision: workflow.revision,
+    event: blockerEvent,
+  })
+  if (result.kind === "applied") return result.decision.state.terminal
+  return workflow.terminal
 })
 
 /** Bind the exact verified data artifact to every matching market-data requirement. */
@@ -43,8 +245,7 @@ export const recordVerifiedMarketData = Effect.fn("BuildWorkflowLifecycle.record
   const actualSymbol = normalizeSymbol(input.dataset.identity.actualSymbol)
   for (const requirement of workflow.evidenceRequirements.filter((item) => item.kind === "market_data")) {
     const matches =
-      requirement.symbols.length === 0 ||
-      requirement.symbols.some((symbol) => normalizeSymbol(symbol) === actualSymbol)
+      requirement.symbols.length === 0 || requirement.symbols.some((symbol) => normalizeSymbol(symbol) === actualSymbol)
     if (!matches) continue
     const already = workflow.evidence.some(
       (item) =>
@@ -84,13 +285,66 @@ export function pendingEvidenceRequirements(state: BuildWorkflowState): string[]
         requirement.required &&
         !state.evidence.some(
           (record) =>
-            record.requirementId === requirement.id &&
-            record.kind === requirement.kind &&
-            record.status === "verified",
+            record.requirementId === requirement.id && record.kind === requirement.kind && record.status === "verified",
         ),
     )
     .map((item) => `${item.kind}:${item.reason}`)
 }
+
+export const freezeWorkflowResearch = Effect.fn("BuildWorkflowLifecycle.freezeResearch")(function* (
+  workflow: BuildWorkflowState,
+) {
+  if (workflow.researchFreeze && workflow.phase !== "evidence_ready") return workflow
+  return yield* appendRequired(
+    workflow.workflowId,
+    {
+      id: eventID("evt_research_frozen"),
+      type: "research.frozen",
+      occurredAt: Date.now(),
+      source: { actor: "tool" },
+      freeze: {
+        id: `freeze_${sha256Text(`${workflow.workflowId}:${workflow.requestVersion}:${workflow.revision}`).slice(0, 24)}`,
+        requestVersion: workflow.requestVersion,
+        evidenceIds: workflow.evidence.filter((item) => item.status === "verified").map((item) => item.id).sort(),
+        createdAt: Date.now(),
+      },
+    },
+    workflow.revision,
+  )
+})
+
+export const bindWorkflowExperimentPlan = Effect.fn("BuildWorkflowLifecycle.bindExperimentPlan")(function* (
+  workflow: BuildWorkflowState,
+) {
+  if (workflow.experimentPlan && workflow.phase !== "candidate_validated") return workflow
+  if (!workflow.candidate) return yield* Effect.fail(new Error("workflow candidate is required for experiment planning"))
+  const fingerprint = sha256Text(
+    JSON.stringify({
+      workflowId: workflow.workflowId,
+      requestVersion: workflow.requestVersion,
+      candidateId: workflow.candidate.algorithmId,
+      strategyHash: workflow.candidate.strategyHash,
+      configHash: workflow.candidate.configHash,
+    }),
+  )
+  return yield* appendRequired(
+    workflow.workflowId,
+    {
+      id: eventID("evt_experiment_plan"),
+      type: "experiment.plan_bound",
+      occurredAt: Date.now(),
+      source: { actor: "tool" },
+      plan: {
+        id: `plan_${fingerprint.slice(0, 24)}`,
+        requestVersion: workflow.requestVersion,
+        candidateId: workflow.candidate.algorithmId,
+        fingerprint,
+        createdAt: Date.now(),
+      },
+    },
+    workflow.revision,
+  )
+})
 
 export const ensureWorkflowCandidate = Effect.fn("BuildWorkflowLifecycle.ensureCandidate")(function* (input: {
   workflow: BuildWorkflowState
@@ -101,6 +355,7 @@ export const ensureWorkflowCandidate = Effect.fn("BuildWorkflowLifecycle.ensureC
   end?: string
 }) {
   let workflow = input.workflow
+  if (workflow.phase === "evidence_ready") workflow = yield* freezeWorkflowResearch(workflow)
   let context = yield* Effect.tryPromise(() =>
     experimentRunContext({
       workflow,
@@ -143,7 +398,9 @@ export const ensureWorkflowCandidate = Effect.fn("BuildWorkflowLifecycle.ensureC
   }
   if (workflow.stage !== "evidence_ready") {
     return yield* Effect.fail(
-      new Error(`workflow evidence is not ready: ${pendingEvidenceRequirements(workflow).join(" | ") || workflow.stage}`),
+      new Error(
+        `workflow evidence is not ready: ${pendingEvidenceRequirements(workflow).join(" | ") || workflow.stage}`,
+      ),
     )
   }
   workflow = yield* appendRequired(
@@ -167,7 +424,10 @@ export const ensureWorkflowCandidate = Effect.fn("BuildWorkflowLifecycle.ensureC
   return { workflow, experiment: { ...context, workflow } satisfies ExperimentRunContext }
 })
 
-export const startWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.startBacktest")(function* (workflow: BuildWorkflowState) {
+export const startWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.startBacktest")(function* (
+  workflow: BuildWorkflowState,
+) {
+  if (workflow.phase === "candidate_validated") workflow = yield* bindWorkflowExperimentPlan(workflow)
   return yield* appendRequired(
     workflow.workflowId,
     {

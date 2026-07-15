@@ -130,7 +130,7 @@ type TaskRecord = {
   sessionID?: string
 }
 
-type Run = {
+export type Run = {
   sessionID: string
   workflowRunID: string
   phase: Phase
@@ -138,19 +138,41 @@ type Run = {
   tasks: Map<string, TaskRecord>
 }
 
-export type BeginResult =
-  | { allowed: true; fingerprint: string }
-  | { allowed: false; fingerprint: string; output: string; sessionID?: string; status: TaskStatus }
+type EvidenceProjectionInput = {
+  sessionID: string
+  workflowRunID: string
+  role: string
+  prompt: string
+  providerID: string
+  recoveryRevision?: string
+}
+
+export function projectEvidenceStartState(run: Run | undefined, input: EvidenceProjectionInput) {
+  const fingerprint = taskFingerprint(input)
+  const projection: Run =
+    run ?? {
+      sessionID: input.sessionID,
+      workflowRunID: input.workflowRunID,
+      phase: Phase.identity,
+      tasks: new Map(),
+    }
+  const from = projection.phase
+  projection.terminal = undefined
+  projection.phase = Phase.evidence
+  projection.tasks.set(fingerprint, { fingerprint, role: input.role, status: "running" })
+  return { projection, fingerprint, from }
+}
 
 export interface Interface {
-  readonly beginEvidence: (input: {
+  /** Projection-only notification. Durable WorkflowRun owns authorization. */
+  readonly projectEvidenceStart: (input: {
     sessionID: string
     workflowRunID: string
     role: string
     prompt: string
     providerID: string
     recoveryRevision?: string
-  }) => Effect.Effect<BeginResult>
+  }) => Effect.Effect<{ fingerprint: string }>
   readonly attachSession: (input: {
     sessionID: string
     workflowRunID: string
@@ -196,19 +218,15 @@ export const layer = Layer.effect(
       return (yield* InstanceState.get(state)).get(key(input))
     })
 
-    const beginEvidence: Interface["beginEvidence"] = Effect.fn("BuildWorkflow.beginEvidence")(function* (input) {
-      const fingerprint = taskFingerprint(input)
+    const projectEvidenceStart: Interface["projectEvidenceStart"] = Effect.fn(
+      "BuildWorkflow.projectEvidenceStart",
+    )(function* (input) {
       const runs = yield* InstanceState.get(state)
       const runKey = key(input)
-      let run = runs.get(runKey)
-      if (!run) {
-        run = {
-          sessionID: input.sessionID,
-          workflowRunID: input.workflowRunID,
-          phase: Phase.identity,
-          tasks: new Map(),
-        }
-        runs.set(runKey, run)
+      const existing = runs.get(runKey)
+      const { projection: run, fingerprint, from } = projectEvidenceStartState(existing, input)
+      runs.set(runKey, run)
+      if (!existing) {
         yield* bus.publish(Event.PhaseTransition, {
           sessionID: input.sessionID,
           workflowRunID: input.workflowRunID,
@@ -216,51 +234,6 @@ export const layer = Layer.effect(
         })
       }
 
-      const existing = run.tasks.get(fingerprint)
-      if (existing) {
-        if (existing.status === "completed") {
-          return {
-            allowed: false as const,
-            fingerprint,
-            output: existing.output ?? "Mandatory evidence already completed.",
-            sessionID: existing.sessionID,
-            status: existing.status,
-          }
-        }
-        return {
-          allowed: false as const,
-          fingerprint,
-          output: terminalBlock({
-            fingerprint,
-            status: existing.status === "blocked" ? "blocked" : "failed",
-            reason: existing.output ?? `identical mandatory task is ${existing.status}`,
-          }),
-          sessionID: existing.sessionID,
-          status: existing.status,
-        }
-      }
-
-      if (run.terminal && !input.recoveryRevision) {
-        return {
-          allowed: false as const,
-          fingerprint,
-          output: terminalBlock({
-            fingerprint,
-            status: run.terminal === Terminal.blocked ? "blocked" : "failed",
-            reason: `Build run already reached terminal state ${run.terminal}`,
-          }),
-          status: run.terminal === Terminal.blocked ? "blocked" : "failed",
-        }
-      }
-
-      // A runtime recovery prerequisite (for example an approved date window)
-      // changes the executable inputs and opens one new fingerprint in the
-      // same user turn. Repeating that recovered fingerprint is still cached.
-      if (run.terminal && input.recoveryRevision) run.terminal = undefined
-
-      const from = run.phase
-      run.phase = Phase.evidence
-      run.tasks.set(fingerprint, { fingerprint, role: input.role, status: "running" })
       yield* bus.publish(Event.PhaseTransition, {
         sessionID: input.sessionID,
         workflowRunID: input.workflowRunID,
@@ -269,7 +242,7 @@ export const layer = Layer.effect(
         fingerprint,
         role: input.role,
       })
-      return { allowed: true as const, fingerprint }
+      return { fingerprint }
     })
 
     const attachSession: Interface["attachSession"] = Effect.fn("BuildWorkflow.attachSession")(function* (input) {
@@ -362,7 +335,7 @@ export const layer = Layer.effect(
       })
     })
 
-    return Service.of({ beginEvidence, attachSession, finishEvidence, finishRun, recordToolCompletion, get })
+    return Service.of({ projectEvidenceStart, attachSession, finishEvidence, finishRun, recordToolCompletion, get })
   }),
 )
 

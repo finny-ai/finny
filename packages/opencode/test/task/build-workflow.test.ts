@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { projectEvidenceStartState } from "@/task/build-workflow"
 
 describe("BuildWorkflow.taskFingerprint", () => {
   test("does not treat discretionary sentiment as mandatory evidence", () => {
@@ -35,5 +36,32 @@ describe("BuildWorkflow.taskFingerprint", () => {
       fingerprint,
     )
     expect(BuildWorkflow.taskFingerprint({ ...base, providerID: "openai" })).not.toBe(fingerprint)
+  })
+})
+
+describe("BuildWorkflow compatibility projection", () => {
+  test("cannot deny a durable evidence transition when legacy state diverges", () => {
+    const input = {
+      sessionID: "ses_projection",
+      workflowRunID: "wf_projection",
+      role: "data_extractor",
+      prompt: "Extract SPY 15m data with Alpaca.",
+      providerID: "google",
+    }
+    const fingerprint = BuildWorkflow.taskFingerprint(input)
+    const legacy = {
+      sessionID: input.sessionID,
+      workflowRunID: input.workflowRunID,
+      phase: BuildWorkflow.Phase.report,
+      terminal: BuildWorkflow.Terminal.blocked,
+      tasks: new Map([
+        [fingerprint, { fingerprint, role: input.role, status: "blocked" as const, output: "legacy denial" }],
+      ]),
+    }
+
+    const projected = projectEvidenceStartState(legacy, input)
+    expect(projected).not.toHaveProperty("allowed")
+    expect(projected.projection.terminal).toBeUndefined()
+    expect(projected.projection.tasks.get(fingerprint)).toMatchObject({ status: "running" })
   })
 })

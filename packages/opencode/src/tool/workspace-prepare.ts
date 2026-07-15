@@ -1,6 +1,7 @@
 import path from "node:path"
 import z from "zod"
 import { Effect } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
 import { algoDir } from "@finny-ai/core/algo"
 import { bootstrapWorkspace } from "../plugin/finny-workspace"
 import {
@@ -11,6 +12,9 @@ import {
 } from "../agent/research-brief"
 import { readRequestSpec, requestSpecProjection } from "../agent/request-spec"
 import type { RequestFacts } from "../agent/request-identity"
+import { BuildWorkflowStore } from "../algorithm/build-workflow/store"
+import { transitionWorkflowIdentity } from "../algorithm/build-workflow/lifecycle"
+import { writeWorkflowRequestProjection } from "../agent/finny-workspace-context"
 import { Tool } from "./tool"
 
 const parameters = z.object({
@@ -113,11 +117,13 @@ async function readRequestContext(requestID: string): Promise<Record<string, unk
 export const WorkspacePrepareTool = Tool.define<
   typeof parameters,
   WorkspacePrepareMetadata,
-  never,
+  Database.Service,
   "finny_workspace_prepare"
 >(
   "finny_workspace_prepare",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    return {
     description:
       "Create or bind the session strategy workspace from request identity before evidence subagents, save, validate, or backtest. Returns the workspace slug, path, and request context; do not manually invent repo-root workspace paths.",
     parameters,
@@ -139,6 +145,41 @@ export const WorkspacePrepareTool = Tool.define<
           }
         }
 
+        let workflowProjection: Record<string, unknown> | undefined
+        if (params.symbol || params.symbols?.length) {
+          const workflows = await Effect.runPromise(
+            BuildWorkflowStore.listBySession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database)),
+          )
+          const workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
+          if (workflow) {
+            const source = {
+              kind: "structured_tool" as const,
+              tool: "finny_workspace_prepare",
+              callId: String(ctx.callID),
+            }
+            const symbols = params.symbols?.length ? params.symbols : params.symbol ? [params.symbol] : undefined
+            const transitioned = await Effect.runPromise(
+              transitionWorkflowIdentity({
+                sessionId: ctx.sessionID,
+                source: { actor: "tool" },
+                reason: "structured workspace identity confirmation",
+                identity: {
+                  ...workflow.identity,
+                  ...(symbols ? { symbols: { value: symbols, source } } : {}),
+                  ...(params.assetClass ? { assetClass: { value: params.assetClass, source } } : {}),
+                  ...(params.interval ? { interval: { value: params.interval, source } } : {}),
+                  ...(params.algorithmName ? { algorithmName: { value: params.algorithmName, source } } : {}),
+                  ...(params.strategyIntent ? { strategyFamily: { value: params.strategyIntent, source } } : {}),
+                  ...(params.startDate && params.endDate
+                    ? { window: { value: { start: params.startDate, end: params.endDate }, source } }
+                    : {}),
+                },
+              }).pipe(Effect.provideService(Database.Service, database)),
+            )
+            if (transitioned) workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
+          }
+        }
+
         const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(params))
         if (!prepared) {
           return {
@@ -149,7 +190,7 @@ export const WorkspacePrepareTool = Tool.define<
         }
 
         const workspacePath = prepared.dir || algoDir(prepared.slug)
-        const requestContext = await readRequestContext(ctx.sessionID)
+        const requestContext = workflowProjection ?? (await readRequestContext(ctx.sessionID))
         // Models cannot self-approve Research→Build handoffs. Approval is a user decision.
         if (params.transition === "approved") {
           await ctx.ask({
@@ -205,5 +246,6 @@ export const WorkspacePrepareTool = Tool.define<
           },
         }
       }),
+    }
   }),
 )

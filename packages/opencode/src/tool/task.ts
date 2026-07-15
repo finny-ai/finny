@@ -50,6 +50,7 @@ import {
 import { resolveAlpacaMarketDataEnv } from "@/data/alpaca-market-data-env"
 import { Plugin } from "@/plugin"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { recordWorkflowAttempt } from "@/algorithm/build-workflow/lifecycle"
 
 /**
  * Substituted when a subagent's final turn produced no text. Uses the BLOCKED:
@@ -802,8 +803,41 @@ const taskExecutor = Effect.gen(function* () {
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
-      const workflowStart = mandatoryEvidence
-        ? yield* workflow.beginEvidence({
+      const durableFingerprint = mandatoryEvidence
+        ? BuildWorkflow.taskFingerprint({
+            role: params.subagent_type,
+            prompt: params.prompt,
+            providerID: msg.info.providerID,
+            recoveryRevision: approvedWindow,
+          })
+        : undefined
+      const durableStart = mandatoryEvidence && durableFingerprint
+        ? yield* recordWorkflowAttempt({
+            sessionId: ctx.sessionID,
+            operation: `task:${params.subagent_type}`,
+            fingerprint: durableFingerprint,
+            idempotencyKey: `begin:${durableFingerprint}`,
+            outcome: "accepted",
+          }).pipe(Effect.provideService(Database.Service, database))
+        : undefined
+      if (durableStart && !durableStart.allowed) {
+        return {
+          title: params.description,
+          metadata: { parentSessionId: ctx.sessionID, sessionId: ctx.sessionID },
+          output: renderOutput({
+            sessionID: ctx.sessionID,
+            state: "completed",
+            summary: "Mandatory evidence durable retry denied",
+            text: BuildWorkflow.terminalBlock({
+              fingerprint: durableFingerprint!,
+              status: "blocked",
+              reason: durableStart.message,
+            }),
+          }),
+        }
+      }
+      const workflowProjection = mandatoryEvidence
+        ? yield* workflow.projectEvidenceStart({
             sessionID: ctx.sessionID,
             workflowRunID,
             role: params.subagent_type,
@@ -813,22 +847,23 @@ const taskExecutor = Effect.gen(function* () {
           })
         : undefined
 
-      if (workflowStart && !workflowStart.allowed) {
-        const sessionID = workflowStart.sessionID ? SessionID.make(workflowStart.sessionID) : ctx.sessionID
-        return {
-          title: params.description,
-          metadata: { parentSessionId: ctx.sessionID, sessionId: sessionID },
-          output: renderOutput({
-            sessionID,
-            state: "completed",
-            summary:
-              workflowStart.status === "completed"
-                ? "Mandatory evidence reused"
-                : "Mandatory evidence terminal blocker",
-            text: workflowStart.output,
-          }),
-        }
-      }
+      const recordDurableFinish = Effect.fn("TaskTool.recordDurableFinish")(function* (
+        status: "blocked" | "completed" | "failed" | "cancelled",
+        output?: string,
+      ) {
+        if (!durableFingerprint) return
+        yield* recordWorkflowAttempt({
+          sessionId: ctx.sessionID,
+          operation: `task:${params.subagent_type}:finish`,
+          fingerprint: durableFingerprint,
+          idempotencyKey: `finish:${durableFingerprint}:${status}`,
+          outcome: status === "completed" ? "accepted" : status === "blocked" ? "blocked" : "failed",
+          lifecycle: "terminal",
+          blockerCode: status === "blocked" ? "mandatory_evidence_blocked" : status === "completed" ? undefined : `mandatory_evidence_${status}`,
+          requiredChanges:
+            status === "completed" ? [] : ["request identity", "evidence window", "provider", "runtime blocker"],
+        }).pipe(Effect.provideService(Database.Service, database), Effect.asVoid)
+      })
 
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
@@ -869,11 +904,11 @@ const taskExecutor = Effect.gen(function* () {
           ],
         }))
 
-      if (workflowStart?.allowed) {
+      if (workflowProjection) {
         yield* workflow.attachSession({
           sessionID: ctx.sessionID,
           workflowRunID,
-          fingerprint: workflowStart.fingerprint,
+          fingerprint: workflowProjection.fingerprint,
           taskSessionID: nextSession.id,
         })
       }
@@ -980,14 +1015,15 @@ const taskExecutor = Effect.gen(function* () {
             }),
           )
       if (Exit.isFailure(registryExit)) {
-        if (workflowStart?.allowed) {
+        if (workflowProjection) {
           yield* workflow.finishEvidence({
             sessionID: ctx.sessionID,
             workflowRunID,
-            fingerprint: workflowStart.fingerprint,
+            fingerprint: workflowProjection.fingerprint,
             status: "failed",
             output: taskRegistryErrorText(Cause.squash(registryExit.cause)),
           })
+          yield* recordDurableFinish("failed", taskRegistryErrorText(Cause.squash(registryExit.cause)))
         }
         return {
           title: params.description,
@@ -1229,14 +1265,15 @@ const taskExecutor = Effect.gen(function* () {
             ),
           )
           if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
-          if (workflowStart?.allowed) {
+          if (workflowProjection) {
             yield* workflow.finishEvidence({
               sessionID: ctx.sessionID,
               workflowRunID,
-              fingerprint: workflowStart.fingerprint,
+              fingerprint: workflowProjection.fingerprint,
               status,
               output: text,
             })
+            yield* recordDurableFinish(status, text)
             if (status === TaskState.Status.blocked) yield* cancelSiblingTasks()
           }
           return text
@@ -1256,14 +1293,15 @@ const taskExecutor = Effect.gen(function* () {
           ),
         )
         if (Exit.isFailure(finalizeExit)) return taskRegistryErrorText(Cause.squash(finalizeExit.cause))
-        if (workflowStart?.allowed) {
+        if (workflowProjection) {
           yield* workflow.finishEvidence({
             sessionID: ctx.sessionID,
             workflowRunID,
-            fingerprint: workflowStart.fingerprint,
+            fingerprint: workflowProjection.fingerprint,
             status,
             output: error instanceof Error ? error.message : String(error),
           })
+          yield* recordDurableFinish(status, error instanceof Error ? error.message : String(error))
           yield* cancelSiblingTasks()
         }
         return yield* Effect.failCause(exit.cause)

@@ -9,7 +9,9 @@ import {
   completeWorkflowBacktest,
   ensureWorkflowCandidate,
   recordVerifiedMarketData,
+  recordWorkflowAttempt,
   startWorkflowBacktest,
+  transitionWorkflowIdentity,
 } from "@/algorithm/build-workflow/lifecycle"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
 import type { Algorithm } from "@/algorithm"
@@ -156,5 +158,127 @@ it.live("drives the single-symbol strict path from verified evidence through a r
     })
     expect(reviewable.backtest?.identityHash).toMatch(/^[a-f0-9]{64}$/)
     yield* Effect.promise(() => fs.rm(artifactDir, { recursive: true, force: true }))
+  }),
+)
+
+it.live("resumes crash-between-begin-and-finish attempts for task, save, and backtest", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_resume_${suffix}`,
+      sessionId: `ses_resume_${suffix}`,
+      workspaceSlug: `spy-resume-${suffix}`,
+      intent: "build",
+      identity: { symbols: { value: ["SPY"], source: { kind: "user_message", messageId: `msg_${suffix}` } } },
+    })
+    for (const operation of ["task:data_extractor", "finny_algorithm_save", "finny_backtest"]) {
+      const fingerprint = `${operation}:fingerprint`
+      const input = {
+        sessionId: workflow.sessionId,
+        operation,
+        fingerprint,
+        idempotencyKey: `${operation}:begin:${fingerprint}`,
+        outcome: "accepted" as const,
+      }
+      expect(yield* recordWorkflowAttempt(input)).toMatchObject({ allowed: true, disposition: "recorded" })
+      expect((yield* BuildWorkflowStore.get(workflow.workflowId))?.attempts.at(-1)).toMatchObject({
+        operation,
+        lifecycle: "in_progress",
+      })
+      expect(yield* recordWorkflowAttempt(input)).toMatchObject({ allowed: true, disposition: "resumed" })
+      expect(
+        yield* recordWorkflowAttempt({
+          sessionId: workflow.sessionId,
+          operation: `${operation}:finish`,
+          fingerprint,
+          idempotencyKey: `${operation}:finish:${fingerprint}:failed`,
+          outcome: "failed",
+          lifecycle: "terminal",
+          blockerCode: `${operation}:execution_failed`,
+          requiredChanges: ["resolve the thrown tool or preflight error"],
+        }),
+      ).toMatchObject({ allowed: true })
+      expect(yield* recordWorkflowAttempt(input)).toMatchObject({
+        allowed: false,
+        code: "unchanged_blocker_retry_denied",
+      })
+    }
+
+    const fingerprint = "finny_backtest:terminal-fingerprint"
+    yield* recordWorkflowAttempt({
+      sessionId: workflow.sessionId,
+      operation: "finny_backtest",
+      fingerprint,
+      idempotencyKey: `finny_backtest:begin:${fingerprint}`,
+      outcome: "accepted",
+    })
+    yield* recordWorkflowAttempt({
+      sessionId: workflow.sessionId,
+      operation: "finny_backtest:finish",
+      fingerprint,
+      idempotencyKey: `finny_backtest:finish:${fingerprint}:blocked`,
+      outcome: "blocked",
+      lifecycle: "terminal",
+      blockerCode: "backtest_preflight_rejected",
+      requiredChanges: ["config"],
+    })
+    expect(
+      yield* recordWorkflowAttempt({
+        sessionId: workflow.sessionId,
+        operation: "finny_backtest",
+        fingerprint,
+        idempotencyKey: `finny_backtest:begin:${fingerprint}`,
+        outcome: "accepted",
+      }),
+    ).toMatchObject({ allowed: false, code: "unchanged_blocker_retry_denied" })
+  }),
+)
+
+it.live("keeps parser-proposed symbols request-bound until structured identity confirmation", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_proposed_${suffix}`,
+      sessionId: `ses_proposed_${suffix}`,
+      workspaceSlug: `spy-proposed-${suffix}`,
+      intent: "build",
+      identityStatus: "proposed",
+      marketDataRequired: true,
+      identity: {
+        symbols: {
+          value: ["SPY"],
+          source: { kind: "parser_proposal", messageId: `msg_${suffix}`, confidence: 0.5, parser: "request_identity_v2" },
+        },
+      },
+    })
+    expect(workflow).toMatchObject({ stage: "request_bound", phase: "identity_proposed" })
+    const dataset = {
+      manifestSha256: hash("proposed-manifest"),
+      identity: { actualSymbol: "SPY", runId: "proposed_run" },
+    } as unknown as VerifiedDatasetRef
+    const blocked = yield* Effect.exit(recordVerifiedMarketData({ sessionId: workflow.sessionId, dataset }))
+    expect(blocked._tag).toBe("Failure")
+    expect(
+      yield* BuildWorkflowStore.append({
+        workflowId: workflow.workflowId,
+        expectedRevision: workflow.revision,
+        event: {
+          id: `evt_proposed_complete_${suffix}`,
+          type: "workflow.completed",
+          occurredAt: Date.now(),
+          source: { actor: "system" },
+        },
+      }),
+    ).toMatchObject({ kind: "rejected", decision: { code: "identity_unconfirmed" } })
+
+    const source = { kind: "structured_tool" as const, tool: "finny_workspace_prepare", callId: "call_confirm" }
+    const confirmed = yield* transitionWorkflowIdentity({
+      sessionId: workflow.sessionId,
+      source: { actor: "tool" },
+      reason: "structured confirmation",
+      identity: { symbols: { value: ["SPY"], source } },
+    })
+    expect(confirmed).toMatchObject({ identityStatus: "confirmed", phase: "identity_confirmed" })
+    expect((yield* recordVerifiedMarketData({ sessionId: workflow.sessionId, dataset }))?.phase).toBe("evidence_ready")
   }),
 )

@@ -33,6 +33,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ToolOutput, Usage, type LLMEvent } from "@opencode-ai/llm"
 import { runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { finishWorkflowRun } from "@/algorithm/build-workflow/lifecycle"
 
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
@@ -109,6 +110,11 @@ export const layer = Layer.effect(
     const flags = yield* RuntimeFlags.Service
     const database = yield* Database.Service
     const workflow = yield* BuildWorkflow.Service
+    const finishDurable = (input: Parameters<typeof finishWorkflowRun>[0]) =>
+      finishWorkflowRun(input).pipe(
+        Effect.provideService(Database.Service, database),
+        Effect.catch(() => Effect.succeed(undefined)),
+      )
 
     const create = Effect.fn("SessionProcessor.create")(function* (input: Input) {
       // Pre-capture snapshot before the LLM stream starts. The AI SDK
@@ -1003,6 +1009,11 @@ export const layer = Layer.effect(
               Effect.gen(function* () {
                 aborted = true
                 if (BuildWorkflow.isBuildAgent(input.assistantMessage.agent)) {
+                  yield* finishDurable({
+                    sessionId: ctx.sessionID,
+                    classification: "interrupted",
+                    reason: "parent run interrupted",
+                  })
                   yield* workflow.finishRun({
                     sessionID: ctx.sessionID,
                     workflowRunID: input.assistantMessage.parentID,
@@ -1058,6 +1069,11 @@ export const layer = Layer.effect(
           if (ctx.needsCompaction) return "compact"
           if (BuildWorkflow.isBuildAgent(input.assistantMessage.agent)) {
             if (ctx.assistantMessage.error) {
+              yield* finishDurable({
+                sessionId: ctx.sessionID,
+                classification: "failed",
+                reason: ctx.assistantMessage.error.name,
+              })
               yield* workflow.finishRun({
                 sessionID: ctx.sessionID,
                 workflowRunID: input.assistantMessage.parentID,
@@ -1068,10 +1084,15 @@ export const layer = Layer.effect(
               ctx.assistantMessage.finish &&
               !["tool-calls", "unknown"].includes(ctx.assistantMessage.finish)
             ) {
+              const terminal = yield* finishDurable({
+                sessionId: ctx.sessionID,
+                classification: "completed",
+              })
               yield* workflow.finishRun({
                 sessionID: ctx.sessionID,
                 workflowRunID: input.assistantMessage.parentID,
-                state: BuildWorkflow.Terminal.completed,
+                state: terminal?.semanticSuccess ? BuildWorkflow.Terminal.completed : BuildWorkflow.Terminal.blocked,
+                reason: terminal ? JSON.stringify(terminal) : undefined,
               })
             }
           }

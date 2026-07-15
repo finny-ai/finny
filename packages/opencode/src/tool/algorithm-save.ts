@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
@@ -21,6 +22,7 @@ import {
   ensureWorkflowCandidate,
   pendingEvidenceRequirements,
   recordVerifiedMarketData,
+  recordWorkflowAttempt,
 } from "@/algorithm/build-workflow/lifecycle"
 
 // On Windows with no Python installed, the Microsoft Store launcher stub
@@ -321,7 +323,33 @@ export const AlgorithmSaveTool = Tool.define(
       parameters,
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const outcome = yield* Effect.promise(async (): Promise<SaveOutcome> => {
+          const fingerprint = createHash("sha256")
+            .update(JSON.stringify({
+              name: params.name,
+              saveMode: params.saveMode,
+              code: params.code,
+              config: params.config,
+              mission: params.mission,
+              riskContract: params.riskContract,
+            }))
+            .digest("hex")
+          const durableStart = yield* Effect.promise(() =>
+            runWorkflow(recordWorkflowAttempt({
+              sessionId: ctx.sessionID,
+              operation: "finny_algorithm_save",
+              fingerprint,
+              idempotencyKey: `save:begin:${fingerprint}`,
+              outcome: "accepted",
+            })),
+          )
+          if (!durableStart.allowed) {
+            return {
+              title: "Save blocked by durable workflow",
+              output: `BLOCKED: ${durableStart.message}`,
+              metadata: { blocked: true, retry: false, blockerCode: durableStart.code },
+            }
+          }
+          const outcomeExit = yield* Effect.exit(Effect.promise(async (): Promise<SaveOutcome> => {
             const _permission = await ctx.ask({
               permission: "finny_algorithm_save",
               patterns: ["*"],
@@ -661,13 +689,47 @@ export const AlgorithmSaveTool = Tool.define(
                 },
               },
             }
-          })
+          }))
+          if (outcomeExit._tag === "Failure") {
+            yield* Effect.promise(() =>
+              runWorkflow(recordWorkflowAttempt({
+                sessionId: ctx.sessionID,
+                operation: "finny_algorithm_save:finish",
+                fingerprint,
+                idempotencyKey: `save:finish:${fingerprint}:failed`,
+                outcome: "failed",
+                lifecycle: "terminal",
+                blockerCode: "save_execution_failed",
+                requiredChanges: ["resolve the thrown save or preflight error"],
+              })),
+            )
+            return yield* Effect.failCause(outcomeExit.cause)
+          }
+          const outcome = outcomeExit.value
 
           // Publish the regenerating event, if any. Done in the outer Effect.gen so we
           // have access to Bus.Service. Failures here must not fail the tool call.
           if (outcome.regenEvent) {
             yield* bus.publish(Algorithm.Event.Regenerating, outcome.regenEvent).pipe(Effect.catch(() => Effect.void))
           }
+
+          const blocked = Boolean((outcome.result.metadata as Record<string, unknown>).blocked)
+          yield* Effect.promise(() =>
+            runWorkflow(recordWorkflowAttempt({
+              sessionId: ctx.sessionID,
+              operation: "finny_algorithm_save:finish",
+              fingerprint,
+              idempotencyKey: `save:finish:${fingerprint}:${blocked ? "blocked" : "accepted"}`,
+              outcome: blocked ? "blocked" : "accepted",
+              lifecycle: "terminal",
+              blockerCode: blocked ? "save_preflight_rejected" : undefined,
+              requiredChanges: blocked ? ["rejected save preflight inputs"] : [],
+              artifactIds:
+                typeof (outcome.result.metadata as Record<string, unknown>).algorithmId === "string"
+                  ? [String((outcome.result.metadata as Record<string, unknown>).algorithmId)]
+                  : [],
+            })),
+          )
 
           return outcome.result
         }),

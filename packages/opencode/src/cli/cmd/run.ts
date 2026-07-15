@@ -628,7 +628,10 @@ export const RunCommand = effectCmd({
 
         function completeHarnessRun() {
           if (process.env.FINNY_HARNESS_MODE !== "1") return
-          const { attributes } = recordRunCompletion(typeof process.exitCode === "number" ? process.exitCode : 0, sessionID)
+          const { attributes } = recordRunCompletion(
+            typeof process.exitCode === "number" ? process.exitCode : 0,
+            sessionID,
+          )
           emit("harness_completion", { name: "finny.run.completed", attributes })
         }
 
@@ -641,6 +644,37 @@ export const RunCommand = effectCmd({
           let error: string | undefined
 
           for await (const event of events.stream) {
+            const workflowEvent = event as unknown as {
+              type: string
+              properties?: {
+                sessionID?: string
+                state?: string
+                phase?: string
+                reason?: string
+              }
+            }
+            if (workflowEvent.type === "build.workflow.terminal" && workflowEvent.properties?.sessionID === sessionID) {
+              let envelope: Record<string, unknown> | undefined
+              try {
+                envelope = workflowEvent.properties.reason ? JSON.parse(workflowEvent.properties.reason) : undefined
+              } catch {}
+              const semanticExitCode = Number(envelope?.semanticExitCode)
+              if (semanticExitCode === 2 || semanticExitCode === 3) process.exitCode = semanticExitCode
+              const terminalEnvelope = envelope ?? {
+                classification: workflowEvent.properties.state,
+                phase: workflowEvent.properties.phase,
+                semanticSuccess: workflowEvent.properties.state === "completed",
+                semanticExitCode:
+                  workflowEvent.properties.state === "completed"
+                    ? 0
+                    : workflowEvent.properties.state === "blocked"
+                      ? 2
+                      : 3,
+              }
+              if (!emit("workflow_terminal", { envelope: terminalEnvelope })) {
+                process.stdout.write(`workflow_terminal: ${JSON.stringify(terminalEnvelope)}${EOL}`)
+              }
+            }
             if (
               event.type === "message.updated" &&
               event.properties.sessionID === sessionID &&

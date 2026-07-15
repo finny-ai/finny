@@ -4,9 +4,9 @@ import {
   AlgorithmBuildWorkflowTable,
 } from "@opencode-ai/core/algorithm/build-workflow-schema"
 import { Database } from "@opencode-ai/core/database/database"
-import { asc, desc, eq } from "drizzle-orm"
+import { asc, desc, eq, max } from "drizzle-orm"
 import { Effect } from "effect"
-import { createBuildWorkflow, requestJsonProjection } from "./state"
+import { createBuildWorkflow, migrateLegacyBuildWorkflowState, requestJsonProjection } from "./state"
 import { appendInTransaction, decodeState, rowToChallenge } from "./store-append"
 import { WorkflowStateCorruptError } from "./store-errors"
 import type {
@@ -64,12 +64,48 @@ export const insert = Effect.fn("BuildWorkflowStore.insert")(function* (input: C
 
 export const get = Effect.fn("BuildWorkflowStore.get")(function* (workflowId: string) {
   const { db } = yield* Database.Service
-  const row = yield* db
-    .select()
-    .from(AlgorithmBuildWorkflowTable)
-    .where(eq(AlgorithmBuildWorkflowTable.id, workflowId))
-    .get()
-  return row ? decodeState(workflowId, row.state) : undefined
+  return yield* db.transaction((tx) =>
+    Effect.gen(function* () {
+      const row = yield* tx
+        .select()
+        .from(AlgorithmBuildWorkflowTable)
+        .where(eq(AlgorithmBuildWorkflowTable.id, workflowId))
+        .get()
+      if (!row) return undefined
+      const legacy = migrateLegacyBuildWorkflowState(row.state)
+      if (!legacy) return decodeState(workflowId, row.state)
+      const eventCursor = yield* tx
+        .select({ seq: max(AlgorithmBuildWorkflowEventTable.seq) })
+        .from(AlgorithmBuildWorkflowEventTable)
+        .where(eq(AlgorithmBuildWorkflowEventTable.workflow_id, workflowId))
+        .get()
+      yield* tx
+        .update(AlgorithmBuildWorkflowTable)
+        .set({
+          stage: legacy.stage,
+          status: legacy.status,
+          revision: legacy.revision,
+          state: encode(legacy),
+          time_updated: legacy.updatedAt,
+        })
+        .where(eq(AlgorithmBuildWorkflowTable.id, workflowId))
+        .run()
+      yield* tx
+        .insert(AlgorithmBuildWorkflowEventTable)
+        .values({
+          id: `${workflowId}:legacy_imported:v2`,
+          workflow_id: workflowId,
+          seq: (eventCursor?.seq ?? -1) + 1,
+          type: "workflow.legacy_imported",
+          payload: encode({ fromVersion: 1, toVersion: 2, resumeToken: legacy.resumeToken }),
+          source_kind: "system",
+          time_created: legacy.updatedAt,
+        })
+        .onConflictDoNothing()
+        .run()
+      return legacy
+    }),
+  )
 })
 
 export const listBySession = Effect.fn("BuildWorkflowStore.listBySession")(function* (sessionId: string) {
@@ -80,7 +116,9 @@ export const listBySession = Effect.fn("BuildWorkflowStore.listBySession")(funct
     .where(eq(AlgorithmBuildWorkflowTable.session_id, sessionId))
     .orderBy(desc(AlgorithmBuildWorkflowTable.time_updated), desc(AlgorithmBuildWorkflowTable.id))
     .all()
-  return rows.map((row) => decodeState(row.id, row.state))
+  return yield* Effect.forEach(rows, (row) => get(row.id), { concurrency: 1 }).pipe(
+    Effect.map((states) => states.filter((state): state is NonNullable<typeof state> => !!state)),
+  )
 })
 
 function storedEvent(row: typeof AlgorithmBuildWorkflowEventTable.$inferSelect): StoredWorkflowEvent {

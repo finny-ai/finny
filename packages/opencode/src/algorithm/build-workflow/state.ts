@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { normalizeInterval, normalizeSymbol } from "@/agent/request-identity"
 import {
   approvalScopeHash,
@@ -18,12 +19,14 @@ import {
 import { transition } from "./state-transitions"
 import {
   WORKFLOW_SCHEMA_VERSION,
+  WORKFLOW_RUN_VERSION,
   type BuildWorkflowState,
   type CreateBuildWorkflowInput,
   type EvidencePolicyInput,
   type EvidenceRequirement,
   type FactSource,
   type RequestJsonProjection,
+  type RequestIdentity,
 } from "./types"
 
 // Pure domain controller. Prompts may describe this workflow, but only these
@@ -43,6 +46,66 @@ export {
   requestApproval,
   transition,
   unambiguousApprovalDecision,
+}
+
+export function workflowResumeToken(workflowId: string, requestVersion: number): string {
+  return `wfr_${createHash("sha256").update(`${workflowId}:${requestVersion}`).digest("hex").slice(0, 32)}`
+}
+
+function legacyPhase(value: Record<string, any>) {
+  if (value.status === "completed") return "terminal_complete" as const
+  if (value.status === "blocked" && value.stage === "backtest_running") return "strict_blocked" as const
+  if (value.stage === "paper_approved" || value.stage === "reviewable") return "qualified" as const
+  if (value.stage === "backtest_running") return "strict_running" as const
+  if (value.stage === "candidate_ready" || value.stage === "backtested") return "candidate_validated" as const
+  if (value.stage === "evidence_ready") return "evidence_ready" as const
+  return value.identity &&
+    typeof value.identity === "object" &&
+    (value.identity as RequestIdentity).symbols?.value?.length
+    ? ("identity_confirmed" as const)
+    : ("identity_proposed" as const)
+}
+
+/** Explicit, deterministic V1 -> WorkflowRunV2 import used by the durable store. */
+export function migrateLegacyBuildWorkflowState(input: unknown, now = Date.now()): BuildWorkflowState | undefined {
+  if (!input || typeof input !== "object") return undefined
+  const legacy = input as Record<string, any>
+  if (legacy.schemaVersion !== WORKFLOW_SCHEMA_VERSION || legacy.runVersion !== undefined) return undefined
+  if (typeof legacy.workflowId !== "string" || typeof legacy.sessionId !== "string") return undefined
+  const requestVersion = 1
+  const identityStatus = legacy.identity?.symbols?.value?.length ? ("confirmed" as const) : ("proposed" as const)
+  const phase = legacyPhase(legacy)
+  const researchFreeze = ["candidate_validated", "experiment_planned", "strict_running", "strict_blocked", "qualified", "terminal_complete"].includes(phase)
+    ? {
+        id: `${legacy.workflowId}:legacy_research_freeze`,
+        requestVersion,
+        evidenceIds: (legacy.evidence ?? []).filter((item: any) => item.status === "verified").map((item: any) => item.id),
+        createdAt: Number(legacy.updatedAt ?? now),
+      }
+    : undefined
+  const experimentPlan = legacy.candidate && ["strict_running", "strict_blocked", "qualified", "terminal_complete"].includes(phase)
+    ? {
+        id: `${legacy.workflowId}:legacy_experiment_plan`,
+        requestVersion,
+        candidateId: legacy.candidate.algorithmId,
+        fingerprint: workflowResumeToken(legacy.workflowId, requestVersion),
+        createdAt: Number(legacy.updatedAt ?? now),
+      }
+    : undefined
+  return {
+    ...legacy,
+    runVersion: WORKFLOW_RUN_VERSION,
+    phase,
+    identityStatus,
+    requestVersion,
+    attempts: [],
+    invalidations: [],
+    researchFreeze,
+    experimentPlan,
+    resumeToken: workflowResumeToken(legacy.workflowId, requestVersion),
+    revision: Number(legacy.revision ?? 0) + 1,
+    updatedAt: now,
+  } as unknown as BuildWorkflowState
 }
 
 function normalizedSymbols(input: EvidencePolicyInput["identity"]): string[] {
@@ -115,14 +178,25 @@ export function evidenceRequirementsFor(input: EvidencePolicyInput): EvidenceReq
 export function createBuildWorkflow(input: CreateBuildWorkflowInput): BuildWorkflowState {
   const now = input.now ?? Date.now()
   const evidenceRequirements = evidenceRequirementsFor(input)
+  const identityStatus = input.identityStatus ?? (input.identity.symbols?.value.length ? "confirmed" : "proposed")
+  const phase = identityStatus === "confirmed" ? ("identity_confirmed" as const) : ("identity_proposed" as const)
   return {
     schemaVersion: WORKFLOW_SCHEMA_VERSION,
+    runVersion: WORKFLOW_RUN_VERSION,
     workflowId: input.workflowId,
     sessionId: input.sessionId,
     workspaceSlug: input.workspaceSlug,
     intent: input.intent,
-    stage: evidenceRequirements.length > 0 ? "evidence_pending" : "request_bound",
+    stage:
+      identityStatus === "proposed"
+        ? "request_bound"
+        : evidenceRequirements.length > 0
+          ? "evidence_pending"
+          : "request_bound",
     status: "active",
+    phase,
+    identityStatus,
+    requestVersion: 1,
     revision: 0,
     identity: input.identity,
     evidenceRequirements,
@@ -130,6 +204,9 @@ export function createBuildWorkflow(input: CreateBuildWorkflowInput): BuildWorkf
     approvalChallenges: [],
     approvals: [],
     experimentAttempts: [],
+    attempts: [],
+    invalidations: [],
+    resumeToken: input.resumeToken ?? workflowResumeToken(input.workflowId, 1),
     createdAt: now,
     updatedAt: now,
   }
@@ -172,7 +249,11 @@ function projectionFacts(state: BuildWorkflowState) {
 
 function projectionProvenance(state: BuildWorkflowState, symbolCount: number) {
   const provenance: Record<string, FactSource> = {}
-  provenanceEntry(provenance, symbolCount === 1 ? "requested_symbol" : "requested_symbols", state.identity.symbols?.source)
+  provenanceEntry(
+    provenance,
+    symbolCount === 1 ? "requested_symbol" : "requested_symbols",
+    state.identity.symbols?.source,
+  )
   provenanceEntry(provenance, "requested_interval", state.identity.interval?.source)
   provenanceEntry(provenance, "requested_asset_class", state.identity.assetClass?.source)
   provenanceEntry(provenance, "requested_algorithm_name", state.identity.algorithmName?.source)
@@ -189,6 +270,10 @@ export function requestJsonProjection(state: BuildWorkflowState): RequestJsonPro
     workflow_id: state.workflowId,
     workflow_revision: state.revision,
     workflow_stage: state.stage,
+    workflow_phase: state.phase,
+    identity_status: state.identityStatus,
+    request_version: state.requestVersion,
+    resume_token: state.resumeToken,
     request_id: state.sessionId,
     ...values,
     provenance: projectionProvenance(state, symbols.length),
@@ -208,7 +293,10 @@ export function isBuildWorkflowState(input: unknown): input is BuildWorkflowStat
   if (!input || typeof input !== "object") return false
   const value = input as Partial<BuildWorkflowState>
   if (value.schemaVersion !== WORKFLOW_SCHEMA_VERSION) return false
+  if (value.runVersion !== WORKFLOW_RUN_VERSION) return false
   if (typeof value.revision !== "number") return false
+  if (typeof value.requestVersion !== "number") return false
+  if (typeof value.resumeToken !== "string") return false
   if (!hasStringFields(value, ["workflowId", "sessionId", "workspaceSlug"])) return false
   return hasArrayFields(value, [
     "evidenceRequirements",
@@ -216,6 +304,8 @@ export function isBuildWorkflowState(input: unknown): input is BuildWorkflowStat
     "approvalChallenges",
     "approvals",
     "experimentAttempts",
+    "attempts",
+    "invalidations",
   ])
 }
 

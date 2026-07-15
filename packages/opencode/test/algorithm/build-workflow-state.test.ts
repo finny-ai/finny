@@ -94,6 +94,20 @@ function readyWorkflow(): BuildWorkflowState {
 function reviewableWorkflow(): BuildWorkflowState {
   let state = readyWorkflow()
   state = applied(
+    transition(state, {
+      id: "evt_freeze",
+      type: "research.frozen",
+      occurredAt: 1_150,
+      source: { actor: "tool" },
+      freeze: {
+        id: "freeze_1",
+        requestVersion: 1,
+        evidenceIds: state.evidence.map((item) => item.id),
+        createdAt: 1_150,
+      },
+    }),
+  )
+  state = applied(
     transition(
       state,
       event({
@@ -111,6 +125,21 @@ function reviewableWorkflow(): BuildWorkflowState {
         },
       }),
     ),
+  )
+  state = applied(
+    transition(state, {
+      id: "evt_plan",
+      type: "experiment.plan_bound",
+      occurredAt: 1_250,
+      source: { actor: "tool" },
+      plan: {
+        id: "plan_1",
+        requestVersion: 1,
+        candidateId: "algo_1",
+        fingerprint: "plan_fingerprint",
+        createdAt: 1_250,
+      },
+    }),
   )
   state = applied(
     transition(state, {
@@ -412,7 +441,12 @@ describe("algorithm build workflow experiment ledger", () => {
   test("counts renamed metric variants, deduplicates replay, and ignores infrastructure failures", () => {
     let state = createBuildWorkflow(workflowInput())
     const conceptId = conceptIdFor(definition)
-    const record = (id: string, strategyHash: string, savedConfigHash: string, outcome: "metrics" | "setup_failure" | "engine_failure") => {
+    const record = (
+      id: string,
+      strategyHash: string,
+      savedConfigHash: string,
+      outcome: "metrics" | "setup_failure" | "engine_failure",
+    ) => {
       const attempt = makeExperimentAttempt({
         id,
         experimentId: state.workflowId,
@@ -473,5 +507,240 @@ describe("algorithm build workflow experiment ledger", () => {
       attempt: sixth,
     })
     expect(decision.allowed).toBe(true)
+  })
+})
+
+describe("WorkflowRunV2 identity, attempts, terminal state, and resume", () => {
+  test("requires durable research freeze and experiment plan transitions in order", () => {
+    let state = readyWorkflow()
+    const candidate = {
+      algorithmId: "algo_phase",
+      name: "phase-order",
+      version: 1,
+      strategyHash: "strategy_phase",
+      configHash: "config_phase",
+      conceptId: "concept_phase",
+    }
+    expect(
+      transition(state, {
+        id: "evt_candidate_without_freeze",
+        type: "candidate.saved",
+        occurredAt: 2_000,
+        source: { actor: "tool" },
+        candidate,
+      }),
+    ).toMatchObject({ allowed: false, code: "evidence_not_ready" })
+    state = applied(
+      transition(state, {
+        id: "evt_research_freeze_order",
+        type: "research.frozen",
+        occurredAt: 2_010,
+        source: { actor: "tool" },
+        freeze: { id: "freeze_order", requestVersion: 1, evidenceIds: state.evidence.map((item) => item.id), createdAt: 2_010 },
+      }),
+    )
+    expect(state.phase).toBe("research_frozen")
+    expect(
+      transition(state, {
+        id: "evt_plan_without_candidate",
+        type: "experiment.plan_bound",
+        occurredAt: 2_020,
+        source: { actor: "tool" },
+        plan: { id: "plan_early", requestVersion: 1, candidateId: "algo_phase", fingerprint: "early", createdAt: 2_020 },
+      }),
+    ).toMatchObject({ allowed: false, code: "experiment_plan_candidate_required" })
+    state = applied(
+      transition(state, {
+        id: "evt_candidate_after_freeze",
+        type: "candidate.saved",
+        occurredAt: 2_030,
+        source: { actor: "tool" },
+        candidate,
+      }),
+    )
+    expect(
+      transition(state, { id: "evt_strict_without_plan", type: "backtest.started", occurredAt: 2_040, source: { actor: "tool" } }),
+    ).toMatchObject({ allowed: false, code: "experiment_plan_required" })
+    state = applied(
+      transition(state, {
+        id: "evt_plan_after_candidate",
+        type: "experiment.plan_bound",
+        occurredAt: 2_050,
+        source: { actor: "tool" },
+        plan: { id: "plan_order", requestVersion: 1, candidateId: "algo_phase", fingerprint: "bound", createdAt: 2_050 },
+      }),
+    )
+    expect(state.phase).toBe("experiment_planned")
+    state = applied(
+      transition(state, { id: "evt_strict_after_plan", type: "backtest.started", occurredAt: 2_060, source: { actor: "tool" } }),
+    )
+    expect(state.phase).toBe("strict_running")
+  })
+
+  test("keeps delegated identity proposed until a structured symbol is confirmed", () => {
+    let state = createBuildWorkflow(workflowInput({ identity: {}, identityStatus: "proposed" }))
+    expect(state).toMatchObject({ runVersion: 2, phase: "identity_proposed", identityStatus: "proposed" })
+    const source = { kind: "structured_tool" as const, tool: "finny_workspace_prepare", callId: "call_1" }
+    state = applied(
+      transition(state, {
+        id: "evt_confirm_spy",
+        type: "identity.confirmed",
+        occurredAt: 1_100,
+        source: { actor: "tool" },
+        identity: { symbols: { value: ["SPY"], source } },
+      }),
+    )
+    expect(state).toMatchObject({ phase: "identity_confirmed", identityStatus: "confirmed", requestVersion: 1 })
+  })
+
+  test("structured identity confirmation reactivates a blocked proposed workflow", () => {
+    let state = createBuildWorkflow(workflowInput({ identityStatus: "proposed" }))
+    state = applied(
+      transition(state, {
+        id: "evt_block_unconfirmed_identity",
+        type: "workflow.blocked",
+        occurredAt: 1_050,
+        source: { actor: "system" },
+        blocker: {
+          code: "identity_unconfirmed",
+          message: "Structured request identity confirmation is required before lifecycle advancement.",
+          fingerprint: "proposed:SPY:BTC/USD",
+          requiredChanges: ["Confirm identity with finny_workspace_prepare."],
+        },
+      }),
+    )
+    expect(state).toMatchObject({
+      status: "blocked",
+      identityStatus: "proposed",
+      blocker: { code: "identity_unconfirmed" },
+      terminal: { classification: "blocked" },
+    })
+
+    const source = { kind: "structured_tool" as const, tool: "finny_workspace_prepare", callId: "call_recover" }
+    state = applied(
+      transition(state, {
+        id: "evt_confirm_blocked_identity",
+        type: "identity.confirmed",
+        occurredAt: 1_100,
+        source: { actor: "tool" },
+        identity: { ...state.identity, symbols: { value: ["SPY", "BTC/USD"], source } },
+      }),
+    )
+    expect(state).toMatchObject({
+      status: "active",
+      phase: "identity_confirmed",
+      stage: "evidence_pending",
+      identityStatus: "confirmed",
+      blocker: undefined,
+      terminal: undefined,
+    })
+  })
+
+  test("amends identity once and invalidates dependent evidence and candidates deterministically", () => {
+    let state = readyWorkflow()
+    state = applied(
+      transition(state, {
+        id: "evt_freeze_before_amendment",
+        type: "research.frozen",
+        occurredAt: 1_200,
+        source: { actor: "tool" },
+        freeze: {
+          id: "freeze_before_amendment",
+          requestVersion: 1,
+          evidenceIds: state.evidence.map((item) => item.id),
+          createdAt: 1_200,
+        },
+      }),
+    )
+    state = applied(
+      transition(state, {
+        id: "evt_candidate_before_amendment",
+        type: "candidate.saved",
+        occurredAt: 1_250,
+        source: { actor: "tool" },
+        candidate: {
+          algorithmId: "algo_old",
+          name: "old",
+          version: 1,
+          strategyHash: "old_strategy",
+          configHash: "old_config",
+          conceptId: "old_concept",
+        },
+      }),
+    )
+    const source = { kind: "structured_tool" as const, tool: "finny_workspace_prepare", callId: "call_amend" }
+    state = applied(
+      transition(state, {
+        id: "evt_amend_qqq",
+        type: "identity.amended",
+        occurredAt: 1_300,
+        source: { actor: "tool" },
+        reason: "user confirmed QQQ before strict validation",
+        identity: { ...state.identity, symbols: { value: ["QQQ"], source } },
+      }),
+    )
+    expect(state).toMatchObject({ requestVersion: 2, phase: "identity_confirmed", evidence: [], candidate: undefined })
+    expect(state.invalidations).toEqual([
+      expect.objectContaining({
+        requestVersion: 2,
+        evidenceIds: expect.arrayContaining(["market_data:SPY", "market_data:BTC", "news:request"]),
+        candidateIds: ["algo_old"],
+        eventId: "evt_amend_qqq",
+      }),
+    ])
+    expect(state.resumeToken).not.toBe(createBuildWorkflow(workflowInput()).resumeToken)
+  })
+
+  test("records rejected attempts and denies an unchanged blocker fingerprint", () => {
+    let state = createBuildWorkflow(workflowInput())
+    state = applied(
+      transition(state, {
+        id: "evt_attempt_blocked",
+        type: "attempt.recorded",
+        occurredAt: 1_100,
+        source: { actor: "tool" },
+        attempt: {
+          id: "attempt_1",
+          idempotencyKey: "save:finish:one:blocked",
+          fingerprint: "same_inputs",
+          operation: "finny_algorithm_save",
+        outcome: "blocked",
+        lifecycle: "terminal",
+          blockerCode: "save_preflight_rejected",
+          requiredChanges: ["config"],
+          requestVersion: 1,
+          artifactIds: [],
+          evidenceIds: [],
+          trialIds: [],
+          createdAt: 1_100,
+        },
+      }),
+    )
+    expect(
+      transition(state, {
+        id: "evt_attempt_retry",
+        type: "attempt.recorded",
+        occurredAt: 1_200,
+        source: { actor: "tool" },
+        attempt: {
+          ...state.attempts[0]!,
+          id: "attempt_2",
+          idempotencyKey: "save:begin:retry",
+          createdAt: 1_200,
+        },
+      }),
+    ).toMatchObject({ allowed: false, code: "unchanged_blocker_retry_denied" })
+  })
+
+  test("cannot report semantic completion before qualification", () => {
+    const state = createBuildWorkflow(workflowInput())
+    expect(
+      transition(state, {
+        id: "evt_complete_early",
+        type: "workflow.completed",
+        occurredAt: 1_100,
+        source: { actor: "system" },
+      }),
+    ).toMatchObject({ allowed: false, code: "workflow_not_qualified" })
   })
 })

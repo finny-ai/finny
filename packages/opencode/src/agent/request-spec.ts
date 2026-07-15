@@ -250,9 +250,15 @@ function mergeIdentity(
   incoming: RequestSpecIdentity,
   preserveExisting = false,
 ): RequestSpecIdentity {
+  const replacesWithUniverse = !preserveExisting && incoming.requested_symbols !== undefined
+  const replacesWithSingle = !preserveExisting && incoming.requested_symbol !== undefined
   return normalizeIdentity({
-    requested_symbol: mergeValue(current?.requested_symbol, incoming.requested_symbol, preserveExisting),
-    requested_symbols: mergeValue(current?.requested_symbols, incoming.requested_symbols, preserveExisting),
+    requested_symbol: replacesWithUniverse
+      ? undefined
+      : mergeValue(current?.requested_symbol, incoming.requested_symbol, preserveExisting),
+    requested_symbols: replacesWithSingle
+      ? undefined
+      : mergeValue(current?.requested_symbols, incoming.requested_symbols, preserveExisting),
     requested_asset_class: mergeValue(current?.requested_asset_class, incoming.requested_asset_class, preserveExisting),
     requested_interval: mergeValue(current?.requested_interval, incoming.requested_interval, preserveExisting),
     requested_start: mergeValue(current?.requested_start, incoming.requested_start, preserveExisting),

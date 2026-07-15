@@ -25,6 +25,13 @@ export interface RequestFacts {
   requested_algorithm_name?: string
 }
 
+export interface RequestIdentityProposal {
+  facts: RequestFacts
+  status: "proposed" | "confirmed"
+  confidence: number
+  parser: "request_identity_v2"
+}
+
 /**
  * Identity metadata a subagent (or artifact note) must carry so the parent can
  * verify provenance. Anything that influences strategy design must be tied back
@@ -158,7 +165,21 @@ function kindToAssetClass(kind: string): AssetClass {
 
 const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
 const TICKERISH_RE = /^[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?$/
-const NON_TRADEABLE_ACRONYMS = new Set(["CPI", "FED", "FOMC", "GDP", "ISM", "NFP", "PCE"])
+const NON_TRADEABLE_ACRONYMS = new Set([
+  "APAC",
+  "CPI",
+  "EMEA",
+  "EU",
+  "FED",
+  "FOMC",
+  "GDP",
+  "ISM",
+  "NFP",
+  "PCE",
+  "UK",
+  "US",
+  "USA",
+])
 
 /**
  * Strictly recognize a single token as a known symbol. Unlike `resolveSymbol`,
@@ -249,8 +270,7 @@ const FEATURE_HORIZON_AFTER_RE =
 const FEATURE_HORIZON_BEFORE_RE =
   /(?:\b(?:adx|atr|bollinger|ema|macd|ma|rsi|sma|stdev|volatility|window|wma)\b|moving\s+average|standard\s+deviation|rolling|lookback(?:\s+period)?|look\s*back(?:\s+period)?)\s*(?:\(|of|:|=|is)?\s*$/i
 // Durations ("last 6 months", "over 3 months") are not bar intervals.
-const DURATION_CONTEXT_RE =
-  /\b(?:last|past|previous|next|over|for|during|within|across)\s*$/i
+const DURATION_CONTEXT_RE = /\b(?:last|past|previous|next|over|for|during|within|across)\s*$/i
 const BARE_INTERVAL_RE = /\b(daily|hourly|weekly)\b/gi
 const BARE_INTERVAL_TIMEFRAME_CONTEXT_RE =
   /\b(?:bar|bars|candle|candles|chart|charts|cadence|crossover|data|frequency|interval|market\s+data|ohlc|ohlcv|price|prices|resolution|strategy|timeframe|time-frame)\b/i
@@ -463,21 +483,23 @@ function intervalFromPrompt(prompt: string): string | undefined {
     const after = prompt.slice(index + match[0].length, index + match[0].length + 80)
     if (isDurationContext(before, after)) continue
     const explicit = isExplicitBarInterval(before, after)
+    const nearSymbol = bareIntervalNearSymbol(before, after)
     // Explicit bar/timeframe labels win over nearby feature-horizon words
     // ("timeframe: 15-minute volatility breakout" is still 15m bars).
-    if (!explicit && isFeatureHorizon(before, after)) continue
+    if (!explicit && !nearSymbol && isFeatureHorizon(before, after)) continue
 
     const interval = normalizeInterval(match[0])
     if (!interval) continue
     const nearbyTimeframe = BARE_INTERVAL_TIMEFRAME_CONTEXT_RE.test(`${before.slice(-32)} ${after.slice(0, 56)}`)
-    const nearSymbol = bareIntervalNearSymbol(before, after)
     const score = explicit ? 300 : nearbyTimeframe ? 200 : nearSymbol ? 150 : 100
     candidates.push({ index, score, interval })
   }
 
   // Compact parenthetical / @ tokens that INTERVAL_RE may not own when glued:
   // "SPY(15m)", "SPY@5m".
-  for (const match of prompt.matchAll(/[@(]\s*(\d+)\s*-?\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\s*\)?/gi)) {
+  for (const match of prompt.matchAll(
+    /[@(]\s*(\d+)\s*-?\s*(m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|week|weeks)\s*\)?/gi,
+  )) {
     const index = match.index ?? 0
     const interval = normalizeInterval(match[0].replace(/^[@(]/, "").replace(/\)$/, ""))
     if (!interval) continue
@@ -524,12 +546,15 @@ const AMBIGUOUS_TICKER_TOKENS = new Set([
 ])
 const TICKER_STOPWORDS = new Set([
   "API",
+  "APAC",
   "COUNTS",
   "CPI",
   "CSV",
   "DD",
   "ETF",
   "ETFS",
+  "EU",
+  "EMEA",
   "FED",
   "FOMC",
   "FX",
@@ -544,14 +569,15 @@ const TICKER_STOPWORDS = new Set([
   "SEC",
   "THE",
   "URL",
+  "UK",
+  "US",
+  "USA",
   "USD",
   "YES",
 ])
 
 function cleanTickerToken(token: string): string | undefined {
-  const stripped = token
-    .trim()
-    .replace(/^["'`\[]+|["'`\].:;!?]+$/g, "")
+  const stripped = token.trim().replace(/^["'`\[]+|["'`\].:;!?]+$/g, "")
   if (/[a-z]/.test(stripped)) return undefined
   const cleaned = stripped.toUpperCase()
   if (!EXPLICIT_TICKER_RE.test(cleaned)) return undefined
@@ -615,7 +641,9 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   // when nothing explicit contradicts it. "for IBKR, RSI mean-reversion ...
   // requested_symbol=SPY" must resolve to SPY, while "trade AAPL, MSFT daily"
   // keeps its list because the explicit symbol is part of it.
-  const explicitInUniverse = explicitSymbol ? universeList.map((s) => normalizeSymbol(s)).includes(explicitSymbol.sym) : false
+  const explicitInUniverse = explicitSymbol
+    ? universeList.map((s) => normalizeSymbol(s)).includes(explicitSymbol.sym)
+    : false
   if (universeList.length > 1 && (universe!.keyed || !explicitSymbol || explicitInUniverse)) {
     facts.requested_symbols = universeList
   }
@@ -652,6 +680,33 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   if (!facts.requested_asset_class && facts.requested_symbols?.length) facts.requested_asset_class = "equity"
 
   return facts
+}
+
+/**
+ * Parser output is explicitly classified as a proposal. A symbol becomes
+ * confirmed only when the user's text contains the exact structured/uppercase
+ * token; delegated instrument selection therefore stays unresolved.
+ */
+export function parseRequestIdentityProposal(prompt: string): RequestIdentityProposal {
+  const facts = parseRequestFacts(prompt)
+  const symbols = facts.requested_symbols?.length
+    ? facts.requested_symbols
+    : facts.requested_symbol
+      ? [facts.requested_symbol]
+      : []
+  if (symbols.length === 0) {
+    return { facts, status: "proposed", confidence: 0, parser: "request_identity_v2" }
+  }
+  const exact = symbols.every((symbol) => {
+    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`).test(prompt)
+  })
+  return {
+    facts,
+    status: exact ? "confirmed" : "proposed",
+    confidence: exact ? 1 : 0.5,
+    parser: "request_identity_v2",
+  }
 }
 
 // ── Cross-algorithm leakage detection ───────────────────────────────────────

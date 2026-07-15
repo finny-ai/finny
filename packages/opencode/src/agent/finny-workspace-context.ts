@@ -325,6 +325,24 @@ export async function syncWorkspaceRequestContext(input: {
 export async function writeWorkflowRequestProjection(state: BuildWorkflowState): Promise<RequestJsonProjection> {
   const ensured = await ensureAlgoWorkspace(state.workspaceSlug)
   const projection = requestJsonProjection(state)
+  await commitRequestSpec({
+    requestID: state.sessionId,
+    identity: {
+      requested_symbol: projection.requested_symbol,
+      requested_symbols: projection.requested_symbols,
+      requested_asset_class:
+        projection.requested_asset_class === "equity" || projection.requested_asset_class === "crypto"
+          ? projection.requested_asset_class
+          : undefined,
+      requested_interval: projection.requested_interval,
+      requested_start: projection.requested_start,
+      requested_end: projection.requested_end,
+      requested_algorithm_name: projection.requested_algorithm_name,
+    },
+    actor: "runtime",
+    reason: `WorkflowRunV2 request version ${state.requestVersion} projection`,
+    approvalState: state.identityStatus === "confirmed" ? "approved" : "pending",
+  })
   const file = path.join(ensured.dir, "request.json")
   await fs.chmod(file, 0o600).catch(() => undefined)
   await fs.writeFile(file, `${JSON.stringify(projection, null, 2)}\n`, "utf8")

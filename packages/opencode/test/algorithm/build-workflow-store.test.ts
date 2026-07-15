@@ -4,7 +4,11 @@ import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { Effect } from "effect"
-import { makeApprovalChallenge } from "@/algorithm/build-workflow/state"
+import {
+  AlgorithmBuildWorkflowEventTable,
+  AlgorithmBuildWorkflowTable,
+} from "@opencode-ai/core/algorithm/build-workflow-schema"
+import { createBuildWorkflow, makeApprovalChallenge } from "@/algorithm/build-workflow/state"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
 import { testEffect } from "../lib/effect"
 
@@ -199,9 +203,15 @@ it.live("persists snapshots, ordered events, revisions, and approval provenance"
     expect(storedEvents.map((event) => [event.seq, event.type])).toEqual([
       [0, "workflow.created"],
       [1, "evidence.recorded"],
-      [2, "evidence.recorded"],
-      [3, "approval.requested"],
-      [4, "approval.granted"],
+      [2, "transition.rejected"],
+      [3, "evidence.recorded"],
+      [4, "approval.requested"],
+      [5, "transition.rejected"],
+      [6, "approval.granted"],
+    ])
+    expect(storedEvents.filter((event) => event.type === "transition.rejected").map((event) => event.payload)).toEqual([
+      expect.objectContaining({ decision: expect.objectContaining({ code: "revision_conflict" }) }),
+      expect.objectContaining({ decision: expect.objectContaining({ code: "approval_source_not_persisted_user" }) }),
     ])
     const storedChallenges = yield* BuildWorkflowStore.challenges(workflowId)
     expect(storedChallenges).toEqual([
@@ -222,5 +232,82 @@ it.live("persists snapshots, ordered events, revisions, and approval provenance"
       requested_interval: "1h",
     })
     expect((yield* BuildWorkflowStore.listBySession(sessionId)).map((item) => item.workflowId)).toEqual([workflowId])
+  }),
+)
+
+it.live("imports legacy V1 state with an explicit durable event and stable resume token", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflowId = `wf_legacy_${suffix}`
+    const legacy = createBuildWorkflow({
+      workflowId,
+      sessionId: `ses_legacy_${suffix}`,
+      workspaceSlug: `spy-legacy-${suffix}`,
+      intent: "build",
+      identity: {
+        symbols: { value: ["SPY"], source: { kind: "legacy_import", path: "request.json" } },
+      },
+      now: 20_000,
+    }) as unknown as Record<string, unknown>
+    for (const key of [
+      "runVersion",
+      "phase",
+      "identityStatus",
+      "requestVersion",
+      "attempts",
+      "invalidations",
+      "resumeToken",
+    ]) {
+      delete legacy[key]
+    }
+    const { db } = yield* Database.Service
+    yield* db
+      .insert(AlgorithmBuildWorkflowTable)
+      .values({
+        id: workflowId,
+        session_id: `ses_legacy_${suffix}`,
+        workspace_slug: `spy-legacy-${suffix}`,
+        stage: "evidence_pending",
+        status: "active",
+        revision: 0,
+        state: legacy,
+        time_created: 20_000,
+        time_updated: 20_000,
+      })
+      .run()
+    yield* db
+      .insert(AlgorithmBuildWorkflowEventTable)
+      .values({
+        id: `${workflowId}:created`,
+        workflow_id: workflowId,
+        seq: 0,
+        type: "workflow.created",
+        payload: { state: legacy },
+        source_kind: "system",
+        time_created: 20_000,
+      })
+      .run()
+    yield* db
+      .insert(AlgorithmBuildWorkflowEventTable)
+      .values({
+        id: `${workflowId}:legacy_rejected`,
+        workflow_id: workflowId,
+        seq: 4,
+        type: "transition.rejected",
+        payload: { decision: { code: "legacy_rejection" } },
+        source_kind: "system",
+        time_created: 20_001,
+      })
+      .run()
+
+    const imported = yield* BuildWorkflowStore.get(workflowId)
+    expect(imported).toMatchObject({ runVersion: 2, requestVersion: 1, revision: 1, identityStatus: "confirmed" })
+    expect(imported?.resumeToken).toMatch(/^wfr_[a-f0-9]{32}$/)
+    expect((yield* BuildWorkflowStore.events(workflowId)).map((event) => [event.seq, event.type])).toEqual([
+      [0, "workflow.created"],
+      [4, "transition.rejected"],
+      [5, "workflow.legacy_imported"],
+    ])
+    expect((yield* BuildWorkflowStore.get(workflowId))?.revision).toBe(1)
   }),
 )

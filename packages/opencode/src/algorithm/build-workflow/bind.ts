@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { MessageTable, PartTable } from "@opencode-ai/core/session/sql"
-import { assetClassForSymbol, parseRequestFacts } from "@/agent/request-identity"
+import { assetClassForSymbol, parseRequestIdentityProposal } from "@/agent/request-identity"
 import { inferBacktestWindow, writeWorkflowRequestProjection } from "@/agent/finny-workspace-context"
 import { bootstrapWorkspace, deriveIntent } from "@/plugin/finny-workspace"
 import { unambiguousApprovalDecision } from "./state"
@@ -33,9 +33,16 @@ function identityFromPrompt(input: {
   prompt: string
   messageID: string
   workspaceSlug: string
-}): RequestIdentity {
-  const facts = parseRequestFacts(input.prompt)
+}): { identity: RequestIdentity; status: "proposed" | "confirmed" } {
+  const proposal = parseRequestIdentityProposal(input.prompt)
+  const facts = proposal.facts
   const user: FactSource = { kind: "user_message", messageId: input.messageID }
+  const parser: FactSource = {
+    kind: "parser_proposal",
+    messageId: input.messageID,
+    confidence: proposal.confidence,
+    parser: proposal.parser,
+  }
   const delegated: FactSource = {
     kind: "delegated_default",
     messageId: input.messageID,
@@ -49,8 +56,8 @@ function identityFromPrompt(input: {
   const symbol = symbols?.[0]
   const window = inferBacktestWindow(input.prompt)
   const family = deriveIntent(input.prompt)
-  return {
-    ...(symbols ? { symbols: { value: symbols, source: user } } : {}),
+  return { status: proposal.status, identity: {
+    ...(symbols ? { symbols: { value: symbols, source: proposal.status === "confirmed" ? user : parser } } : {}),
     ...(facts.requested_interval ? { interval: { value: facts.requested_interval, source: user } } : {}),
     ...(facts.requested_asset_class || symbol
       ? {
@@ -68,7 +75,7 @@ function identityFromPrompt(input: {
     ...(window.start && window.end
       ? { window: { value: { start: window.start, end: window.end }, source: user } }
       : {}),
-  }
+  } }
 }
 
 function persistedParentUserText(input: { sessionID: string; messageID: string }) {
@@ -159,12 +166,14 @@ export function ensurePrimaryBuildWorkflow(input: {
     const workspace = yield* Effect.tryPromise(() => bootstrapWorkspace(input.sessionID, prompt))
     if (!workspace) return undefined
     const flags = workflowClaimFlags(prompt)
+    const parsed = identityFromPrompt({ prompt, messageID: input.messageID, workspaceSlug: workspace.slug })
     const state = yield* BuildWorkflowStore.insert({
       workflowId: workflowID(input.sessionID, input.messageID),
       sessionId: input.sessionID,
       workspaceSlug: workspace.slug,
       intent: "build",
-      identity: identityFromPrompt({ prompt, messageID: input.messageID, workspaceSlug: workspace.slug }),
+      identity: parsed.identity,
+      identityStatus: parsed.status,
       marketDataRequired: true,
       ...flags,
     })

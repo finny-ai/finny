@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   parseRequestFacts,
+  parseRequestIdentityProposal,
   verifyIdentity,
   normalizeSymbol,
   normalizeInterval,
@@ -35,6 +36,31 @@ describe("request identity normalization", () => {
     expect(normalizeInterval("five-minute")).toBe("5m")
     expect(normalizeInterval("thirty minutes")).toBe("30m")
     expect(normalizeInterval("(15m)")).toBe("15m")
+  })
+})
+
+describe("request identity proposals", () => {
+  test("does not bind market or region prose as a ticker", () => {
+    const prompts = [
+      "Research a liquid US-market opportunity and choose the instrument.",
+      "Find an EMEA equity opportunity without choosing a symbol yet.",
+      "Compare UK and EU markets, then delegate the instrument choice.",
+      "Research APAC stocks and propose a liquid vehicle.",
+    ]
+    for (const prompt of prompts) {
+      const proposal = parseRequestIdentityProposal(prompt)
+      expect(proposal.status).toBe("proposed")
+      expect(proposal.facts.requested_symbol).toBeUndefined()
+      expect(proposal.facts.requested_symbols).toBeUndefined()
+    }
+  })
+
+  test("confirms an exact explicit SPY token", () => {
+    expect(parseRequestIdentityProposal("Build and backtest SPY equity on 1d bars.")).toMatchObject({
+      status: "confirmed",
+      confidence: 1,
+      facts: { requested_symbol: "SPY", requested_asset_class: "equity", requested_interval: "1d" },
+    })
   })
 })
 

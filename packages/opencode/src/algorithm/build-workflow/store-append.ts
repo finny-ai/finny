@@ -5,7 +5,7 @@ import {
 } from "@opencode-ai/core/algorithm/build-workflow-schema"
 import { Database } from "@opencode-ai/core/database/database"
 import { MessageTable, PartTable } from "@opencode-ai/core/session/sql"
-import { and, eq } from "drizzle-orm"
+import { and, eq, max } from "drizzle-orm"
 import { Effect } from "effect"
 import { isBuildWorkflowState, transition, unambiguousApprovalDecision } from "./state"
 import type {
@@ -61,12 +61,7 @@ function insertChallengeRow(tx: Tx, state: BuildWorkflowState, challenge: Approv
     .run()
 }
 
-function updateResolvedChallenge(
-  tx: Tx,
-  state: BuildWorkflowState,
-  challenge: ApprovalChallenge,
-  occurredAt: number,
-) {
+function updateResolvedChallenge(tx: Tx, state: BuildWorkflowState, challenge: ApprovalChallenge, occurredAt: number) {
   return tx
     .update(AlgorithmBuildApprovalChallengeTable)
     .set({
@@ -112,9 +107,7 @@ export function persistChallengeEvent(tx: Tx, state: BuildWorkflowState, event: 
   return Effect.void
 }
 
-function isStructuredApprovalSource(
-  event: Extract<WorkflowEvent, { type: "approval.granted" | "approval.rejected" }>,
-) {
+function isStructuredApprovalSource(event: Extract<WorkflowEvent, { type: "approval.granted" | "approval.rejected" }>) {
   if (event.source.actor !== "user") return false
   if (event.source.synthetic === true) return false
   if (event.source.structuredResponse !== true) return false
@@ -150,11 +143,7 @@ function messageTextParts(parts: Array<{ data: unknown }>) {
     .join("\n")
 }
 
-function messageTimingValid(
-  messageTime: number,
-  challengeCreatedAt: number,
-  eventOccurredAt: number,
-) {
+function messageTimingValid(messageTime: number, challengeCreatedAt: number, eventOccurredAt: number) {
   if (messageTime < challengeCreatedAt) return false
   if (eventOccurredAt < messageTime) return false
   return true
@@ -170,7 +159,9 @@ function isPersistedUserTextSource(
   return !!event.source.messageId
 }
 
-function isUserRoleMessage(message: { data: { role?: string } } | undefined): message is { data: { role: "user" }; time_created: number } {
+function isUserRoleMessage(
+  message: { data: { role?: string } } | undefined,
+): message is { data: { role: "user" }; time_created: number } {
   if (!message) return false
   return message.data.role === "user"
 }
@@ -212,7 +203,7 @@ function revisionConflictResult(
   }
 }
 
-function unprovenApprovalResult(current: BuildWorkflowState): ApplyStoredEventResult {
+function unprovenApprovalResult(current: BuildWorkflowState): Extract<ApplyStoredEventResult, { kind: "rejected" }> {
   return {
     kind: "rejected",
     decision: {
@@ -224,10 +215,9 @@ function unprovenApprovalResult(current: BuildWorkflowState): ApplyStoredEventRe
   }
 }
 
-function isApprovalDecisionEvent(event: WorkflowEvent): event is Extract<
-  WorkflowEvent,
-  { type: "approval.granted" | "approval.rejected" }
-> {
+function isApprovalDecisionEvent(
+  event: WorkflowEvent,
+): event is Extract<WorkflowEvent, { type: "approval.granted" | "approval.rejected" }> {
   return event.type === "approval.granted" || event.type === "approval.rejected"
 }
 
@@ -238,6 +228,7 @@ function persistAppliedTransition(
   decision: Extract<ReturnType<typeof transition>, { allowed: true }>,
 ) {
   return Effect.gen(function* () {
+    const seq = yield* nextEventSeq(tx, workflowId)
     yield* tx
       .update(AlgorithmBuildWorkflowTable)
       .set({
@@ -254,7 +245,7 @@ function persistAppliedTransition(
       .values({
         id: event.id,
         workflow_id: workflowId,
-        seq: decision.state.revision,
+        seq,
         type: event.type,
         payload: encode(event),
         source_kind: event.source.actor,
@@ -264,6 +255,40 @@ function persistAppliedTransition(
       .run()
     yield* persistChallengeEvent(tx, decision.state, event)
     return { kind: "applied" as const, decision }
+  })
+}
+
+function nextEventSeq(tx: Tx, workflowId: string) {
+  return tx
+    .select({ seq: max(AlgorithmBuildWorkflowEventTable.seq) })
+    .from(AlgorithmBuildWorkflowEventTable)
+    .where(eq(AlgorithmBuildWorkflowEventTable.workflow_id, workflowId))
+    .get()
+    .pipe(Effect.map((row) => (row?.seq ?? -1) + 1))
+}
+
+function persistRejectedTransition(
+  tx: Tx,
+  current: BuildWorkflowState,
+  event: WorkflowEvent,
+  code: string,
+  message: string,
+) {
+  return Effect.gen(function* () {
+    const seq = yield* nextEventSeq(tx, current.workflowId)
+    yield* tx
+      .insert(AlgorithmBuildWorkflowEventTable)
+      .values({
+        id: `${event.id}:rejected:${seq}`,
+        workflow_id: current.workflowId,
+        seq,
+        type: "transition.rejected",
+        payload: encode({ event, decision: { code, message }, requestVersion: current.requestVersion }),
+        source_kind: event.source.actor,
+        source_message_id: event.source.messageId,
+        time_created: event.occurredAt,
+      })
+      .run()
   })
 }
 
@@ -284,16 +309,50 @@ export function appendInTransaction(
     if (!row) return { kind: "not_found" as const, workflowId: input.workflowId }
 
     const current = decodeState(row.id, row.state)
+    const duplicate = yield* tx
+      .select({ id: AlgorithmBuildWorkflowEventTable.id })
+      .from(AlgorithmBuildWorkflowEventTable)
+      .where(eq(AlgorithmBuildWorkflowEventTable.id, input.event.id))
+      .get()
+    if (duplicate) {
+      yield* persistRejectedTransition(
+        tx,
+        current,
+        input.event,
+        "idempotent_replay",
+        `Event ${input.event.id} was already applied.`,
+      )
+      return {
+        kind: "idempotent_replay" as const,
+        workflowId: input.workflowId,
+        eventId: input.event.id,
+        state: current,
+      }
+    }
     if (input.expectedRevision !== undefined && input.expectedRevision !== current.revision) {
+      yield* persistRejectedTransition(
+        tx,
+        current,
+        input.event,
+        "revision_conflict",
+        `Expected revision ${input.expectedRevision}, actual ${current.revision}.`,
+      )
       return revisionConflictResult(input.workflowId, input.expectedRevision, current.revision)
     }
     if (isApprovalDecisionEvent(input.event)) {
       const proven = yield* persistedUserApprovalSource(tx, current, input.event)
-      if (!proven) return unprovenApprovalResult(current)
+      if (!proven) {
+        const result = unprovenApprovalResult(current)
+        yield* persistRejectedTransition(tx, current, input.event, result.decision.code, result.decision.message)
+        return result
+      }
     }
 
     const decision = transition(current, input.event)
-    if (!decision.allowed) return { kind: "rejected" as const, decision }
+    if (!decision.allowed) {
+      yield* persistRejectedTransition(tx, current, input.event, decision.code, decision.message)
+      return { kind: "rejected" as const, decision }
+    }
     return yield* persistAppliedTransition(tx, input.workflowId, input.event, decision)
   })
 }

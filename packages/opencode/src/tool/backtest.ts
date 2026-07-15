@@ -40,6 +40,7 @@ import {
   failWorkflowBacktest,
   pendingEvidenceRequirements,
   recordVerifiedMarketData,
+  recordWorkflowAttempt,
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
 import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
@@ -414,7 +415,34 @@ export const BacktestTool = Tool.define(
       "Run the full backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, durability report, and review packet. A recommended run creates a controller challenge; use finny_workflow_request_approval for that exact scope.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
-      Effect.promise(async () => {
+      Effect.gen(function* () {
+        const fingerprint = crypto
+          .createHash("sha256")
+          .update(JSON.stringify(params))
+          .digest("hex")
+        const durableStart = yield* Effect.promise(() =>
+          runWorkflow(recordWorkflowAttempt({
+            sessionId: ctx.sessionID,
+            operation: "finny_backtest",
+            fingerprint,
+            idempotencyKey: `backtest:begin:${fingerprint}`,
+            outcome: "accepted",
+          })),
+        )
+        if (!durableStart.allowed) {
+          return {
+            title: "Backtest blocked by durable workflow",
+            output: `BLOCKED: ${durableStart.message}`,
+            metadata: {
+              algorithmName: undefined,
+              params: undefined,
+              results: undefined,
+              blocked: true,
+              blockerCode: durableStart.code,
+            },
+          }
+        }
+        const resultExit = yield* Effect.exit(Effect.promise(async () => {
         await ctx.ask({
           permission: "finny_backtest",
           patterns: ["*"],
@@ -1193,6 +1221,43 @@ export const BacktestTool = Tool.define(
             ...(failureDiagnosis ? { failure_diagnosis: failureDiagnosis } : {}),
           },
         }
+        }))
+        if (resultExit._tag === "Failure") {
+          yield* Effect.promise(() =>
+            runWorkflow(recordWorkflowAttempt({
+              sessionId: ctx.sessionID,
+              operation: "finny_backtest:finish",
+              fingerprint,
+              idempotencyKey: `backtest:finish:${fingerprint}:failed`,
+              outcome: "failed",
+              lifecycle: "terminal",
+              blockerCode: "backtest_execution_failed",
+              requiredChanges: ["resolve the thrown backtest or preflight error"],
+            })),
+          )
+          return yield* Effect.failCause(resultExit.cause)
+        }
+        const result = resultExit.value
+        const blocked = /\bblocked\b/i.test(result.title) || /^BLOCKED:/m.test(result.output)
+        const resultMetadata = result.metadata as Record<string, any>
+        yield* Effect.promise(() =>
+          runWorkflow(recordWorkflowAttempt({
+            sessionId: ctx.sessionID,
+            operation: "finny_backtest:finish",
+            fingerprint,
+            idempotencyKey: `backtest:finish:${fingerprint}:${blocked ? "blocked" : "accepted"}`,
+            outcome: blocked ? "blocked" : "accepted",
+            lifecycle: "terminal",
+            blockerCode: blocked ? "backtest_preflight_rejected" : undefined,
+            requiredChanges: blocked ? ["rejected backtest preflight inputs"] : [],
+            artifactIds: resultMetadata.results?.runId ? [String(resultMetadata.results.runId)] : [],
+            trialIds:
+              resultMetadata.experiment && typeof resultMetadata.experiment === "object" && "experimentId" in resultMetadata.experiment
+                ? [String(resultMetadata.experiment.experimentId)]
+                : [],
+          })),
+        )
+        return result
       }),
     }
   }),
