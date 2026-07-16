@@ -51,9 +51,7 @@ describe("live HttpApi", () => {
   it.live("reloads the current algorithm instead of trusting the client payload", () =>
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped({ git: true })
-      const previousBypass = process.env.FINNY_LICENSE_BYPASS
-      process.env.FINNY_LICENSE_BYPASS = "1"
-      try {
+      {
         const res = yield* requestInDirectory("/live/start", dir, {
           method: "POST",
           headers: { "content-type": "application/json" },
@@ -82,9 +80,6 @@ describe("live HttpApi", () => {
           _tag: "LiveRunStartError",
           message: expect.stringContaining("no longer exists"),
         })
-      } finally {
-        if (previousBypass === undefined) delete process.env.FINNY_LICENSE_BYPASS
-        else process.env.FINNY_LICENSE_BYPASS = previousBypass
       }
     }),
   )

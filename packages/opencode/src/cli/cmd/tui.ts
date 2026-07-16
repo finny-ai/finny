@@ -212,12 +212,9 @@ export const TuiThreadCommand = cmd({
             url: transport.url,
             daemonUrl,
             daemonHeaders,
-            // Telemetry init is deferred until the license gate clears, so the
-            // gate (which may activate a key in the startup dialog) resolves
-            // BEFORE the gate is read - otherwise consumerCached caches false and
-            // backtest/chat emits no-op for the whole session. Covers both the
-            // main realm (backtest, in-process) and the worker realm (chat).
-            async onLicenseReady() {
+            // Telemetry init covers both the main realm (backtest, in-process)
+            // and the worker realm (chat).
+            async onTelemetryReady() {
               await TelemetryLifecycle.refreshForEmit().catch(() => {})
               await client.call("refreshTelemetry", undefined).catch(() => {})
             },

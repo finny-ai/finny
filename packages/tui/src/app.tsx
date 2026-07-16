@@ -26,8 +26,6 @@ import {
 import { TuiPathsProvider, TuiStartupProvider, TuiTerminalEnvironmentProvider, useTuiStartup } from "./context/runtime"
 import { DialogProvider, useDialog } from "./ui/dialog"
 import { DialogProvider as DialogProviderList } from "./component/dialog-provider"
-import { DialogLicenseActivation } from "./component/dialog-license-activation"
-import { License } from "@/license"
 import { ErrorComponent } from "./component/error-component"
 import { PluginRouteMissing } from "./component/plugin-route-missing"
 import { ProjectProvider, useProject } from "./context/project"
@@ -148,9 +146,8 @@ export type TuiInput = {
   args: Args
   config: TuiConfig.Resolved
   onSnapshot?: () => Promise<string[]>
-  /** Invoked once the license gate clears, so telemetry init runs AFTER a key is
-   * activated rather than before (avoids caching a stale "not a consumer" gate). */
-  onLicenseReady?: () => void | Promise<void>
+  /** Invoked once the TUI is ready, so telemetry init runs in both realms. */
+  onTelemetryReady?: () => void | Promise<void>
   directory?: string
   fetch?: typeof fetch
   headers?: RequestInit["headers"]
@@ -328,7 +325,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
                                                               <EditorContextProvider>
                                                                 <App
                                                                   onSnapshot={input.onSnapshot}
-                                                                  onLicenseReady={input.onLicenseReady}
+                                                                  onTelemetryReady={input.onTelemetryReady}
                                                                   pluginHost={input.pluginHost}
                                                                 />
                                                               </EditorContextProvider>
@@ -375,7 +372,7 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
 
 function App(props: {
   onSnapshot?: () => Promise<string[]>
-  onLicenseReady?: () => void | Promise<void>
+  onTelemetryReady?: () => void | Promise<void>
   pluginHost: TuiPluginHost
 }) {
   const startup = useTuiStartup()
@@ -434,45 +431,16 @@ function App(props: {
       setReady(true)
     })
 
-  // License-activation startup gate: block finny until the workstation has a
-  // valid license. Mirrors the pre-refactor runLicenseActivation/runStartupGate
-  // wiring that was dropped when the TUI moved to packages/tui. The dialog is
-  // non-dismissible — Esc/Ctrl+C quit finny (handled inside the dialog), a valid
-  // key proceeds. Dev/CI bypass, stale-cache revalidation, and FINNY_LICENSE_KEY
-  // are all handled by License.ensureActive() before any interactive prompt.
-  const [licenseGatePassed, setLicenseGatePassed] = createSignal(false)
-  let gateStarted = false
-  async function runLicenseGate() {
-    // Non-interactive path first: honors the bypass, revalidates a stale cache
-    // against the server, and consumes FINNY_LICENSE_KEY (CI/automation). Only
-    // prompt when there is genuinely no valid license for this workstation.
-    try {
-      await License.ensureActive()
-      await props.onLicenseReady?.()
-      setLicenseGatePassed(true)
-      return
-    } catch {
-      // No usable license — fall through to the interactive activation prompt.
-    }
-    while (!(await License.isUnlockedForToday())) {
-      const result = await DialogLicenseActivation.show(dialog)
-      if (result !== "activated") {
-        // Esc/Ctrl+C resolve "dismissed"; quit finny (fail-closed).
-        await exit()
-        return
-      }
-      dialog.clear()
-    }
-    await props.onLicenseReady?.()
-    setLicenseGatePassed(true)
-  }
+  // Telemetry init runs once the TUI is ready so both the main realm
+  // (backtest, in-process) and the worker realm (chat) resolve their gates.
+  let telemetryStarted = false
   createEffect(
     on(
-      () => ready() && dialog.stack.length === 0,
+      () => ready(),
       (isReady) => {
-        if (!isReady || gateStarted) return
-        gateStarted = true
-        void runLicenseGate()
+        if (!isReady || telemetryStarted) return
+        telemetryStarted = true
+        void props.onTelemetryReady?.()
       },
     ),
   )
@@ -597,11 +565,7 @@ function App(props: {
 
   createEffect(
     on(
-      // Wait for the license gate to pass before opening the empty-provider
-      // onboarding dialog — otherwise it would dialog.replace() over the
-      // non-dismissible license dialog, resolving it as "dismissed" and
-      // quitting the TUI before the user can activate.
-      () => licenseGatePassed() && sync.status === "complete" && sync.data.provider.length === 0,
+      () => sync.status === "complete" && sync.data.provider.length === 0,
       (isEmpty, wasEmpty) => {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return

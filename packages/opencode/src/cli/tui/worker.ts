@@ -76,9 +76,7 @@ export const rpc = {
       }),
     )
   },
-  // Re-run telemetry init after the main process clears the license gate. The
-  // bootstrap call above runs before the gate, so a key activated in the startup
-  // dialog would otherwise leave chat telemetry off until restart. Idempotent.
+  // Re-run telemetry init once the TUI signals readiness. Idempotent.
   async refreshTelemetry() {
     await TelemetryLifecycle.refreshAndStart()
   },

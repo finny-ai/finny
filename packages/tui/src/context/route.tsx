@@ -31,7 +31,6 @@ export type SettingsTab =
   | "paper-trading"
   | "data-sources"
   | "skills"
-  | "pro"
 
 export type SessionsRoute = { type: "sessions" }
 export type AlgorithmsRoute = { type: "algorithms"; algorithmId?: string }

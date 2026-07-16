@@ -7,7 +7,7 @@ import { Log } from "../util/log"
 
 const log = Log.create({ service: "device" })
 
-const LICENSE_STATE_DIR_ENV = "FINNY_LICENSE_STATE_DIR"
+const STATE_DIR_ENV = "FINNY_STATE_DIR"
 let stateDirOverride: string | undefined
 
 interface DeviceInfo {
@@ -21,7 +21,7 @@ interface DeviceInfo {
 let cached: DeviceInfo | undefined
 
 function stateDir() {
-  const envDir = process.env[LICENSE_STATE_DIR_ENV]?.trim()
+  const envDir = process.env[STATE_DIR_ENV]?.trim()
   return stateDirOverride ?? (envDir || Global.Path.data)
 }
 

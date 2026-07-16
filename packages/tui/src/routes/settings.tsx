@@ -12,18 +12,16 @@ import { DialogAgent } from "../component/dialog-agent"
 import { SettingsPanelMcp } from "../component/settings-panel-mcp"
 import { SettingsPanelDataSources } from "../component/settings-panel-data-sources"
 import { SettingsPanelSkills } from "../component/settings-panel-skills"
-import { SettingsPanelPro } from "../component/settings-panel-pro"
 
 const TABS: { id: SettingsTab; label: string }[] = [
   { id: "appearance", label: "Appearance" },
   { id: "data-sources", label: "Data Sources" },
   { id: "mcp", label: "MCP" },
   { id: "skills", label: "Skills" },
-  { id: "pro", label: "Plan" },
 ]
 
 type SimpleCopy = { title: string; body: string; cta: string }
-type PanelTab = "mcp" | "paper-trading" | "data-sources" | "skills" | "pro"
+type PanelTab = "mcp" | "paper-trading" | "data-sources" | "skills"
 type SimpleSettingsTab = Exclude<SettingsTab, PanelTab>
 const COPY: Record<SimpleSettingsTab, SimpleCopy> = {
   appearance: {
@@ -76,14 +74,14 @@ export function Settings() {
   }
 
   const isSimpleTab = (t: SettingsTab): t is SimpleSettingsTab =>
-    t !== "mcp" && t !== "paper-trading" && t !== "data-sources" && t !== "skills" && t !== "pro"
+    t !== "mcp" && t !== "paper-trading" && t !== "data-sources" && t !== "skills"
 
   return (
     <box flexGrow={1} flexDirection="column">
       <RouteHeader
         icon={ROUTE_ICONS.settings as unknown as string[]}
         title="Settings"
-        subtitle="Appearance, data sources, MCP, skills, plan"
+        subtitle="Appearance, data sources, MCP, skills"
       />
 
       <box
@@ -134,9 +132,6 @@ export function Settings() {
           </Show>
           <Show when={activeTopTab() === "skills"}>
             <SettingsPanelSkills />
-          </Show>
-          <Show when={activeTopTab() === "pro"}>
-            <SettingsPanelPro />
           </Show>
           <Show when={isSimpleTab(activeTopTab())}>
             <Card title={` ${COPY[activeTopTab() as SimpleSettingsTab].title} `}>

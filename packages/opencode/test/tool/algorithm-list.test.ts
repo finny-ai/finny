@@ -24,8 +24,8 @@ function row(over: Partial<Algorithm.Info>): Algorithm.Info {
 
 describe("buildAlgorithmListPayload", () => {
   test("empty input still returns a JSON-shaped payload", () => {
-    const p = buildAlgorithmListPayload([], "free")
-    expect(p).toEqual({ count: 0, capacity: null, remaining: null, tier: "free", algorithms: [] })
+    const p = buildAlgorithmListPayload([])
+    expect(p).toEqual({ count: 0, capacity: null, remaining: null, algorithms: [] })
   })
 
   test("collapses duplicate-name rows to the highest version", () => {
@@ -35,7 +35,7 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "capital", version: 4, time_updated: 150 }),
       row({ name: "capital", version: 1, time_updated: 50 }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.count).toBe(2)
     expect(p.algorithms.map((a) => `${a.name}@${a.version}`)).toEqual(["orb@7", "capital@4"])
   })
@@ -46,41 +46,33 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "x", version: 3, time_updated: 500, algorithmId: "new" }),
       row({ name: "x", version: 3, time_updated: 200, algorithmId: "mid" }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.count).toBe(1)
     // The Map collapses to a single entry; verify it's the most recently updated.
     expect(p.algorithms[0].updated).toBe(new Date(500).toISOString())
   })
 
-  test("local capacity is unlimited for every tier", () => {
+  test("local capacity is unlimited", () => {
     const algos = [
       row({ name: "a", version: 1 }),
       row({ name: "b", version: 1 }),
       row({ name: "c", version: 1 }),
     ]
-    for (const tier of ["free", "lite", "pro"] as const) {
-      const p = buildAlgorithmListPayload(algos, tier)
-      expect(p.capacity).toBeNull()
-      expect(p.remaining).toBeNull()
-    }
+    const p = buildAlgorithmListPayload(algos)
+    expect(p.capacity).toBeNull()
+    expect(p.remaining).toBeNull()
   })
 
   test("does not report capacity exhaustion as algorithm count grows", () => {
     const algos = Array.from({ length: 8 }, (_, i) => row({ name: `n${i}`, version: 1 }))
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.count).toBe(8)
     expect(p.capacity).toBeNull()
     expect(p.remaining).toBeNull()
   })
 
-  test("lite tier also reports null capacity and remaining", () => {
-    const p = buildAlgorithmListPayload([row({ name: "a", version: 1 })], "lite")
-    expect(p.capacity).toBeNull()
-    expect(p.remaining).toBeNull()
-  })
-
   test("payload is JSON-serializable without losing capacity/remaining", () => {
-    const p = buildAlgorithmListPayload([], "free")
+    const p = buildAlgorithmListPayload([])
     const round = JSON.parse(JSON.stringify(p))
     expect(round.capacity).toBeNull()
     expect(round.remaining).toBeNull()
@@ -92,7 +84,7 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "new", version: 1, time_updated: 300 }),
       row({ name: "mid", version: 1, time_updated: 200 }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.algorithms.map((a) => a.name)).toEqual(["new", "mid", "old"])
   })
 })

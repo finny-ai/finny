@@ -13,8 +13,6 @@ import { validateSymbolForBroker } from "./brokers/policy"
 import { LiveLedger } from "./ledger"
 import { liveTradingDisabledReason } from "./brokers/live-trading"
 import { emit } from "@/analytics/emit"
-import { requireBrokerTier } from "@/plan/brokers"
-import { License } from "@/license"
 import { NativeHedgeLedger, type NativeHedgeLiveEventInput, type NativeHedgeLiveEventType } from "./native-hedge-ledger"
 import { verifyPromotion } from "@/backtest/run-integrity"
 import type { ControllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
@@ -671,8 +669,6 @@ if __name__ == "__main__":
 `
 
   export async function start(params: StartParams): Promise<Run> {
-    await License.ensureActive()
-
     if (params.algorithm.backtestCode && params.algorithm.backtestCode.trim().length > 0) {
       throw new StartRejectedError(
         "Live trading is blocked for algorithms with custom backtestCode. Migrate to the strict Strategy(broker, params=None) contract.",
@@ -705,10 +701,6 @@ if __name__ == "__main__":
         )
       }
     }
-
-    // Tier gate for live trading on this brokerage. Paper trading bypasses
-    // this check entirely — it never enters this code path.
-    await requireBrokerTier(brokerKind)
 
     const spec = BrokerRegistry.getSpec(brokerKind)
 

@@ -1,5 +1,4 @@
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
-import { License } from "../license"
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
 import { Telemetry } from "./gate"
@@ -124,24 +123,15 @@ let flushInProgress: Promise<void> | undefined
 const inFlight = new Set<Promise<unknown>>()
 
 type Identity = {
-  licenseKeyHash?: string
-  machineIdHash?: string
   deviceUserId?: string
-  plan_type?: "per_head" | "enterprise"
 }
 let identityPromise: Promise<Identity> | undefined
 
 async function identity(): Promise<Identity> {
   if (!identityPromise) {
     identityPromise = (async () => {
-      const status = await License.currentStatus().catch(() => undefined)
       const deviceUserId = await DeviceProfile.userId().catch(() => undefined)
-      return {
-        licenseKeyHash: status?.license_key_hash,
-        machineIdHash: status?.machine_id_hash,
-        deviceUserId,
-        plan_type: status?.plan_type,
-      }
+      return { deviceUserId }
     })()
   }
   return identityPromise
@@ -160,20 +150,17 @@ function scheduleFlush() {
 // We deliberately do NOT await the network here: identity() is local, so
 // callers (and drain()) only block on cheap work, while the request itself is
 // tracked in `inFlight` so drain()'s timeout can bound a slow/hung server.
-// Auth is enforced server-side (active per_head license + device); the optional
-// FINNY_TELEMETRY_SECRET header is for internal/debug callers only.
+// The optional FINNY_TELEMETRY_SECRET header is for internal/debug callers only.
 async function doFlush(): Promise<void> {
   if (flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = undefined
   }
   const id = await identity()
-  if (id.plan_type !== "per_head" || !id.licenseKeyHash) {
+  if (!id.deviceUserId) {
     if (!warnedIdentityDrop) {
       warnedIdentityDrop = true
-      log.warn("telemetry batch dropped - not an active per_head consumer license", {
-        plan_type: id.plan_type,
-        hasLicenseKeyHash: !!id.licenseKeyHash,
+      log.warn("telemetry batch dropped - device identity unavailable", {
         dropped: buffer.length,
       })
     }
@@ -186,10 +173,7 @@ async function doFlush(): Promise<void> {
 
 function sendBatch(batch: SinkEvent[], id: Identity): void {
   const body = JSON.stringify({
-    licenseKeyHash: id.licenseKeyHash,
-    machineIdHash: id.machineIdHash,
     deviceUserId: id.deviceUserId,
-    plan_type: id.plan_type,
     appVersion: InstallationVersion,
     batch,
   })

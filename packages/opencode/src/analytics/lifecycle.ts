@@ -6,8 +6,8 @@ import { TelemetrySink } from "./sink"
 const log = Log.create({ service: "telemetry" })
 
 export namespace TelemetryLifecycle {
-  // refreshAndStart may run more than once per realm (bootstrap + a re-run after
-  // the license gate), so skip repeating an identical status line. Only the
+  // refreshAndStart may run more than once per realm (bootstrap + a re-run at
+  // TUI ready), so skip repeating an identical status line. Only the
   // worker/server path logs - the main-process refreshForEmit() stays silent so
   // the two realms (which share one terminal) don't double-log the same message.
   let lastStatus: string | undefined
@@ -23,7 +23,7 @@ export namespace TelemetryLifecycle {
 
   // For the server/worker/daemon: enables the gate AND starts the SessionSync
   // subscriber that turns chat session/message/part events into telemetry.
-  // Idempotent and safe to re-run (e.g. after the license gate activates a key).
+  // Idempotent and safe to re-run.
   export async function refreshAndStart(): Promise<boolean> {
     TelemetrySink.resetIdentity()
     const enabled = await Telemetry.refresh()

@@ -72,8 +72,8 @@ export let url: URL
 
 export async function listen(opts: ListenOptions): Promise<Listener> {
   const listener = await Effect.runPromise(listenEffect(opts))
-  // Consumer telemetry is gated (env opt-in + per_head license). refreshAndStart
-  // is a no-op when telemetry is disabled, so this is safe on every server boot.
+  // Consumer telemetry honors the env opt-out. refreshAndStart is a no-op when
+  // telemetry is disabled, so this is safe on every server boot.
   void TelemetryLifecycle.refreshAndStart().catch(() => {})
   return {
     hostname: listener.hostname,
