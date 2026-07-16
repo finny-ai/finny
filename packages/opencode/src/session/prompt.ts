@@ -70,6 +70,8 @@ import { Auth } from "@/auth"
 import { buildCapabilityManifest, capabilityManifestSystemFragment } from "@/capability/manifest"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import { inspectResearchBriefForBuildHandoff, renderResearchBriefHandoff } from "@/agent/research-brief"
+import type { ToolHookContext } from "@opencode-ai/plugin"
+import { runToolHookLifecycle } from "./tool-hook-lifecycle"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -277,80 +279,98 @@ export const layer = Layer.effect(
         description: task.description,
         subagent_type: task.agent,
       }
-      yield* plugin.trigger(
-        "tool.execute.before",
-        { tool: TaskTool.id, sessionID, callID: part.id },
-        { args: taskArgs },
-      )
-
-      const taskAgent = yield* agents.get(task.agent)
-      if (!taskAgent) {
-        const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
-        const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${task.agent}".${hint}` })
-        yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
-        throw error
+      const hook: ToolHookContext = {
+        tool: TaskTool.id,
+        sessionID,
+        callID: part.callID,
+        messageID: assistantMessage.id,
+        parentSessionID: session.parentID,
+        agent: task.agent,
       }
-
       let error: Error | undefined
+      let executionStarted = false
+      let executionCompleted = false
+      let missingAgent = false
       const taskAbort = new AbortController()
-      const result = yield* taskTool
-        .execute(taskArgs, {
-          agent: task.agent,
-          messageID: assistantMessage.id,
-          sessionID,
-          abort: taskAbort.signal,
-          callID: part.callID,
-          extra: { bypassAgentCheck: true, promptOps },
-          messages: msgs,
-          metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
-            Effect.gen(function* () {
-              part = yield* sessions.updatePart({
-                ...part,
-                type: "tool",
-                state: { ...part.state, ...val },
-              } satisfies SessionV1.ToolPart)
-            }),
-          ask: (req: any) =>
-            permission
-              .ask({
-                ...req,
-                sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
-              })
-              .pipe(Effect.orDie),
-        })
-        .pipe(
-          Effect.catchCause((cause) => {
-            const defect = Cause.squash(cause)
-            error = defect instanceof Error ? defect : new Error(String(defect))
-            return Effect.logError("subtask execution failed", {
-              error,
+      const result = yield* runToolHookLifecycle({
+        plugin,
+        context: hook,
+        args: taskArgs,
+        execute: (runtimeArgs) =>
+          Effect.gen(function* () {
+            executionStarted = true
+            const taskAgent = yield* agents.get(task.agent)
+            if (!taskAgent) {
+              missingAgent = true
+              const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
+              const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
+              const missing = new NamedError.Unknown({ message: `Agent not found: "${task.agent}".${hint}` })
+              yield* events.publish(Session.Event.Error, { sessionID, error: missing.toObject() })
+              throw missing
+            }
+            const output = yield* taskTool.execute(runtimeArgs, {
               agent: task.agent,
-              description: task.description,
+              messageID: assistantMessage.id,
+              sessionID,
+              abort: taskAbort.signal,
+              callID: part.callID,
+              extra: { bypassAgentCheck: true, promptOps },
+              messages: msgs,
+              metadata: (val: { title?: string; metadata?: Record<string, any> }) =>
+                Effect.gen(function* () {
+                  part = yield* sessions.updatePart({
+                    ...part,
+                    type: "tool",
+                    state: { ...part.state, ...val },
+                  } satisfies SessionV1.ToolPart)
+                }),
+              ask: (req: any) =>
+                permission
+                  .ask({
+                    ...req,
+                    sessionID,
+                    ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                  })
+                  .pipe(Effect.orDie),
             })
+            executionCompleted = true
+            return output
           }),
-          Effect.onInterrupt(() =>
-            Effect.gen(function* () {
-              taskAbort.abort()
-              assistantMessage.finish = "tool-calls"
-              assistantMessage.time.completed = Date.now()
-              yield* sessions.updateMessage(assistantMessage)
-              if (part.state.status === "running") {
-                yield* sessions.updatePart({
-                  ...part,
-                  state: {
-                    status: "error",
-                    error: "Cancelled",
-                    time: { start: part.state.time.start, end: Date.now() },
-                    metadata: part.state.metadata,
-                    input: part.state.input,
-                  },
-                } satisfies SessionV1.ToolPart)
-              }
-            }),
-          ),
-        )
+      }).pipe(
+        Effect.map(({ output }) => output),
+        Effect.catchCause((cause) => {
+          const defect = Cause.squash(cause)
+          error = defect instanceof Error ? defect : new Error(String(defect))
+          if (!executionStarted || missingAgent || executionCompleted) return Effect.failCause(cause)
+          return Cause.hasInterrupts(cause)
+            ? Effect.failCause(cause)
+            : Effect.logError("subtask execution failed", {
+                error,
+                agent: task.agent,
+                description: task.description,
+              })
+        }),
+        Effect.onInterrupt(() =>
+          Effect.gen(function* () {
+            taskAbort.abort()
+            assistantMessage.finish = "tool-calls"
+            assistantMessage.time.completed = Date.now()
+            yield* sessions.updateMessage(assistantMessage)
+            if (part.state.status === "running") {
+              yield* sessions.updatePart({
+                ...part,
+                state: {
+                  status: "error",
+                  error: "Cancelled",
+                  time: { start: part.state.time.start, end: Date.now() },
+                  metadata: part.state.metadata,
+                  input: part.state.input,
+                },
+              } satisfies SessionV1.ToolPart)
+            }
+          }),
+        ),
+      )
 
       const attachments = result?.attachments?.map((attachment) => ({
         ...attachment,
@@ -358,12 +378,6 @@ export const layer = Layer.effect(
         sessionID,
         messageID: assistantMessage.id,
       }))
-
-      yield* plugin.trigger(
-        "tool.execute.after",
-        { tool: TaskTool.id, sessionID, callID: part.id, args: taskArgs },
-        result,
-      )
 
       assistantMessage.finish = "tool-calls"
       assistantMessage.time.completed = Date.now()
@@ -1420,9 +1434,7 @@ export const layer = Layer.effect(
               if (workspace) {
                 // Use handoff-aware inspect so sparse Build prompts that rewrote
                 // request.json do not drop an already-approved ResearchBrief.
-                const handoff = yield* Effect.promise(() =>
-                  inspectResearchBriefForBuildHandoff(algoDir(workspace)),
-                )
+                const handoff = yield* Effect.promise(() => inspectResearchBriefForBuildHandoff(algoDir(workspace)))
                 if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
               }
             }

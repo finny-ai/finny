@@ -216,6 +216,23 @@ export type ProviderHook = {
   models?: (provider: ProviderV2, ctx: ProviderHookContext) => Promise<Record<string, ModelV2>>
 }
 
+export type ToolHookContext = {
+  tool: string
+  sessionID: string
+  callID: string
+  messageID?: string
+  parentSessionID?: string
+  agent?: string
+}
+
+export type ToolHookErrorPhase = "before" | "execute" | "after"
+
+export type ToolHookErrorOutput = {
+  error: unknown
+  phase: ToolHookErrorPhase
+  interrupted: boolean
+}
+
 /** @deprecated Use AuthOAuthResult instead. */
 export type AuthOuathResult = AuthOAuthResult
 
@@ -263,22 +280,25 @@ export interface Hooks {
     input: { command: string; sessionID: string; arguments: string },
     output: { parts: Part[] },
   ) => Promise<void>
-  "tool.execute.before"?: (
-    input: { tool: string; sessionID: string; callID: string },
-    output: { args: any },
-  ) => Promise<void>
+  "tool.execute.before"?: (input: ToolHookContext, output: { args: any }) => Promise<void>
   "shell.env"?: (
     input: { cwd: string; sessionID?: string; callID?: string },
     output: { env: Record<string, string> },
   ) => Promise<void>
   "tool.execute.after"?: (
-    input: { tool: string; sessionID: string; callID: string; args: any },
+    input: ToolHookContext & { args: any },
     output: {
       title: string
       output: string
       metadata: any
     },
   ) => Promise<void>
+  /**
+   * Observe a tool failure or cancellation. This hook is notification-only:
+   * mutations are ignored and hook failures must never replace the original
+   * tool failure.
+   */
+  "tool.execute.error"?: (input: ToolHookContext & { args: any }, output: ToolHookErrorOutput) => Promise<void>
   "experimental.chat.messages.transform"?: (
     input: {},
     output: {

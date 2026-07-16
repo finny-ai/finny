@@ -9,6 +9,7 @@ import { Effect } from "effect"
 import { createBuildWorkflow, migrateLegacyBuildWorkflowState, requestJsonProjection } from "./state"
 import { appendInTransaction, decodeState, rowToChallenge } from "./store-append"
 import { WorkflowStateCorruptError } from "./store-errors"
+import { publishWorkflowHookSnapshot } from "./hook-snapshot"
 import type {
   ApplyStoredEventResult,
   CreateBuildWorkflowInput,
@@ -59,12 +60,13 @@ export const insert = Effect.fn("BuildWorkflowStore.insert")(function* (input: C
         .run()
     }),
   )
+  publishWorkflowHookSnapshot(state)
   return state
 })
 
 export const get = Effect.fn("BuildWorkflowStore.get")(function* (workflowId: string) {
   const { db } = yield* Database.Service
-  return yield* db.transaction((tx) =>
+  const state = yield* db.transaction((tx) =>
     Effect.gen(function* () {
       const row = yield* tx
         .select()
@@ -106,6 +108,8 @@ export const get = Effect.fn("BuildWorkflowStore.get")(function* (workflowId: st
       return legacy
     }),
   )
+  if (state) publishWorkflowHookSnapshot(state)
+  return state
 })
 
 export const listBySession = Effect.fn("BuildWorkflowStore.listBySession")(function* (sessionId: string) {
@@ -116,9 +120,11 @@ export const listBySession = Effect.fn("BuildWorkflowStore.listBySession")(funct
     .where(eq(AlgorithmBuildWorkflowTable.session_id, sessionId))
     .orderBy(desc(AlgorithmBuildWorkflowTable.time_updated), desc(AlgorithmBuildWorkflowTable.id))
     .all()
-  return yield* Effect.forEach(rows, (row) => get(row.id), { concurrency: 1 }).pipe(
+  const states = yield* Effect.forEach(rows, (row) => get(row.id), { concurrency: 1 }).pipe(
     Effect.map((states) => states.filter((state): state is NonNullable<typeof state> => !!state)),
   )
+  if (states[0]) publishWorkflowHookSnapshot(states[0])
+  return states
 })
 
 function storedEvent(row: typeof AlgorithmBuildWorkflowEventTable.$inferSelect): StoredWorkflowEvent {
@@ -171,6 +177,8 @@ export const append = Effect.fn("BuildWorkflowStore.append")(function* (input: {
 }) {
   const { db } = yield* Database.Service
   const result = yield* db.transaction((tx) => appendInTransaction(tx, input))
+  if (result.kind === "applied") publishWorkflowHookSnapshot(result.decision.state)
+  if (result.kind === "idempotent_replay") publishWorkflowHookSnapshot(result.state)
   return result as ApplyStoredEventResult
 })
 

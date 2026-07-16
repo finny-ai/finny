@@ -20,6 +20,8 @@ import { AzureAuthPlugin } from "./azure"
 import { DigitalOceanAuthPlugin } from "./digitalocean"
 import { XaiAuthPlugin } from "./xai"
 import { FinnyMemoryPlugin } from "./finny-memory"
+import { FinnyWorkspacePlugin } from "./finny-workspace"
+import { FINNY_HARNESS_HOOK, FinnyHarnessPlugin } from "./finny-harness"
 import { Effect, Layer, Context } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
@@ -81,6 +83,8 @@ function internalPlugins(flags: RuntimeFlags.Info): PluginInstance[] {
     // nudge, progress timeline). Dropped from the registry during an upstream
     // merge (commit 055622642); restored here.
     FinnyMemoryPlugin,
+    FinnyWorkspacePlugin,
+    FinnyHarnessPlugin,
   ]
 }
 
@@ -286,10 +290,29 @@ export const layer = Layer.effect(
     >(name: Name, input: Input, output: Output) {
       if (!name) return output
       const s = yield* InstanceState.get(state)
-      for (const hook of s.hooks) {
+      // The harness closes the span only after every output-mutating observer
+      // succeeds. If an earlier after hook fails, the error hook closes it as
+      // failed instead of leaving a false completed span.
+      const ordered =
+        name === "tool.execute.after"
+          ? [...s.hooks].sort(
+              (left, right) =>
+                Number(Boolean((left as any)[FINNY_HARNESS_HOOK])) -
+                Number(Boolean((right as any)[FINNY_HARNESS_HOOK])),
+            )
+          : s.hooks
+      for (const hook of ordered) {
         const fn = hook[name] as any
         if (!fn) continue
-        yield* Effect.promise(async () => fn(input, output))
+        const invoke = Effect.promise(async () => fn(input, output))
+        if (name === "tool.execute.error") {
+          // Error hooks are notification-only. Fan out to every observer even
+          // when one observer is broken, and never surface its failure to the
+          // caller that is preserving the original tool cause.
+          yield* invoke.pipe(Effect.catchCause(() => Effect.void))
+          continue
+        }
+        yield* invoke
       }
       return output
     })

@@ -10,6 +10,7 @@ import {
 } from "@opencode-ai/core/algorithm/build-workflow-schema"
 import { createBuildWorkflow, makeApprovalChallenge } from "@/algorithm/build-workflow/state"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import { getWorkflowHookSnapshot } from "@/algorithm/build-workflow/hook-snapshot"
 import { testEffect } from "../lib/effect"
 
 const it = testEffect(Database.defaultLayer)
@@ -78,6 +79,14 @@ it.live("persists snapshots, ordered events, revisions, and approval provenance"
       now: 10_000,
     })
     expect(initial).toMatchObject({ stage: "evidence_pending", revision: 0 })
+    expect(getWorkflowHookSnapshot(sessionId)).toMatchObject({
+      workflowId,
+      revision: 0,
+      pendingEvidence: [
+        { id: "market_data:SPY", kind: "market_data" },
+        { id: "news:request", kind: "news" },
+      ],
+    })
 
     const dataResult = yield* BuildWorkflowStore.append({
       workflowId,
@@ -97,6 +106,10 @@ it.live("persists snapshots, ordered events, revisions, and approval provenance"
       },
     })
     expect(dataResult.kind).toBe("applied")
+    expect(getWorkflowHookSnapshot(sessionId)).toMatchObject({
+      revision: 1,
+      pendingEvidence: [{ id: "news:request", kind: "news" }],
+    })
 
     const conflict = yield* BuildWorkflowStore.append({
       workflowId,
@@ -194,6 +207,12 @@ it.live("persists snapshots, ordered events, revisions, and approval provenance"
 
     const state = yield* BuildWorkflowStore.get(workflowId)
     expect(state).toMatchObject({ workflowId, revision: 4, stage: "evidence_ready" })
+    expect(getWorkflowHookSnapshot(sessionId)).toMatchObject({
+      revision: 4,
+      stage: "evidence_ready",
+      pendingEvidence: [],
+      pendingApprovals: [],
+    })
     expect(state?.approvals[0]).toMatchObject({
       challengeId: challenge.id,
       sourceMessageId: approvalMessageId,
@@ -302,6 +321,7 @@ it.live("imports legacy V1 state with an explicit durable event and stable resum
 
     const imported = yield* BuildWorkflowStore.get(workflowId)
     expect(imported).toMatchObject({ runVersion: 2, requestVersion: 1, revision: 1, identityStatus: "confirmed" })
+    expect(getWorkflowHookSnapshot(`ses_legacy_${suffix}`)).toMatchObject({ workflowId, revision: 1 })
     expect(imported?.resumeToken).toMatch(/^wfr_[a-f0-9]{32}$/)
     expect((yield* BuildWorkflowStore.events(workflowId)).map((event) => [event.seq, event.type])).toEqual([
       [0, "workflow.created"],

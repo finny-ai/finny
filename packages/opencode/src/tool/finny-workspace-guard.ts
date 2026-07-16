@@ -1,33 +1,103 @@
 import * as path from "path"
-import { Effect } from "effect"
+import { existsSync } from "fs"
+import { Effect, Schema } from "effect"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { Tool } from "./tool"
 import { InstanceState } from "@/effect/instance-state"
+
+export type FinnyWorkspaceOperation = "read" | "write" | "edit"
+
+export type FinnyWorkspacePolicyResult = { allowed: true } | { allowed: false; code: string; message: string }
+
+type FinnyWorkspacePolicyInput = {
+  agent?: string
+  sessionID: string
+  filePath: string
+  operation: FinnyWorkspaceOperation
+  directory: string
+  worktree: string
+}
+
+type ArtifactKind = "news" | "sec" | "sentiment"
+
+const ARTIFACT_KIND_BY_AGENT: Partial<Record<string, ArtifactKind>> = {
+  news_agent: "news",
+  researcher: "news",
+  sec_agent: "sec",
+  sentiment_agent: "sentiment",
+}
+
+const AGENT_LABELS: Partial<Record<string, string>> = {
+  researcher: "Researcher",
+  news_agent: "News Agent",
+  sec_agent: "SEC Agent",
+  sentiment_agent: "Sentiment Agent",
+}
+
+const WORKSPACE_BINDINGS: Record<ArtifactKind, string> = {
+  news: "workspace_news_dir",
+  sec: "allowed_sec_dir",
+  sentiment: "allowed_sentiment_dir",
+}
+
+const ARTIFACT_NOUNS: Record<ArtifactKind, string> = {
+  news: "news",
+  sec: "SEC",
+  sentiment: "sentiment",
+}
+
+export class FinnyWorkspacePolicyError extends Schema.TaggedErrorClass<FinnyWorkspacePolicyError>()(
+  "FinnyWorkspacePolicyError",
+  { code: Schema.String, message: Schema.String },
+) {}
 
 export function sameOrInside(parent: string, child: string) {
   const relative = path.relative(path.resolve(parent), path.resolve(child))
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative))
 }
 
-function isRepoLocalAlgoNewsPath(filepath: string, worktree: string) {
-  const relative = path.relative(path.join(worktree, "algos"), filepath)
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
-  const parts = relative.split(path.sep)
-  return parts.length >= 3 && parts[1] === "data" && parts[2] === "news"
+export function findFinnyAlgoRoot(directory: string, worktree: string): string {
+  const starts = [...new Set([directory, worktree].filter((item) => item && item !== "/"))]
+  for (const start of starts) {
+    let current = path.resolve(start)
+    while (true) {
+      if (existsSync(path.join(current, "algos/_template/README.md"))) return current
+      const next = path.dirname(current)
+      if (next === current) break
+      current = next
+    }
+  }
+  return worktree
 }
 
-function isRepoLocalAlgoSecPath(filepath: string, worktree: string) {
-  const relative = path.relative(path.join(worktree, "algos"), filepath)
-  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
-  const parts = relative.split(path.sep)
-  return parts.length >= 3 && parts[1] === "data" && parts[2] === "sec"
+export function resolveFinnyWorkspacePath(filePath: string, directory: string, worktree: string): string {
+  if (path.isAbsolute(filePath)) {
+    if (!existsSync(filePath)) {
+      const match = filePath.match(/^(.*?)[/\\]((?:algos(?:[/\\].*)?)|(?:data-agent(?:[/\\]instructions\.md)?))$/)
+      if (match) {
+        const candidate = path.resolve(findFinnyAlgoRoot(directory, worktree), match[2])
+        if (candidate !== filePath && (existsSync(candidate) || existsSync(path.dirname(candidate)))) return candidate
+      }
+    }
+    return filePath
+  }
+  const normalized = filePath.replace(/^\.\//, "")
+  if (
+    normalized === "algos" ||
+    normalized.startsWith("algos/") ||
+    normalized === "data-agent" ||
+    normalized === "data-agent/instructions.md"
+  ) {
+    return path.resolve(findFinnyAlgoRoot(directory, worktree), normalized)
+  }
+  return path.resolve(directory, filePath)
 }
 
-function isRepoLocalAlgoSentimentPath(filepath: string, worktree: string) {
+function isRepoLocalAlgoArtifactPath(filepath: string, worktree: string, kind: "news" | "sec" | "sentiment") {
   const relative = path.relative(path.join(worktree, "algos"), filepath)
   if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) return false
   const parts = relative.split(path.sep)
-  return parts.length >= 3 && parts[1] === "data" && parts[2] === "sentiment"
+  return parts.length >= 3 && parts[1] === "data" && parts[2] === kind
 }
 
 function isFlatArtifactTarget(root: string, filepath: string) {
@@ -38,97 +108,142 @@ function isFlatArtifactTarget(root: string, filepath: string) {
   return parts.length === 1 && parts[0] !== "body" && parts[0] !== "headlines"
 }
 
-export const assertResearcherWorkspaceNewsPath = Effect.fn("FinnyWorkspaceGuard.assertResearcherWorkspaceNewsPath")(
-  function* (ctx: Tool.Context, filepath: string, operation: "read" | "write" | "edit") {
-    if (ctx.agent !== "news_agent" && ctx.agent !== "researcher") return
-    const agentLabel = ctx.agent === "researcher" ? "Researcher" : "News Agent"
+function isDotEnv(file: string) {
+  return /^\.env(?:$|\.)/.test(path.basename(file))
+}
 
-    const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
-    if (!workspace) {
-      const instance = yield* InstanceState.context
-      if (operation === "read" && !isRepoLocalAlgoNewsPath(filepath, instance.worktree)) return
-      return yield* Effect.die(
-        new Error(
-          `${agentLabel} ${operation} blocked: ${filepath} is not allowed because no workspace_news_dir is bound.`,
-        ),
-      )
-    }
+function isWorkspaceMetadataFile(workspacePath: string, filepath: string) {
+  return new Set([
+    workspacePath,
+    path.join(workspacePath, "mission.md"),
+    path.join(workspacePath, "request.json"),
+    path.join(workspacePath, "prefs.md"),
+    path.join(workspacePath, "decisions.md"),
+    path.join(workspacePath, "memory.md"),
+    path.join(workspacePath, "CURRENT"),
+  ]).has(path.resolve(filepath))
+}
 
-    const newsRoot = path.join(algoDir(workspace), "data", "news")
-    if (sameOrInside(newsRoot, filepath)) {
-      if ((operation === "write" || operation === "edit") && !isFlatArtifactTarget(newsRoot, filepath)) {
-        return yield* Effect.die(
-          new Error(
-            `${agentLabel} ${operation} blocked: write one compact markdown note directly under ${newsRoot}; do not use body/ or headlines/ subfolders.`,
-          ),
-        )
-      }
-      return
-    }
+function blocked(code: string, message: string): FinnyWorkspacePolicyResult {
+  return { allowed: false, code, message }
+}
 
-    return yield* Effect.die(
-      new Error(
-        `${agentLabel} ${operation} blocked: ${filepath} is outside the session workspace news directory. Use ${newsRoot}.`,
-      ),
+async function evaluateDataAgentReadPolicy(
+  input: FinnyWorkspacePolicyInput,
+  filepath: string,
+): Promise<FinnyWorkspacePolicyResult> {
+  if (isDotEnv(filepath)) {
+    return blocked(
+      "data_agent_env_blocked",
+      `Data Agent read blocked: may not read ${path.basename(filepath)} because env files are not model-visible.`,
     )
-  },
-)
+  }
+  const root = findFinnyAlgoRoot(input.directory, input.worktree)
+  if (sameOrInside(path.join(root, "data-agent"), filepath)) return { allowed: true }
+  const workspace = await getSessionWorkspace(input.sessionID).catch(() => null)
+  const workspacePath = workspace ? algoDir(workspace) : undefined
+  if (workspacePath && isWorkspaceMetadataFile(workspacePath, filepath)) return { allowed: true }
+  if (workspacePath && sameOrInside(path.join(workspacePath, "data"), filepath)) return { allowed: true }
+  const allowedHint = workspacePath ? path.join(workspacePath, "data") : "the session workspace data/ directory"
+  return blocked(
+    "data_agent_path_blocked",
+    `Data Agent read blocked: ${filepath} is outside allowed data roots. Read the cookbook at ${path.join(root, "data-agent", "instructions.md")} and inspect artifacts under ${allowedHint}.`,
+  )
+}
 
-export const assertSecAgentWorkspaceSecPath = Effect.fn("FinnyWorkspaceGuard.assertSecAgentWorkspaceSecPath")(
-  function* (ctx: Tool.Context, filepath: string, operation: "read" | "write" | "edit") {
-    if (ctx.agent !== "sec_agent") return
+function allowUnboundArtifactRead(input: FinnyWorkspacePolicyInput, filepath: string, kind: ArtifactKind): boolean {
+  if (input.operation !== "read") return false
+  return !isRepoLocalAlgoArtifactPath(filepath, input.worktree, kind)
+}
 
-    const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
-    if (!workspace) {
-      const instance = yield* InstanceState.context
-      if (operation === "read" && !isRepoLocalAlgoSecPath(filepath, instance.worktree)) return
-      return yield* Effect.die(
-        new Error(`SEC Agent ${operation} blocked: ${filepath} is not allowed because no allowed_sec_dir is bound.`),
-      )
-    }
+function unboundArtifactResult(
+  input: FinnyWorkspacePolicyInput,
+  filepath: string,
+  kind: ArtifactKind,
+  label: string,
+): FinnyWorkspacePolicyResult {
+  if (allowUnboundArtifactRead(input, filepath, kind)) return { allowed: true }
+  return blocked(
+    `${kind}_workspace_unbound`,
+    `${label} ${input.operation} blocked: ${filepath} is not allowed because no ${WORKSPACE_BINDINGS[kind]} is bound.`,
+  )
+}
 
-    const secRoot = path.join(algoDir(workspace), "data", "sec")
-    if (sameOrInside(secRoot, filepath)) return
+function requiresFlatArtifactTarget(input: FinnyWorkspacePolicyInput, kind: ArtifactKind): boolean {
+  if (!(["news", "sentiment"] as ArtifactKind[]).includes(kind)) return false
+  return (["write", "edit"] as FinnyWorkspaceOperation[]).includes(input.operation)
+}
 
-    return yield* Effect.die(
-      new Error(
-        `SEC Agent ${operation} blocked: ${filepath} is outside the session workspace SEC directory. Use ${secRoot}.`,
-      ),
+function nestedArtifactResult(
+  input: FinnyWorkspacePolicyInput,
+  filepath: string,
+  root: string,
+  kind: ArtifactKind,
+  label: string,
+): FinnyWorkspacePolicyResult {
+  const instruction =
+    kind === "news"
+      ? `write one compact markdown note directly under ${root}`
+      : `write aggregate artifacts directly under ${root}`
+  return blocked(
+    `${kind}_nested_write_blocked`,
+    `${label} ${input.operation} blocked: ${instruction}; do not use body/ or headlines/ subfolders.`,
+  )
+}
+
+async function evaluateArtifactAgentPolicy(
+  input: FinnyWorkspacePolicyInput,
+  filepath: string,
+  kind: ArtifactKind,
+): Promise<FinnyWorkspacePolicyResult> {
+  const label = AGENT_LABELS[input.agent ?? ""] ?? "Artifact Agent"
+  const workspace = await getSessionWorkspace(input.sessionID).catch(() => null)
+  if (!workspace) return unboundArtifactResult(input, filepath, kind, label)
+
+  const root = path.join(algoDir(workspace), "data", kind)
+  if (!sameOrInside(root, filepath)) {
+    return blocked(
+      `${kind}_path_blocked`,
+      `${label} ${input.operation} blocked: ${filepath} is outside the session workspace ${ARTIFACT_NOUNS[kind]} directory. Use ${root}.`,
     )
-  },
-)
+  }
+  if (requiresFlatArtifactTarget(input, kind) && !isFlatArtifactTarget(root, filepath)) {
+    return nestedArtifactResult(input, filepath, root, kind, label)
+  }
+  return { allowed: true }
+}
 
-export const assertSentimentAgentWorkspacePath = Effect.fn("FinnyWorkspaceGuard.assertSentimentAgentWorkspacePath")(
-  function* (ctx: Tool.Context, filepath: string, operation: "read" | "write" | "edit") {
-    if (ctx.agent !== "sentiment_agent") return
+/**
+ * Single source of truth for Finny agent file access. Direct tools and the
+ * observational harness before-hook both call this function.
+ */
+export async function evaluateFinnyWorkspacePathPolicy(
+  input: FinnyWorkspacePolicyInput,
+): Promise<FinnyWorkspacePolicyResult> {
+  const filepath = resolveFinnyWorkspacePath(input.filePath, input.directory, input.worktree)
+  const isDataRead = input.agent === "data_extractor" && input.operation === "read"
+  if (isDataRead) return evaluateDataAgentReadPolicy(input, filepath)
 
-    const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
-    if (!workspace) {
-      const instance = yield* InstanceState.context
-      if (operation === "read" && !isRepoLocalAlgoSentimentPath(filepath, instance.worktree)) return
-      return yield* Effect.die(
-        new Error(
-          `Sentiment Agent ${operation} blocked: ${filepath} is not allowed because no allowed_sentiment_dir is bound.`,
-        ),
-      )
-    }
+  const kind = ARTIFACT_KIND_BY_AGENT[input.agent ?? ""]
+  if (!kind) return { allowed: true }
+  return evaluateArtifactAgentPolicy(input, filepath, kind)
+}
 
-    const sentimentRoot = path.join(algoDir(workspace), "data", "sentiment")
-    if (sameOrInside(sentimentRoot, filepath)) {
-      if ((operation === "write" || operation === "edit") && !isFlatArtifactTarget(sentimentRoot, filepath)) {
-        return yield* Effect.die(
-          new Error(
-            `Sentiment Agent ${operation} blocked: write aggregate artifacts directly under ${sentimentRoot}; do not use body/ or headlines/ subfolders.`,
-          ),
-        )
-      }
-      return
-    }
-
-    return yield* Effect.die(
-      new Error(
-        `Sentiment Agent ${operation} blocked: ${filepath} is outside the session workspace sentiment directory. Use ${sentimentRoot}.`,
-      ),
-    )
-  },
-)
+export const assertFinnyWorkspacePathPolicy = Effect.fn("FinnyWorkspaceGuard.assertPathPolicy")(function* (
+  ctx: Tool.Context,
+  filePath: string,
+  operation: FinnyWorkspaceOperation,
+) {
+  const instance = yield* InstanceState.context
+  const result = yield* Effect.promise(() =>
+    evaluateFinnyWorkspacePathPolicy({
+      agent: ctx.agent,
+      sessionID: ctx.sessionID,
+      filePath,
+      operation,
+      directory: instance.directory,
+      worktree: instance.worktree,
+    }),
+  )
+  if (!result.allowed) return yield* Effect.die(new FinnyWorkspacePolicyError(result))
+})

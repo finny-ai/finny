@@ -9,12 +9,11 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
-import { existsSync } from "fs"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import {
-  assertResearcherWorkspaceNewsPath,
-  assertSecAgentWorkspaceSecPath,
-  assertSentimentAgentWorkspacePath,
+  assertFinnyWorkspacePathPolicy,
+  findFinnyAlgoRoot,
+  resolveFinnyWorkspacePath,
   sameOrInside,
 } from "./finny-workspace-guard"
 
@@ -26,65 +25,11 @@ const MAX_BYTES_LABEL = `${MAX_BYTES / 1024} KB`
 const SAMPLE_BYTES = 4096
 const SUPPORTED_IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"])
 
-export function findFinnyAlgoRoot(directory: string, worktree: string): string {
-  const starts = [...new Set([directory, worktree].filter((item) => item && item !== "/"))]
-  for (const start of starts) {
-    let current = path.resolve(start)
-    while (true) {
-      if (existsSync(path.join(current, "algos/_template/README.md"))) return current
-      const next = path.dirname(current)
-      if (next === current) break
-      current = next
-    }
-  }
-  return worktree
-}
-
 export function resolveReadPath(filePath: string, directory: string, worktree: string): string {
-  if (path.isAbsolute(filePath)) {
-    if (!existsSync(filePath)) {
-      const match = filePath.match(/^(.*?)[/\\]((?:algos(?:[/\\].*)?)|(?:data-agent(?:[/\\]instructions\.md)?))$/)
-      if (match) {
-        const candidate = path.resolve(findFinnyAlgoRoot(directory, worktree), match[2])
-        if (candidate !== filePath && (existsSync(candidate) || existsSync(path.dirname(candidate)))) return candidate
-      }
-    }
-    return filePath
-  }
-  const normalized = filePath.replace(/^\.\//, "")
-  if (
-    normalized === "algos" ||
-    normalized.startsWith("algos/") ||
-    normalized === "data-agent" ||
-    normalized === "data-agent/instructions.md"
-  ) {
-    return path.resolve(findFinnyAlgoRoot(directory, worktree), normalized)
-  }
-  return path.resolve(directory, filePath)
+  return resolveFinnyWorkspacePath(filePath, directory, worktree)
 }
 
 class ReadStop extends Schema.TaggedErrorClass<ReadStop>()("ReadStop", {}) {}
-
-function workspaceDataRoot(slug: string) {
-  return path.join(algoDir(slug), "data")
-}
-
-function isDotEnv(file: string) {
-  return /^\.env(?:$|\.)/.test(path.basename(file))
-}
-
-function isWorkspaceMetadataFile(workspacePath: string, filepath: string) {
-  const allowed = new Set([
-    workspacePath,
-    path.join(workspacePath, "mission.md"),
-    path.join(workspacePath, "request.json"),
-    path.join(workspacePath, "prefs.md"),
-    path.join(workspacePath, "decisions.md"),
-    path.join(workspacePath, "memory.md"),
-    path.join(workspacePath, "CURRENT"),
-  ])
-  return allowed.has(path.resolve(filepath))
-}
 
 // `offset` and `limit` were originally `z.coerce.number()` — the runtime
 // coercion was useful when the tool was called from a shell but serves no
@@ -292,39 +237,6 @@ export const ReadTool = Tool.define<
       return nonPrintableCount / bytes.length > 0.3
     }
 
-    const assertDataExtractorRead = Effect.fn("ReadTool.assertDataExtractorRead")(function* (
-      ctx: Tool.Context<Metadata>,
-      filepath: string,
-    ) {
-      if (ctx.agent !== "data_extractor") return
-
-      if (isDotEnv(filepath)) {
-        return yield* Effect.fail(
-          new Error(
-            `Data Agent read blocked: may not read ${path.basename(filepath)} because env files are not model-visible.`,
-          ),
-        )
-      }
-
-      const instance = yield* InstanceState.context
-      const root = findFinnyAlgoRoot(instance.directory, instance.worktree)
-      if (sameOrInside(path.join(root, "data-agent"), filepath)) return
-
-      const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
-      if (workspace) {
-        const workspacePath = algoDir(workspace)
-        if (isWorkspaceMetadataFile(workspacePath, filepath)) return
-        if (sameOrInside(workspaceDataRoot(workspace), filepath)) return
-      }
-
-      const allowedHint = workspace ? workspaceDataRoot(workspace) : "the session workspace data/ directory"
-      return yield* Effect.fail(
-        new Error(
-          `Data Agent read blocked: ${filepath} is outside allowed data roots. Read the cookbook at ${path.join(root, "data-agent", "instructions.md")} and inspect artifacts under ${allowedHint}.`,
-        ),
-      )
-    })
-
     const run = Effect.fn("ReadTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context<Metadata>,
@@ -334,10 +246,7 @@ export const ReadTool = Tool.define<
       if (process.platform === "win32") {
         filepath = FSUtil.normalizePath(filepath)
       }
-      yield* assertDataExtractorRead(ctx, filepath)
-      yield* assertResearcherWorkspaceNewsPath(ctx, filepath, "read")
-      yield* assertSecAgentWorkspaceSecPath(ctx, filepath, "read")
-      yield* assertSentimentAgentWorkspacePath(ctx, filepath, "read")
+      yield* assertFinnyWorkspacePathPolicy(ctx, filepath, "read")
       const title = path.relative(instance.worktree, filepath)
 
       const stat = yield* fs.stat(filepath).pipe(

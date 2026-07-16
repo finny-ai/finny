@@ -117,4 +117,34 @@ describe("plugin.trigger", () => {
       }),
     ),
   )
+
+  it.instance("fans out observational error hooks and suppresses hook failures", () =>
+    withProject(
+      [
+        "export const broken = async () => ({",
+        '  "tool.execute.error": async () => { throw new Error("observer failed") },',
+        "})",
+        "export const observer = async () => ({",
+        '  "tool.execute.error": async (_input, output) => { output.seen.push("observer") },',
+        "})",
+        "",
+      ].join("\n"),
+      Effect.gen(function* () {
+        const plugin = yield* Plugin.Service
+        const output = {
+          error: new Error("original failure"),
+          phase: "execute" as const,
+          interrupted: false,
+          seen: [] as string[],
+        }
+        yield* plugin.trigger(
+          "tool.execute.error",
+          { tool: "read", sessionID: "ses_error", callID: "call_error" },
+          output,
+        )
+        expect(output.seen).toEqual(["observer"])
+        expect(output.error.message).toBe("original failure")
+      }),
+    ),
+  )
 })
