@@ -247,6 +247,140 @@ export default defineSchema({
     .index("by_source_id", ["source_id"])
     .index("by_status", ["status"]),
 
+  // ---------------------------------------------------------------------------
+  // Consumer telemetry (training-data capture). Populated exclusively via
+  // POST /ingest/telemetry from the TelemetrySink client batcher. Rows are
+  // append-only and identified by deviceUserId (the OSS client has no license
+  // identity). Full message/part payloads land in `data` so transcripts can be
+  // reconstructed later for model training; tokens (input/output/reasoning/
+  // cache read+write) are copied top-level on messages for cheap aggregation.
+  // ---------------------------------------------------------------------------
+  telemetrySessions: defineTable({
+    sessionId: v.string(),
+    deviceUserId: v.string(),
+    projectId: v.optional(v.string()),
+    directory: v.optional(v.string()),
+    title: v.optional(v.string()),
+    version: v.optional(v.string()),
+    appVersion: v.optional(v.string()),
+    data: v.optional(v.any()),
+    timeCreated: v.number(),
+    timeUpdated: v.optional(v.number()),
+  })
+    .index("by_session", ["sessionId"])
+    .index("by_device_time", ["deviceUserId", "timeCreated"]),
+
+  telemetryMessages: defineTable({
+    sessionId: v.string(),
+    messageId: v.string(),
+    deviceUserId: v.string(),
+    role: v.optional(v.string()),
+    provider: v.optional(v.string()),
+    model: v.optional(v.string()),
+    tokens: v.optional(v.any()),
+    cost: v.optional(v.number()),
+    data: v.optional(v.any()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_message", ["messageId"])
+    .index("by_session", ["sessionId"])
+    .index("by_device_time", ["deviceUserId", "timeCreated"]),
+
+  telemetryParts: defineTable({
+    sessionId: v.string(),
+    messageId: v.string(),
+    partId: v.string(),
+    deviceUserId: v.string(),
+    type: v.optional(v.string()),
+    data: v.optional(v.any()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_part", ["partId"])
+    .index("by_message", ["messageId"])
+    .index("by_session", ["sessionId"])
+    .index("by_device_time", ["deviceUserId", "timeCreated"]),
+
+  telemetryEvents: defineTable({
+    eventType: v.string(),
+    eventName: v.optional(v.string()),
+    deviceUserId: v.string(),
+    sessionId: v.optional(v.string()),
+    projectId: v.optional(v.string()),
+    payload: v.optional(v.any()),
+    source: v.optional(v.string()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_device_time", ["deviceUserId", "timeCreated"])
+    .index("by_type_time", ["eventType", "timeCreated"]),
+
+  telemetryArtifacts: defineTable({
+    artifactType: v.string(),
+    artifactName: v.string(),
+    deviceUserId: v.string(),
+    sessionId: v.optional(v.string()),
+    algorithmId: v.optional(v.string()),
+    algorithmName: v.optional(v.string()),
+    version: v.optional(v.number()),
+    content: v.string(),
+    metadata: v.optional(v.any()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_device_time", ["deviceUserId", "timeCreated"])
+    .index("by_algorithm", ["algorithmId"])
+    .index("by_type_time", ["artifactType", "timeCreated"]),
+
+  telemetryBacktests: defineTable({
+    eventType: v.string(),
+    deviceUserId: v.string(),
+    sessionId: v.optional(v.string()),
+    algorithmId: v.optional(v.string()),
+    duration: v.optional(v.string()),
+    interval: v.optional(v.string()),
+    capital: v.optional(v.string()),
+    status: v.optional(v.string()),
+    metrics: v.optional(v.any()),
+    payload: v.optional(v.any()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_device_time", ["deviceUserId", "timeCreated"])
+    .index("by_algorithm", ["algorithmId"])
+    .index("by_event_time", ["eventType", "timeCreated"]),
+
+  telemetryLiveOrders: defineTable({
+    eventType: v.string(),
+    deviceUserId: v.string(),
+    sessionId: v.optional(v.string()),
+    algorithmId: v.optional(v.string()),
+    runId: v.optional(v.string()),
+    orderId: v.optional(v.string()),
+    symbol: v.optional(v.string()),
+    side: v.optional(v.string()),
+    qty: v.optional(v.number()),
+    price: v.optional(v.number()),
+    status: v.optional(v.string()),
+    brokerTimestamp: v.optional(v.string()),
+    // Live-run lifecycle fields: the table holds the full append-only stream
+    // for a run (started / equity_snapshot / order_fill / log / stopped),
+    // distinguished by eventType and grouped by runId.
+    brokerage: v.optional(v.string()),
+    mode: v.optional(v.string()),
+    equity: v.optional(v.number()),
+    cash: v.optional(v.number()),
+    logLevel: v.optional(v.string()),
+    logMessage: v.optional(v.string()),
+    payload: v.optional(v.any()),
+    appVersion: v.optional(v.string()),
+    timeCreated: v.number(),
+  })
+    .index("by_device_time", ["deviceUserId", "timeCreated"])
+    .index("by_algorithm", ["algorithmId"])
+    .index("by_run", ["runId"]),
+
   licenseChecks: defineTable({
     request_id: v.string(),
     license_key_hash: v.string(),

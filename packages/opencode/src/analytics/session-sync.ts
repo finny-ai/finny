@@ -8,6 +8,10 @@ const log = Log.create({ service: "session-sync" })
 
 const partBuffers = new Map<string, Map<string, PartRow>>()
 const sessionCreated = new Set<string>()
+// Messages already shipped to the sink. Parts for these messages bypass the
+// buffer: user messages publish message.updated BEFORE their parts, so the
+// buffer is empty at sync time and late parts would otherwise be dropped.
+const messageSynced = new Set<string>()
 
 let started = false
 let listener: ((env: unknown) => void) | undefined
@@ -35,6 +39,18 @@ export namespace SessionSync {
         const { sessionID, part, time } = payload.properties ?? {}
         const messageID = part?.messageID
         if (!messageID || !part?.id || !sessionID) return
+        if (messageSynced.has(messageID)) {
+          TelemetrySink.enqueue({
+            kind: "part",
+            session_id: sessionID,
+            message_id: messageID,
+            part_id: part.id,
+            type: part?.type,
+            data: part,
+            time_created: typeof time === "number" ? time : Date.now(),
+          })
+          return
+        }
         let bucket = partBuffers.get(messageID)
         if (!bucket) {
           bucket = new Map()
@@ -81,11 +97,17 @@ export namespace SessionSync {
     started = false
     partBuffers.clear()
     sessionCreated.clear()
+    messageSynced.clear()
   }
 }
 
 async function syncCompletedMessage(sessionID: string, info: any) {
   try {
+    // User messages can re-fire message.updated (e.g. reverts); one row per
+    // message is enough since parts stream through directly once synced.
+    if (messageSynced.has(info.id)) return
+    messageSynced.add(info.id)
+
     if (!sessionCreated.has(sessionID)) {
       sessionCreated.add(sessionID)
       try {

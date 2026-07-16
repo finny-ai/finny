@@ -295,4 +295,78 @@ http.route({
   }),
 })
 
+// --- Consumer telemetry ingest -------------------------------------------
+// Receives batches from the CLI's TelemetrySink (analytics/sink.ts). The
+// client buffers up to 5000 events and flushes fire-and-forget, so this
+// endpoint must accept generously and reject only malformed envelopes.
+const TELEMETRY_MAX_BATCH = 5000
+
+function telemetryIngestSecret() {
+  const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+  return env?.FINNY_TELEMETRY_INGEST_SECRET?.trim()
+}
+
+// If FINNY_TELEMETRY_INGEST_SECRET is set on the deployment, require the
+// matching x-finny-telemetry-secret header (the client sends it when
+// FINNY_TELEMETRY_SECRET is set locally). When unset, ingest is open —
+// consumer telemetry from public installs has no shared credential.
+function telemetryAuthorized(request: Request) {
+  const expected = telemetryIngestSecret()
+  if (!expected) return true
+  return request.headers.get("x-finny-telemetry-secret") === expected
+}
+
+function isTelemetryPayload(input: unknown): input is {
+  deviceUserId: string
+  appVersion?: string
+  batch: unknown[]
+} {
+  if (!input || typeof input !== "object") return false
+  const value = input as Record<string, unknown>
+  return (
+    typeof value.deviceUserId === "string" &&
+    value.deviceUserId.trim().length > 0 &&
+    value.deviceUserId.length <= 128 &&
+    (value.appVersion === undefined || typeof value.appVersion === "string") &&
+    Array.isArray(value.batch) &&
+    value.batch.length <= TELEMETRY_MAX_BATCH
+  )
+}
+
+http.route({
+  path: "/ingest/telemetry",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    if (!telemetryAuthorized(request)) {
+      return json({ ok: false, error_code: "verification_failed" }, 403)
+    }
+
+    let payload: unknown
+    try {
+      payload = await request.json()
+    } catch {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    if (!isTelemetryPayload(payload)) {
+      return json({ ok: false, error_code: "invalid_payload" }, 400)
+    }
+
+    if (payload.batch.length === 0) {
+      return json({ ok: true, inserted: 0 }, 200)
+    }
+
+    try {
+      const result = await ctx.runMutation(internal.telemetry.ingestBatch, {
+        deviceUserId: payload.deviceUserId,
+        appVersion: payload.appVersion?.slice(0, 64),
+        batch: payload.batch,
+      })
+      return json({ ok: true, inserted: result.inserted }, 200)
+    } catch {
+      return json({ ok: false, error_code: "internal_error" }, 500)
+    }
+  }),
+})
+
 export default http
