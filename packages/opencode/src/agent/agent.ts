@@ -618,7 +618,7 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
-              finnyToolBundle(["bash", "read", "skill"]),
+              finnyToolBundle(["bash", "read", "skill", "finny_dataset_evidence_finalize"]),
               user,
               finnyDataAgentAccess,
               finnySecretReadDeny,

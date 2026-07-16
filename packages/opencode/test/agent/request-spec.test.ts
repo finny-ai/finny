@@ -56,6 +56,25 @@ describe("runtime RequestSpec integrity", () => {
     }
   })
 
+  test("model shell commands cannot hide runtime storage behind string concatenation", () => {
+    for (const command of [
+      `python3 -c 'from pathlib import Path; print(Path.home() / "request-" + "specs")'`,
+      `python3 - <<'PY'\nimport os\nprint(os.path.join('/tmp', "request-" + "specs", 'current.json'))\nPY`,
+    ]) {
+      expect(() => assertNoRuntimeRequestSpecPath({ command })).toThrow("runtime-owned")
+    }
+  })
+
+  test("model shell commands cannot access runtime state databases directly", () => {
+    for (const command of [
+      `sqlite3 ~/.local/share/opencode/opencode.db 'select * from session'`,
+      `python3 -c 'import sqlite3; sqlite3.connect("/tmp/opencode-local.db")'`,
+      `rm -f /tmp/opencode-dev.db-wal`,
+    ]) {
+      expect(() => assertNoRuntimeRequestSpecPath({ command })).toThrow("runtime-owned")
+    }
+  })
+
   test("legacy workspace identity migrates once and then stops being authoritative", async () => {
     sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "finny-request-spec-legacy-"))
     previousFinnyHome = process.env.FINNY_HOME

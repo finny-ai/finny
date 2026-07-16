@@ -26,9 +26,8 @@ the market folders below.
 
 Always keep requested coverage separate from actual saved coverage. If a provider
 truncates intraday history, returns no rows for part of the window, or rejects the
-requested lookback, keep `requested_start` and `requested_end` unchanged in the
-manifest, compute `actual_start` and `actual_end` from saved rows, set coverage to
-`"partial"`, and include a short coverage note.
+requested lookback, report the source limitation honestly. The runtime finalizer
+keeps the bound requested window immutable and derives actual coverage from saved rows.
 
 ## Environment
 
@@ -184,50 +183,12 @@ future/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
 option/<SYMBOL>_<INTERVAL>_<START>_<END>.csv
 ```
 
-For durable artifacts, write a small `.manifest.json` sidecar when practical. Every
-successful extraction must write both CSV and manifest under `allowed_data_dir` only.
-Include identity fields that match the digest:
-
-```json
-{
-  "schema_version": 1,
-  "source": "yfinance",
-  "symbols": ["AAPL"],
-  "interval": "1d",
-  "requested_symbol": "AAPL",
-  "actual_symbol": "AAPL",
-  "requested_interval": "1d",
-  "actual_interval": "1d",
-  "requested_asset_class": "equity",
-  "actual_asset_class": "equity",
-  "requested_algorithm_name": "aapl-breakout",
-  "request_id": "ses_example",
-  "request_version": 1,
-  "request_content_hash": "sha256:<runtime supplied hash>",
-  "requested_start": "2024-01-01",
-  "requested_end": "2024-12-31",
-  "actual_start": "2024-01-02",
-  "actual_end": "2024-12-30",
-  "output_path": "stock/AAPL_1d_2024-01-01_2024-12-31.csv",
-  "rows": 252,
-  "run_id": "20260616T120000Z-aapl",
-  "coverage": "partial",
-  "coverage_note": "source did not return requested boundary dates",
-  "usable_for_parent": "no",
-  "created_at": "2026-06-04T00:00:00Z"
-}
-```
-
-The manifest may also carry optional, lenient enrichment fields written by the
-`Analysis Summary` step (`analysis_summary_path`, `analysis_regime`,
-`analysis_hypotheses`). These are candidate analysis only; they never affect identity,
-coverage, or reuse, and may be absent.
-
-Use `actual_start`/`actual_end` from the first and last saved row after timezone
-normalization and deduplication. Use `requested_start`/`requested_end` for the
-requested window. If a source truncates history, set `coverage` to `"partial"`
-and include a concise `coverage_note`; do not label requested dates as actual
-coverage.
+Never write, copy, or patch a manifest in bash. After the CSV and optional analysis
+summary are complete, call `finny_dataset_evidence_finalize` exactly once. Pass only
+the relative CSV path, provider/feed/venue/provider symbol, price-basis treatment,
+and optional analysis-summary fields. The finalizer atomically writes the canonical
+`DatasetEvidenceV2` sidecar and computes request identity, actual boundaries,
+calendar reconciliation, hashes, quality counts, qualification, and the digest.
 
 ## End-Date Fetch Bound (inclusive)
 
@@ -297,13 +258,10 @@ OHLCV and marking it usable.
 
 ## Artifact Verification
 
-After writing a CSV and manifest, run a local verification command that reads both
-files back from `allowed_data_dir`. At minimum, verify:
+Before finalization, run a local verification command that reads the CSV back from
+`allowed_data_dir`. At minimum, verify:
 
 - row count is greater than zero
-- the manifest output path points to the saved CSV
-- requested_start/requested_end match the request context
-- actual_start/actual_end match the first and last saved timestamps
 - timestamp duplicates, null OHLCV values, invalid OHLC relationships, and large
   intraday gaps are reported when practical
 
@@ -337,8 +295,8 @@ Return the verification summary to the parent. Do not dump raw rows or full gap 
 
 ## Analysis Summary
 
-After a usable extraction passes verification, write one more sidecar next to the CSV and
-manifest: `<base>.analysis_summary.json`. This is **candidate edge analysis, not confirmed
+After a usable extraction passes verification, optionally write one sidecar next to the CSV:
+`<base>.analysis_summary.json`. This is **candidate edge analysis, not confirmed
 edge** — it gives the parent a starting hypothesis, and every claim must be backtested before
 it is trusted. It never changes coverage, `usable_for_parent`, or identity.
 
@@ -354,7 +312,6 @@ Schema written to `<base>.analysis_summary.json`:
 {
   "schema_version": 1,
   "source_csv": "stock/SPY_1h_2026-01-01_2026-03-31.csv",
-  "source_manifest": "stock/SPY_1h_2026-01-01_2026-03-31.manifest.json",
   "analysis_regime": "trending_up",
   "analysis_hypotheses": [
     "Candidate trend continuation after shallow pullbacks; requires backtest."
@@ -374,7 +331,7 @@ Use `not_returned` for any stat that cannot be computed. `analysis_regime` is on
 Hypotheses are phrased as `Candidate ... ; requires backtest` — never "edge", "profitable",
 or "works".
 
-Recipe (substitute the literal CSV/manifest paths for this request):
+Recipe (substitute the literal CSV path for this request):
 
 ```bash
 "$FINNY_PYTHON_BIN" <<'PY'
@@ -382,7 +339,6 @@ import json, datetime
 import numpy as np, pandas as pd
 
 CSV = "stock/SPY_1h_2026-01-01_2026-03-31.csv"
-MANIFEST = "stock/SPY_1h_2026-01-01_2026-03-31.manifest.json"
 INTERVAL = "1h"
 OUT = CSV.rsplit(".csv", 1)[0] + ".analysis_summary.json"
 
@@ -454,7 +410,6 @@ hypotheses = HYP[regime][:3]
 summary = {
     "schema_version": 1,
     "source_csv": CSV,
-    "source_manifest": MANIFEST,
     "analysis_regime": regime,
     "analysis_hypotheses": hypotheses,
     "stats": {
@@ -467,18 +422,6 @@ summary = {
 }
 with open(OUT, "w") as f:
     json.dump(summary, f, indent=2)
-
-# Mirror the headline fields + pointer into the manifest so the parent sees them.
-try:
-    with open(MANIFEST) as f:
-        man = json.load(f)
-    man["analysis_summary_path"] = OUT
-    man["analysis_regime"] = regime
-    man["analysis_hypotheses"] = hypotheses
-    with open(MANIFEST, "w") as f:
-        json.dump(man, f, indent=2)
-except Exception as e:
-    print(f"analysis summary written, manifest not updated: {e}")
 
 print(f"analysis_summary_path={OUT} analysis_regime={regime}")
 PY
@@ -495,8 +438,8 @@ or internal market data is configured. If yfinance is selected as the fallback, 
 the requested window first. For intraday intervals, yfinance may reject long
 lookbacks; when the provider-capability preflight already proves the full window
 cannot be covered, do not retry repeatedly. Return the full-window blocker, or make
-one diagnostic partial attempt only if it will help explain coverage, and record
-the limitation in the manifest.
+one diagnostic partial attempt only if it will help explain coverage, and report
+the limitation in the final summary.
 
 Example: AAPL daily bars.
 
@@ -508,17 +451,8 @@ df[["timestamp","open","high","low","close","volume"]].to_csv(sys.stdout, index=
   > stock/AAPL_1d_2024-01-01_2024-12-31.csv
 ```
 
-Manifest:
-
-```bash
-"${FINNY_PYTHON_BIN:-python3}" -c 'import json, datetime, pandas as pd
-df = pd.read_csv("stock/AAPL_1d_2024-01-01_2024-12-31.csv", parse_dates=["timestamp"])
-actual_start = df["timestamp"].min().date().isoformat()
-actual_end = df["timestamp"].max().date().isoformat()
-coverage = "complete" if actual_start <= "2024-01-01" and actual_end >= "2024-12-31" else "partial"
-print(json.dumps({"schema_version":1,"source":"yfinance","symbols":["AAPL"],"interval":"1d","requested_start":"2024-01-01","requested_end":"2024-12-31","actual_start":actual_start,"actual_end":actual_end,"output_path":"stock/AAPL_1d_2024-01-01_2024-12-31.csv","rows":len(df),"coverage":coverage,"created_at":datetime.datetime.utcnow().replace(microsecond=0).isoformat()+"Z"}, indent=2))' \
-  > stock/AAPL_1d_2024-01-01_2024-12-31.manifest.json
-```
+Finalize this CSV with `finny_dataset_evidence_finalize` using Yahoo's actual
+feed/venue/provider symbol and the `auto_adjust` price-basis treatment used by the fetch.
 
 ## Binance Public Klines
 
@@ -650,11 +584,10 @@ PY
 After Alpaca writes the CSV, verify coverage and timestamp cadence. The shortest
 positive intraday timestamp delta must not be smaller than the requested interval;
 for example, a `15m` request containing 5-minute deltas is unusable even if its
-filename and manifest say `15m`. Echo the exact CSV and manifest paths that were
-read back; do not reconstruct or retype them from memory. If verification fails, delete or
-ignore the Alpaca artifact for the final manifest and retry with Polygon when
-configured, otherwise yfinance. Record `source_attempts` and the fallback reason
-in the return summary.
+filename says `15m`. Echo the exact CSV path that was read back; do not reconstruct
+or retype it from memory. If verification fails, delete or ignore the Alpaca CSV
+and retry with Polygon when configured, otherwise yfinance. Record `source_attempts`
+and the fallback reason in the return summary.
 
 For options, use Alpaca's options bars endpoint and OCC-formatted symbols. Add the
 exact option symbol mapping to this file when an enterprise fork needs options data.
@@ -687,17 +620,13 @@ Example: SPY daily bars.
 
 ```bash
 "${FINNY_PYTHON_BIN:-python3}" <<'PY'
-import csv, datetime, json, os, sys, urllib.error, urllib.parse, urllib.request
+import csv, datetime, json, os, urllib.error, urllib.parse, urllib.request
 
 symbol = "SPY"
 requested_interval = "1d"
 requested_start = "2024-01-01"
 requested_end = "2024-12-31"
-requested_asset_class = "equity"
-requested_algorithm_name = os.environ.get("FINNY_STRATEGY_WORKSPACE_NAME", "polygon-demo")
-run_id = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).strftime("%Y%m%dT%H%M%SZ") + "-polygon-spy"
 out = "stock/SPY_1d_2024-01-01_2024-12-31.csv"
-manifest_out = out.replace(".csv", ".manifest.json")
 
 interval_map = {
     "1d": ("1", "day"),
@@ -756,38 +685,12 @@ with open(out, "w", newline="") as f:
         ts = datetime.datetime.fromtimestamp(int(r["t"]) / 1000, tz=datetime.timezone.utc).isoformat().replace("+00:00", "Z")
         w.writerow([ts, r["o"], r["h"], r["l"], r["c"], r.get("v", 0)])
 
-actual_start = datetime.datetime.fromtimestamp(int(rows[0]["t"]) / 1000, tz=datetime.timezone.utc).date().isoformat()
-actual_end = datetime.datetime.fromtimestamp(int(rows[-1]["t"]) / 1000, tz=datetime.timezone.utc).date().isoformat()
-coverage = "complete" if actual_start <= requested_start and actual_end >= requested_end else "partial"
-manifest = {
-    "schema_version": 1,
-    "source": "polygon",
-    "symbols": [symbol],
-    "interval": requested_interval,
-    "requested_symbol": symbol,
-    "actual_symbol": symbol,
-    "requested_interval": requested_interval,
-    "actual_interval": requested_interval,
-    "requested_asset_class": requested_asset_class,
-    "actual_asset_class": requested_asset_class,
-    "requested_algorithm_name": requested_algorithm_name,
-    "requested_start": requested_start,
-    "requested_end": requested_end,
-    "actual_start": actual_start,
-    "actual_end": actual_end,
-    "output_path": out,
-    "rows": len(rows),
-    "run_id": run_id,
-    "coverage": coverage,
-    "usable_for_parent": "yes" if coverage == "complete" else "no",
-    "source_attempts": [{"source": "polygon", "status": "ok", "rows": len(rows)}],
-    "created_at": datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-}
-with open(manifest_out, "w") as f:
-    json.dump(manifest, f, indent=2)
-print(f"wrote {len(rows)} rows to {out} and {manifest_out}")
+print(f"wrote {len(rows)} rows to {out}")
 PY
 ```
+
+Finalize this CSV with `finny_dataset_evidence_finalize` using Polygon's actual
+feed/venue/provider symbol and `adjusted=true` corporate-action treatment.
 
 If Polygon fails with an entitlement or plan-limit error, do not write a Polygon
 CSV. Return a blocker only when all appropriate fallbacks are exhausted. A useful

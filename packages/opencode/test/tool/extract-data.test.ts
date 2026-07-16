@@ -76,6 +76,9 @@ describe("data_extractor subagent", () => {
         const hasBashAllow = info.permission.some((r) => r.permission === "bash" && r.action === "allow")
         const hasReadAllow = info.permission.some((r) => r.permission === "read" && r.action === "allow")
         const hasSkillAllow = info.permission.some((r) => r.permission === "skill" && r.action === "allow")
+        const hasFinalizeAllow = info.permission.some(
+          (r) => r.permission === "finny_dataset_evidence_finalize" && r.action === "allow",
+        )
         const hasRemovedDataBashAllow = info.permission.some(
           (r) => r.permission === "finny_data_bash" && r.action === "allow",
         )
@@ -83,6 +86,7 @@ describe("data_extractor subagent", () => {
         expect(hasBashAllow).toBe(true)
         expect(hasReadAllow).toBe(true)
         expect(hasSkillAllow).toBe(true)
+        expect(hasFinalizeAllow).toBe(true)
         expect(hasRemovedDataBashAllow).toBe(false)
       }),
     ),
@@ -148,7 +152,7 @@ describe("data_extractor prompt contract", () => {
 
   test("reports command source and artifact summary instead of raw rows", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("selected data source and command artifact summary")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Return the tool output without dumping raw rows")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Return the finalizer tool output without dumping raw rows")
     expect(PROMPT_DATA_EXTRACTOR).not.toContain("Expected order is Alpaca")
   })
 
@@ -159,7 +163,7 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("bash write guard")
     expect(PROMPT_DATA_EXTRACTOR).not.toContain("`finny_data_bash`")
     expect(PROMPT_DATA_EXTRACTOR).not.toContain("{{secret:alias}}")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Return any written data or manifest path")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Return the finalizer's CSV and manifest paths")
   })
 
   test("uses instructions plus bash without legacy extractor fallback", () => {
@@ -174,8 +178,10 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).not.toContain("A/B evaluation")
   })
 
-  test("limits available tools to read, skill, and bash", () => {
-    expect(PROMPT_DATA_EXTRACTOR).toContain("only tools are `read`, `skill`, and `bash`")
+  test("limits available tools to read, skill, bash, and the evidence finalizer", () => {
+    expect(PROMPT_DATA_EXTRACTOR).toContain(
+      "only tools are `read`, `skill`, `bash`, and `finny_dataset_evidence_finalize`",
+    )
     expect(PROMPT_DATA_EXTRACTOR).toContain("Never call `glob`, `write`, `edit`")
   })
 
@@ -189,7 +195,8 @@ describe("data_extractor prompt contract", () => {
   })
 
   test("requires CSV plus manifest and forbids estimated metrics", () => {
-    expect(PROMPT_DATA_EXTRACTOR).toContain("exactly one OHLCV CSV plus one `.manifest.json`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Call `finny_dataset_evidence_finalize` exactly once")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Never hand-write or patch a `.manifest.json`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("workspace_slug")
     expect(PROMPT_DATA_EXTRACTOR).toContain("`not_returned`")
   })
@@ -198,7 +205,7 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("Form an extraction plan before the first fetch command")
     expect(PROMPT_DATA_EXTRACTOR).toContain("selected source and fallback source")
     expect(PROMPT_DATA_EXTRACTOR).toContain("source-capability preflight")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Before returning, read back the saved CSV and manifest")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Call `finny_dataset_evidence_finalize` exactly once")
     expect(PROMPT_DATA_EXTRACTOR).toContain("Attempt the full requested window first")
     expect(PROMPT_DATA_EXTRACTOR).toContain("do not silently shorten the request")
     expect(PROMPT_DATA_EXTRACTOR).toContain("mark coverage as partial")
@@ -251,7 +258,8 @@ describe("data-agent instructions contract", () => {
     expect(instructions).toContain("yfinance as yf")
     expect(instructions).not.toContain("finny secret set")
     expect(instructions).toContain("manifest")
-    expect(instructions).toContain("\"rows\": 252")
+    expect(instructions).toContain("finny_dataset_evidence_finalize")
+    expect(instructions).toContain("Never write, copy, or patch a manifest in bash")
     expect(instructions).toContain("high >= max(open, close)")
     expect(instructions).toContain("low <= min(open, close)")
     expect(instructions).not.toContain("high >= low >= close >= open")
@@ -285,24 +293,26 @@ describe("data-agent instructions contract", () => {
     expect(alpaca).toContain("name: finny-provider-alpaca")
     expect(alpaca).toContain("ALPACA_API_KEY_ID")
     expect(alpaca).toContain("next_page_token")
-    expect(alpaca).toContain('source: "alpaca"')
+    expect(alpaca).toContain("finny_dataset_evidence_finalize")
 
     expect(binance).toContain("name: finny-provider-binance")
     expect(binance).toContain("BTC/USD")
     expect(binance).toContain("limit=1000")
     expect(binance).toContain("next startTime")
-    expect(binance).toContain('source: "binance"')
+    expect(binance).toContain("finny_dataset_evidence_finalize")
 
     expect(polygon).toContain("name: finny-provider-polygon")
     expect(polygon).toContain("POLYGON_API_KEY")
     expect(polygon).toContain("https://api.polygon.io/v2/aggs/ticker")
     expect(polygon).toContain("adjusted=true")
     expect(polygon).toContain("entitlement/plan limit")
+    expect(polygon).toContain("Never write or patch the manifest yourself")
 
     expect(yfinance).toContain("name: finny-provider-yfinance")
     expect(yfinance).toContain("FINNY_PYTHON_BIN")
     expect(yfinance).toContain("Yahoo v8 chart HTTP API")
     expect(yfinance).toContain("provider-limit")
+    expect(yfinance).toContain("finny_dataset_evidence_finalize")
   })
 
   test("commits an env template without concrete secret values", async () => {

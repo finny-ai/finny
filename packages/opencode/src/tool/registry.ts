@@ -39,6 +39,7 @@ import { QuoteTool } from "./quote"
 import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
+import { DatasetEvidenceFinalizeTool } from "./dataset-evidence-finalize"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -168,6 +169,7 @@ export const layer = Layer.effect(
     const priceHistory = yield* PriceHistoryTool
     const portfolioBacktest = yield* PortfolioBacktestTool
     const discordRead = yield* DiscordReadTool
+    const datasetEvidenceFinalize = yield* DatasetEvidenceFinalizeTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -312,6 +314,7 @@ export const layer = Layer.effect(
           priceHistory: Tool.init(priceHistory),
           portfolioBacktest: Tool.init(portfolioBacktest),
           discordRead: Tool.init(discordRead),
+          datasetEvidenceFinalize: Tool.init(datasetEvidenceFinalize),
         })
 
         return {
@@ -360,6 +363,7 @@ export const layer = Layer.effect(
             tool.priceHistory,
             tool.portfolioBacktest,
             tool.discordRead,
+            tool.datasetEvidenceFinalize,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],

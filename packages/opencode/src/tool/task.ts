@@ -219,25 +219,41 @@ function dataExtractorValidationContext(
 }
 
 async function readWorkspaceDateWindow(requestID: string): Promise<{
+  authoritative: boolean
   requested_start?: string
   requested_end?: string
   requested_interval?: string
 }> {
   const spec = await readRequestSpec({ requestID })
-  if (!spec) return {}
+  if (!spec) return { authoritative: false }
   return {
+    authoritative: true,
     requested_start: spec.requested_start,
     requested_end: spec.requested_end,
     requested_interval: spec.requested_interval,
   }
 }
 
-function unapprovedExtendedDataWindowBlock(input: {
+function dataExtractorWindowBlock(input: {
   prompt: string
   workspace: string | null
-  existing: { requested_start?: string; requested_end?: string; requested_interval?: string }
+  existing: {
+    authoritative: boolean
+    requested_start?: string
+    requested_end?: string
+    requested_interval?: string
+  }
 }): string | undefined {
   if (input.existing.requested_start && input.existing.requested_end) return undefined
+  if (input.existing.authoritative) {
+    return [
+      "BLOCKED: incomplete authoritative data window.",
+      "The parent RequestSpec must contain both requested_start and requested_end before data_extractor can launch.",
+      "Call `finny_workspace_prepare` again with a supported `duration`, or with explicit `startDate` and `endDate`, then relaunch data_extractor.",
+      "Do not infer dates only inside the child prompt or edit runtime RequestSpec storage directly.",
+      `workspace=${input.workspace ?? "MISSING"}.`,
+    ].join(" ")
+  }
 
   const promptWindow = extractDateWindow(input.prompt)
   const days = dateWindowDays(promptWindow.start, promptWindow.end)
@@ -513,14 +529,14 @@ export function withFinnySubagentContext(
       ...renderDataProviderCapabilities(providerCapabilities),
       "- provider_skill_policy: load only the runtime-advertised skill_id for the selected provider; never probe guessed skill IDs or cookbook paths.",
       "- provider_outcomes: retrieval_success | provider_failure | coverage_failure | schema_failure; preserve this exact failure layer in the parent result.",
-      "- runtime_owned_manifest_fields: output_path (derived from the emitted CSV artifact), manifest path, and canonical artifact_paths are normalized by the evidence runtime.",
+      "- runtime_owned_manifest_fields: request identity, output and manifest paths, calendar reconciliation, quality counts, hashes, qualification, and canonical artifact_paths are produced by finny_dataset_evidence_finalize.",
       "- end_date_semantics: the end date is INCLUSIVE; its bars are part of the window. Provider end/endTime params are timestamp bounds, so pass end date + 1 day as the fetch bound (e.g. end 2026-07-02 -> end=2026-07-03T00:00:00Z for Alpaca/yfinance/Binance; Polygon /range/ is date-inclusive, pass as-is). Passing the bare end date drops the final session and falsely reads as partial coverage.",
       dataWindow.adjusted
         ? "- window_adjustment: intraday rolling window capped at the last fully completed UTC date; do not require future bars from the current UTC day."
         : undefined,
       "",
       "Use `data-agent/instructions.md` as the source cookbook. Do not read `algos/_template/README.md`; it is outside the Data Agent read contract.",
-      "Set bash `workdir` to `allowed_data_dir` for writes. Manifests must record requested_start/requested_end separately from actual_start/actual_end computed from saved rows.",
+      "Set bash `workdir` to `allowed_data_dir` for CSV and analysis writes. Never hand-write a manifest; call finny_dataset_evidence_finalize after the CSV is verified.",
       "</finny-subagent-context>",
       "",
       prompt,
@@ -803,24 +819,28 @@ const taskExecutor = Effect.gen(function* () {
       if (!next) {
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
-      const preflightConflict = mandatoryEvidence
-        ? yield* Effect.promise(async () => {
-            const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
-            if (!parentWorkspace) return undefined
-            const promptFacts = parseRequestFacts(params.prompt)
-            const parentFacts = await readRuntimeRequestFacts(ctx.sessionID)
-            if (parentFacts.requested_symbols?.length) {
-              return promptConflictWithParentRequest(parentFacts, promptFacts)
-            }
-            if (!requestHasIdentity(parentFacts) || promptFacts.requested_symbols?.length) return undefined
-            return dataRequestContextMismatchBlock({
-              prompt: params.prompt,
-              workspace: parentWorkspace,
-              context: parentFacts as WorkspaceRequestContext,
-            })
-          })
-        : undefined
-      if (preflightConflict) {
+      const preflightBlock = yield* Effect.promise(async () => {
+        const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+        if (mandatoryEvidence && parentWorkspace) {
+          const promptFacts = parseRequestFacts(params.prompt)
+          const parentFacts = await readRuntimeRequestFacts(ctx.sessionID)
+          const conflict = parentFacts.requested_symbols?.length
+            ? promptConflictWithParentRequest(parentFacts, promptFacts)
+            : requestHasIdentity(parentFacts) && !promptFacts.requested_symbols?.length
+              ? dataRequestContextMismatchBlock({
+                  prompt: params.prompt,
+                  workspace: parentWorkspace,
+                  context: parentFacts as WorkspaceRequestContext,
+                })
+              : undefined
+          if (conflict) return conflict
+        }
+        if (params.subagent_type !== "data_extractor") return undefined
+        const existing = await readWorkspaceDateWindow(String(ctx.sessionID))
+        if (!existing.authoritative) return undefined
+        return dataExtractorWindowBlock({ prompt: params.prompt, workspace: parentWorkspace, existing })
+      })
+      if (preflightBlock) {
         return {
           title: params.description,
           metadata: { parentSessionId: ctx.sessionID, sessionId: ctx.sessionID },
@@ -829,9 +849,9 @@ const taskExecutor = Effect.gen(function* () {
             state: "completed",
             summary: "Evidence request rejected before launch",
             text: [
-              preflightConflict,
+              preflightBlock,
               "The invalid task was not registered and did not terminalize this Build run.",
-              "Retry once with the exact authoritative request identity shown above; do not substitute a proxy symbol.",
+              "Retry once after correcting the authoritative request identity above.",
             ].join("\n"),
           }),
         }
@@ -1132,7 +1152,7 @@ const taskExecutor = Effect.gen(function* () {
         }
         if (params.subagent_type === "data_extractor") {
           const existingWindow = yield* Effect.promise(() => readWorkspaceDateWindow(String(ctx.sessionID)))
-          const dateBlock = unapprovedExtendedDataWindowBlock({
+          const dateBlock = dataExtractorWindowBlock({
             prompt: params.prompt,
             workspace,
             existing: existingWindow,

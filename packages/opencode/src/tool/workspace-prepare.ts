@@ -53,6 +53,80 @@ const parameters = z.object({
     ),
 })
 
+type WorkspacePrepareParams = z.infer<typeof parameters>
+
+type WorkspacePrepareWindow = {
+  startDate?: string
+  endDate?: string
+  error?: string
+}
+
+const DURATION_UNITS: Record<string, "d" | "w" | "m" | "y"> = {
+  d: "d",
+  day: "d",
+  days: "d",
+  w: "w",
+  week: "w",
+  weeks: "w",
+  m: "m",
+  month: "m",
+  months: "m",
+  y: "y",
+  year: "y",
+  years: "y",
+}
+
+function formatUtcDate(value: Date): string {
+  return value.toISOString().slice(0, 10)
+}
+
+function subtractCalendarMonths(value: Date, months: number): Date {
+  const day = value.getUTCDate()
+  const shifted = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() - months, 1))
+  const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate()
+  shifted.setUTCDate(Math.min(day, lastDay))
+  return shifted
+}
+
+function parseDuration(duration: string): { count: number; unit: "d" | "w" | "m" | "y" } | undefined {
+  const match = /^(\d+|one)\s*(d|day|days|w|week|weeks|m|month|months|y|year|years)$/i.exec(duration.trim())
+  if (!match) return undefined
+  const count = match[1].toLowerCase() === "one" ? 1 : Number.parseInt(match[1], 10)
+  const unit = DURATION_UNITS[match[2].toLowerCase()]
+  if (!Number.isFinite(count) || count <= 0 || !unit) return undefined
+  return { count, unit }
+}
+
+export function resolveWorkspacePrepareWindow(
+  params: Pick<WorkspacePrepareParams, "duration" | "startDate" | "endDate">,
+  now = new Date(),
+): WorkspacePrepareWindow {
+  if (params.startDate || params.endDate) {
+    if (!params.startDate || !params.endDate) {
+      return {
+        error:
+          "Incomplete date window: provide both startDate and endDate, or omit both and provide a supported duration.",
+      }
+    }
+    return { startDate: params.startDate, endDate: params.endDate }
+  }
+  if (!params.duration) return {}
+  const parsed = parseDuration(params.duration)
+  if (!parsed) return {}
+
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  const start = new Date(end)
+  if (parsed.unit === "d") start.setUTCDate(start.getUTCDate() - parsed.count)
+  if (parsed.unit === "w") start.setUTCDate(start.getUTCDate() - parsed.count * 7)
+  if (parsed.unit === "m") {
+    return { startDate: formatUtcDate(subtractCalendarMonths(end, parsed.count)), endDate: formatUtcDate(end) }
+  }
+  if (parsed.unit === "y") {
+    return { startDate: formatUtcDate(subtractCalendarMonths(end, parsed.count * 12)), endDate: formatUtcDate(end) }
+  }
+  return { startDate: formatUtcDate(start), endDate: formatUtcDate(end) }
+}
+
 type WorkspacePrepareMetadata = {
   workspaceSlug?: string
   workspacePath?: string
@@ -77,7 +151,7 @@ function latestUserText(messages: Tool.Context["messages"]): string {
   return ""
 }
 
-export function promptFromParams(params: z.infer<typeof parameters>, fallback: string): string {
+export function promptFromParams(params: WorkspacePrepareParams, fallback: string): string {
   const fields: Array<[string, string | undefined]> = [
     ["algorithm", params.algorithmName],
     ["symbol", params.symbol],
@@ -100,7 +174,7 @@ export function promptFromParams(params: z.infer<typeof parameters>, fallback: s
   return fallback
 }
 
-function structuredRequestFacts(params: z.infer<typeof parameters>): RequestFacts {
+function structuredRequestFacts(params: WorkspacePrepareParams): RequestFacts {
   return {
     requested_symbol: params.symbol,
     requested_symbols: params.symbols,
@@ -111,11 +185,11 @@ function structuredRequestFacts(params: z.infer<typeof parameters>): RequestFact
 }
 
 export function workspacePrepareIdentityConflict(
-  params: Pick<z.infer<typeof parameters>, "symbol" | "symbols" | "assetClass" | "interval">,
+  params: Pick<WorkspacePrepareParams, "symbol" | "symbols" | "assetClass" | "interval">,
   userPrompt: string,
 ): string | undefined {
   const user = parseRequestFacts(userPrompt)
-  const requested = structuredRequestFacts(params as z.infer<typeof parameters>)
+  const requested = structuredRequestFacts(params as WorkspacePrepareParams)
   const userSymbol = normalizeSymbol(user.requested_symbol)
   const toolSymbol = normalizeSymbol(requested.requested_symbol)
   const userSymbols = user.requested_symbols?.map(normalizeSymbol).filter((value): value is string => Boolean(value))
@@ -173,10 +247,15 @@ export const WorkspacePrepareTool = Tool.define<
     description:
       "Create or bind the session strategy workspace from request identity before evidence subagents, save, validate, or backtest. Returns the workspace slug, path, and request context; do not manually invent repo-root workspace paths.",
     parameters,
-    execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
+    execute: (params: WorkspacePrepareParams, ctx: Tool.Context) =>
       Effect.promise(async () => {
+        const window = resolveWorkspacePrepareWindow(params)
+        if (window.error) {
+          return { title: "Workspace prepare failed", output: window.error, metadata: {} }
+        }
+        const effectiveParams: WorkspacePrepareParams = { ...params, ...window }
         const userText = latestUserText(ctx.messages)
-        const identityConflict = workspacePrepareIdentityConflict(params, userText)
+        const identityConflict = workspacePrepareIdentityConflict(effectiveParams, userText)
         if (identityConflict) {
           return {
             title: "Workspace prepare rejected",
@@ -192,7 +271,7 @@ export const WorkspacePrepareTool = Tool.define<
           metadata: {},
         })
 
-        const prompt = promptFromParams(params, userText)
+        const prompt = promptFromParams(effectiveParams, userText)
         if (!prompt.trim()) {
           return {
             title: "Workspace prepare failed",
@@ -207,13 +286,13 @@ export const WorkspacePrepareTool = Tool.define<
         const workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
         let workflowProjection: Record<string, unknown> | undefined
         const hasStructuredIdentity = Boolean(
-          params.symbol ||
-          params.symbols?.length ||
-          params.assetClass ||
-          params.interval ||
-          params.algorithmName ||
-          params.strategyIntent ||
-          (params.startDate && params.endDate),
+          effectiveParams.symbol ||
+          effectiveParams.symbols?.length ||
+          effectiveParams.assetClass ||
+          effectiveParams.interval ||
+          effectiveParams.algorithmName ||
+          effectiveParams.strategyIntent ||
+          (effectiveParams.startDate && effectiveParams.endDate),
         )
         if (workflow && hasStructuredIdentity) {
           const source = {
@@ -221,7 +300,11 @@ export const WorkspacePrepareTool = Tool.define<
             tool: "finny_workspace_prepare",
             callId: String(ctx.callID),
           }
-          const symbols = params.symbols?.length ? params.symbols : params.symbol ? [params.symbol] : undefined
+          const symbols = effectiveParams.symbols?.length
+            ? effectiveParams.symbols
+            : effectiveParams.symbol
+              ? [effectiveParams.symbol]
+              : undefined
           const transitioned = await Effect.runPromise(
             transitionWorkflowIdentity({
               sessionId: ctx.sessionID,
@@ -230,12 +313,16 @@ export const WorkspacePrepareTool = Tool.define<
               identity: {
                 ...workflow.identity,
                 ...(symbols ? { symbols: { value: symbols, source } } : {}),
-                ...(params.assetClass ? { assetClass: { value: params.assetClass, source } } : {}),
-                ...(params.interval ? { interval: { value: params.interval, source } } : {}),
-                ...(params.algorithmName ? { algorithmName: { value: params.algorithmName, source } } : {}),
-                ...(params.strategyIntent ? { strategyFamily: { value: params.strategyIntent, source } } : {}),
-                ...(params.startDate && params.endDate
-                  ? { window: { value: { start: params.startDate, end: params.endDate }, source } }
+                ...(effectiveParams.assetClass ? { assetClass: { value: effectiveParams.assetClass, source } } : {}),
+                ...(effectiveParams.interval ? { interval: { value: effectiveParams.interval, source } } : {}),
+                ...(effectiveParams.algorithmName
+                  ? { algorithmName: { value: effectiveParams.algorithmName, source } }
+                  : {}),
+                ...(effectiveParams.strategyIntent
+                  ? { strategyFamily: { value: effectiveParams.strategyIntent, source } }
+                  : {}),
+                ...(effectiveParams.startDate && effectiveParams.endDate
+                  ? { window: { value: { start: effectiveParams.startDate, end: effectiveParams.endDate }, source } }
                   : {}),
               },
             }).pipe(Effect.provideService(Database.Service, database)),
@@ -243,7 +330,7 @@ export const WorkspacePrepareTool = Tool.define<
           if (transitioned) workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
         }
 
-        const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(params))
+        const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(effectiveParams))
         if (!prepared) {
           return {
             title: "Workspace prepare skipped",
@@ -262,7 +349,7 @@ export const WorkspacePrepareTool = Tool.define<
                 sessionID: ctx.sessionID,
                 slug: prepared.slug,
                 prompt,
-                facts: structuredRequestFacts(params),
+                facts: structuredRequestFacts(effectiveParams),
                 recordExplicitRequestContext: true,
                 actor: "user",
                 reason: "finny_workspace_prepare explicit request context",

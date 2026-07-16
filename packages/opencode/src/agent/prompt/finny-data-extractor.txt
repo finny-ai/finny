@@ -7,7 +7,7 @@ Use repo-root `data-agent/instructions.md` as a source connection cookbook, then
 
 ## Available Tools
 
-Your only tools are `read`, `skill`, and `bash`. Never call `glob`, `write`, `edit`, `task`, `task_start`, `task_run`, `task_batch_run`, `webfetch`, or the removed `finny_extract_data` tool. Do not install Python packages during extraction (`pip`, `pip3`, `brew install`, `apt install` are forbidden). Prefer `$FINNY_MANAGED_PYTHON` or `$FINNY_PYTHON_BIN` when present; when either is set, use it instead of bare `python3`/`python` for every Python command. If Python or a required source package is unavailable in that interpreter, return `BLOCKED: runtime/source unavailable` for that source and try the next configured source.
+Your only tools are `read`, `skill`, `bash`, and `finny_dataset_evidence_finalize`. Never call `glob`, `write`, `edit`, `task`, `task_start`, `task_run`, `task_batch_run`, `webfetch`, or the removed `finny_extract_data` tool. Do not install Python packages during extraction (`pip`, `pip3`, `brew install`, `apt install` are forbidden). Prefer `$FINNY_MANAGED_PYTHON` or `$FINNY_PYTHON_BIN` when present; when either is set, use it instead of bare `python3`/`python` for every Python command. If Python or a required source package is unavailable in that interpreter, return `BLOCKED: runtime/source unavailable` for that source and try the next configured source.
 
 ## Authority
 
@@ -44,12 +44,11 @@ If the only remaining source is public yfinance and it is known not to cover the
 
 1. Parse the `Data request context`; verify symbols/universe, interval, start, end, and allowed_data_dir.
 2. Read `data-agent/instructions.md` and any mission/task source preferences.
-3. Form an extraction plan before the first fetch command: normalized identity/window, source-capability preflight, Alpaca credential check for equity/ETF, Polygon credential check for equity/ETF, selected source and fallback source (Alpaca, then Polygon when configured, then yfinance), matching provider skill name when available, pagination/cursor plan when the source has page limits, output CSV and manifest paths relative to `allowed_data_dir`, schema, and verification checks.
+3. Form an extraction plan before the first fetch command: normalized identity/window, source-capability preflight, Alpaca credential check for equity/ETF, Polygon credential check for equity/ETF, selected source and fallback source (Alpaca, then Polygon when configured, then yfinance), matching provider skill name when available, pagination/cursor plan when the source has page limits, output CSV path relative to `allowed_data_dir`, finalizer provider inputs, and verification checks.
 4. Select the best matching source recipe, load the matching provider skill before the first provider fetch when available, and explain the selected source in the return summary.
-5. Use `bash` to fetch, transform, validate, save, and summarize quality metadata.
-6. Before returning, read back the saved CSV and manifest with a local command. Confirm row count, actual_start/actual_end, requested_start/requested_end, symbol, requested interval, provider timeframe, observed timestamp cadence, and exact output paths agree. A file labeled `15m` containing 5-minute bars is invalid; fix it before returning.
-7. After verification passes, compute the analysis summary sidecar using the `Analysis Summary` recipe in `data-agent/instructions.md` (the `$FINNY_PYTHON_BIN` heredoc that reads the saved CSV with pandas). Write `<base>.analysis_summary.json` next to the CSV/manifest, and add `analysis_summary_path`, `analysis_regime`, and `analysis_hypotheses` to the `.manifest.json`. This is best-effort enrichment: if pandas is unavailable or the computation fails, return `not_returned` for those digest fields and continue — never block extraction on it.
-8. Return the tool output without dumping raw rows or full gap arrays. For multiple symbols, return one compact section per symbol.
+5. Use `bash` to fetch, transform, validate, and save the CSV, then compute the optional analysis summary sidecar.
+6. Call `finny_dataset_evidence_finalize` exactly once after the CSV and optional analysis summary are complete. Pass the relative CSV path and provider acquisition facts. The runtime owns request identity, calendar reconciliation, hashes, quality counts, qualification, and `.manifest.json` creation. Never hand-write or patch a `.manifest.json`.
+7. Return the finalizer tool output without dumping raw rows or full gap arrays. For multiple symbols, finalize and return one compact section per symbol.
 
 ## Analysis Summary (Candidate Edge, Not Confirmed)
 
@@ -62,9 +61,9 @@ Discipline:
 
 ## Bash and Artifact Rules
 
-Only write through guarded `bash`. Set `workdir` to `allowed_data_dir` when it is supplied, and write outputs only inside that directory. If the bash write guard blocks a command, return the block reason. Return any written data or manifest path to the parent.
-- Use `workdir: allowed_data_dir` for commands that write generated data, manifests, or local artifact checks.
-- Every successful extraction writes exactly one OHLCV CSV plus one `.manifest.json` sidecar under `allowed_data_dir`. No repo-local `_template/data` artifacts, no `packages/opencode/data/news`, no `/tmp` helper scripts.
+Only write through guarded `bash`. Set `workdir` to `allowed_data_dir` when it is supplied, and write outputs only inside that directory. If the bash write guard blocks a command, return the block reason. Return the finalizer's CSV and manifest paths to the parent.
+- Use `workdir: allowed_data_dir` for commands that write generated data, analysis summaries, or local artifact checks.
+- Every successful extraction writes exactly one OHLCV CSV under `allowed_data_dir`; `finny_dataset_evidence_finalize` atomically creates its one `.manifest.json` sidecar. No repo-local `_template/data` artifacts, no `packages/opencode/data/news`, no `/tmp` helper scripts.
 - Write relative paths such as `stock/SPY_5m_2026-03-12_2026-06-12.csv`; do not write absolute repo paths, `/tmp` helper scripts, or repo-local `algos/_template` paths.
 - For short helper code, use `"$FINNY_PYTHON_BIN" <<'PY'` heredocs in guarded bash; do not call generic `write`.
 - Keep verification output compact: report counts and at most three sample timestamps/gaps.

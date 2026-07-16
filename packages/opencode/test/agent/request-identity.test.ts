@@ -129,6 +129,15 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_asset_class).toBe("crypto")
   })
 
+  test("does not mistake OHLCV for the symbol in historical data prompts", () => {
+    const facts = parseRequestFacts(
+      "Extract historical OHLCV data for BTC covering the last 2 years with a 1d interval.",
+    )
+    expect(facts.requested_symbol).toBe("BTC")
+    expect(facts.requested_interval).toBe("1d")
+    expect(facts.requested_asset_class).toBe("crypto")
+  })
+
   test("scopes bare daily interval parsing to timeframe context", () => {
     expect(parseRequestFacts("SOL daily market data").requested_interval).toBe("1d")
     expect(parseRequestFacts("Build a SOL daily strategy with max drawdown 10%.").requested_interval).toBe("1d")

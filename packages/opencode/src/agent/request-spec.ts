@@ -409,8 +409,15 @@ export async function requestProjectionMatches(input: { workspaceDir: string; sp
 
 /** Hard shell boundary: model-issued commands may not address the runtime store. */
 export function assertNoRuntimeRequestSpecPath(input: { command: string }): void {
-  if (/(?:^|[\\/])request-specs(?:[\\/\s'"$]|$)/i.test(input.command)) {
+  const normalized = input.command
+    .toLowerCase()
+    .replace(/[\s'"`+]/g, "")
+    .replaceAll("\\", "/")
+  if (normalized.includes("request-specs")) {
     throw new Error("Shell access blocked: runtime RequestSpec storage is runtime-owned and not model-writable.")
+  }
+  if (/opencode(?:-local|-dev)?\.db(?:-wal|-shm)?/.test(normalized)) {
+    throw new Error("Shell access blocked: the runtime state database is runtime-owned and not model-writable.")
   }
 }
 

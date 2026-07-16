@@ -68,6 +68,7 @@ const ALL_TOOL_IDS = [
   "finny_get_history",
   "finny_portfolio_backtest",
   "finny_discord_read",
+  "finny_dataset_evidence_finalize",
 ]
 
 const EXPECTED_TOOLS = {
@@ -154,7 +155,7 @@ const EXPECTED_TOOLS = {
     "task_start",
     "webfetch",
   ],
-  data_extractor: ["bash", "read", "skill"],
+  data_extractor: ["bash", "finny_dataset_evidence_finalize", "read", "skill"],
   news_agent: ["apply_patch", "edit", "finny_discord_read", "read", "webfetch", "websearch", "write"],
   sec_agent: ["apply_patch", "bash", "edit", "read", "webfetch", "websearch", "write"],
 }

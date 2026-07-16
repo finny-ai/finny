@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test"
-import { promptFromParams, workspacePrepareIdentityConflict } from "../../src/tool/workspace-prepare"
+import {
+  promptFromParams,
+  resolveWorkspacePrepareWindow,
+  workspacePrepareIdentityConflict,
+} from "../../src/tool/workspace-prepare"
 import { findLatestReviewPacketInRoots } from "../../src/tool/review-packet"
 import { parseRequestFacts } from "../../src/agent/request-identity"
 import fs from "node:fs/promises"
@@ -7,6 +11,36 @@ import os from "node:os"
 import path from "node:path"
 
 describe("workspace prepare request context", () => {
+  test("resolves a one-year duration to an absolute UTC date window", () => {
+    expect(resolveWorkspacePrepareWindow({ duration: "1y" }, new Date("2026-07-16T18:30:00-04:00"))).toEqual({
+      startDate: "2025-07-16",
+      endDate: "2026-07-16",
+    })
+  })
+
+  test("preserves explicit dates when duration is also supplied", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "1y", startDate: "2024-01-02", endDate: "2025-01-02" },
+        new Date("2026-07-16T00:00:00Z"),
+      ),
+    ).toEqual({ startDate: "2024-01-02", endDate: "2025-01-02" })
+  })
+
+  test("clamps calendar-month subtraction at month end", () => {
+    expect(resolveWorkspacePrepareWindow({ duration: "one month" }, new Date("2026-03-31T12:00:00Z"))).toEqual({
+      startDate: "2026-02-28",
+      endDate: "2026-03-31",
+    })
+  })
+
+  test("rejects a partial explicit date window", () => {
+    expect(resolveWorkspacePrepareWindow({ duration: "1y", startDate: "2025-07-16" })).toEqual({
+      error:
+        "Incomplete date window: provide both startDate and endDate, or omit both and provide a supported duration.",
+    })
+  })
+
   test("puts structured dates before summary dates", () => {
     const prompt = promptFromParams(
       {

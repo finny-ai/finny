@@ -216,7 +216,9 @@ function recognizeExplicitSymbol(
   if (opts.requireUppercaseForUnknown && cleaned !== cleaned.toUpperCase()) return undefined
   const upper = cleaned.toUpperCase()
   if (!TICKERISH_RE.test(upper) || NON_TRADEABLE_ACRONYMS.has(upper)) return undefined
-  if (opts.rejectAmbiguousUnknown && AMBIGUOUS_TICKER_TOKENS.has(upper)) return undefined
+  if (opts.rejectAmbiguousUnknown && (AMBIGUOUS_TICKER_TOKENS.has(upper) || TICKER_STOPWORDS.has(upper))) {
+    return undefined
+  }
 
   const resolved = resolveSymbol(upper)
   if (!resolved) return undefined

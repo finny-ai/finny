@@ -25,7 +25,7 @@ import {
   TaskTool,
   type TaskPromptOps,
 } from "../../src/tool/task"
-import { WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
+import { resolveWorkspacePrepareWindow, WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -449,6 +449,58 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("launches the original BTC OHLCV prompt without treating OHLCV as an equity symbol", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "btc-daily-momentum.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Build a BTC crypto momentum strategy with daily bars over the last 2 years.",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const result = yield* def.execute(
+            {
+              description: "BTC daily data extraction",
+              prompt: "Extract historical OHLCV data for BTC covering the last 2 years with a 1d interval.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("data request context mismatch")
+          expect(seen).toBeDefined()
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- symbols or universe: BTC")
+          expect(text).toContain("- interval: 1d")
+          expect(text).toContain("- asset_class when known: crypto")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("rebinds stale parent workspace when data_extractor prompt carries a new stock universe", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -678,20 +730,20 @@ describe("tool.task", () => {
     ),
   )
 
-  it.live("blocks generated multi-year data windows when the workspace has no approved dates", () =>
+  it.live("blocks a one-year data task before launch when authoritative dates are missing", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const prev = process.env.XDG_DATA_HOME
         process.env.XDG_DATA_HOME = dir
         try {
           const { chat, assistant } = yield* seed()
-          const slug = "qqq-1d-trend-following.1.1.00.00"
+          const slug = "eth-1d-custom.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
           yield* Effect.promise(() =>
             syncWorkspaceRequestContext({
               sessionID: chat.id,
               slug,
-              prompt: "Research QQQ 1d trend following for equities.",
+              prompt: "Research ETH.USD 1d custom strategy for crypto.",
             }),
           )
 
@@ -702,9 +754,8 @@ describe("tool.task", () => {
 
           const result = yield* def.execute(
             {
-              description: "QQQ long history data extraction",
-              prompt:
-                "Fetch QQQ daily OHLCV from 2014-01-01 to 2026-07-08. Aim for the longest clean daily history you can get (>= 3000 bars desired).",
+              description: "ETH one-year data extraction",
+              prompt: "Fetch ETH.USD daily OHLCV from 2025-07-16 to 2026-07-16.",
               subagent_type: "data_extractor",
             },
             {
@@ -720,13 +771,13 @@ describe("tool.task", () => {
           )
 
           expect(prompted).toBe(false)
-          expect(result.output).toContain("BLOCKED: unapproved extended data window")
-          expect(result.output).toContain("Ask the user with the `question` tool")
+          expect(result.output).toContain("BLOCKED: incomplete authoritative data window")
+          expect(result.output).toContain("The invalid task was not registered")
 
           const request = JSON.parse(
             yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
           )
-          expect(request.requested_symbol).toBe("QQQ")
+          expect(request.requested_symbol).toBe("ETH")
           expect(request.requested_interval).toBe("1d")
           expect(request.requested_start).toBeUndefined()
           expect(request.requested_end).toBeUndefined()
@@ -775,7 +826,7 @@ describe("tool.task", () => {
               ask: () => Effect.void,
             },
           )
-          expect(blocked.output).toContain("BLOCKED: unapproved extended data window")
+          expect(blocked.output).toContain("BLOCKED: incomplete authoritative data window")
 
           const workspaceTool = yield* WorkspacePrepareTool
           const workspaceDef = yield* workspaceTool.init()
@@ -825,10 +876,80 @@ describe("tool.task", () => {
             },
           )
 
-          expect(allowed.output).not.toContain("BLOCKED: unapproved extended data window")
+          expect(allowed.output).not.toContain("BLOCKED: incomplete authoritative data window")
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("- start date as absolute YYYY-MM-DD: 2025-06-30")
           expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-30")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("persists absolute dates from duration before launching data extraction", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "eth-1d-custom.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          const expected = resolveWorkspacePrepareWindow({ duration: "1y" })
+
+          const workspaceTool = yield* WorkspacePrepareTool
+          const workspaceDef = yield* workspaceTool.init()
+          yield* workspaceDef.execute(
+            {
+              algorithmName: "eth-1d-custom",
+              symbol: "ETH.USD",
+              assetClass: "crypto",
+              interval: "1d",
+              duration: "1y",
+              strategyIntent: "custom",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          const request = JSON.parse(
+            yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
+          )
+          expect(request.requested_start).toBe(expected.startDate)
+          expect(request.requested_end).toBe(expected.endDate)
+
+          const taskTool = yield* TaskRunTool
+          const taskDef = yield* taskTool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const result = yield* taskDef.execute(
+            {
+              description: "ETH one-year data extraction",
+              prompt: `Fetch ETH.USD daily OHLCV from ${expected.startDate} to ${expected.endDate}.`,
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("BLOCKED: incomplete authoritative data window")
+          expect(seen).toBeDefined()
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
