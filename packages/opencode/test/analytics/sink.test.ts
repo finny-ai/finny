@@ -49,7 +49,7 @@ describe("TelemetrySink", () => {
     await TelemetrySink.flush()
     await TelemetrySink.drain()
 
-    expect(capturedUrl).toBe("https://usable-rook-135.convex.site/ingest/telemetry")
+    expect(capturedUrl).toBe("https://wry-mastiff-821.convex.site/ingest/telemetry")
     const headers = capturedInit?.headers as Record<string, string> | undefined
     expect(headers?.["x-finny-telemetry-secret"]).toBeUndefined()
     const body = JSON.parse(String(capturedInit?.body))

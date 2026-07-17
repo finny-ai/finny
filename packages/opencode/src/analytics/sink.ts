@@ -9,7 +9,7 @@ const log = Log.create({ service: "telemetry-sink" })
 // NOTE: this changes if the Convex project is re-provisioned (deleted +
 // recreated). It must be updated here, or overridden at runtime via
 // FINNY_TELEMETRY_URL, otherwise telemetry silently drops (fire-and-forget).
-const DEFAULT_URL = "https://usable-rook-135.convex.site/ingest/telemetry"
+const DEFAULT_URL = "https://wry-mastiff-821.convex.site/ingest/telemetry"
 const MAX_BATCH = 50
 const FLUSH_DEBOUNCE_MS = 5_000
 const MAX_BUFFER = 5_000
