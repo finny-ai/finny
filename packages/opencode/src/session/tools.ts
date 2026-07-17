@@ -23,6 +23,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
+import { contextPhaseExecutionBlock, type ContextPhaseGate } from "@/task/strategy-context"
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -33,6 +34,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
   definitions?: Tool.Def[]
+  includeMcpTools?: boolean
+  strategyContextGate?: ContextPhaseGate
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -96,7 +99,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const executeRegisteredTool = (item: Tool.Def, runtimeArgs: any, options: ToolExecutionOptions) =>
     Effect.gen(function* () {
       const ctx = context(runtimeArgs, options)
-      const result = yield* item.execute(runtimeArgs, ctx)
+      const blocked = contextPhaseExecutionBlock(item.id, input.strategyContextGate)
+      const result = blocked ?? (yield* item.execute(runtimeArgs, ctx))
       const output = {
         ...result,
         attachments: result.attachments?.map((attachment) => ({
@@ -131,7 +135,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  for (const [key, item] of Object.entries(yield* mcp.tools())) {
+  const mcpTools = input.includeMcpTools === false ? {} : yield* mcp.tools()
+  for (const [key, item] of Object.entries(mcpTools)) {
     const execute = item.execute
     if (!execute) continue
 

@@ -9,7 +9,18 @@
 // The view itself is stateless except for derived memos.
 /** @jsxImportSource @opentui/solid */
 import { useTerminalDimensions } from "@opentui/solid"
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import {
+  For,
+  Match,
+  Show,
+  Switch,
+  createEffect,
+  createMemo,
+  createSignal,
+  onCleanup,
+  type Accessor,
+  type JSX,
+} from "solid-js"
 import "opentui-spinner/solid"
 import { createColors, createFrames } from "@opencode-ai/tui/ui/spinner"
 import {
@@ -24,6 +35,7 @@ import {
 import { FOOTER_MENU_ROWS, RunFooterMenu } from "./footer.menu"
 import { RunFooterSubagentBody } from "./footer.subagent"
 import { RunPromptBody, createPromptState } from "./footer.prompt"
+import { createFooterTodoTray, RunTodoPanel, RunTodoStatus } from "./footer.todo"
 import { RunPermissionBody } from "./footer.permission"
 import { RunQuestionBody } from "./footer.question"
 import { footerWidthPolicy } from "./footer.width"
@@ -52,6 +64,7 @@ import type {
   RunProvider,
   RunResource,
   RunTuiConfig,
+  ToolTodoSnapshot,
 } from "./types"
 import type { RunTheme } from "./theme"
 import { modelInfo } from "./variant.shared"
@@ -83,6 +96,7 @@ type RunFooterViewProps = {
   state: () => FooterState
   view?: () => FooterView
   subagent?: () => FooterSubagentState
+  todo?: () => ToolTodoSnapshot
   queuedPrompts?: () => FooterQueuedPrompt[]
   theme: () => RunTheme
   diffStyle?: RunDiffStyle
@@ -105,13 +119,30 @@ type RunFooterViewProps = {
   onModelSelect: (model: NonNullable<RunInput["model"]>) => void
   onVariantSelect: (variant: string | undefined) => void
   onRows: (rows: number) => void
-  onLayout: (input: { route: FooterPromptRoute; autocomplete: boolean; subagentRows: number }) => void
+  onLayout: (input: { route: FooterPromptRoute; autocomplete: boolean; subagentRows: number; todoRows: number }) => void
   onStatus: (text: string) => void
   onSubagentSelect?: (sessionID: string | undefined) => void
   onQueuedRemove: (messageID: string) => Promise<boolean>
 }
 
 export { TEXTAREA_MIN_ROWS, TEXTAREA_MAX_ROWS } from "./footer.prompt"
+
+function StableSubagentSurfaces(props: {
+  inspecting: Accessor<boolean>
+  composer: JSX.Element
+  inspector: JSX.Element
+}) {
+  return (
+    <>
+      <box id="run-direct-footer-composer-surface" visible={!props.inspecting()} width="100%" flexDirection="column">
+        {props.composer}
+      </box>
+      <box id="run-direct-footer-subagent-frame" visible={props.inspecting()} width="100%" flexGrow={1} flexShrink={1}>
+        {props.inspector}
+      </box>
+    </>
+  )
+}
 
 export function RunFooterView(props: RunFooterViewProps) {
   const term = useTerminalDimensions()
@@ -128,6 +159,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       }
     )
   })
+  const todo = createMemo<ToolTodoSnapshot>(() => props.todo?.() ?? { kind: "todo", items: [], tail: "" })
   const [route, setRoute] = createSignal<FooterPromptRoute>({ type: "composer" })
   const [subagentMenuRows, setSubagentMenuRows] = createSignal(RUN_SUBAGENT_PANEL_ROWS)
   const queuedPrompts = createMemo(() => props.queuedPrompts?.() ?? [])
@@ -157,6 +189,8 @@ export function RunFooterView(props: RunFooterViewProps) {
   })
   const tabs = createMemo(() => subagent().tabs)
   const activeTabs = createMemo(() => tabs().filter((item) => item.status === "running"))
+  const taskTrayTabs = createMemo(() => activeTabs().slice(0, 2))
+  const hiddenTaskCount = createMemo(() => Math.max(0, activeTabs().length - taskTrayTabs().length))
   const selectedTab = createMemo(() => tabs().find((item) => item.sessionID === selected()))
   const selectedIndex = createMemo(() => {
     const sessionID = selected()
@@ -380,6 +414,10 @@ export function RunFooterView(props: RunFooterViewProps) {
   })
   const shell = createMemo(() => prompt() && composer.shell())
   const menu = createMemo(() => prompt() && composer.visible())
+  const todoTray = createFooterTodoTray({
+    todo,
+    canExpand: () => prompt() && !shell() && !panel() && !menu(),
+  })
   const stateStatus = createMemo(() => props.state().status.trim())
   const modeLabel = createMemo(() => {
     if (exiting()) {
@@ -452,6 +490,8 @@ export function RunFooterView(props: RunFooterViewProps) {
   const statuslineBackground = createMemo(() => theme().status)
   const hasActivityMeta = createMemo(() => activityMeta().length > 0)
   const hasModelStatus = createMemo(() => responsive().statusline.showModel && Boolean(modelStatus()))
+  const hasTodoTray = createMemo(() => todoTray.hasTodos())
+  const hasTaskTray = createMemo(() => taskTrayTabs().length > 0)
   const contextHints = createMemo(() => {
     if (!prompt() || shell() || !responsive().statusline.showContextHints) {
       return []
@@ -465,7 +505,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       items.push({ kind: "queued", key: queuedShortcut(), label: `${queue()} queued` })
     }
     if (activeTabs().length > 0 && subagentShortcut()) {
-      items.push({ kind: "subagents", key: subagentShortcut(), label: "subagents" })
+      items.push({ kind: "subagents", key: subagentShortcut(), label: "open" })
     }
 
     const limit = responsive().statusline.contextHintLimit
@@ -516,6 +556,20 @@ export function RunFooterView(props: RunFooterViewProps) {
       ...props.tuiConfig.keybinds.get("command.palette.show"),
       ...props.tuiConfig.keybinds.get("variant.cycle"),
     ],
+  }))
+
+  useBindings(() => ({
+    mode: OPENCODE_BASE_MODE,
+    enabled: active().type === "prompt" && route().type === "composer" && todoTray.hasTodos(),
+    commands: [
+      {
+        name: "session.todo.toggle",
+        title: "Toggle task list",
+        category: "Session",
+        run: todoTray.toggle,
+      },
+    ],
+    bindings: [],
   }))
 
   useBindings(() => ({
@@ -616,6 +670,7 @@ export function RunFooterView(props: RunFooterViewProps) {
       route: route(),
       autocomplete: menu(),
       subagentRows: subagentMenuRows(),
+      todoRows: todoTray.rows(),
     })
   })
 
@@ -630,13 +685,18 @@ export function RunFooterView(props: RunFooterViewProps) {
       gap={0}
       padding={0}
     >
-      <Show when={panel() || inspecting()}>
-        <box id="run-direct-footer-panel-spacer" width="100%" height={1} flexShrink={0} backgroundColor="transparent" />
-      </Show>
+      <box
+        id="run-direct-footer-panel-spacer"
+        visible={panel() || inspecting()}
+        width="100%"
+        height={1}
+        flexShrink={0}
+        backgroundColor="transparent"
+      />
 
-      <Show
-        when={inspecting()}
-        fallback={
+      <StableSubagentSurfaces
+        inspecting={inspecting}
+        composer={
           <box width="100%" flexDirection="column" gap={0}>
             <For each={[promptView()]}>
               {() => (
@@ -667,28 +727,30 @@ export function RunFooterView(props: RunFooterViewProps) {
                     gap={0}
                   >
                     <box id="run-direct-footer-body" width="100%" flexGrow={1} flexShrink={1} flexDirection="column">
+                      <box visible={prompt()} width="100%">
+                        <RunPromptBody
+                          visible={prompt}
+                          theme={theme}
+                          background={() => runTheme().background}
+                          placeholder={composer.placeholder}
+                          onSubmit={composer.onSubmit}
+                          onKeyDown={composer.onKeyDown}
+                          onContentChange={composer.onContentChange}
+                          bind={composer.bind}
+                        />
+                      </box>
+                      <box visible={selectingSubagent()} width="100%">
+                        <RunSubagentSelectBody
+                          active={selectingSubagent}
+                          theme={theme}
+                          tabs={tabs}
+                          current={selected}
+                          onClose={closePanel}
+                          onSelect={openTab}
+                          onRows={setSubagentMenuRows}
+                        />
+                      </box>
                       <Switch>
-                        <Match when={active().type === "prompt" && route().type === "composer"}>
-                          <RunPromptBody
-                            theme={theme}
-                            background={() => runTheme().background}
-                            placeholder={composer.placeholder}
-                            onSubmit={composer.onSubmit}
-                            onKeyDown={composer.onKeyDown}
-                            onContentChange={composer.onContentChange}
-                            bind={composer.bind}
-                          />
-                        </Match>
-                        <Match when={selectingSubagent()}>
-                          <RunSubagentSelectBody
-                            theme={theme}
-                            tabs={tabs}
-                            current={selected}
-                            onClose={closePanel}
-                            onSelect={openTab}
-                            onRows={setSubagentMenuRows}
-                          />
-                        </Match>
                         <Match when={selectingQueued()}>
                           <RunQueuedPromptSelectBody
                             theme={theme}
@@ -816,6 +878,10 @@ export function RunFooterView(props: RunFooterViewProps) {
               />
             </Show>
 
+            <Show when={!panel() && !menu() && todoTray.expanded()}>
+              <RunTodoPanel tray={todoTray} theme={theme} width={width} />
+            </Show>
+
             <Show when={!panel() && !menu()}>
               <box
                 id="run-direct-footer-statusline"
@@ -910,6 +976,42 @@ export function RunFooterView(props: RunFooterViewProps) {
                   )}
                 </Show>
 
+                <RunTodoStatus tray={todoTray} theme={theme} separated={() => hasActivityMeta() || hasModelStatus()} />
+
+                <Show when={taskTrayTabs().length > 0}>
+                  <box
+                    id="run-direct-footer-statusline-task-tray"
+                    paddingRight={1}
+                    backgroundColor="transparent"
+                    flexShrink={0}
+                    maxWidth={48}
+                  >
+                    <text fg={theme().text} wrapMode="none" truncate>
+                      <For each={taskTrayTabs()}>
+                        {(item, index) => (
+                          <>
+                            <Show
+                              when={index() > 0}
+                              fallback={
+                                <Show when={hasActivityMeta() || hasModelStatus() || hasTodoTray()}>
+                                  {sectionSeparator()}
+                                </Show>
+                              }
+                            >
+                              <span style={{ fg: theme().muted }}> · </span>
+                            </Show>
+                            <span style={{ fg: theme().warning }}>● </span>
+                            <span style={{ fg: theme().text }}>{item.label}</span>
+                          </>
+                        )}
+                      </For>
+                      <Show when={hiddenTaskCount() > 0}>
+                        <span style={{ fg: theme().muted }}> +{hiddenTaskCount()}</span>
+                      </Show>
+                    </text>
+                  </box>
+                </Show>
+
                 <For each={contextHints()}>
                   {(hint, index) => (
                     <box
@@ -920,7 +1022,12 @@ export function RunFooterView(props: RunFooterViewProps) {
                       maxWidth={24}
                     >
                       <text fg={theme().text} wrapMode="none" truncate>
-                        <Show when={index() > 0 || ((hasActivityMeta() || hasModelStatus()) && index() === 0)}>
+                        <Show
+                          when={
+                            index() > 0 ||
+                            ((hasActivityMeta() || hasModelStatus() || hasTodoTray() || hasTaskTray()) && index() === 0)
+                          }
+                        >
                           {sectionSeparator()}
                         </Show>
                         <span style={{ fg: theme().text }}>{hint.key}</span>{" "}
@@ -940,7 +1047,11 @@ export function RunFooterView(props: RunFooterViewProps) {
                       maxWidth={18}
                     >
                       <text fg={theme().text} wrapMode="none" truncate>
-                        <Show when={hasActivityMeta() || hasModelStatus() || hasContextHints()}>
+                        <Show
+                          when={
+                            hasActivityMeta() || hasModelStatus() || hasTodoTray() || hasTaskTray() || hasContextHints()
+                          }
+                        >
                           {sectionSeparator()}
                         </Show>
                         <span style={{ fg: theme().text }}>{hint().key}</span>{" "}
@@ -953,33 +1064,34 @@ export function RunFooterView(props: RunFooterViewProps) {
             </Show>
           </box>
         }
-      >
-        <box
-          id="run-direct-footer-subagent-frame"
-          width="100%"
-          flexGrow={1}
-          flexShrink={1}
-          border={["left"]}
-          borderColor={theme().highlight}
-          customBorderChars={{
-            ...EMPTY_BORDER,
-            vertical: "┃",
-          }}
-        >
-          <RunFooterSubagentBody
-            active={inspecting}
-            theme={runTheme}
-            tab={selectedTab}
-            index={selectedIndex}
-            total={() => tabs().length}
-            detail={detail}
-            width={width}
-            diffStyle={props.diffStyle}
-            onCycle={cycleTab}
-            onClose={closeTab}
-          />
-        </box>
-      </Show>
+        inspector={
+          <box
+            id="run-direct-footer-subagent-content"
+            width="100%"
+            flexGrow={1}
+            flexShrink={1}
+            border={["left"]}
+            borderColor={theme().highlight}
+            customBorderChars={{
+              ...EMPTY_BORDER,
+              vertical: "┃",
+            }}
+          >
+            <RunFooterSubagentBody
+              active={inspecting}
+              theme={runTheme}
+              tab={selectedTab}
+              index={selectedIndex}
+              total={() => tabs().length}
+              detail={detail}
+              width={width}
+              diffStyle={props.diffStyle}
+              onCycle={cycleTab}
+              onClose={closeTab}
+            />
+          </box>
+        }
+      />
     </box>
   )
 }

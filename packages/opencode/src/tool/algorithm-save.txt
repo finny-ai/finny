@@ -10,6 +10,7 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **code** (required): The full strategy.py source code
 - **saveMode** (required): Either `"new"` or `"version"`. There is no default — you must choose every time. See **Choosing saveMode** below.
 - **docsMode**: Required with `saveMode: "version"`. Use `"inherit"` to snapshot the prior mission/preferences/risk unchanged, or `"replace"` to provide replacements. Decisions are append-only in either mode.
+- A successful save with advisory warnings is already valid and ready for backtesting. Do not create another version solely to clear an advisory warning; proceed with the requested backtest workflow.
 - **language**: Programming language, defaults to "python"
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.

@@ -1,6 +1,7 @@
 import { afterEach, expect } from "bun:test"
 import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
+import { realpathSync } from "fs"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
 import { Agent } from "../../src/agent/agent"
@@ -411,6 +412,92 @@ it.instance(
     config: {
       permission: {
         bash: "deny",
+      },
+    },
+  },
+)
+
+it.instance(
+  "Finny strategy sandbox overrides broad user mutation permissions",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const finny = yield* load((svc) => svc.get("finny"))
+      expect(finny).toBeDefined()
+      const source = path.join(test.directory, "packages/opencode/script/finalize-task.ts")
+      const mission = path.join(algosRoot(), "sandbox-test", "mission.md")
+
+      expect(Permission.evaluate("bash", "bun run script/finalize-task.ts", finny!.permission).action).toBe("deny")
+      expect(Permission.evaluate("shell", "bun run script/finalize-task.ts", finny!.permission).action).toBe("deny")
+      expect(Permission.evaluate("edit", source, finny!.permission).action).toBe("deny")
+      expect(Permission.evaluate("write", source, finny!.permission).action).toBe("deny")
+      expect(Permission.evaluate("edit", mission, finny!.permission).action).toBe("allow")
+      expect(Permission.evaluate("write", mission, finny!.permission).action).toBe("allow")
+    }),
+  {
+    config: {
+      permission: {
+        bash: "allow",
+        shell: "allow",
+        edit: "allow",
+        write: "allow",
+        apply_patch: "allow",
+      },
+    },
+  },
+)
+
+it.instance(
+  "Finny workspace permissions accept relative and canonical temp paths but reject repo source",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const configured = yield* Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = process.env.FINNY_HOME
+          const home = `/tmp/finny-agent-permission-${Math.random().toString(36).slice(2)}`
+          process.env.FINNY_HOME = home
+          return { previous, home }
+        }),
+        ({ home }) =>
+          load((svc) => svc.get("finny")).pipe(Effect.map((finny) => ({ finny, root: path.join(home, "algos") }))),
+        ({ previous }) =>
+          Effect.sync(() => {
+            if (previous === undefined) delete process.env.FINNY_HOME
+            else process.env.FINNY_HOME = previous
+          }),
+      )
+
+      const lexicalWorkspace = path.join(configured.root, "sandbox-test")
+      const canonicalRoot = path.join(realpathSync.native("/tmp"), path.relative("/tmp", configured.root))
+      const canonicalWorkspace = path.join(canonicalRoot, "sandbox-test")
+      const controlFiles = ["mission.md", "todo.md", "edge_analysis.md"]
+
+      for (const workspace of [lexicalWorkspace, canonicalWorkspace]) {
+        for (const name of controlFiles) {
+          const absolute = path.join(workspace, name)
+          const relative = path.relative(test.directory, absolute)
+          expect(Permission.evaluate("edit", absolute, configured.finny!.permission).action).toBe("allow")
+          expect(Permission.evaluate("edit", relative, configured.finny!.permission).action).toBe("allow")
+          expect(Permission.evaluate("write", absolute, configured.finny!.permission).action).toBe("allow")
+          expect(Permission.evaluate("write", relative, configured.finny!.permission).action).toBe("allow")
+        }
+      }
+
+      const source = path.join(test.directory, "packages/opencode/script/finalize-task.ts")
+      expect(Permission.evaluate("edit", source, configured.finny!.permission).action).toBe("deny")
+      expect(
+        Permission.evaluate("edit", path.relative(test.directory, source), configured.finny!.permission).action,
+      ).toBe("deny")
+    }),
+  {
+    config: {
+      permission: {
+        bash: "allow",
+        shell: "allow",
+        edit: "allow",
+        write: "allow",
+        apply_patch: "allow",
       },
     },
   },

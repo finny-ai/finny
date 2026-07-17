@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { extractCoreMetrics, normalizeMetricsDocument, renderQuantReviewHtml, validateTerminalReview, writeFileAtomically, type QuantReviewData } from "../../src/backtest/final-review-packet"
+import { canonicalStrictRunArtifactDir, extractCoreMetrics, hydrateReviewRun, normalizeMetricsDocument, renderQuantReviewHtml, validateTerminalReview, writeFileAtomically, type QuantReviewData } from "../../src/backtest/final-review-packet"
 
 const data: QuantReviewData = {
   algorithm: { algorithmId: "algo-1", name: "spy-alpha", version: 2 } as any,
@@ -20,6 +20,7 @@ const data: QuantReviewData = {
   conclusion: "recommended_for_paper",
   conclusionReason: "All terminal gates passed.",
   generatedAt: "2026-07-12T00:00:00Z",
+  qualification: { workflowId: "exp-12345678", phase: "qualified", status: "active", runId: "run-2", identityHash: "immutable-1", verdict: "recommended_for_paper" },
 }
 
 function failedTrialFixture(count = 5) {
@@ -50,6 +51,7 @@ function exhaustionInput(fixture = failedTrialFixture()) {
     specs: [{ ...data.specs[0], optimizationBudget: 5 }],
     events: [...fixture.started, ...fixture.completed],
     runs: fixture.runs,
+    qualification: data.qualification,
   }
 }
 
@@ -109,24 +111,71 @@ describe("final quant review packet", () => {
   })
 
   test("normalizes realistic nested v2 metrics without false N/A", () => {
-    const nested = { v2: { trade: { expectancy: 14.25, profit_factor: 1.82, total_trades: 31 }, returns: { cagr: .224 }, ratios: { sortino: 1.91, calmar: 1.44, omega: 1.27 }, risk: { ann_vol: .18 }, exposure: { time_in_market_pct: .64, total_turnover: 8.5, avg_gross_exposure: .72, avg_net_exposure: .48 } } }
+    const nested = { v2: { trade: { expectancy: 14.25, profit_factor: 1.82, total_trades: 31 }, returns: { cagr: .224 }, ratios: { sortino: 1.91, calmar: 1.44, omega: 1.27 }, risk: { ann_vol: .18 }, exposure: { time_in_market_pct: .64, total_turnover: 8.5, avg_gross_exposure: 964.6169, avg_net_exposure: 482.3084 } } }
     expect(normalizeMetricsDocument(nested)).toBe(nested.v2)
     const metrics = extractCoreMetrics(data.runs[0].manifest, nested)
-    expect(metrics).toMatchObject({ expectancy: 14.25, profitFactor: 1.82, trades: 31, cagr: .224, sortino: 1.91, calmar: 1.44, omega: 1.27, annualizedVolatility: .18, timeInMarket: .64, turnover: 8.5, avgGrossExposure: .72, avgNetExposure: .48 })
+    expect(metrics).toMatchObject({ expectancy: 14.25, profitFactor: 1.82, trades: 31, cagr: .224, sortino: 1.91, calmar: 1.44, omega: 1.27, annualizedVolatility: .18, timeInMarket: .64, turnover: 8.5, avgGrossExposure: 964.6169, avgNetExposure: 482.3084 })
     const html = renderQuantReviewHtml({ ...data, runs: [{ ...data.runs[0], metrics }] })
-    for (const value of ["Omega", "1.27", "Time in market", "64.00%", "Turnover", "8.5", "Avg gross exposure", "72.00%", "Avg net exposure", "48.00%", "14.3", "22.40%", "1.91", "1.44"]) expect(html).toContain(value)
+    for (const value of ["Omega", "1.27", "Time in market", "64.00%", "Turnover", "8.5", "Avg gross notional", "$964.62", "Avg net notional", "$482.31", "14.3", "22.40%", "1.91", "1.44"]) expect(html).toContain(value)
+    expect(html).not.toContain("96461.69%")
+  })
+
+  test("recovers stitched OOS evidence for older manifests whose sourceArtifacts was persisted as null", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-review-artifacts-"))
+    const manifest = {
+      ...data.runs[0].manifest,
+      id: "20260716T234114Z-b00c9e940a53138b",
+      algorithmId: "algo-1",
+      algorithmVersion: 7,
+      dir: path.join(root, "backtests", "run-7"),
+      artifacts: { equityCurve: null, trades: null, sourceArtifacts: null },
+    } as any
+    const runDir = canonicalStrictRunArtifactDir(manifest, root)!
+    try {
+      await fs.mkdir(runDir, { recursive: true })
+      await fs.writeFile(
+        path.join(runDir, "metrics.json"),
+        JSON.stringify({ v2: { walk_forward: { n_folds: 2, stitched_oos_return: 0.0048, folds: [] } } }),
+      )
+      const hydrated = await hydrateReviewRun(manifest, undefined, root)
+      expect(hydrated.robustness).toMatchObject({ n_folds: 2, stitched_oos_return: 0.0048 })
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 
   test("fails closed for missing, empty, unrelated, or mismatched terminal evidence", () => {
-    const base = { algorithmId: "algo-1", experimentId: data.experimentId, conclusion: "recommended_for_paper" as const, specs: data.specs, events: data.events, runs: data.runs }
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, conclusion: "recommended_for_paper" as const, specs: data.specs, events: data.events, runs: data.runs, qualification: data.qualification }
     expect(validateTerminalReview({ ...base, specs: [] })).toContain("selected experiment spec is missing")
     expect(validateTerminalReview({ ...base, events: [] })).toContain("experiment lineage has no trial evidence for the selected algorithm")
     expect(validateTerminalReview({ ...base, events: data.events.map((event) => ({ ...event, algorithmId: "other" })) })).toContain("experiment lineage has no trial evidence for the selected algorithm")
     expect(validateTerminalReview({ ...base, runs: data.runs.map((run) => ({ ...run, verdict: "failed" })) })).toContain("recommended_for_paper requires a matching persisted recommended run")
   })
 
+  test("binds final review to the exact authoritative qualified WorkflowRun", () => {
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, conclusion: "recommended_for_paper" as const, specs: data.specs, events: data.events, runs: data.runs, qualification: data.qualification }
+    expect(validateTerminalReview(base)).toEqual([])
+    expect(validateTerminalReview({ ...base, qualification: { ...data.qualification, runId: "provider-fetch-run" } })).toContain("final review terminal runId must match the qualified WorkflowRun backtest")
+    expect(validateTerminalReview({ ...base, qualification: { ...data.qualification, identityHash: "provider-fetch-identity" } })).toContain("final review terminal identityHash must match the qualified WorkflowRun backtest")
+  })
+
+  test("provider-fetch computed recommendation cannot substitute for WorkflowRun qualification", () => {
+    const input = {
+      algorithmId: "algo-1",
+      experimentId: data.experimentId,
+      conclusion: "recommended_for_paper" as const,
+      specs: data.specs,
+      events: data.events,
+      runs: data.runs,
+      qualification: { ...data.qualification, phase: "candidate_validated", verdict: "research_only" },
+    }
+    const errors = validateTerminalReview(input)
+    expect(errors).toContain("final review requires an authoritative qualified WorkflowRun")
+    expect(errors).toContain("final review WorkflowRun verdict must be recommended_for_paper")
+  })
+
   test("refuses review unless a terminal run beats buy-and-hold", () => {
-    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: data.events, conclusion: "recommended_for_paper" as const }
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: data.events, conclusion: "recommended_for_paper" as const, qualification: data.qualification }
     const tied = data.runs.map((run) => ({ ...run, manifest: { ...run.manifest, alpha: 0 }, metrics: { ...run.metrics, alpha: 0 } }))
     expect(validateTerminalReview({ ...base, runs: tied })).toContain("final review is produced only when the strategy beats buy-and-hold (terminal alpha must be > 0)")
     const missing = data.runs.map((run) => ({ ...run, manifest: { ...run.manifest, alpha: null }, metrics: { ...run.metrics, alpha: null } }))
@@ -137,7 +186,7 @@ describe("final quant review packet", () => {
   })
 
   test("refuses review until both terminal backtest and walk-forward returns are positive", () => {
-    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: data.events, conclusion: "recommended_for_paper" as const }
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: data.events, conclusion: "recommended_for_paper" as const, qualification: data.qualification }
     const losingBacktest = data.runs.map((run) => ({ ...run, manifest: { ...run.manifest, results: { ...run.manifest.results, totalReturn: -.01 } } }))
     expect(validateTerminalReview({ ...base, runs: losingBacktest })).toContain("final review is produced only when the terminal backtest return is > 0")
     const losingWalkForward = data.runs.map((run) => ({ ...run, robustness: { ...run.robustness, stitched_oos_return: -.01 } }))
@@ -146,7 +195,7 @@ describe("final quant review packet", () => {
     expect(validateTerminalReview({ ...base, runs: missingWalkForward })).toContain("final review requires a persisted stitched walk-forward OOS return")
   })
 
-  test("allows benchmark-beating research to complete without paper recommendation", () => {
+  test("refuses a positive-but-sparse failed run and does not allow research_complete to become terminal", () => {
     const researchRun = {
       ...data.runs[0],
       verdict: "failed",
@@ -159,8 +208,11 @@ describe("final quant review packet", () => {
       events: [{ ...data.events[0], outcome: "failed" as const }],
       runs: [researchRun],
       conclusion: "research_complete" as const,
+      qualification: data.qualification,
     }
-    expect(validateTerminalReview(input)).toEqual([])
+    const errors = validateTerminalReview(input)
+    expect(errors).toContain("final review requires a persisted terminal recommended_for_paper run that passed deterministic robustness and all positive return/OOS/alpha gates")
+    expect(errors).toContain("final review conclusion must be recommended_for_paper; unqualified research must continue iteration without a final packet")
     expect(validateTerminalReview({ ...input, conclusion: "recommended_for_paper" })).toContain("recommended_for_paper requires a matching persisted recommended run")
     expect(validateTerminalReview({ ...input, runs: data.runs })).toContain("research_complete cannot replace a recommended_for_paper conclusion")
     expect(renderQuantReviewHtml({ ...data, conclusion: "research_complete" })).toContain("Research completed with benchmark outperformance")
@@ -169,32 +221,32 @@ describe("final quant review packet", () => {
   test("validates concept exhaustion against persisted failed trials", () => {
     const fixture = failedTrialFixture()
     const common = exhaustionInput(fixture)
-    expect(validateTerminalReview({ ...common, conclusion: "concept_exhausted" })).toEqual([])
+    expect(validateTerminalReview({ ...common, conclusion: "concept_exhausted" })).toContain("final review conclusion must be recommended_for_paper; unqualified research must continue iteration without a final packet")
     const short = failedTrialFixture(4)
-    expect(validateTerminalReview({ ...exhaustionInput(short), conclusion: "concept_exhausted" })[0]).toContain("5 consecutive completed failed")
+    expect(validateTerminalReview({ ...exhaustionInput(short), conclusion: "concept_exhausted" }).join("; ")).toContain("5 consecutive completed failed")
     const passed = fixture.completed.map((event) => ({ ...event, outcome: "passed" as const }))
-    expect(validateTerminalReview({ ...common, events: [...fixture.started, ...passed], conclusion: "concept_exhausted" })[0]).toContain("5 consecutive completed failed")
+    expect(validateTerminalReview({ ...common, events: [...fixture.started, ...passed], conclusion: "concept_exhausted" }).join("; ")).toContain("5 consecutive completed failed")
   })
 
   test("validates optimization exhaustion against started-trial budget", () => {
     const fixture = failedTrialFixture()
     const common = exhaustionInput(fixture)
-    expect(validateTerminalReview({ ...common, conclusion: "optimization_exhausted" })).toEqual([])
-    expect(validateTerminalReview({ ...common, events: fixture.completed, conclusion: "optimization_exhausted" })[0]).toContain("uniquely started")
+    expect(validateTerminalReview({ ...common, conclusion: "optimization_exhausted" })).toContain("final review conclusion must be recommended_for_paper; unqualified research must continue iteration without a final packet")
+    expect(validateTerminalReview({ ...common, events: fixture.completed, conclusion: "optimization_exhausted" }).join("; ")).toContain("uniquely started")
   })
 
   test("concept exhaustion requires a consecutive persisted failure streak", () => {
     const outcomes = ["failed", "failed", "passed", "failed", "failed", "failed"] as const
     const completed = outcomes.map((outcome, index) => ({ ...data.events[0], trialId: `streak-${index}`, runId: `streak-run-${index}`, outcome }))
     const runs = completed.map((event) => ({ ...data.runs[0], manifest: { ...data.runs[0].manifest, id: event.runId! }, verdict: event.outcome }))
-    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: completed, runs, conclusion: "concept_exhausted" as const }
-    expect(validateTerminalReview(base)[0]).toContain("current streak 3")
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: completed, runs, conclusion: "concept_exhausted" as const, qualification: data.qualification }
+    expect(validateTerminalReview(base).join("; ")).toContain("current streak 3")
     expect(validateTerminalReview({ ...base, events: completed.slice(0, 5).map((event) => ({ ...event, outcome: "failed" as const })), runs: [] }).join("; ")).toContain("current streak 0")
   })
 
   test("requires blocked outcome semantics and a complete ancestor chain", () => {
     const blocked = { ...data.events[0], outcome: "blocked" as const, runId: undefined }
-    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: [blocked], runs: [] }
+    const base = { algorithmId: "algo-1", experimentId: data.experimentId, specs: data.specs, events: [blocked], runs: [], qualification: data.qualification }
     expect(validateTerminalReview({ ...base, conclusion: "blocked" })).toContain("final review requires a persisted terminal run with a buy-and-hold alpha comparison")
     const failedNoRun = { ...blocked, outcome: "failed" as const }
     expect(validateTerminalReview({ ...base, events: [failedNoRun], conclusion: "blocked" })).toContain("final review requires a persisted terminal run with a buy-and-hold alpha comparison")

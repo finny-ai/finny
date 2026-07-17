@@ -51,6 +51,7 @@ import { Database } from "@opencode-ai/core/database/database"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { ModelV2 } from "@opencode-ai/core/model"
+import { requiresQuestionOnlyTools } from "./build-clarification"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { AgentAttachment, FileAttachment, Prompt, Source } from "@opencode-ai/core/session/prompt"
 import * as DateTime from "effect/DateTime"
@@ -65,6 +66,7 @@ import { decodeMessageInfo, decodeMessagePart, isOrphanedInterruptedTool } from 
 import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
+import { StrategyContext } from "@/task/strategy-context"
 import { ProviderPreflight } from "./provider-preflight"
 import { Auth } from "@/auth"
 import { buildCapabilityManifest, capabilityManifestSystemFragment } from "@/capability/manifest"
@@ -72,6 +74,13 @@ import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import { inspectResearchBriefForBuildHandoff, renderResearchBriefHandoff } from "@/agent/research-brief"
 import type { ToolHookContext } from "@opencode-ai/plugin"
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
+import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import { resumeWorkflowRun } from "@/algorithm/build-workflow/lifecycle"
+import {
+  buildWorkflowContinuationReminder,
+  hasParentOverlapActionAfterContextLaunch,
+  shouldResumeInterruptedWorkflow,
+} from "./build-workflow-continuation"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1140,6 +1149,7 @@ export const layer = Layer.effect(
       })
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
+      yield* Effect.promise(() => StrategyContext.finalizeDeliveredTasks(input.sessionID, database, [message]))
       yield* runSessionPreflight({
         noReply: input.noReply,
         sessionID: input.sessionID,
@@ -1222,9 +1232,43 @@ export const layer = Layer.effect(
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
+          const lastUserMsg = msgs.findLast(
+            (msg) => msg.info.role === "user" && msg.info.id === lastUser.id,
+          )
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
+          let currentWorkflow = (
+            yield* BuildWorkflowStore.listBySession(sessionID).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.catch(() => Effect.succeed([])),
+            )
+          ).find((item) => item.status === "active" || item.status === "blocked")
+          const hasRealContinuationText =
+            lastUserMsg?.parts.some(
+              (part) => part.type === "text" && part.synthetic !== true && part.text.trim().length > 0,
+            ) ?? false
+          if (
+            shouldResumeInterruptedWorkflow({
+              workflow: currentWorkflow,
+              lastUserCreatedAt: lastUser.time.created,
+              hasRealContinuationText,
+            })
+          ) {
+            currentWorkflow = yield* resumeWorkflowRun({
+              sessionId: sessionID,
+              changedFingerprint: `user:${lastUser.id}:${lastUser.time.created}`,
+            }).pipe(
+              Effect.provideService(Database.Service, database),
+              Effect.catch((error) =>
+                Effect.logWarning("failed to resume interrupted Build workflow", {
+                  "session.id": sessionID,
+                  workflowId: currentWorkflow?.workflowId,
+                  error: String(error),
+                }).pipe(Effect.as(currentWorkflow)),
+              ),
+            )
+          }
           // Some providers return "stop" even when the assistant message contains
           // tool calls. Keep the loop running so tool results can be sent back to
           // the model, but ignore cleanup-marked interrupted orphans.
@@ -1233,11 +1277,48 @@ export const layer = Layer.effect(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
 
+          let workflowContinuation: string | undefined
           if (
             lastAssistant?.finish &&
             !["tool-calls"].includes(lastAssistant.finish) &&
             !hasToolCalls &&
-            lastUser.id < lastAssistant.id
+            lastUser.id < lastAssistant.id &&
+            (lastUser.agent === "build" || lastUser.agent === "finny")
+          ) {
+            const activeWorkflow = currentWorkflow?.status === "active" ? currentWorkflow : undefined
+            const [pendingContext, contextTasks] = yield* Effect.all([
+              Effect.promise(() => StrategyContext.pendingTasks(sessionID, database, msgs)).pipe(
+                Effect.catch(() => Effect.succeed([])),
+              ),
+              Effect.promise(() => StrategyContext.contextTasks(sessionID, database)).pipe(
+                Effect.catch(() => Effect.succeed([])),
+              ),
+            ])
+            const saveHardBoundary =
+              lastAssistantMsg?.parts.some(
+                (part) =>
+                  part.type === "tool" &&
+                  part.tool === "finny_algorithm_save" &&
+                  part.state.status === "completed" &&
+                  (part.state.metadata.exhausted === true || Boolean(part.state.metadata.environmentBlock)),
+              ) ?? false
+            workflowContinuation = buildWorkflowContinuationReminder({
+              workflow: activeWorkflow,
+              pendingContextTasks: pendingContext.length,
+              unverifiedContextRoles: activeWorkflow
+                ? StrategyContext.unlaunchedRequiredContextRoles(activeWorkflow, contextTasks)
+                : [],
+              parentOverlapComplete: hasParentOverlapActionAfterContextLaunch(msgs),
+              saveHardBoundary,
+            })
+          }
+
+          if (
+            lastAssistant?.finish &&
+            !["tool-calls"].includes(lastAssistant.finish) &&
+            !hasToolCalls &&
+            lastUser.id < lastAssistant.id &&
+            !workflowContinuation
           ) {
             const orphan = lastAssistantMsg?.parts.find(
               (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
@@ -1252,6 +1333,34 @@ export const layer = Layer.effect(
             }
             yield* Effect.logInfo("exiting loop", { "session.id": sessionID })
             break
+          }
+
+          if (workflowContinuation) {
+            // A continuation appended to the original user turn sits before the
+            // narrative-only assistant response that violated it. Admit the
+            // retry as a new synthetic user turn so the required tool action is
+            // the final instruction in model history. Repeat this correction on
+            // every narrative-only violation until the workflow advances.
+            const continuationUser: SessionV1.User = {
+              id: MessageID.ascending(),
+              sessionID,
+              role: "user",
+              time: { created: Date.now() },
+              agent: lastUser.agent,
+              model: lastUser.model,
+            }
+            yield* sessions.updateMessage(continuationUser)
+            yield* sessions.updatePart({
+              id: PartID.ascending(),
+              messageID: continuationUser.id,
+              sessionID,
+              type: "text",
+              text: workflowContinuation,
+              synthetic: true,
+              metadata: { build_workflow_continuation: true },
+            })
+            step++
+            continue
           }
 
           step++
@@ -1354,6 +1463,31 @@ export const layer = Layer.effect(
               }),
               agents.list(),
             ])
+            const pendingContext = yield* Effect.promise(() =>
+              StrategyContext.pendingTasks(sessionID, database, msgs),
+            ).pipe(Effect.catch(() => Effect.succeed([])))
+            const [contextTasks, turnWorkflows] = yield* Effect.all([
+              Effect.promise(() => StrategyContext.contextTasks(sessionID, database)).pipe(
+                Effect.catch(() => Effect.succeed([])),
+              ),
+              BuildWorkflowStore.listBySession(sessionID).pipe(
+                Effect.provideService(Database.Service, database),
+                Effect.catch(() => Effect.succeed([])),
+              ),
+            ])
+            const activeTurnWorkflow = turnWorkflows.find((item) => item.status === "active")
+            const unlaunchedRequiredRoles =
+              activeTurnWorkflow && StrategyContext.requiresConcurrentContextKickoff(activeTurnWorkflow)
+                ? StrategyContext.unlaunchedRequiredContextRoles(activeTurnWorkflow, contextTasks)
+                : []
+            const contextLaunchRequired = unlaunchedRequiredRoles.length > 0
+            const contextDefinitions = StrategyContext.filterContextPhaseTools(capabilityDefinitions, {
+              pendingCount: pendingContext.length,
+              launchRequired: contextLaunchRequired,
+            })
+            const turnDefinitions = requiresQuestionOnlyTools({ agent: agent.name, messages: msgs })
+              ? contextDefinitions.filter((definition) => definition.id === "question")
+              : contextDefinitions
             const tools = yield* SessionTools.resolve({
               agent,
               session,
@@ -1362,7 +1496,12 @@ export const layer = Layer.effect(
               bypassAgentCheck,
               messages: msgs,
               promptOps,
-              definitions: capabilityDefinitions,
+              definitions: turnDefinitions,
+              includeMcpTools: pendingContext.length === 0 && !contextLaunchRequired,
+              strategyContextGate: {
+                unlaunchedRequiredRoles,
+                pendingTasks: pendingContext,
+              },
             }).pipe(
               Effect.provideService(Plugin.Service, plugin),
               Effect.provideService(Permission.Service, permission),
@@ -1410,10 +1549,13 @@ export const layer = Layer.effect(
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
+            if (unlaunchedRequiredRoles.length > 0) {
+              system.push(StrategyContext.requiredContextLaunchSystemFragment(unlaunchedRequiredRoles))
+            }
             const manifest = buildCapabilityManifest({
               agent,
               agents: capabilityAgentInfos,
-              tools: capabilityDefinitions,
+              tools: turnDefinitions,
               sessionPermission: session.permission,
             })
             const capabilityManifest = yield* Effect.succeed(manifest).pipe(

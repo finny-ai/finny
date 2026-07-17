@@ -34,6 +34,26 @@ export namespace BacktestRunner {
     | { kind: "verified_artifact"; dataset: VerifiedDatasetRef }
     | { kind: "provider_fetch" }
 
+  export function qualificationDataSourceIssue(input: {
+    engineMode: "strict_v2" | "legacy_unsafe"
+    sessionID?: string
+    dataSource: BacktestDataSource
+    qualification?: QualificationInputV1
+  }): string | undefined {
+    if (
+      input.engineMode === "strict_v2" &&
+      input.sessionID &&
+      input.qualification &&
+      input.dataSource.kind !== "verified_artifact"
+    ) {
+      return (
+        "Qualification requires the exact verified data_extractor artifact. " +
+        "Provider-fetched data is research-only and cannot create a promotable run."
+      )
+    }
+    return undefined
+  }
+
   export interface Params {
     algorithm: Algorithm.Info
     duration: string // "1w" | "1m" | "3m" | "6m" | "1y"
@@ -73,11 +93,7 @@ export namespace BacktestRunner {
     /** Mandatory verdict inputs. Omit only for legacy/research-only runs. */
     qualification?: QualificationInputV1
     sessionID?: string
-    /**
-     * Product/session strict runs must use the exact verified data_extractor
-     * artifact. Provider fetch remains available only to non-session internal
-     * callers and explicitly enabled legacy migration paths.
-     */
+    /** Verified artifacts can qualify; provider fetches are research-only. */
     dataSource?: BacktestDataSource
   }
 
@@ -2539,15 +2555,8 @@ if __name__ == "__main__":
         kind: "unsafe_custom_runner",
       }
     }
-    if (engineMode === "strict_v2" && sessionID && dataSource.kind !== "verified_artifact") {
-      return {
-        ok: false,
-        error:
-          "Session-backed strict backtests require the exact verified data_extractor artifact. " +
-          "Pass dataSource.kind=verified_artifact from the session evidence gate; provider_fetch is internal-only.",
-        kind: "data_evidence",
-      }
-    }
+    const dataSourceIssue = qualificationDataSourceIssue({ engineMode, sessionID, dataSource, qualification })
+    if (dataSourceIssue) return { ok: false, error: dataSourceIssue, kind: "data_evidence" }
 
     // Fallbacks: synthesize default backtest.py and config.json if the algo is missing them.
     const backtestCode =
@@ -2949,21 +2958,6 @@ if __name__ == "__main__":
           assumptions,
           calendar: assetSpec.calendar,
         })
-        await persistBacktestEvidenceOrReport({
-          tmpDir,
-          runId,
-          algorithm,
-          config,
-          results,
-          duration,
-          interval,
-          capital,
-          startDate: start,
-          endDate: end,
-          source,
-          benchmark,
-          calendar: assetSpec.calendar,
-        })
         if (
           dataSource.kind === "verified_artifact" &&
           hasProductRiskContract(config) &&
@@ -3001,6 +2995,24 @@ if __name__ == "__main__":
             ],
           }
         }
+        // Strict publication assigns results.artifactDir. Persist the history
+        // manifest only afterwards so sourceArtifacts points at immutable
+        // metrics/run/durability evidence instead of being stored as null.
+        await persistBacktestEvidenceOrReport({
+          tmpDir,
+          runId,
+          algorithm,
+          config,
+          results,
+          duration,
+          interval,
+          capital,
+          startDate: start,
+          endDate: end,
+          source,
+          benchmark,
+          calendar: assetSpec.calendar,
+        })
 
         emit({
           eventType: "backtest.completed",

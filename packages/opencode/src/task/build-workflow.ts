@@ -30,9 +30,11 @@ export const Terminal = {
 
 export type Terminal = (typeof Terminal)[keyof typeof Terminal]
 
-// sentiment_agent is discretionary in build prompts and must not terminalize the
-// mandatory evidence phase or cancel sibling workers when it fails/blocks alone.
-const mandatoryEvidenceRoles = new Set(["data_extractor", "news_agent", "researcher", "sec_agent"])
+// Historical data extraction is recommended for research-led builds, but it is
+// not a universal workflow gate. Keep only claim-dependent evidence roles in
+// the mandatory compatibility projection; data_extractor still receives its
+// request-identity and date-window safety checks in the task runtime.
+const mandatoryEvidenceRoles = new Set(["news_agent", "researcher", "sec_agent"])
 
 const toolPhases: Readonly<Record<string, Phase>> = {
   finny_algorithm_scaffold: Phase.implementation,

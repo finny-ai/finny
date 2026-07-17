@@ -4,6 +4,15 @@ import type { EngineV2 } from "./results"
 export type UnifiedVerdict = "failed" | "inconclusive" | "weak" | "candidate" | "recommended_for_paper"
 export type WalkForwardVerdict = "robust" | "degraded" | "failed"
 
+export type RobustQualificationResult = {
+  verdict: string | null | undefined
+  totalReturn: unknown
+  stitchedOosReturn: unknown
+  alpha: unknown
+}
+
+export type WorkflowBacktestVerdict = "failed" | "research_only" | "candidate" | "recommended_for_paper"
+
 const SCORE: Record<UnifiedVerdict, number> = {
   failed: 0,
   inconclusive: 1,
@@ -26,6 +35,31 @@ function uplift(verdict: UnifiedVerdict): UnifiedVerdict {
 
 function finite(value: unknown, fallback = 0): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback
+}
+
+function positiveFinite(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+}
+
+/**
+ * The single runtime stop gate for Build research. A profitability-only result
+ * is not terminal: it must also carry the deterministic engine_v2 promotion
+ * verdict produced by the quality, walk-forward, consistency, and decay gates.
+ */
+export function isRobustQualifiedResult(input: RobustQualificationResult): boolean {
+  return input.verdict === "recommended_for_paper" && [
+    input.totalReturn,
+    input.stitchedOosReturn,
+    input.alpha,
+  ].every(positiveFinite)
+}
+
+export function enforceRobustWorkflowVerdict(
+  input: Omit<RobustQualificationResult, "verdict"> & { verdict: WorkflowBacktestVerdict },
+): WorkflowBacktestVerdict {
+  return input.verdict === "recommended_for_paper" && !isRobustQualifiedResult(input)
+    ? "candidate"
+    : input.verdict
 }
 
 function failedWalkForward(wf: EngineV2.WalkForwardSummary, stitchedSharpe: number, stitchedReturn: number) {

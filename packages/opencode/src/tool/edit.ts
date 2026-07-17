@@ -4,7 +4,7 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import * as path from "path"
-import { Effect, Schema, Semaphore } from "effect"
+import { Effect, Option, Schema, Semaphore } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -20,6 +20,7 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
 import { resolveReadPath } from "./read"
 import { assertFinnyWorkspacePathPolicy } from "./finny-workspace-guard"
+import { Database } from "@opencode-ai/core/database/database"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -64,6 +65,7 @@ export const EditTool = Tool.define(
     const afs = yield* FSUtil.Service
     const format = yield* Format.Service
     const events = yield* EventV2Bridge.Service
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
 
     return {
       description: DESCRIPTION,
@@ -80,7 +82,7 @@ export const EditTool = Tool.define(
 
           const instance = yield* InstanceState.context
           const filePath = resolveReadPath(params.filePath, instance.directory, instance.worktree)
-          yield* assertFinnyWorkspacePathPolicy(ctx, filePath, "edit")
+          yield* assertFinnyWorkspacePathPolicy(ctx, filePath, "edit", database)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

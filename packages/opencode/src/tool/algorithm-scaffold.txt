@@ -1,5 +1,7 @@
 Generate a complete, validated trading strategy from a template. Returns production-ready Python code that passes all validation checks.
 
+Do not call this tool while any strategy-context subagent is active. Continue only non-overlapping setup work and wait for the automatic completion results before scaffolding or synthesizing strategy code.
+
 ## When to Use
 - When starting a new strategy from scratch
 - When the user asks for a specific strategy type

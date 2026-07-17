@@ -3,7 +3,7 @@ import { and, eq } from "drizzle-orm"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { MessageTable, PartTable } from "@opencode-ai/core/session/sql"
-import { assetClassForSymbol, parseRequestIdentityProposal } from "@/agent/request-identity"
+import { assetClassForSymbol, normalizeSymbol, parseRequestIdentityProposal } from "@/agent/request-identity"
 import { inferBacktestWindow, writeWorkflowRequestProjection } from "@/agent/finny-workspace-context"
 import { bootstrapWorkspace, deriveIntent } from "@/plugin/finny-workspace"
 import { unambiguousApprovalDecision } from "./state"
@@ -24,16 +24,83 @@ export function workflowClaimFlags(prompt: string) {
   }
 }
 
+export function structuredWorkflowClaimFlags(prompt: string, vagueStrategyBuild = false) {
+  const flags = workflowClaimFlags(prompt)
+  return {
+    ...flags,
+    newsRequired: flags.newsRequired || vagueStrategyBuild,
+  }
+}
+
+export function requiresIdentityClarification(prompt: string) {
+  return parseRequestIdentityProposal(prompt).status === "proposed"
+}
+
 function workflowID(sessionID: string, messageID: string) {
   return `wf_${crypto.createHash("sha256").update(`${sessionID}:${messageID}`).digest("hex").slice(0, 32)}`
 }
 
-// @codescene(disable-all) Request binding is the single typed normalization boundary.
-function identityFromPrompt(input: {
-  prompt: string
-  messageID: string
+/**
+ * Materialize the WorkflowRun that was intentionally deferred for a vague
+ * opening request once finny_workspace_prepare has crossed the trusted
+ * clarification boundary. The structured identity has already been checked
+ * against the real user text/question answers by the tool before this runs.
+ */
+export const ensureStructuredBuildWorkflow = Effect.fn("BuildWorkflowBind.ensureStructured")(function* (input: {
+  sessionID: string
+  callID: string
+  agent: string
   workspaceSlug: string
-}): { identity: RequestIdentity; status: "proposed" | "confirmed" } {
+  prompt: string
+  symbols: string[]
+  assetClass?: "equity" | "crypto"
+  interval?: string
+  algorithmName?: string
+  strategyFamily?: string
+  vagueStrategyBuild?: boolean
+  window?: { start: string; end: string }
+}) {
+  if (!PRIMARY_BUILD_AGENTS.has(input.agent)) return undefined
+  const active = (yield* BuildWorkflowStore.listBySession(input.sessionID)).find(
+    (state) => state.status === "active" || state.status === "blocked",
+  )
+  if (active) return active
+
+  const symbols = input.symbols.map(normalizeSymbol).filter((symbol): symbol is string => Boolean(symbol))
+  if (!symbols.length) return undefined
+  const source: FactSource = {
+    kind: "structured_tool",
+    tool: "finny_workspace_prepare",
+    callId: input.callID,
+  }
+  const flags = structuredWorkflowClaimFlags(input.prompt, input.vagueStrategyBuild)
+  return yield* BuildWorkflowStore.insert({
+    workflowId: workflowID(input.sessionID, `finny_workspace_prepare:${input.callID}`),
+    sessionId: input.sessionID,
+    workspaceSlug: input.workspaceSlug,
+    intent: "build",
+    identityStatus: "confirmed",
+    identity: {
+      symbols: { value: symbols, source },
+      ...(input.assetClass ? { assetClass: { value: input.assetClass, source } } : {}),
+      ...(input.interval ? { interval: { value: input.interval, source } } : {}),
+      algorithmName: {
+        value: input.algorithmName ?? input.workspaceSlug.split(".")[0]!,
+        source,
+      },
+      ...(input.strategyFamily ? { strategyFamily: { value: input.strategyFamily, source } } : {}),
+      ...(input.window ? { window: { value: input.window, source } } : {}),
+    },
+    marketDataRequired: true,
+    ...flags,
+  })
+})
+
+// @codescene(disable-all) Request binding is the single typed normalization boundary.
+function identityFromPrompt(input: { prompt: string; messageID: string; workspaceSlug: string }): {
+  identity: RequestIdentity
+  status: "proposed" | "confirmed"
+} {
   const proposal = parseRequestIdentityProposal(input.prompt)
   const facts = proposal.facts
   const user: FactSource = { kind: "user_message", messageId: input.messageID }
@@ -56,26 +123,29 @@ function identityFromPrompt(input: {
   const symbol = symbols?.[0]
   const window = inferBacktestWindow(input.prompt)
   const family = deriveIntent(input.prompt)
-  return { status: proposal.status, identity: {
-    ...(symbols ? { symbols: { value: symbols, source: proposal.status === "confirmed" ? user : parser } } : {}),
-    ...(facts.requested_interval ? { interval: { value: facts.requested_interval, source: user } } : {}),
-    ...(facts.requested_asset_class || symbol
-      ? {
-          assetClass: {
-            value: facts.requested_asset_class ?? assetClassForSymbol(symbol) ?? "equity",
-            source: facts.requested_asset_class ? user : delegated,
-          },
-        }
-      : {}),
-    algorithmName: {
-      value: facts.requested_algorithm_name ?? input.workspaceSlug.split(".")[0]!,
-      source: facts.requested_algorithm_name ? user : delegated,
+  return {
+    status: proposal.status,
+    identity: {
+      ...(symbols ? { symbols: { value: symbols, source: proposal.status === "confirmed" ? user : parser } } : {}),
+      ...(facts.requested_interval ? { interval: { value: facts.requested_interval, source: user } } : {}),
+      ...(facts.requested_asset_class || symbol
+        ? {
+            assetClass: {
+              value: facts.requested_asset_class ?? assetClassForSymbol(symbol) ?? "equity",
+              source: facts.requested_asset_class ? user : delegated,
+            },
+          }
+        : {}),
+      algorithmName: {
+        value: facts.requested_algorithm_name ?? input.workspaceSlug.split(".")[0]!,
+        source: facts.requested_algorithm_name ? user : delegated,
+      },
+      ...(family ? { strategyFamily: { value: family, source: user } } : {}),
+      ...(window.start && window.end
+        ? { window: { value: { start: window.start, end: window.end }, source: user } }
+        : {}),
     },
-    ...(family ? { strategyFamily: { value: family, source: user } } : {}),
-    ...(window.start && window.end
-      ? { window: { value: { start: window.start, end: window.end }, source: user } }
-      : {}),
-  } }
+  }
 }
 
 function persistedParentUserText(input: { sessionID: string; messageID: string }) {
@@ -162,6 +232,11 @@ export function ensurePrimaryBuildWorkflow(input: {
       yield* Effect.tryPromise(() => writeWorkflowRequestProjection(current))
       return current
     }
+
+    // Do not create a generic strategy workspace from a vague request. The
+    // first concrete identity must come from a later user clarification, not
+    // from model-authored workspace tool arguments in the same turn.
+    if (requiresIdentityClarification(prompt)) return undefined
 
     const workspace = yield* Effect.tryPromise(() => bootstrapWorkspace(input.sessionID, prompt))
     if (!workspace) return undefined

@@ -300,6 +300,15 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function taskStatus(part: ToolPart): FooterSubagentTab["status"] {
   if (part.state.status === "completed") {
+    const output = text(part.state.output)
+    if (output && /<task\b[^>]*\bstate=["']running["']/i.test(output)) {
+      return "running"
+    }
+
+    if (output && /<task\b[^>]*\bstate=["']error["']/i.test(output)) {
+      return "error"
+    }
+
     return "completed"
   }
 
@@ -342,6 +351,36 @@ function batchSubagentStatus(value: string | undefined): FooterSubagentTab["stat
   return "running"
 }
 
+function deliveredTaskStates(value: string) {
+  const out: Array<{ sessionID: string; status: Extract<FooterSubagentTab["status"], "completed" | "error"> }> = []
+  for (const match of value.matchAll(/<task\b([^>]*)>/gi)) {
+    const attributes = match[1] ?? ""
+    const sessionID = attributes.match(/\bid=["']([^"']+)["']/i)?.[1]
+    const state = attributes.match(/\bstate=["'](completed|error)["']/i)?.[1]
+    if (!sessionID || (state !== "completed" && state !== "error")) continue
+    out.push({ sessionID, status: state })
+  }
+  return out
+}
+
+function syncDeliveredTaskTabs(data: SubagentData, part: Extract<Part, { type: "text" }>) {
+  if (part.synthetic !== true) return false
+  let changed = false
+  for (const delivered of deliveredTaskStates(part.text)) {
+    const current = data.tabs.get(delivered.sessionID)
+    if (!current || current.status !== "running") continue
+    const next = {
+      ...current,
+      status: delivered.status,
+      lastUpdatedAt: part.time?.end ?? part.time?.start ?? Date.now(),
+    }
+    if (sameSubagentTab(current, next)) continue
+    data.tabs.set(delivered.sessionID, next)
+    changed = true
+  }
+  return changed
+}
+
 function syncBatchTaskTabs(data: SubagentData, part: ToolPart, children?: Set<string>) {
   const raw = metadata(part, "subagents")
   if (!Array.isArray(raw)) return false
@@ -355,7 +394,9 @@ function syncBatchTaskTabs(data: SubagentData, part: ToolPart, children?: Set<st
       sessionID,
       partID: part.id,
       callID: part.callID,
-      label: Locale.titlecase((text(entry.subagentType) ?? text(entry.subagent_type) ?? "general").replaceAll("_", " ")),
+      label: Locale.titlecase(
+        (text(entry.subagentType) ?? text(entry.subagent_type) ?? "general").replaceAll("_", " "),
+      ),
       description: text(entry.description) ?? stateTitle(part) ?? inputLabel(part.state.input) ?? "",
       status: batchSubagentStatus(text(entry.state)),
       background: metadata(part, "background") === true,
@@ -391,6 +432,11 @@ function syncTaskTab(data: SubagentData, part: ToolPart, children?: Set<string>)
   if (!sessionID) {
     return batchChanged
   }
+
+  // Rejected task preflights never create a child. Older persisted results
+  // sometimes copied the parent id into metadata.sessionId; never turn that
+  // parent session into a fake subagent tab.
+  if (sessionID === part.sessionID) return batchChanged
 
   if (children && children.size > 0 && !children.has(sessionID)) {
     return batchChanged
@@ -804,6 +850,10 @@ export function listSubagentTabs(data: SubagentData) {
       return active
     }
 
+    // Preserve launch order in the active tray. Updating one child must not
+    // make the visible tabs jump while its siblings continue running.
+    if (a.status === "running" && b.status === "running") return 0
+
     return b.lastUpdatedAt - a.lastUpdatedAt
   })
 }
@@ -846,11 +896,8 @@ export function bootstrapSubagentData(input: BootstrapSubagentInput) {
 
   for (const message of input.messages) {
     for (const part of message.parts) {
-      if (part.type !== "tool") {
-        continue
-      }
-
-      changed = syncTaskTab(input.data, part, children) || changed
+      if (part.type === "tool") changed = syncTaskTab(input.data, part, children) || changed
+      if (part.type === "text") changed = syncDeliveredTaskTabs(input.data, part) || changed
     }
   }
 
@@ -941,11 +988,9 @@ export function reduceSubagentData(input: {
   if (event.type === "message.part.updated") {
     const part = event.properties.part
     if (part.sessionID === input.sessionID) {
-      if (part.type !== "tool") {
-        return false
-      }
-
-      return syncTaskTab(input.data, part)
+      if (part.type === "tool") return syncTaskTab(input.data, part)
+      if (part.type === "text") return syncDeliveredTaskTabs(input.data, part)
+      return false
     }
   }
 

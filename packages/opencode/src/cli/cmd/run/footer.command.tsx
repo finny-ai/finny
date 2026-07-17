@@ -202,6 +202,7 @@ function match<T extends PanelEntry>(query: string, entries: T[]) {
 }
 
 function PanelShell(props: {
+  active?: Accessor<boolean>
   id: string
   title: string
   countVisible?: boolean
@@ -216,8 +217,26 @@ function PanelShell(props: {
   dark?: boolean
   chrome?: "default" | "minimal"
 }) {
+  const [field, setField] = createSignal<InputRenderable>()
+  const active = () => props.active?.() ?? true
   const background = () => (props.dark ? props.theme().shade : props.theme().surface)
   const minimal = () => props.chrome === "minimal"
+  createEffect(() => {
+    const input = field()
+    if (!input) {
+      return
+    }
+    if (!active()) {
+      input.blur()
+      return
+    }
+
+    queueMicrotask(() => {
+      if (!input.isDestroyed && active()) {
+        input.focus()
+      }
+    })
+  })
   const content = (
     <>
       <box height={1} flexShrink={0} backgroundColor={background()} />
@@ -254,6 +273,7 @@ function PanelShell(props: {
         backgroundColor={background()}
       >
         <input
+          visible={active()}
           width="100%"
           focusedBackgroundColor={background()}
           focusedTextColor={props.theme().text}
@@ -264,11 +284,7 @@ function PanelShell(props: {
           ref={(input) => {
             props.inputRef(input)
             input.traits = { status: "FILTER" }
-            queueMicrotask(() => {
-              if (!input.isDestroyed) {
-                input.focus()
-              }
-            })
+            setField(input)
           }}
         />
       </box>
@@ -585,6 +601,7 @@ export function RunCommandMenuBody(props: {
 }
 
 export function RunSubagentSelectBody(props: {
+  active: Accessor<boolean>
   theme: Accessor<RunFooterTheme>
   tabs: Accessor<FooterSubagentTab[]>
   current: Accessor<string | undefined>
@@ -640,7 +657,7 @@ export function RunSubagentSelectBody(props: {
   })
 
   useKeyboard((event) => {
-    if (event.defaultPrevented) {
+    if (!props.active() || event.defaultPrevented) {
       return
     }
 
@@ -649,6 +666,7 @@ export function RunSubagentSelectBody(props: {
 
   return (
     <PanelShell
+      active={props.active}
       id="run-direct-footer-subagent-panel"
       title="Select subagent"
       query={query()}

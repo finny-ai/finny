@@ -4,15 +4,19 @@ import type { ScrollBoxRenderable } from "@opentui/core"
 import { testRender, type JSX } from "@opentui/solid"
 import {
   formatCompletedSubagentDetail,
+  formatSubagentNavigationHint,
   formatSubagentRetry,
   formatSubagentTitle,
   formatSubagentToolcalls,
   InlineToolRow,
+  isForegroundTask,
   parseApplyPatchFiles,
   parseDiagnostics,
   parseQuestionAnswers,
   parseQuestions,
   parseTodos,
+  subagentStateIcon,
+  subagentVisualState,
   toolDisplay,
 } from "../../../src/routes/session"
 
@@ -245,6 +249,42 @@ describe("TUI inline tool wrapping", () => {
     expect(formatSubagentTitle("Explore", "Inspect renderer", false)).toBe("Explore Task — Inspect renderer")
     expect(formatSubagentTitle("Explore", "Inspect renderer", true)).toBe(
       "Explore Task (background) — Inspect renderer",
+    )
+  })
+
+  test("recognizes foreground task aliases without classifying background launchers", () => {
+    expect(isForegroundTask("task", "running", false)).toBe(true)
+    expect(isForegroundTask("task_run", "running", false)).toBe(true)
+    expect(isForegroundTask("task_batch_run", "running", undefined)).toBe(true)
+    expect(isForegroundTask("task_start", "running", true)).toBe(false)
+    expect(isForegroundTask("task_run", "completed", false)).toBe(false)
+  })
+
+  test("keeps background and batch tasks running until declared terminal delivery", () => {
+    expect(
+      subagentVisualState({
+        partStatus: "completed",
+        background: true,
+        output: '<task id="child-1" state="running"><task_result>started</task_result></task>',
+      }),
+    ).toBe("running")
+    expect(subagentVisualState({ partStatus: "completed", declaredState: "running" })).toBe("running")
+    expect(subagentVisualState({ partStatus: "completed", declaredState: "completed" })).toBe("completed")
+  })
+
+  test("renders blocked and failed subagents without success checks", () => {
+    expect(subagentVisualState({ partStatus: "completed", output: "BLOCKED: missing evidence" })).toBe("blocked")
+    expect(subagentVisualState({ partStatus: "completed", declaredState: "error" })).toBe("error")
+    expect(subagentVisualState({ partStatus: "error" })).toBe("error")
+    expect(subagentStateIcon("blocked")).toBe("×")
+    expect(subagentStateIcon("error")).toBe("×")
+    expect(subagentStateIcon("completed")).toBe("✓")
+  })
+
+  test("formats the dynamic subagent hint as one measured text value", () => {
+    expect(formatSubagentNavigationHint("ctrl+x down", "ctrl+b", false)).toBe("ctrl+x down view subagents")
+    expect(formatSubagentNavigationHint("ctrl+x down", "ctrl+b", true)).toBe(
+      "ctrl+x down view subagents · ctrl+b background",
     )
   })
 

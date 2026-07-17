@@ -1088,12 +1088,14 @@ export const layer = Layer.effect(
                 sessionId: ctx.sessionID,
                 classification: "completed",
               })
-              yield* workflow.finishRun({
-                sessionID: ctx.sessionID,
-                workflowRunID: input.assistantMessage.parentID,
-                state: terminal?.semanticSuccess ? BuildWorkflow.Terminal.completed : BuildWorkflow.Terminal.blocked,
-                reason: terminal ? JSON.stringify(terminal) : undefined,
-              })
+              if (terminal) {
+                yield* workflow.finishRun({
+                  sessionID: ctx.sessionID,
+                  workflowRunID: input.assistantMessage.parentID,
+                  state: terminal.semanticSuccess ? BuildWorkflow.Terminal.completed : BuildWorkflow.Terminal.blocked,
+                  reason: JSON.stringify(terminal),
+                })
+              }
             }
           }
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"

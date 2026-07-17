@@ -147,6 +147,37 @@ function isNyseHalfDay(input: DayInput): boolean {
   return julyFourthSunday && input.day === `${year}-07-02`
 }
 
+function newYorkDay(input: EpochInput): string {
+  const parts = partsInNewYork(input)
+  const month = String(parts.month).padStart(2, "0")
+  const day = String(parts.day).padStart(2, "0")
+  return `${parts.year}-${month}-${day}`
+}
+
+/**
+ * Last XNYS session whose regular-hours close is available to a delayed
+ * historical-data entitlement. Date-only evidence windows must use a fully
+ * closed session; otherwise the finalizer correctly sees the rest of today's
+ * 09:30-16:00 session as missing data.
+ */
+export function lastCompletedXnysSessionDate(input: { now: Date; availabilityDelayMinutes?: number }): string {
+  const nowEpoch = input.now.getTime()
+  const delay = (input.availabilityDelayMinutes ?? 15) * 60_000
+  let candidate = newYorkDay({ epoch: nowEpoch })
+
+  if (isNyseTradingDay({ day: candidate })) {
+    const closeHour = isNyseHalfDay({ day: candidate }) ? 13 : 16
+    const availableAt = zonedEpoch({ day: candidate, hour: closeHour }) + delay
+    if (nowEpoch >= availableAt) return candidate
+  }
+
+  candidate = addDays({ day: candidate, count: -1 })
+  while (!isNyseTradingDay({ day: candidate })) {
+    candidate = addDays({ day: candidate, count: -1 })
+  }
+  return candidate
+}
+
 function timestamps(input: TimestampRange): number[] {
   const values: number[] = []
   for (let value = input.start; value < input.endExclusive; value += input.step) values.push(value)

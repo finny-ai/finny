@@ -7,6 +7,7 @@ import { BacktestRunner } from "../../src/backtest/runner"
 import type { Algorithm } from "../../src/algorithm"
 import { validateExistingDataExtractorEvidence, type VerifiedDatasetRef } from "../../src/data/data-extractor-evidence"
 import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
+import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
 
 function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
   return {
@@ -250,19 +251,22 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     }
   })
 
-  test("requires a verified artifact for session-backed strict runs", async () => {
-    const r = await BacktestRunner.run({
-      algorithm: algo(),
-      duration: "1m",
-      interval: "1d",
-      capital: "10000",
-      sessionID: "ses_product_backtest",
-    })
-    expect(r.ok).toBe(false)
-    if (!r.ok) {
-      expect(r.kind).toBe("data_evidence")
-      expect(r.error).toContain("require the exact verified data_extractor artifact")
-    }
+  test("allows provider fetch for research but requires verified evidence for qualification", () => {
+    expect(
+      BacktestRunner.qualificationDataSourceIssue({
+        engineMode: "strict_v2",
+        sessionID: "ses_product_backtest",
+        dataSource: { kind: "provider_fetch" },
+      }),
+    ).toBeUndefined()
+    expect(
+      BacktestRunner.qualificationDataSourceIssue({
+        engineMode: "strict_v2",
+        sessionID: "ses_product_backtest",
+        dataSource: { kind: "provider_fetch" },
+        qualification: qualificationInputForResearch(),
+      }),
+    ).toContain("research-only")
   })
 
   test("rejects structurally forged verified dataset references", async () => {

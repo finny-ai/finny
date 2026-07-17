@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../../src/backtest/verdict"
+import { composeBacktestVerdict, deriveWalkForwardVerdict, enforceRobustWorkflowVerdict, isRobustQualifiedResult } from "../../src/backtest/verdict"
 import type { BacktestQuality } from "../../src/backtest/evaluation"
 import type { EngineV2 } from "../../src/backtest/results"
 
@@ -137,5 +137,36 @@ describe("composeBacktestVerdict", () => {
   test("keeps the legacy degraded retention band distinct from failure", () => {
     expect(deriveWalkForwardVerdict(walkForward({ oos_decay: 0.6 })).verdict).toBe("degraded")
     expect(deriveWalkForwardVerdict(walkForward({ oos_decay: 0.8 })).verdict).toBe("robust")
+  })
+})
+
+describe("robust workflow qualification", () => {
+  const positive = {
+    totalReturn: 0.01,
+    stitchedOosReturn: 0.005,
+    alpha: 0.02,
+  }
+
+  test("requires the deterministic promotion verdict in addition to all positive performance gates", () => {
+    expect(isRobustQualifiedResult({ verdict: "recommended_for_paper", ...positive })).toBeTrue()
+    expect(isRobustQualifiedResult({ verdict: "failed", ...positive })).toBeFalse()
+    expect(isRobustQualifiedResult({ verdict: "candidate", ...positive })).toBeFalse()
+  })
+
+  test("fails closed for zero, negative, missing, or non-finite performance", () => {
+    for (const override of [
+      { totalReturn: 0 },
+      { stitchedOosReturn: -0.001 },
+      { alpha: undefined },
+      { alpha: Number.NaN },
+    ]) {
+      expect(isRobustQualifiedResult({ verdict: "recommended_for_paper", ...positive, ...override })).toBeFalse()
+    }
+  })
+
+  test("keeps positive-but-unqualified runs active and defensively downgrades an inconsistent promotion claim", () => {
+    expect(enforceRobustWorkflowVerdict({ verdict: "failed", ...positive })).toBe("failed")
+    expect(enforceRobustWorkflowVerdict({ verdict: "recommended_for_paper", ...positive, stitchedOosReturn: 0 })).toBe("candidate")
+    expect(enforceRobustWorkflowVerdict({ verdict: "recommended_for_paper", ...positive })).toBe("recommended_for_paper")
   })
 })

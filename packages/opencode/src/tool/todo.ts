@@ -34,7 +34,63 @@ const WORKFLOW_TODOS = [
   ["Emit terminal workflow envelope", "terminal_complete"],
 ] as const
 
+const EXPLORATORY_TODOS = [
+  ["Confirm request identity", "identity_confirmed"],
+  ["Run exploratory backtest (verified evidence optional)", "exploratory_backtest"],
+  ["Review exploratory backtest results", "exploratory_review"],
+] as const
+
+function hasEnteredStrictWorkflow(state: BuildWorkflowState) {
+  return (
+    state.evidence.length > 0 ||
+    !!state.researchFreeze ||
+    !!state.candidate ||
+    !!state.experimentPlan ||
+    [
+      "evidence_ready",
+      "research_frozen",
+      "candidate_validated",
+      "experiment_planned",
+      "strict_running",
+      "strict_blocked",
+      "qualified",
+      "terminal_complete",
+    ].includes(state.phase)
+  )
+}
+
+function exploratoryTodoProjection(state: BuildWorkflowState): Todo.Info[] {
+  const completed = new Set<string>()
+  if (state.identityStatus === "confirmed") completed.add("identity_confirmed")
+  const exploratoryBacktestComplete = state.attempts.some(
+    (attempt) =>
+      attempt.operation === "finny_backtest:finish" &&
+      attempt.lifecycle === "terminal" &&
+      attempt.outcome === "accepted" &&
+      attempt.requestVersion === state.requestVersion,
+  )
+  if (exploratoryBacktestComplete) {
+    completed.add("exploratory_backtest")
+    // The unified backtest returns its metrics, deterministic verdict, and
+    // diagnosis in the same tool result, so the result is reviewable as soon
+    // as the durable terminal attempt is recorded.
+    completed.add("exploratory_review")
+  }
+  const failed = state.phase === "terminal_failed"
+  return EXPLORATORY_TODOS.map(([content, milestone]) => ({
+    content,
+    priority: "high",
+    status:
+      failed && !completed.has(milestone)
+        ? "cancelled"
+        : completed.has(milestone)
+          ? "completed"
+          : "pending",
+  }))
+}
+
 export function workflowTodoProjection(state: BuildWorkflowState): Todo.Info[] {
+  if (!hasEnteredStrictWorkflow(state)) return exploratoryTodoProjection(state)
   const completed = new Set<string>()
   if (state.identityStatus === "confirmed") completed.add("identity_confirmed")
   if (
@@ -73,7 +129,18 @@ export async function authoritativeWorkflowTodos(input: {
   const workflows = await input.load()
   const workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
   if (!workflow) throw new Error("durable WorkflowRun is unavailable for lifecycle projection")
-  return workflowTodoProjection(workflow)
+  const projection = workflowTodoProjection(workflow)
+  const protectedMilestones = new Map(projection.map((item) => [item.content, item.status]))
+  const modelTodos = input.modelTodos.map((item) => {
+    const status = protectedMilestones.get(item.content)
+    return status ? { ...item, status } : item
+  })
+  const authored = new Set(modelTodos.map((item) => item.content))
+  // Model-authored implementation tasks remain useful, but they cannot hide
+  // the durable lifecycle by simply omitting its pending milestones. Keep one
+  // authoritative projection item for every missing milestone so an active
+  // failed-gate workflow can never present an all-complete task list.
+  return [...modelTodos, ...projection.filter((item) => !authored.has(item.content))]
 }
 
 export const TodoWriteTool = Tool.define<typeof Parameters, Metadata, Todo.Service | Database.Service>(

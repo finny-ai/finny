@@ -2,8 +2,10 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import z from "zod"
 import { Effect } from "effect"
+import { Database } from "@opencode-ai/core/database/database"
 import { finnyHomeArtifacts } from "@finny-ai/core/prefs"
 import { Algorithm } from "../algorithm"
+import { BuildWorkflowStore } from "../algorithm/build-workflow/store"
 import { resolveAlgorithmFolder } from "../algorithm/folder"
 import { generateFinalQuantReview } from "../backtest/final-review-packet"
 import { Tool } from "./tool"
@@ -11,7 +13,7 @@ import { Tool } from "./tool"
 const parameters = z.object({
   algorithmName: z.string().min(1).describe("Saved algorithm name."),
   experimentId: z.string().regex(/^[a-zA-Z0-9._-]{8,120}$/).optional().describe("For generation only: exact Review experiment ID returned by finny_backtest. Omit when opening an existing packet."),
-  conclusion: z.enum(["recommended_for_paper", "research_complete", "concept_exhausted", "optimization_exhausted", "blocked", "user_stopped"]).optional(),
+  conclusion: z.literal("recommended_for_paper").optional().describe("Generation is allowed only for a robust-qualified terminal run; paper approval remains separate."),
   reason: z.string().min(1).max(1000).optional().describe("For generation only: evidence-backed terminal reason and recommended next action."),
 })
 
@@ -77,13 +79,17 @@ async function openReviewPacket(reviewPath: string): Promise<string | undefined>
   }
 }
 
-export const ReviewPacketTool = Tool.define<typeof parameters, ReviewPacketMetadata, never, "finny_review_packet">(
+export const ReviewPacketTool = Tool.define<typeof parameters, ReviewPacketMetadata, Database.Service, "finny_review_packet">(
   "finny_review_packet",
-  Effect.succeed({
-    description: "Open an existing saved quant review packet by passing algorithmName only; this lookup is read-only and must not trigger workspace preparation, evidence subagents, or a backtest. To generate a new final packet after iteration, also pass experimentId, conclusion, and reason; generation requires positive total return, stitched walk-forward OOS return, and alpha versus buy-and-hold.",
-    parameters,
-    execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
-      Effect.promise(async () => {
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
+    return {
+      description: "Open an existing saved quant review packet by passing algorithmName only; this lookup is read-only and must not trigger workspace preparation, evidence subagents, or a backtest. Generate the one final packet only after WorkflowRun is robust-qualified: pass experimentId, conclusion=recommended_for_paper, and reason. Generation requires the deterministic recommended_for_paper verdict plus positive total return, stitched walk-forward OOS return, and alpha versus buy-and-hold. Paper approval remains a separate human decision.",
+      parameters,
+      execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
+        Effect.promise(async () => {
         const permissionPattern = params.experimentId ?? params.algorithmName
         await ctx.ask({ permission: "finny_review_packet", patterns: [permissionPattern], always: [permissionPattern], metadata: {} })
         const algorithm = await Algorithm.get(params.algorithmName)
@@ -111,8 +117,37 @@ export const ReviewPacketTool = Tool.define<typeof parameters, ReviewPacketMetad
             metadata: { created: false, experimentId: params.experimentId },
           }
         }
+        const workflow = await runWorkflow(BuildWorkflowStore.get(params.experimentId))
+        const qualifiedActive = workflow?.phase === "qualified" && workflow.status === "active"
+        const qualifiedTerminal = workflow?.phase === "terminal_complete" && workflow.status === "completed"
+        const strictRunIdentityHash = workflow?.backtest?.hashes.strictRunIdentityHash
+        if (
+          (!qualifiedActive && !qualifiedTerminal) ||
+          workflow?.sessionId !== ctx.sessionID ||
+          workflow?.backtest?.verdict !== "recommended_for_paper" ||
+          !strictRunIdentityHash
+        ) {
+          return {
+            title: "Review packet not produced",
+            output: "Final quant review was not produced: the selected experiment is not an authoritative robust-qualified WorkflowRun. Continue controlled save/backtest iteration.",
+            metadata: { created: false, experimentId: params.experimentId } satisfies ReviewPacketMetadata,
+          }
+        }
         try {
-          const result = await generateFinalQuantReview({ algorithm, experimentId: params.experimentId, conclusion: params.conclusion, conclusionReason: params.reason })
+          const result = await generateFinalQuantReview({
+            algorithm,
+            experimentId: params.experimentId,
+            conclusion: params.conclusion,
+            conclusionReason: params.reason,
+            qualification: {
+              workflowId: workflow.workflowId,
+              phase: workflow.phase,
+              status: workflow.status,
+              runId: workflow.backtest.runId,
+              identityHash: strictRunIdentityHash,
+              verdict: workflow.backtest.verdict,
+            },
+          })
           return {
             title: "Quant review packet ready",
             output: `Final quant review packet created for ${result.data.runs.length} participating run(s) across ${result.data.versions.length} version(s).\nOpen quant review packet: ${result.reviewPath}\nPaper approval remains explicit and separate.`,
@@ -123,6 +158,7 @@ export const ReviewPacketTool = Tool.define<typeof parameters, ReviewPacketMetad
           const ineligible = message.includes("final review requires") || message.includes("final review is produced only")
           return { title: ineligible ? "Review packet not produced" : "Review packet failed", output: `${ineligible ? "Final quant review was not produced" : "Could not generate the final quant review packet"}: ${message}`, metadata: { created: false, experimentId: params.experimentId } satisfies ReviewPacketMetadata }
         }
-      }),
+        }),
+    }
   }),
 )

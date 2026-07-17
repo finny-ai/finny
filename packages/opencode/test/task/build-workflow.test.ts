@@ -3,8 +3,8 @@ import { BuildWorkflow } from "@/task/build-workflow"
 import { projectEvidenceStartState } from "@/task/build-workflow"
 
 describe("BuildWorkflow.taskFingerprint", () => {
-  test("does not treat discretionary sentiment as mandatory evidence", () => {
-    expect(BuildWorkflow.isMandatoryEvidenceRole("data_extractor")).toBe(true)
+  test("does not treat recommended data extraction or discretionary sentiment as mandatory evidence", () => {
+    expect(BuildWorkflow.isMandatoryEvidenceRole("data_extractor")).toBe(false)
     expect(BuildWorkflow.isMandatoryEvidenceRole("news_agent")).toBe(true)
     expect(BuildWorkflow.isMandatoryEvidenceRole("sentiment_agent")).toBe(false)
   })

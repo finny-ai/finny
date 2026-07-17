@@ -1,4 +1,4 @@
-import { Schema } from "effect"
+import { Option, Schema } from "effect"
 import * as path from "path"
 import { Effect } from "effect"
 import * as Tool from "./tool"
@@ -16,6 +16,7 @@ import { assertExternalDirectoryEffect } from "./external-directory"
 import * as Bom from "@/util/bom"
 import { resolveReadPath } from "./read"
 import { assertFinnyWorkspacePathPolicy } from "./finny-workspace-guard"
+import { Database } from "@opencode-ai/core/database/database"
 
 const MAX_PROJECT_DIAGNOSTICS_FILES = 5
 
@@ -33,6 +34,7 @@ export const WriteTool = Tool.define(
     const fs = yield* FSUtil.Service
     const events = yield* EventV2Bridge.Service
     const format = yield* Format.Service
+    const database = Option.getOrUndefined(yield* Effect.serviceOption(Database.Service))
 
     return {
       description: DESCRIPTION,
@@ -41,7 +43,7 @@ export const WriteTool = Tool.define(
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
           const filepath = resolveReadPath(params.filePath, instance.directory, instance.worktree)
-          yield* assertFinnyWorkspacePathPolicy(ctx, filepath, "write")
+          yield* assertFinnyWorkspacePathPolicy(ctx, filepath, "write", database)
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)

@@ -58,7 +58,21 @@ def _load_csv(path: Path) -> pd.DataFrame:
     missing = sorted(required - set(df.columns))
     if missing:
         raise SystemExit(f"CSV missing required columns: {missing}")
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    raw_timestamps = df["timestamp"]
+    numeric_timestamps = pd.to_numeric(raw_timestamps, errors="coerce")
+    if numeric_timestamps.notna().all():
+        magnitude = float(numeric_timestamps.abs().median())
+        if magnitude < 1e11:
+            unit = "s"
+        elif magnitude < 1e14:
+            unit = "ms"
+        elif magnitude < 1e17:
+            unit = "us"
+        else:
+            unit = "ns"
+        df["timestamp"] = pd.to_datetime(numeric_timestamps, unit=unit, utc=True)
+    else:
+        df["timestamp"] = pd.to_datetime(raw_timestamps, utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
     keep = ["timestamp", "open", "high", "low", "close", "volume"]
     return df[keep].astype({c: "float64" for c in keep[1:]})

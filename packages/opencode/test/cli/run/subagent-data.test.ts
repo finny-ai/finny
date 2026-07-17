@@ -210,6 +210,20 @@ function childMessage(input: {
 }
 
 describe("run subagent data", () => {
+  test("does not create a fake task tab from the parent session id", () => {
+    const data = createSubagentData()
+
+    bootstrapSubagentData({
+      data,
+      messages: [taskMessage("parent-1")],
+      children: [],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(snapshotSubagentData(data).tabs).toEqual([])
+  })
+
   test("bootstraps tabs and child blockers from parent task parts", () => {
     const data = createSubagentData()
 
@@ -387,7 +401,7 @@ describe("run subagent data", () => {
                     { description: "Research SPY news", subagent_type: "news_agent" },
                   ],
                 },
-                output: "<task_batch state=\"completed\"></task_batch>",
+                output: '<task_batch state="completed"></task_batch>',
                 title: "Mandatory evidence batch",
                 metadata: {
                   batch: true,
@@ -431,6 +445,229 @@ describe("run subagent data", () => {
         description: "Research SPY news",
         status: "completed",
       }),
+    ])
+  })
+
+  test("keeps completed background launchers active until synthetic delivery reaches the parent", () => {
+    const data = createSubagentData()
+
+    bootstrapSubagentData({
+      data,
+      messages: [
+        {
+          parts: [
+            {
+              id: "task-launcher",
+              sessionID: "parent-1",
+              messageID: "msg-launcher",
+              type: "tool",
+              callID: "call-launcher",
+              tool: "task_run",
+              state: {
+                status: "completed",
+                input: {
+                  description: "Research SPY news",
+                  subagent_type: "news_agent",
+                },
+                output: '<task id="child-news" state="running"><task_result>started</task_result></task>',
+                title: "Research SPY news",
+                metadata: {
+                  sessionId: "child-news",
+                  background: true,
+                },
+                time: { start: 1, end: 2 },
+              },
+            },
+          ],
+        },
+      ],
+      children: [{ id: "child-news" }],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({ sessionID: "child-news", status: "running", background: true }),
+    ])
+
+    expect(
+      reduce(data, {
+        type: "message.part.updated",
+        properties: {
+          part: {
+            id: "delivery-news",
+            sessionID: "parent-1",
+            messageID: "msg-delivery-news",
+            type: "text",
+            synthetic: true,
+            text: '<task id="child-news" state="completed"><task_result>done</task_result></task>',
+            time: { start: 3, end: 4 },
+          },
+        },
+      }),
+    ).toBe(true)
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({ sessionID: "child-news", status: "completed" }),
+    ])
+  })
+
+  test("deduplicates batch launch rows and terminalizes only matching synthetic deliveries", () => {
+    const data = createSubagentData()
+    const batch: SessionMessage = {
+      parts: [
+        {
+          id: "batch-running",
+          sessionID: "parent-1",
+          messageID: "msg-batch-running",
+          type: "tool",
+          callID: "call-batch-running",
+          tool: "task_batch_run",
+          state: {
+            status: "completed",
+            input: {
+              tasks: [
+                { description: "Extract SPY data", subagent_type: "data_extractor" },
+                { description: "Research SPY news", subagent_type: "news_agent" },
+              ],
+            },
+            output: '<task_batch state="running"></task_batch>',
+            title: "Mandatory evidence batch",
+            metadata: {
+              batch: true,
+              subagents: [
+                {
+                  sessionId: "child-data",
+                  subagentType: "data_extractor",
+                  description: "Extract SPY data",
+                  state: "running",
+                },
+                {
+                  sessionId: "child-news",
+                  subagentType: "news_agent",
+                  description: "Research SPY news",
+                  state: "running",
+                },
+                {
+                  sessionId: "child-data",
+                  subagentType: "data_extractor",
+                  description: "Extract SPY data",
+                  state: "running",
+                },
+              ],
+            },
+            time: { start: 1, end: 2 },
+          },
+        },
+      ],
+    }
+
+    bootstrapSubagentData({
+      data,
+      messages: [batch],
+      children: [{ id: "child-data" }, { id: "child-news" }],
+      permissions: [],
+      questions: [],
+    })
+    expect(snapshotSubagentData(data).tabs.map((tab) => [tab.sessionID, tab.status])).toEqual([
+      ["child-data", "running"],
+      ["child-news", "running"],
+    ])
+
+    reduce(data, {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "delivery-news",
+          sessionID: "parent-1",
+          messageID: "msg-delivery-news",
+          type: "text",
+          synthetic: true,
+          text: '<task id="child-news" state="completed"><task_result>done</task_result></task>',
+          time: { start: 3, end: 4 },
+        },
+      },
+    })
+    expect(snapshotSubagentData(data).tabs.map((tab) => [tab.sessionID, tab.status])).toEqual([
+      ["child-data", "running"],
+      ["child-news", "completed"],
+    ])
+
+    reduce(data, {
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id: "delivery-data",
+          sessionID: "parent-1",
+          messageID: "msg-delivery-data",
+          type: "text",
+          synthetic: true,
+          text: '<task id="child-data" state="error"><task_error>failed</task_error></task>',
+          time: { start: 5, end: 6 },
+        },
+      },
+    })
+    expect(snapshotSubagentData(data).tabs.map((tab) => [tab.sessionID, tab.status])).toEqual([
+      ["child-data", "error"],
+      ["child-news", "completed"],
+    ])
+  })
+
+  test("replays synthetic task deliveries after static running batch metadata", () => {
+    const data = createSubagentData()
+
+    bootstrapSubagentData({
+      data,
+      messages: [
+        {
+          parts: [
+            {
+              id: "batch-running",
+              sessionID: "parent-1",
+              messageID: "msg-batch-running",
+              type: "tool",
+              callID: "call-batch-running",
+              tool: "task_batch_run",
+              state: {
+                status: "completed",
+                input: { tasks: [] },
+                output: '<task_batch state="running"></task_batch>',
+                title: "Evidence batch",
+                metadata: {
+                  subagents: [
+                    {
+                      sessionId: "child-data",
+                      subagentType: "data_extractor",
+                      description: "Extract SPY data",
+                      state: "running",
+                    },
+                  ],
+                },
+                time: { start: 1, end: 2 },
+              },
+            },
+          ],
+        },
+        {
+          parts: [
+            {
+              id: "delivery-data",
+              sessionID: "parent-1",
+              messageID: "msg-delivery-data",
+              type: "text",
+              synthetic: true,
+              text: '<task id="child-data" state="completed"><task_result>done</task_result></task>',
+              time: { start: 3, end: 4 },
+            },
+          ],
+        },
+      ],
+      children: [{ id: "child-data" }],
+      permissions: [],
+      questions: [],
+    })
+
+    expect(snapshotSubagentData(data).tabs).toEqual([
+      expect.objectContaining({ sessionID: "child-data", status: "completed" }),
     ])
   })
 

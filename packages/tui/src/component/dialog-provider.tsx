@@ -367,8 +367,8 @@ function ApiMethod(props: ApiMethodProps) {
     <DialogPrompt
       title={props.title}
       placeholder="API key"
-      description={
-        {
+      description={() =>
+        ({
           opencode: (
             <box gap={1}>
               <text fg={theme.textMuted}>
@@ -403,7 +403,7 @@ function ApiMethod(props: ApiMethodProps) {
               <text fg={theme.textMuted}>You can also manage this under Settings → Data Sources → Web search.</text>
             </box>
           ),
-        }[props.providerID] ?? undefined
+        })[props.providerID] ?? undefined
       }
       onConfirm={async (value) => {
         if (!value) return

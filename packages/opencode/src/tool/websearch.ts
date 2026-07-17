@@ -8,6 +8,8 @@ import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { PerplexitySearch } from "@opencode-ai/core/tool/perplexity-search"
 import { resolvePerplexityApiKey } from "./perplexity-credentials"
+import { Database } from "@opencode-ai/core/database/database"
+import { StrategyContext } from "@/task/strategy-context"
 
 export const Parameters = Schema.Struct({
   query: Schema.String.annotate({ description: "Websearch query" }),
@@ -123,14 +125,27 @@ export const WebSearchTool = Tool.define(
   Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient
     const flags = yield* RuntimeFlags.Service
+    const database = yield* Effect.serviceOption(Database.Service)
 
     return {
       get description() {
         return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
       },
       parameters: Parameters,
-      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
+      execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context): Effect.Effect<Tool.ExecuteResult> =>
         Effect.gen(function* () {
+          const contextBlock =
+            database._tag === "Some"
+              ? yield* Effect.promise(() =>
+                  StrategyContext.duplicateFetchBlock(
+                    "Direct web evidence search",
+                    ctx.sessionID,
+                    database.value,
+                    ctx.messages,
+                  ),
+                )
+              : undefined
+          if (contextBlock) return contextBlock
           // Local auth.json key (Settings) enables Perplexity without env vars.
           const perplexityKey = yield* Effect.promise(() => resolvePerplexityApiKey())
           const provider = selectWebSearchProvider(ctx.sessionID, {

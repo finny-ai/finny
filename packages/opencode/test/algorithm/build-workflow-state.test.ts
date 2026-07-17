@@ -743,4 +743,50 @@ describe("WorkflowRunV2 identity, attempts, terminal state, and resume", () => {
       }),
     ).toMatchObject({ allowed: false, code: "workflow_not_qualified" })
   })
+
+  test("terminalizes in-progress attempts when the workflow is interrupted", () => {
+    let state = createBuildWorkflow(workflowInput())
+    state = applied(
+      transition(state, {
+        id: "evt_attempt_running",
+        type: "attempt.recorded",
+        occurredAt: 1_100,
+        source: { actor: "tool" },
+        attempt: {
+          id: "attempt_running",
+          idempotencyKey: "backtest:begin:one",
+          fingerprint: "backtest_inputs",
+          operation: "finny_backtest",
+          outcome: "accepted",
+          lifecycle: "in_progress",
+          requiredChanges: [],
+          requestVersion: 1,
+          artifactIds: [],
+          evidenceIds: [],
+          trialIds: [],
+          createdAt: 1_100,
+        },
+      }),
+    )
+    state = applied(
+      transition(state, {
+        id: "evt_interrupted",
+        type: "workflow.blocked",
+        occurredAt: 1_200,
+        source: { actor: "system" },
+        blocker: {
+          code: "workflow_interrupted",
+          message: "user interrupted the run",
+          fingerprint: "1:2:research",
+          requiredChanges: ["resume the workflow with the stable resume token"],
+        },
+      }),
+    )
+
+    expect(state.attempts[0]).toMatchObject({
+      lifecycle: "terminal",
+      outcome: "failed",
+      blockerCode: "workflow_interrupted",
+    })
+  })
 })

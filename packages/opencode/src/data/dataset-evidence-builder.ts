@@ -39,6 +39,8 @@ export type BuiltDatasetEvidenceManifest = DatasetEvidenceV2 & {
   coverage: string
   coverage_note: string
   usable_for_parent: "yes" | "no"
+  usable_for_research: "yes" | "no"
+  strict_backtest_eligible: "yes" | "no"
   analysis_summary_path?: string
   analysis_regime?: string
   analysis_hypotheses?: string[]
@@ -290,18 +292,28 @@ function bindRequest(input: BuildDatasetEvidenceV2Input): RequestBinding {
   }
 }
 
+function providerAvailabilityDelay(input: BuildDatasetEvidenceV2Input): number {
+  const provider = input.provider.id.trim().toLowerCase()
+  const feed = input.provider.feed.trim().toLowerCase()
+  return provider === "alpaca" && feed === "sip" ? 20 * 60_000 : 0
+}
+
 function isOpenFinalCandle(input: {
   missing: number[]
   extra: number[]
   expected: number[]
   requestedEnd: string
   now: Date
+  step: number
+  availabilityDelay: number
 }): boolean {
+  const availableBucket = Math.floor((input.now.getTime() - input.availabilityDelay) / input.step) * input.step
   return (
-    input.missing.length === 1 &&
+    input.missing.length > 0 &&
     input.extra.length === 0 &&
-    input.missing[0] === input.expected.at(-1) &&
-    input.requestedEnd === input.now.toISOString().slice(0, 10)
+    input.requestedEnd === input.now.toISOString().slice(0, 10) &&
+    input.missing.every((timestamp) => timestamp >= availableBucket) &&
+    input.missing.every((timestamp, index) => input.expected.at(-input.missing.length + index) === timestamp)
   )
 }
 
@@ -335,6 +347,8 @@ function reconcileTimestamps(
       expected,
       requestedEnd: binding.requestedEnd,
       now: input.now ?? new Date(),
+      step: intervalMilliseconds(binding.interval),
+      availabilityDelay: providerAvailabilityDelay(input),
     }),
   }
 }
@@ -356,7 +370,7 @@ function coverageDescription(input: {
   if (input.openFinalCandle) {
     return {
       coverage: "partial_current_open_candle",
-      coverageNote: "partial because the current requested candle is still open and not yet available",
+      coverageNote: "partial because the current requested session or candle is still open and not yet available",
     }
   }
   if (input.hardBlocked) {
@@ -504,6 +518,8 @@ function legacyManifestFields(input: ManifestAssemblyInput) {
     coverage: qualification.coverage,
     coverage_note: qualification.coverageNote,
     usable_for_parent: qualification.usableForParent,
+    usable_for_research: qualification.usableForParent,
+    strict_backtest_eligible: (qualification.status === "strict_qualified" ? "yes" : "no") as "yes" | "no",
   }
 }
 
