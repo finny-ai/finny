@@ -18,9 +18,10 @@ import {
 } from "../algorithm/strategy-params"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import { Database } from "@opencode-ai/core/database/database"
+import { StrategyContext } from "@/task/strategy-context"
 import {
+  activeWorkflowForSession,
   ensureWorkflowCandidate,
-  pendingEvidenceRequirements,
   recordVerifiedMarketData,
   recordWorkflowAttempt,
 } from "@/algorithm/build-workflow/lifecycle"
@@ -205,6 +206,38 @@ export function contractRejectionBlock(missionIssues: string[], configIssues: st
   }
 }
 
+const SAVE_PREFLIGHT_RETRY_LIMIT = 2
+const savePreflightFailures = new Map<string, number>()
+
+export function recordSavePreflightFailure(sessionID: string, fingerprint: string): number {
+  const key = `${sessionID}:${fingerprint}`
+  const failures = (savePreflightFailures.get(key) ?? 0) + 1
+  savePreflightFailures.set(key, failures)
+  return failures
+}
+
+export function savePreflightRetryMessage(failures: number, configIssues: string[]): string {
+  const docsModeConflict = configIssues.some((issue) =>
+    issue.includes('docsMode "inherit" cannot replace mission, preferences, or riskContract'),
+  )
+  if (failures >= SAVE_PREFLIGHT_RETRY_LIMIT) {
+    return [
+      `BLOCKED: save preflight retry limit reached (${failures}/${SAVE_PREFLIGHT_RETRY_LIMIT}) for unchanged inputs.`,
+      "",
+      docsModeConflict
+        ? 'Stop this build attempt now. The only valid next call changes docsMode to "replace" while preserving saveMode "version" and the replacement docsInput. Do not call finny_algorithm_save again with docsMode "inherit".'
+        : "Stop this build attempt now. Correct the listed mission/config inputs before calling finny_algorithm_save again; do not repeat the unchanged call.",
+    ].join("\n")
+  }
+  return docsModeConflict
+    ? 'NEXT ACTION (one retry maximum): preserve saveMode "version" and the replacement docsInput, but change docsMode from "inherit" to "replace". Do not retry with docsMode "inherit".'
+    : "NEXT ACTION (one retry maximum): correct every listed mission/config issue before calling finny_algorithm_save again. Do not repeat the unchanged call."
+}
+
+export function _resetSavePreflightGuardForTests(): void {
+  savePreflightFailures.clear()
+}
+
 export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
   const blockers = warnings.filter((warning) => Validate.diagnosticDisposition(warning) === "blocking")
   if (blockers.length === 0) return undefined
@@ -235,7 +268,10 @@ const questionnaireInput = z
 
 const missionInput = z.object({
   status: z.enum(["research", "backtested", "paper", "live", "retired"]).optional(),
-  created: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD").optional(),
+  created: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/, "expected YYYY-MM-DD")
+    .optional(),
   hypothesis: z.string().min(1),
   scope: z.object({
     asset_class: z.enum(["equities", "crypto", "futures", "fx", "options", "mixed"]),
@@ -291,18 +327,42 @@ type DocumentParams = {
 
 /** Resolve documents once so structured input cannot be overridden by stale/raw YAML. */
 export function resolveSaveDocuments(params: DocumentParams) {
-  if (!params.docsInput) return { mission: params.mission, prefs: params.prefs, decisions: params.decisions, riskContract: params.riskContract }
+  if (!params.docsInput)
+    return {
+      mission: params.mission,
+      prefs: params.prefs,
+      decisions: params.decisions,
+      riskContract: params.riskContract,
+    }
   const input = params.docsInput.mission
   const questionnaire = Mission.CORE8_IDS.map((id) => {
     const answer = input.questionnaire[id]
-    return { id, question: CORE8_QUESTIONS[id], answer, status: answer.trim().length > 0 ? ("answered" as const) : ("skipped" as const) }
+    return {
+      id,
+      question: CORE8_QUESTIONS[id],
+      answer,
+      status: answer.trim().length > 0 ? ("answered" as const) : ("skipped" as const),
+    }
   })
   const mission = Mission.renderV4({
-    name: params.name, status: input.status, created: input.created, hypothesis: input.hypothesis,
-    scope: input.scope, strategy: input.strategy, risk_contract: input.risk_contract,
-    exit_conditions: input.exit_conditions, questionnaire, userPreferences: input.user_preferences, body: input.body,
+    name: params.name,
+    status: input.status,
+    created: input.created,
+    hypothesis: input.hypothesis,
+    scope: input.scope,
+    strategy: input.strategy,
+    risk_contract: input.risk_contract,
+    exit_conditions: input.exit_conditions,
+    questionnaire,
+    userPreferences: input.user_preferences,
+    body: input.body,
   })
-  return { mission, prefs: params.docsInput.prefs, decisions: params.docsInput.decisions, riskContract: `${JSON.stringify(input.risk_contract, null, 2)}\n` }
+  return {
+    mission,
+    prefs: params.docsInput.prefs,
+    decisions: params.docsInput.decisions,
+    riskContract: `${JSON.stringify(input.risk_contract, null, 2)}\n`,
+  }
 }
 
 const parameters = z.object({
@@ -322,13 +382,36 @@ const parameters = z.object({
   language: z.string().optional().describe("Programming language, defaults to python"),
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
-  reasoning: z.string().optional().describe("Markdown explaining why this version exists — what changed and why. Written to reasoning.md inside the version directory."),
+  reasoning: z
+    .string()
+    .optional()
+    .describe(
+      "Markdown explaining why this version exists — what changed and why. Written to reasoning.md inside the version directory.",
+    ),
   docsInput: docsInput.optional(),
-  mission: z.string().optional().describe("WHO: the hypothesis, scope, and exit conditions. Version replacements write mission.md in the new version."),
-  prefs: z.string().optional().describe("HOW: sizing, risk constraints, interval, target asset. Version replacements write prefs.md in the new version."),
-  decisions: z.string().optional().describe("Design decisions to append to the immutable decisions.md history for the new version."),
+  mission: z
+    .string()
+    .optional()
+    .describe(
+      "WHO: the hypothesis, scope, and exit conditions. Version replacements write mission.md in the new version.",
+    ),
+  prefs: z
+    .string()
+    .optional()
+    .describe(
+      "HOW: sizing, risk constraints, interval, target asset. Version replacements write prefs.md in the new version.",
+    ),
+  decisions: z
+    .string()
+    .optional()
+    .describe("Design decisions to append to the immutable decisions.md history for the new version."),
   riskContract: z.string().optional().describe("JSON risk contract saved as risk.json with the version."),
-  targetBrokerage: z.enum(["alpaca", "binance", "ibkr"]).optional().describe("Target brokerage for live deployment. Use when building a strategy for a brokerage the user hasn't connected yet (e.g. futures on Alpaca → target ibkr). Backtest runs immediately; live deploy requires the target brokerage to be connected later."),
+  targetBrokerage: z
+    .enum(["alpaca", "binance", "ibkr"])
+    .optional()
+    .describe(
+      "Target brokerage for live deployment. Use when building a strategy for a brokerage the user hasn't connected yet (e.g. futures on Alpaca → target ibkr). Backtest runs immediately; live deploy requires the target brokerage to be connected later.",
+    ),
 })
 
 // Payload the async body returns: the tool's ExecuteResult-shaped value, plus (optionally)
@@ -361,24 +444,152 @@ export const AlgorithmSaveTool = Tool.define(
       parameters,
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
+          const pendingContext = yield* Effect.promise(() =>
+            StrategyContext.pendingTasks(ctx.sessionID, database, ctx.messages),
+          )
+          if (pendingContext.length > 0) {
+            return {
+              title: "Save waiting for strategy context",
+              output: StrategyContext.blockedOutput("Strategy save", pendingContext),
+              metadata: {
+                blocked: true,
+                retry: false,
+                pendingContext: pendingContext.map((task) => `${task.subagentType}:${task.id}`),
+              },
+            }
+          }
+          // Resolve and validate all document/config-only save inputs before
+          // registering a durable candidate fingerprint. These checks do not
+          // inspect strategy code and a caller must be able to correct only
+          // docsMode/docsInput and retry the identical code/config. Recording
+          // the attempt first poisoned that unsaved fingerprint as terminal.
+          const documents = resolveSaveDocuments(params)
+          const normalizedConfig = bindMissionRiskContract(
+            normalizeConfigForSave({ incoming: params.config }),
+            documents.mission,
+          )
+          const missionRiskContract = Mission.riskContract(documents.mission)
+          const normalizedRiskContract = missionRiskContract
+            ? `${JSON.stringify(missionRiskContract, null, 2)}\n`
+            : documents.riskContract
+          const missionIssues =
+            params.saveMode === "new" || params.docsMode === "replace" || documents.mission !== undefined
+              ? Mission.validateForNewSave(documents.mission)
+              : []
+          const configIssues: string[] = []
+          if (missionRiskContract && documents.riskContract) {
+            try {
+              if (canonicalJson(JSON.parse(documents.riskContract)) !== canonicalJson(missionRiskContract)) {
+                configIssues.push("riskContract must exactly match mission.risk_contract")
+              }
+            } catch {
+              configIssues.push("riskContract must be valid JSON matching mission.risk_contract")
+            }
+          }
+          if (params.saveMode === "version" && !params.docsMode) {
+            configIssues.push('version saves require docsMode: "inherit" or "replace"')
+          }
+          if (
+            params.saveMode === "version" &&
+            params.docsMode === "inherit" &&
+            (documents.mission !== undefined ||
+              documents.prefs !== undefined ||
+              documents.riskContract !== undefined)
+          ) {
+            configIssues.push(
+              'docsMode "inherit" cannot replace mission, preferences, or riskContract; use docsMode: "replace"',
+            )
+          }
+          if (params.saveMode === "new") {
+            const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
+            if (missingConfig.length > 0) {
+              configIssues.push(
+                `missing required config field(s): ${missingConfig.join(", ")} — include symbol, asset_class, ` +
+                  `interval, required_history_bars, and non-empty strategy params under params in the save config; do not save first ` +
+                  `and patch with finny_algorithm_set_params`,
+              )
+            }
+            const unsupported = unsupportedNewSaveConfigReasons(normalizedConfig)
+            configIssues.push(...unsupported)
+            if (unsupported.length > 0) {
+              configIssues.push(
+                "for multi-portfolio requests, run a portfolio backtest or save one complete strategy per symbol — do not narrow to one ticker without user approval",
+              )
+            }
+          }
+          const contractBlock = contractRejectionBlock(missionIssues, configIssues)
+          if (contractBlock) {
+            const preflightFingerprint = createHash("sha256")
+              .update(
+                canonicalJson({
+                  name: params.name,
+                  saveMode: params.saveMode,
+                  docsMode: params.docsMode,
+                  code: params.code,
+                  config: params.config,
+                  mission: params.mission,
+                  prefs: params.prefs,
+                  decisions: params.decisions,
+                  riskContract: params.riskContract,
+                  docsInput: params.docsInput,
+                }),
+              )
+              .digest("hex")
+            const failures = recordSavePreflightFailure(ctx.sessionID, preflightFingerprint)
+            const retryMessage = savePreflightRetryMessage(failures, configIssues)
+            if (failures >= SAVE_PREFLIGHT_RETRY_LIMIT) {
+              yield* Effect.promise(() =>
+                runWorkflow(
+                  recordWorkflowAttempt({
+                    sessionId: ctx.sessionID,
+                    operation: "finny_algorithm_save:contract_preflight",
+                    fingerprint: preflightFingerprint,
+                    idempotencyKey: `save:contract_preflight:${preflightFingerprint}`,
+                    outcome: "blocked",
+                    lifecycle: "terminal",
+                    blockerCode: "save_contract_retry_limit",
+                    requiredChanges: configIssues.some((issue) => issue.includes('docsMode "inherit"'))
+                      ? ['change docsMode from "inherit" to "replace"']
+                      : ["correct the rejected mission/config inputs"],
+                  }),
+                ),
+              )
+            }
+            return {
+              ...contractBlock,
+              output: `${contractBlock.output}\n\n${retryMessage}`,
+              metadata: {
+                ...contractBlock.metadata,
+                preflightFailures: failures,
+                retryLimit: SAVE_PREFLIGHT_RETRY_LIMIT,
+                retryLimitReached: failures >= SAVE_PREFLIGHT_RETRY_LIMIT,
+                blockerCode: failures >= SAVE_PREFLIGHT_RETRY_LIMIT ? "save_contract_retry_limit" : undefined,
+              },
+            }
+          }
+
           const fingerprint = createHash("sha256")
-            .update(JSON.stringify({
-              name: params.name,
-              saveMode: params.saveMode,
-              code: params.code,
-              config: params.config,
-              mission: params.mission,
-              riskContract: params.riskContract,
-            }))
+            .update(
+              JSON.stringify({
+                name: params.name,
+                saveMode: params.saveMode,
+                code: params.code,
+                config: params.config,
+                mission: params.mission,
+                riskContract: params.riskContract,
+              }),
+            )
             .digest("hex")
           const durableStart = yield* Effect.promise(() =>
-            runWorkflow(recordWorkflowAttempt({
-              sessionId: ctx.sessionID,
-              operation: "finny_algorithm_save",
-              fingerprint,
-              idempotencyKey: `save:begin:${fingerprint}`,
-              outcome: "accepted",
-            })),
+            runWorkflow(
+              recordWorkflowAttempt({
+                sessionId: ctx.sessionID,
+                operation: "finny_algorithm_save",
+                fingerprint,
+                idempotencyKey: `save:begin:${fingerprint}`,
+                outcome: "accepted",
+              }),
+            ),
           )
           if (!durableStart.allowed) {
             return {
@@ -387,155 +598,24 @@ export const AlgorithmSaveTool = Tool.define(
               metadata: { blocked: true, retry: false, blockerCode: durableStart.code },
             }
           }
-          const outcomeExit = yield* Effect.exit(Effect.promise(async (): Promise<SaveOutcome> => {
-            const _permission = await ctx.ask({
-              permission: "finny_algorithm_save",
-              patterns: ["*"],
-              always: ["*"],
-              metadata: {},
-            })
+          const outcomeExit = yield* Effect.exit(
+            Effect.promise(async (): Promise<SaveOutcome> => {
+              const _permission = await ctx.ask({
+                permission: "finny_algorithm_save",
+                patterns: ["*"],
+                always: ["*"],
+                metadata: {},
+              })
 
-            const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
-            if (!evidence.ok) {
-              RetryOrchestrator.reset(ctx.sessionID, params.name)
-              return {
-                result: {
-                  title: "Save blocked by missing evidence",
-                  output: evidence.text,
-                  metadata: {
-                    blocked: true,
-                    retry: false,
-                    evidenceRequired: true,
-                    workspaceSlug: evidence.workspaceSlug,
-                    issues: evidence.issues,
-                  },
-                },
-              }
-            }
+              const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+              let workflow = evidence.ok
+                ? await runWorkflow(recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }))
+                : await runWorkflow(activeWorkflowForSession(ctx.sessionID))
 
-            let workflow = await runWorkflow(
-              recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
-            )
-            const pendingEvidence = workflow ? pendingEvidenceRequirements(workflow) : []
-            if (pendingEvidence.length > 0) {
-              return {
-                result: {
-                  title: "Save blocked by workflow evidence policy",
-                  output:
-                    "The exact market-data artifact was recorded, but the controller still requires: " +
-                    pendingEvidence.join(" | "),
-                  metadata: {
-                    blocked: true,
-                    retry: false,
-                    workflowId: workflow?.workflowId,
-                    pendingEvidence,
-                  },
-                },
-              }
-            }
-
-            // Environment hard-stop #1: Python isn't installed at all. Probe
-            // before validation so we don't let a clean ENOENT slip through
-            // `Validate.checkSyntax`'s silent-skip branch and reach save.
-            if (!(await isPythonAvailable())) {
-              RetryOrchestrator.reset(ctx.sessionID, params.name)
-              return {
-                result: {
-                  title: "Python isn't installed",
-                  output: PYTHON_MISSING_OUTPUT,
-                  metadata: {
-                    blocked: true,
-                    retry: false,
-                    transient: false,
-                    environmentBlock: "python_not_installed",
-                  },
-                },
-              }
-            }
-
-            // Contract gate: mission + execution config are cheap, pure
-            // checks — run them together BEFORE code validation so the agent
-            // gets every structural blocker in ONE response instead of
-            // peeling them one save round-trip at a time. New algorithms
-            // require a complete v4 mission.md; a mission passed on a version
-            // bump must also be valid.
-            const documents = resolveSaveDocuments(params)
-            const normalizedConfig = bindMissionRiskContract(
-              normalizeConfigForSave({ incoming: params.config }),
-              documents.mission,
-            )
-            const missionRiskContract = Mission.riskContract(documents.mission)
-            const normalizedRiskContract = missionRiskContract
-              ? `${JSON.stringify(missionRiskContract, null, 2)}\n`
-              : documents.riskContract
-            const missionIssues =
-              params.saveMode === "new" || params.docsMode === "replace" || documents.mission !== undefined
-                ? Mission.validateForNewSave(documents.mission)
-                : []
-            const configIssues: string[] = []
-            if (missionRiskContract && documents.riskContract) {
-              try {
-                if (canonicalJson(JSON.parse(documents.riskContract)) !== canonicalJson(missionRiskContract)) {
-                  configIssues.push("riskContract must exactly match mission.risk_contract")
-                }
-              } catch {
-                configIssues.push("riskContract must be valid JSON matching mission.risk_contract")
-              }
-            }
-            if (params.saveMode === "version" && !params.docsMode) {
-              configIssues.push('version saves require docsMode: "inherit" or "replace"')
-            }
-            if (
-              params.saveMode === "version" &&
-              params.docsMode === "inherit" &&
-              (documents.mission !== undefined || documents.prefs !== undefined || documents.riskContract !== undefined)
-            ) {
-              configIssues.push(
-                'docsMode "inherit" cannot replace mission, preferences, or riskContract; use docsMode: "replace"',
-              )
-            }
-            if (params.saveMode === "new") {
-              const missingConfig = missingRequiredNewSaveConfigFields(normalizedConfig)
-              if (missingConfig.length > 0) {
-                configIssues.push(
-                  `missing required config field(s): ${missingConfig.join(", ")} — include symbol, asset_class, ` +
-                    `interval, required_history_bars, and non-empty strategy params under params in the save config; do not save first ` +
-                    `and patch with finny_algorithm_set_params`,
-                )
-              }
-              const unsupported = unsupportedNewSaveConfigReasons(normalizedConfig)
-              configIssues.push(...unsupported)
-              if (unsupported.length > 0) {
-                configIssues.push(
-                  "for multi-portfolio requests, run a portfolio backtest or save one complete strategy per symbol — do not narrow to one ticker without user approval",
-                )
-              }
-            }
-            const contractBlock = contractRejectionBlock(missionIssues, configIssues)
-            if (contractBlock) {
-              return { result: contractBlock }
-            }
-
-            // Run validation through the retry orchestrator so the attempt counter,
-            // transient flagging, and max-retry handling all live in one place.
-            const validation = await RetryOrchestrator.attempt({
-              sessionID: ctx.sessionID,
-              algorithmName: params.name,
-              code: params.code,
-              config: params.config,
-            })
-
-            // Environment hard-stop: if the validator failed because Python
-            // isn't on PATH, no amount of retrying will help — the code was
-            // never the problem. Surface a single user-visible error and clear
-            // the retry counter so the next save (after the user installs
-            // Python) starts fresh.
-            if (validation.kind !== "passed") {
-              const probe =
-                validation.kind === "retry"
-                  ? validation.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n")
-                  : validation.report
-              if (looksLikePythonMissing(probe)) {
+              // Environment hard-stop #1: Python isn't installed at all. Probe
+              // before validation so we don't let a clean ENOENT slip through
+              // `Validate.checkSyntax`'s silent-skip branch and reach save.
+              if (!(await isPythonAvailable())) {
                 RetryOrchestrator.reset(ctx.sessionID, params.name)
                 return {
                   result: {
@@ -550,197 +630,257 @@ export const AlgorithmSaveTool = Tool.define(
                   },
                 }
               }
-            }
 
-            // Validation failed, but we still have budget — tell the agent to rewrite.
-            // Marked `transient: true` so the TUI suppresses this from the user.
-            if (validation.kind === "retry") {
-              const errorCodes = validation.diagnostics.map((d) => d.code)
-              return {
-                result: {
-                  title: "Failed to save strategy — fixing",
-                  output: RetryOrchestrator.buildRetryInstruction(validation),
-                  metadata: {
-                    blocked: true,
-                    retry: true,
-                    transient: true,
+              // Run validation through the retry orchestrator so the attempt counter,
+              // transient flagging, and max-retry handling all live in one place.
+              const validation = await RetryOrchestrator.attempt({
+                sessionID: ctx.sessionID,
+                algorithmName: params.name,
+                code: params.code,
+                // Validate the same mission-bound risk contract that will be
+                // persisted. Using the raw incoming config let a save pass
+                // without protective-stop checks, only for finny_backtest to
+                // reject the identical saved version moments later.
+                config: normalizedConfig,
+              })
+
+              // Environment hard-stop: if the validator failed because Python
+              // isn't on PATH, no amount of retrying will help — the code was
+              // never the problem. Surface a single user-visible error and clear
+              // the retry counter so the next save (after the user installs
+              // Python) starts fresh.
+              if (validation.kind !== "passed") {
+                const probe =
+                  validation.kind === "retry"
+                    ? validation.diagnostics.map((d) => `${d.code} ${d.message}`).join("\n")
+                    : validation.report
+                if (looksLikePythonMissing(probe)) {
+                  RetryOrchestrator.reset(ctx.sessionID, params.name)
+                  return {
+                    result: {
+                      title: "Python isn't installed",
+                      output: PYTHON_MISSING_OUTPUT,
+                      metadata: {
+                        blocked: true,
+                        retry: false,
+                        transient: false,
+                        environmentBlock: "python_not_installed",
+                      },
+                    },
+                  }
+                }
+              }
+
+              // Validation failed, but we still have budget — tell the agent to rewrite.
+              // Marked `transient: true` so the TUI suppresses this from the user.
+              if (validation.kind === "retry") {
+                const errorCodes = validation.diagnostics.map((d) => d.code)
+                return {
+                  result: {
+                    title: "Failed to save strategy — fixing",
+                    output: RetryOrchestrator.buildRetryInstruction(validation),
+                    metadata: {
+                      blocked: true,
+                      retry: true,
+                      transient: true,
+                      attempt: validation.attempt,
+                      maxAttempts: validation.maxAttempts,
+                      errorCount: validation.diagnostics.length,
+                      errorCodes,
+                    },
+                  },
+                  regenEvent: {
+                    sessionID: ctx.sessionID,
+                    algorithmName: params.name,
                     attempt: validation.attempt,
                     maxAttempts: validation.maxAttempts,
-                    errorCount: validation.diagnostics.length,
                     errorCodes,
                   },
-                },
-                regenEvent: {
-                  sessionID: ctx.sessionID,
-                  algorithmName: params.name,
-                  attempt: validation.attempt,
-                  maxAttempts: validation.maxAttempts,
-                  errorCodes,
-                },
+                }
               }
-            }
 
-            // Exhausted all retries — surface a clean, user-visible error.
-            if (validation.kind === "exhausted") {
+              // Exhausted all retries — surface a clean, user-visible error.
+              if (validation.kind === "exhausted") {
+                return {
+                  result: {
+                    title: "Failed to save strategy",
+                    output: RetryOrchestrator.buildExhaustedMessage(validation),
+                    metadata: {
+                      blocked: true,
+                      retry: false,
+                      transient: false,
+                      exhausted: true,
+                      attempts: validation.attempts,
+                    },
+                  },
+                }
+              }
+
+              // Validation passed — proceed with save.
+              const warningBlock = validationWarningsBlock(validation.warnings)
+              if (warningBlock) {
+                return { result: warningBlock }
+              }
+
+              // (Mission + config contract checked before code validation above.)
+
+              // The agent never sees brokerKind — the user's per-session pick
+              // (set via the TUI Brokerage capsule and persisted to
+              // brokerage.json) is read here so every saved algo is permanently
+              // stamped with the brokerage it was generated against.
+              const activeBrokerKind = await readActiveBrokerKind()
+
+              let algo
+              try {
+                algo = await Algorithm.save({
+                  name: params.name,
+                  code: params.code,
+                  language: params.language,
+                  description: params.description,
+                  config: normalizedConfig,
+                  reasoning: params.reasoning,
+                  mission: documents.mission,
+                  prefs: documents.prefs,
+                  decisions: documents.decisions,
+                  riskContract: normalizedRiskContract,
+                  docsMode: params.docsMode,
+                  brokerKind: activeBrokerKind ?? undefined,
+                  targetBrokerage: params.targetBrokerage,
+                  saveMode: params.saveMode,
+                })
+              } catch (err) {
+                if (err instanceof Algorithm.SaveModeConflictError) {
+                  const lines = [err.message]
+                  if (err.suggested) lines.push(`Suggested name: "${err.suggested}".`)
+                  return {
+                    result: {
+                      title: err.kind === "name_taken" ? "Name already in use" : "No existing algorithm to version",
+                      output: lines.join(" "),
+                      metadata: { blocked: true, saveModeConflict: err.kind, suggestedName: err.suggested },
+                    },
+                  }
+                }
+                if (err instanceof Algorithm.DocsModeRequiredError) {
+                  return {
+                    result: {
+                      title: "Version save blocked — docsMode required",
+                      output: err.message,
+                      metadata: { blocked: true, docsModeRequired: true },
+                    },
+                  }
+                }
+                throw err
+              }
+
+              const parts: string[] = [
+                JSON.stringify(
+                  {
+                    algorithmId: algo.algorithmId,
+                    name: algo.name,
+                    version: algo.version,
+                    status: algo.status,
+                    language: algo.language,
+                    validationAttempts: validation.attempts,
+                  },
+                  null,
+                  2,
+                ),
+              ]
+
+              await linkAlgorithmToWorkspace(ctx.sessionID, {
+                algorithmId: algo.algorithmId,
+                name: algo.name,
+                version: algo.version,
+              }).catch(() => undefined)
+
+              if (workflow && evidence.ok) {
+                const config = (() => {
+                  try {
+                    return normalizedConfig ? JSON.parse(normalizedConfig) : {}
+                  } catch {
+                    return {}
+                  }
+                })()
+                const candidate = await runWorkflow(
+                  ensureWorkflowCandidate({
+                    workflow,
+                    algorithm: algo,
+                    dataset: evidence.dataset,
+                    interval: String(config.interval ?? workflow.identity.interval?.value ?? "1d"),
+                    start: workflow.identity.window?.value.start,
+                    end: workflow.identity.window?.value.end,
+                  }),
+                )
+                workflow = candidate.workflow
+              }
+
+              if (!evidence.ok) {
+                parts.push(
+                  "",
+                  "Saved for exploratory research. Verified market-data evidence is still required for strict candidate qualification and promotion.",
+                )
+              }
+
+              if (validation.warnings.length > 0) {
+                parts.push(
+                  "",
+                  "These warnings are advisory: this saved version is valid and ready for backtesting. Do not create another version solely to clear them; continue with the requested backtest workflow.",
+                  "",
+                  Validate.format({ valid: true, errors: [], warnings: validation.warnings }),
+                )
+              }
+
+              // Soft-warn when the strategy targets a different brokerage than the active one
+              const target = params.targetBrokerage
+              const brokerageMismatch = target && activeBrokerKind && target !== activeBrokerKind
+              if (brokerageMismatch) {
+                parts.push(
+                  "",
+                  `⚠️ Saved for ${target.toUpperCase()}; cannot run live on ${activeBrokerKind}. Connect ${target.toUpperCase()} via Settings → Brokerages before deploying live. Backtesting works immediately.`,
+                )
+              }
+
               return {
                 result: {
-                  title: "Failed to save strategy",
-                  output: RetryOrchestrator.buildExhaustedMessage(validation),
+                  title: `Saved "${algo.name}" v${algo.version}`,
+                  output: parts.join("\n"),
                   metadata: {
-                    blocked: true,
-                    retry: false,
-                    transient: false,
-                    exhausted: true,
-                    attempts: validation.attempts,
+                    algorithmId: algo.algorithmId,
+                    name: algo.name,
+                    version: algo.version,
+                    warningCount: validation.warnings.length + (brokerageMismatch ? 1 : 0),
+                    validationAttempts: validation.attempts,
+                    qualificationEligible: evidence.ok,
+                    evidenceRequiredForQualification: !evidence.ok,
+                    evidenceIssues: evidence.ok ? [] : evidence.issues,
+                    ...(workflow
+                      ? {
+                          workflowId: workflow.workflowId,
+                          workflowStage: workflow.stage,
+                          conceptId: workflow.candidate?.conceptId,
+                        }
+                      : {}),
+                    ...(params.targetBrokerage ? { targetBrokerage: params.targetBrokerage } : {}),
+                    ...(brokerageMismatch ? { brokerageMismatch: true } : {}),
                   },
                 },
               }
-            }
-
-            // Validation passed — proceed with save.
-            const warningBlock = validationWarningsBlock(validation.warnings)
-            if (warningBlock) {
-              return { result: warningBlock }
-            }
-
-            // (Mission + config contract checked before code validation above.)
-
-            // The agent never sees brokerKind — the user's per-session pick
-            // (set via the TUI Brokerage capsule and persisted to
-            // brokerage.json) is read here so every saved algo is permanently
-            // stamped with the brokerage it was generated against.
-            const activeBrokerKind = await readActiveBrokerKind()
-
-            let algo
-            try {
-              algo = await Algorithm.save({
-                name: params.name,
-                code: params.code,
-                language: params.language,
-                description: params.description,
-                config: normalizedConfig,
-                reasoning: params.reasoning,
-                mission: documents.mission,
-                prefs: documents.prefs,
-                decisions: documents.decisions,
-                riskContract: normalizedRiskContract,
-                docsMode: params.docsMode,
-                brokerKind: activeBrokerKind ?? undefined,
-                targetBrokerage: params.targetBrokerage,
-                saveMode: params.saveMode,
-              })
-            } catch (err) {
-              if (err instanceof Algorithm.SaveModeConflictError) {
-                const lines = [err.message]
-                if (err.suggested) lines.push(`Suggested name: "${err.suggested}".`)
-                return {
-                  result: {
-                    title: err.kind === "name_taken" ? "Name already in use" : "No existing algorithm to version",
-                    output: lines.join(" "),
-                    metadata: { blocked: true, saveModeConflict: err.kind, suggestedName: err.suggested },
-                  },
-                }
-              }
-              if (err instanceof Algorithm.DocsModeRequiredError) {
-                return {
-                  result: {
-                    title: "Version save blocked — docsMode required",
-                    output: err.message,
-                    metadata: { blocked: true, docsModeRequired: true },
-                  },
-                }
-              }
-              throw err
-            }
-
-            const parts: string[] = [
-              JSON.stringify(
-                {
-                  algorithmId: algo.algorithmId,
-                  name: algo.name,
-                  version: algo.version,
-                  status: algo.status,
-                  language: algo.language,
-                  validationAttempts: validation.attempts,
-                },
-                null,
-                2,
-              ),
-            ]
-
-            await linkAlgorithmToWorkspace(ctx.sessionID, {
-              algorithmId: algo.algorithmId,
-              name: algo.name,
-              version: algo.version,
-            }).catch(() => undefined)
-
-            if (workflow) {
-              const config = (() => {
-                try {
-                  return normalizedConfig ? JSON.parse(normalizedConfig) : {}
-                } catch {
-                  return {}
-                }
-              })()
-              const candidate = await runWorkflow(
-                ensureWorkflowCandidate({
-                  workflow,
-                  algorithm: algo,
-                  dataset: evidence.dataset,
-                  interval: String(config.interval ?? workflow.identity.interval?.value ?? "1d"),
-                  start: workflow.identity.window?.value.start,
-                  end: workflow.identity.window?.value.end,
-                }),
-              )
-              workflow = candidate.workflow
-            }
-
-            if (validation.warnings.length > 0) {
-              parts.push("", Validate.format({ valid: true, errors: [], warnings: validation.warnings }))
-            }
-
-            // Soft-warn when the strategy targets a different brokerage than the active one
-            const target = params.targetBrokerage
-            const brokerageMismatch = target && activeBrokerKind && target !== activeBrokerKind
-            if (brokerageMismatch) {
-              parts.push("", `⚠️ Saved for ${target.toUpperCase()}; cannot run live on ${activeBrokerKind}. Connect ${target.toUpperCase()} via Settings → Brokerages before deploying live. Backtesting works immediately.`)
-            }
-
-            return {
-              result: {
-                title: `Saved "${algo.name}" v${algo.version}`,
-                output: parts.join("\n"),
-                metadata: {
-                  algorithmId: algo.algorithmId,
-                  name: algo.name,
-                  version: algo.version,
-                  warningCount: validation.warnings.length + (brokerageMismatch ? 1 : 0),
-                  validationAttempts: validation.attempts,
-                  ...(workflow
-                    ? {
-                        workflowId: workflow.workflowId,
-                        workflowStage: workflow.stage,
-                        conceptId: workflow.candidate?.conceptId,
-                      }
-                    : {}),
-                  ...(params.targetBrokerage ? { targetBrokerage: params.targetBrokerage } : {}),
-                  ...(brokerageMismatch ? { brokerageMismatch: true } : {}),
-                },
-              },
-            }
-          }))
+            }),
+          )
           if (outcomeExit._tag === "Failure") {
             yield* Effect.promise(() =>
-              runWorkflow(recordWorkflowAttempt({
-                sessionId: ctx.sessionID,
-                operation: "finny_algorithm_save:finish",
-                fingerprint,
-                idempotencyKey: `save:finish:${fingerprint}:failed`,
-                outcome: "failed",
-                lifecycle: "terminal",
-                blockerCode: "save_execution_failed",
-                requiredChanges: ["resolve the thrown save or preflight error"],
-              })),
+              runWorkflow(
+                recordWorkflowAttempt({
+                  sessionId: ctx.sessionID,
+                  operation: "finny_algorithm_save:finish",
+                  fingerprint,
+                  idempotencyKey: `save:finish:${fingerprint}:failed`,
+                  outcome: "failed",
+                  lifecycle: "terminal",
+                  blockerCode: "save_execution_failed",
+                  requiredChanges: ["resolve the thrown save or preflight error"],
+                }),
+              ),
             )
             return yield* Effect.failCause(outcomeExit.cause)
           }
@@ -754,20 +894,22 @@ export const AlgorithmSaveTool = Tool.define(
 
           const blocked = Boolean((outcome.result.metadata as Record<string, unknown>).blocked)
           yield* Effect.promise(() =>
-            runWorkflow(recordWorkflowAttempt({
-              sessionId: ctx.sessionID,
-              operation: "finny_algorithm_save:finish",
-              fingerprint,
-              idempotencyKey: `save:finish:${fingerprint}:${blocked ? "blocked" : "accepted"}`,
-              outcome: blocked ? "blocked" : "accepted",
-              lifecycle: "terminal",
-              blockerCode: blocked ? "save_preflight_rejected" : undefined,
-              requiredChanges: blocked ? ["rejected save preflight inputs"] : [],
-              artifactIds:
-                typeof (outcome.result.metadata as Record<string, unknown>).algorithmId === "string"
-                  ? [String((outcome.result.metadata as Record<string, unknown>).algorithmId)]
-                  : [],
-            })),
+            runWorkflow(
+              recordWorkflowAttempt({
+                sessionId: ctx.sessionID,
+                operation: "finny_algorithm_save:finish",
+                fingerprint,
+                idempotencyKey: `save:finish:${fingerprint}:${blocked ? "blocked" : "accepted"}`,
+                outcome: blocked ? "blocked" : "accepted",
+                lifecycle: "terminal",
+                blockerCode: blocked ? "save_preflight_rejected" : undefined,
+                requiredChanges: blocked ? ["rejected save preflight inputs"] : [],
+                artifactIds:
+                  typeof (outcome.result.metadata as Record<string, unknown>).algorithmId === "string"
+                    ? [String((outcome.result.metadata as Record<string, unknown>).algorithmId)]
+                    : [],
+              }),
+            ),
           )
 
           return outcome.result

@@ -12,6 +12,7 @@ import { Truncate } from "@/tool/truncate"
 import { TestInstance } from "../fixture/fixture"
 import { SessionID, MessageID } from "../../src/session/schema"
 import { testEffect } from "../lib/effect"
+import { algoDir, bindSessionWorkspace, ensureAlgoWorkspace } from "@finny-ai/core/algo"
 
 const it = testEffect(
   Layer.mergeAll(
@@ -108,6 +109,52 @@ describe("tool.apply_patch freeform", () => {
     Effect.gen(function* () {
       const { ctx } = makeCtx()
       yield* expectFailure(execute({ patchText: "*** Begin Patch\n*** End Patch" }, ctx), "patch rejected: empty patch")
+    }),
+  )
+
+  it.instance("blocks main Finny apply_patch edits to bound workspace evidence manifests", () =>
+    Effect.gen(function* () {
+      const workspace = yield* Effect.promise(() => ensureAlgoWorkspace("apply-patch-manifest-integrity"))
+      yield* Effect.promise(() => bindSessionWorkspace(baseCtx.sessionID, workspace.slug))
+      const manifest = path.join(algoDir(workspace.slug), "data", "evidence-manifest.json")
+      yield* makeDir(path.dirname(manifest))
+      yield* writeText(
+        manifest,
+        JSON.stringify({ requested_algorithm_name: "recent-news-catalysts-research", request_version: 3 }) + "\n",
+      )
+      const { ctx } = makeCtx()
+      const finnyCtx = { ...ctx, agent: "finny" }
+      const patchText = `*** Begin Patch
+*** Update File: ${manifest}
+@@
+-{"requested_algorithm_name":"recent-news-catalysts-research","request_version":3}
++{"requested_algorithm_name":"supertrend-btc","request_version":1}
+*** End Patch`
+
+      yield* expectFailure(
+        execute({ patchText }, finnyCtx),
+        "only the owning subagent or evidence finalizer may write it",
+      )
+      expect(yield* readText(manifest)).toContain('"requested_algorithm_name":"recent-news-catalysts-research"')
+      expect(yield* readText(manifest)).toContain('"request_version":3')
+    }),
+  )
+
+  it.instance("blocks main Finny from creating repository scripts during a bound strategy workflow", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const workspace = yield* Effect.promise(() => ensureAlgoWorkspace("apply-patch-source-integrity"))
+      yield* Effect.promise(() => bindSessionWorkspace(baseCtx.sessionID, workspace.slug))
+      const sourceFile = path.join(test.directory, "script", "finalize-task.ts")
+      const { ctx } = makeCtx()
+      const finnyCtx = { ...ctx, agent: "finny" }
+      const patchText = `*** Begin Patch
+*** Add File: ${sourceFile}
++export const forceComplete = true
+*** End Patch`
+
+      yield* expectFailure(execute({ patchText }, finnyCtx), "outside the bound strategy workspace")
+      yield* expectReadFailure(sourceFile)
     }),
   )
 

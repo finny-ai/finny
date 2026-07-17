@@ -217,9 +217,11 @@ export function Session() {
       (sync.data.part[message.id] ?? []).filter(
         (part): part is ToolPart =>
           part.type === "tool" &&
-          part.tool === "task" &&
-          part.state.status === "running" &&
-          part.state.metadata?.background !== true,
+          isForegroundTask(
+            part.tool,
+            part.state.status,
+            part.state.status === "pending" ? undefined : part.state.metadata?.background,
+          ),
       ),
     ),
   )
@@ -1549,22 +1551,18 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
       </For>
       <Show when={props.parts.some((x) => x.type === "tool" && toolDisplay(x.tool) === "task")}>
         <box paddingTop={1} paddingLeft={3}>
-          <text fg={theme.text}>
-            {childShortcut()}
-            <span style={{ fg: theme.textMuted }}> view subagents</span>
-            <Show
-              when={props.parts.some(
+          <text fg={theme.textMuted}>
+            {formatSubagentNavigationHint(
+              childShortcut(),
+              backgroundShortcut(),
+              props.parts.some(
                 (x) =>
                   x.type === "tool" &&
                   toolDisplay(x.tool) === "task" &&
                   x.state.status === "running" &&
                   x.state.metadata?.background !== true,
-              )}
-            >
-              <span style={{ fg: theme.textMuted }}> · </span>
-              {backgroundShortcut()}
-              <span style={{ fg: theme.textMuted }}> background</span>
-            </Show>
+              ),
+            )}
           </text>
         </box>
       </Show>
@@ -1579,7 +1577,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           customBorderChars={SplitBorder.customBorderChars}
           borderColor={theme.error}
         >
-          <text fg={theme.textMuted}>{props.message.error?.data.message}</text>
+          <text fg={theme.textMuted}>{errorMessage(props.message.error)}</text>
         </box>
       </Show>
       <Switch>
@@ -1835,7 +1833,10 @@ function QuantReviewPacket(props: ToolProps) {
   return (
     <BlockTool title="# Quant review packet" part={props.part}>
       <box flexDirection="column" gap={1}>
-        <Show when={reviewPath()} fallback={<text fg={theme.error}>{props.output ?? "Review packet unavailable"}</text>}>
+        <Show
+          when={reviewPath()}
+          fallback={<text fg={theme.error}>{props.output ?? "Review packet unavailable"}</text>}
+        >
           <text fg={theme.text}>Final experiment-lineage packet is ready. Paper approval remains separate.</text>
           <Link href={reviewPath()!} fg={theme.primary} width="100%" wrapMode="word">
             Open quant review packet
@@ -2396,13 +2397,14 @@ function Task(props: ToolProps) {
   )
 
   const status = createMemo(() => sync.data.session_status[sessionID() ?? ""])
-  const isRunning = createMemo(() => {
-    const value = status()
-    return (
-      props.part.state.status === "running" ||
-      (props.metadata.background === true && value !== undefined && value.type !== "idle")
-    )
-  })
+  const visual = createMemo(() =>
+    subagentVisualState({
+      partStatus: props.part.state.status,
+      background: props.metadata.background,
+      output: props.output,
+    }),
+  )
+  const isRunning = createMemo(() => visual() === "running")
   const retry = createMemo(() => {
     const value = status()
     if (value?.type !== "retry") return
@@ -2436,7 +2438,7 @@ function Task(props: ToolProps) {
       } else content.push(`↳ ${formatSubagentToolcalls(tools().length)}`)
     }
 
-    if (!isRunning() && props.part.state.status === "completed") {
+    if (visual() === "completed") {
       content.push(`↳ ${formatCompletedSubagentDetail(tools().length, Locale.duration(duration()))}`)
     }
 
@@ -2445,9 +2447,9 @@ function Task(props: ToolProps) {
 
   return (
     <InlineTool
-      icon={props.part.state.status === "completed" ? "✓" : "│"}
+      icon={subagentStateIcon(visual())}
       subagent={true}
-      color={retry() ? theme.error : undefined}
+      color={retry() || visual() === "error" || visual() === "blocked" ? theme.error : undefined}
       spinner={isRunning()}
       complete={stringValue(props.input.description)}
       pending="Delegating..."
@@ -2472,21 +2474,25 @@ function TaskBatch(props: ToolProps) {
 
   const subagents = createMemo(() => {
     if (!Array.isArray(props.metadata.subagents)) return []
-    return props.metadata.subagents.flatMap((value) => {
+    return props.metadata.subagents.flatMap((value, index) => {
       const item = recordValue(value)
       const sessionId = stringValue(item?.sessionId)
-      if (!item || !sessionId) return []
-      return [{
-        sessionId,
-        subagentType: stringValue(item.subagentType) ?? "general",
-        description: stringValue(item.description) ?? "Delegated task",
-        state: stringValue(item.state) ?? "running",
-      }]
+      if (!item) return []
+      return [
+        {
+          sessionId,
+          key: sessionId ?? `batch-item-${index}`,
+          subagentType: stringValue(item.subagentType) ?? "general",
+          description: stringValue(item.description) ?? "Delegated task",
+          state: stringValue(item.state) ?? "running",
+        },
+      ]
     })
   })
 
   createEffect(() => {
     for (const item of subagents()) {
+      if (!item.sessionId) continue
       if (!sync.data.message[item.sessionId]?.length) void sync.session.sync(item.sessionId)
     }
   })
@@ -2495,18 +2501,23 @@ function TaskBatch(props: ToolProps) {
     <box flexDirection="column" gap={1}>
       <For each={subagents()}>
         {(item) => {
-          const status = createMemo(() => sync.data.session_status[item.sessionId])
-          const running = createMemo(() => item.state === "running" && status()?.type !== "idle")
+          const visual = createMemo(() =>
+            subagentVisualState({
+              partStatus: props.part.state.status,
+              declaredState: item.state,
+              output: props.output,
+            }),
+          )
           return (
             <InlineTool
-              icon={running() ? "│" : "✓"}
+              icon={subagentStateIcon(visual())}
               subagent={true}
-              color={item.state === "error" ? theme.error : undefined}
-              spinner={running()}
+              color={visual() === "error" || visual() === "blocked" ? theme.error : undefined}
+              spinner={visual() === "running"}
               complete={item.description}
               pending="Delegating..."
               part={props.part}
-              onClick={() => navigate({ type: "session", sessionID: item.sessionId })}
+              onClick={item.sessionId ? () => navigate({ type: "session", sessionID: item.sessionId! }) : undefined}
             >
               {formatSubagentTitle(Locale.titlecase(item.subagentType), item.description, true)}
             </InlineTool>
@@ -2525,6 +2536,14 @@ export function formatSubagentTitle(agent: string, description: string, backgrou
   return `${agent} Task${background ? " (background)" : ""} — ${description}`
 }
 
+export function formatSubagentNavigationHint(
+  childShortcut: string,
+  backgroundShortcut: string,
+  hasForegroundTask: boolean,
+) {
+  return `${childShortcut} view subagents${hasForegroundTask ? ` · ${backgroundShortcut} background` : ""}`
+}
+
 export function formatSubagentRetry(attempt: number, message: string) {
   return `Retrying (attempt ${attempt}) · ${message}`
 }
@@ -2532,6 +2551,40 @@ export function formatSubagentRetry(attempt: number, message: string) {
 export function formatCompletedSubagentDetail(toolcalls: number, duration: string) {
   if (toolcalls === 0) return duration
   return `${formatSubagentToolcalls(toolcalls)} · ${duration}`
+}
+
+export type SubagentVisualState = "running" | "completed" | "error" | "blocked" | "cancelled"
+
+export function subagentVisualState(input: {
+  partStatus: string
+  declaredState?: unknown
+  background?: unknown
+  output?: unknown
+}): SubagentVisualState {
+  const declared = typeof input.declaredState === "string" ? input.declaredState.toLowerCase() : undefined
+  if (declared === "error" || declared === "failed") return "error"
+  if (declared === "blocked") return "blocked"
+  if (declared === "cancelled") return "cancelled"
+  if (declared === "running" || declared === "queued") return "running"
+  if (declared === "completed") {
+    return typeof input.output === "string" && /\bBLOCKED:/.test(input.output) ? "blocked" : "completed"
+  }
+
+  if (input.partStatus === "error") return "error"
+  if (input.partStatus !== "completed") return "running"
+  if (typeof input.output === "string") {
+    if (/<task\b[^>]*\bstate=["']running["']/i.test(input.output)) return "running"
+    if (/<task\b[^>]*\bstate=["']error["']/i.test(input.output)) return "error"
+    if (/\bBLOCKED:/.test(input.output)) return "blocked"
+  }
+  return input.background === true ? "running" : "completed"
+}
+
+export function subagentStateIcon(state: SubagentVisualState) {
+  if (state === "completed") return "✓"
+  if (state === "cancelled") return "○"
+  if (state === "error" || state === "blocked") return "×"
+  return "│"
 }
 
 function Edit(props: ToolProps) {
@@ -2791,6 +2844,10 @@ const taskToolAliases = new Set(["task_run", "task_start", "task_batch_run"])
 export function toolDisplay(tool: string) {
   if (taskToolAliases.has(tool)) return "task"
   return toolDisplays.has(tool) ? tool : "generic"
+}
+
+export function isForegroundTask(tool: string, status: string, background: unknown) {
+  return toolDisplay(tool) === "task" && status === "running" && background !== true
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

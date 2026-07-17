@@ -29,7 +29,7 @@ import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
-import { existsSync } from "fs"
+import { existsSync, realpathSync } from "fs"
 import { algosRoot } from "@finny-ai/core/algo"
 import { Plugin } from "@/plugin"
 import { Skill } from "../skill"
@@ -316,99 +316,110 @@ export const layer = Layer.effect(
             ...finnyWorkspacePatterns("algos/_template/mission.md"),
           },
         })
-        function finnyUserAlgoNewsReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const patterns = [
-            path.join(root, "*/data/news/*"),
-            path.join(root, "*/data/news/*/*"),
-            path.join(root, "*/data/news/*/*/*"),
-            path.join(root, "*/data/news"),
+        function canonicalPathVariants(input: string): string[] {
+          const resolved = path.resolve(input)
+          const variants = [resolved]
+          let existing = resolved
+          const suffix: string[] = []
+          while (!existsSync(existing)) {
+            const parent = path.dirname(existing)
+            if (parent === existing) break
+            suffix.unshift(path.basename(existing))
+            existing = parent
+          }
+          try {
+            variants.push(path.join(realpathSync.native(existing), ...suffix))
+          } catch {
+            // Keep the lexical path when no existing ancestor can be resolved.
+          }
+          return [...new Set(variants)]
+        }
+
+        function finnyUserAlgoPatterns(suffixes: string[]): string[] {
+          const absolute = canonicalPathVariants(algosRoot()).flatMap((root) =>
+            suffixes.map((suffix) => path.join(root, suffix)),
+          )
+          // File mutation tools ask permission with paths relative to the
+          // instance worktree, while external-directory checks use absolute
+          // paths. Include both spellings, plus realpath aliases such as
+          // macOS /tmp -> /private/tmp, so the narrow workspace policy is the
+          // same at catalog time and execution time.
+          const anchors = [...new Set([ctx.worktree, ctx.directory].flatMap(canonicalPathVariants))]
+          return [
+            ...new Set([
+              ...absolute,
+              ...absolute.flatMap((pattern) => anchors.map((root) => path.relative(root, pattern))),
+            ]),
           ]
+        }
+
+        function finnyUserAlgoNewsReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
+          const patterns = finnyUserAlgoPatterns([
+            "*/data/news/*",
+            "*/data/news/*/*",
+            "*/data/news/*/*/*",
+            "*/data/news",
+          ])
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
         function finnyUserAlgoNewsWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const allow = [path.join(root, "*/data/news/*"), path.join(root, "*/data/news")]
-          const deny = [
-            path.join(root, "*/data/news/body"),
-            path.join(root, "*/data/news/body/*"),
-            path.join(root, "*/data/news/headlines"),
-            path.join(root, "*/data/news/headlines/*"),
-          ]
+          const allow = finnyUserAlgoPatterns(["*/data/news/*", "*/data/news"])
+          const deny = finnyUserAlgoPatterns([
+            "*/data/news/body",
+            "*/data/news/body/*",
+            "*/data/news/headlines",
+            "*/data/news/headlines/*",
+          ])
           return {
             ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
             ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
           }
         }
         function finnyUserAlgoDataPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const patterns = [
-            path.join(root, "*/data/*"),
-            path.join(root, "*/data/*/*"),
-            path.join(root, "*/data/*/*/*"),
-            path.join(root, "*/data/*/*/*/*"),
-            path.join(root, "*/data"),
-          ]
+          const patterns = finnyUserAlgoPatterns(["*/data/*", "*/data/*/*", "*/data/*/*/*", "*/data/*/*/*/*", "*/data"])
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
         function finnyUserAlgoWorkspaceReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const patterns = [
-            path.join(root, "*"),
-            path.join(root, "*/*"),
-            path.join(root, "*/*/*"),
-            path.join(root, "*/*/*/*"),
-            path.join(root, "*/*/*/*/*"),
-          ]
+          const patterns = finnyUserAlgoPatterns(["*", "*/*", "*/*/*", "*/*/*/*", "*/*/*/*/*"])
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
         function finnyUserAlgoWorkspaceWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const deny = [
-            path.join(root, "*"),
-            path.join(root, "*/*"),
-            path.join(root, "*/*/*"),
-            path.join(root, "*/*/*/*"),
-            path.join(root, "*/*/*/*/*"),
-          ]
-          const allow = [
-            path.join(root, "*/mission.md"),
-            path.join(root, "*/todo.md"),
-            path.join(root, "*/edge_analysis.md"),
-            path.join(root, "*/analysis"),
-            path.join(root, "*/analysis/*"),
-            path.join(root, "*/analysis/*/*"),
-            path.join(root, "*/analysis/*/*/*"),
-          ]
+          const deny = finnyUserAlgoPatterns(["*", "*/*", "*/*/*", "*/*/*/*", "*/*/*/*/*"])
+          const allow = finnyUserAlgoPatterns([
+            "*/mission.md",
+            "*/todo.md",
+            "*/edge_analysis.md",
+            "*/analysis",
+            "*/analysis/*",
+            "*/analysis/*/*",
+            "*/analysis/*/*/*",
+          ])
           return {
             ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
             ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
           }
         }
         function finnyUserAlgoSecPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const patterns = [path.join(root, "*/data/sec/*"), path.join(root, "*/data/sec")]
+          const patterns = finnyUserAlgoPatterns(["*/data/sec/*", "*/data/sec"])
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
         function finnyUserAlgoSentimentReadPatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const patterns = [
-            path.join(root, "*/data/sentiment/*"),
-            path.join(root, "*/data/sentiment/body/*"),
-            path.join(root, "*/data/sentiment/body"),
-            path.join(root, "*/data/sentiment"),
-          ]
+          const patterns = finnyUserAlgoPatterns([
+            "*/data/sentiment/*",
+            "*/data/sentiment/body/*",
+            "*/data/sentiment/body",
+            "*/data/sentiment",
+          ])
           return Object.fromEntries([...new Set(patterns)].map((item) => [item, "allow" as const]))
         }
         function finnyUserAlgoSentimentWritePatterns(): Exclude<PermissionConfig[keyof PermissionConfig], string> {
-          const root = algosRoot()
-          const allow = [path.join(root, "*/data/sentiment/*"), path.join(root, "*/data/sentiment")]
-          const deny = [
-            path.join(root, "*/data/sentiment/body"),
-            path.join(root, "*/data/sentiment/body/*"),
-            path.join(root, "*/data/sentiment/headlines"),
-            path.join(root, "*/data/sentiment/headlines/*"),
-          ]
+          const allow = finnyUserAlgoPatterns(["*/data/sentiment/*", "*/data/sentiment"])
+          const deny = finnyUserAlgoPatterns([
+            "*/data/sentiment/body",
+            "*/data/sentiment/body/*",
+            "*/data/sentiment/headlines",
+            "*/data/sentiment/headlines/*",
+          ])
           return {
             ...Object.fromEntries([...new Set(allow)].map((item) => [item, "allow" as const])),
             ...Object.fromEntries([...new Set(deny)].map((item) => [item, "deny" as const])),
@@ -454,6 +465,17 @@ export const layer = Layer.effect(
             "**/.env.*": "deny",
           },
         })
+        // User/global config may be intentionally broad for coding agents, but
+        // the visible Finny strategy controller must never inherit a shell or
+        // repo-wide mutation capability. Later workspace access adds back only
+        // the narrow durable strategy files it owns.
+        const finnyStrategySandbox = Permission.fromConfig({
+          bash: "deny",
+          shell: "deny",
+          apply_patch: "deny",
+          write: "deny",
+          edit: "deny",
+        })
         const agents: Record<string, Info> = {
           finny: {
             name: "finny",
@@ -469,17 +491,12 @@ export const layer = Layer.effect(
                 question: "allow",
               }),
               user,
+              finnyStrategySandbox,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
-              finnySessionNewsAccess,
-              finnySessionSecAccess,
-              finnySessionSentimentAccess,
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
-              Permission.fromConfig({
-                apply_patch: "deny",
-              }),
             ),
             mode: "primary",
             native: true,

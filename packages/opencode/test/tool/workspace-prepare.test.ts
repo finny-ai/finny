@@ -2,20 +2,69 @@ import { describe, expect, test } from "bun:test"
 import {
   promptFromParams,
   resolveWorkspacePrepareWindow,
+  workspacePrepareClarificationBlock,
+  workspacePrepareConfirmedIdentityLock,
   workspacePrepareIdentityConflict,
+  workspacePrepareUserContext,
 } from "../../src/tool/workspace-prepare"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { findLatestReviewPacketInRoots } from "../../src/tool/review-packet"
 import { parseRequestFacts } from "../../src/agent/request-identity"
+import { canonicalBuildDiscoveryQuestions } from "../../src/session/build-clarification"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
 describe("workspace prepare request context", () => {
   test("resolves a one-year duration to an absolute UTC date window", () => {
-    expect(resolveWorkspacePrepareWindow({ duration: "1y" }, new Date("2026-07-16T18:30:00-04:00"))).toEqual({
-      startDate: "2025-07-16",
-      endDate: "2026-07-16",
+    expect(
+      resolveWorkspacePrepareWindow({ duration: "1y", interval: "1d" }, new Date("2026-07-16T18:30:00-04:00")),
+    ).toEqual({
+      startDate: "2025-07-15",
+      endDate: "2026-07-15",
     })
+  })
+
+  test("ends an open intraday equity window on the last completed session", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "6m", interval: "5m", assetClass: "equity" },
+        new Date("2026-07-16T12:40:00-04:00"),
+      ),
+    ).toEqual({ startDate: "2026-01-15", endDate: "2026-07-15" })
+  })
+
+  test("uses today's equity session only after the close and SIP delay", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "6m", interval: "5m", assetClass: "equity" },
+        new Date("2026-07-16T16:14:59-04:00"),
+      ),
+    ).toEqual({ startDate: "2026-01-15", endDate: "2026-07-15" })
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "6m", interval: "5m", assetClass: "equity" },
+        new Date("2026-07-16T16:15:00-04:00"),
+      ),
+    ).toEqual({ startDate: "2026-01-16", endDate: "2026-07-16" })
+  })
+
+  test("skips non-trading days when resolving an equity duration window", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "1m", interval: "15m", assetClass: "equity" },
+        new Date("2026-07-20T08:00:00-04:00"),
+      ),
+    ).toEqual({ startDate: "2026-06-17", endDate: "2026-07-17" })
+  })
+
+  test("ends crypto intraday duration windows on the last complete UTC day", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        { duration: "1m", interval: "5m", assetClass: "crypto" },
+        new Date("2026-07-16T18:30:00Z"),
+      ),
+    ).toEqual({ startDate: "2026-06-15", endDate: "2026-07-15" })
   })
 
   test("preserves explicit dates when duration is also supplied", () => {
@@ -25,6 +74,46 @@ describe("workspace prepare request context", () => {
         new Date("2026-07-16T00:00:00Z"),
       ),
     ).toEqual({ startDate: "2024-01-02", endDate: "2025-01-02" })
+  })
+
+  test("clamps explicit crypto end dates that land on the incomplete current UTC day", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        {
+          duration: "1y",
+          startDate: "2025-07-17",
+          endDate: "2026-07-17",
+          interval: "4h",
+          assetClass: "crypto",
+        },
+        new Date("2026-07-17T16:30:00Z"),
+      ),
+    ).toEqual({ startDate: "2025-07-17", endDate: "2026-07-16" })
+  })
+
+  test("allows safety clamp of a locked incomplete crypto end day without user re-approval", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["BTC.USD"] },
+        assetClass: { value: "crypto" },
+        interval: { value: "4h" },
+        window: { value: { start: "2025-07-17", end: "2026-07-17" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "BTC 4h supertrend",
+        params: {
+          symbol: "BTC.USD",
+          assetClass: "crypto",
+          interval: "4h",
+          startDate: "2025-07-17",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
   })
 
   test("clamps calendar-month subtraction at month end", () => {
@@ -90,6 +179,206 @@ describe("workspace prepare request context", () => {
         { symbol: "VFV", assetClass: "equity", interval: "15m" },
         "Build a VFV 15-minute strategy",
       ),
+    ).toBeUndefined()
+  })
+
+  test("locks confirmed identity against silent window shrink and interval thrash", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["SPY"] },
+        assetClass: { value: "equity" },
+        interval: { value: "15min" },
+        window: { value: { start: "2026-01-16", end: "2026-07-16" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-05-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toContain("date window 2026-05-16→2026-07-16 changes confirmed identity")
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "1h",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toContain("interval 1h changes confirmed identity 15m")
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("allows confirmed identity changes only with explicit user approval", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["SPY"] },
+        assetClass: { value: "equity" },
+        interval: { value: "15min" },
+        window: { value: { start: "2026-01-16", end: "2026-07-16" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "Switch to Hourly (1h) for the same SPY request",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "1h",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "Use the shorter window 2026-06-01 to 2026-07-15",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-06-01",
+          endDate: "2026-07-15",
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("rejects model-invented workspace identity before the user clarifies", () => {
+    expect(
+      workspacePrepareClarificationBlock(
+        {
+          requestSummary: "Beat buy-and-hold with a BTC trend strategy.",
+          algorithmName: "supertrend-btc",
+          symbol: "BTC-USD",
+          assetClass: "crypto",
+          interval: "1d",
+          duration: "1y",
+        },
+        "Build me a strategy that can beat buy and hold; you choose the idea",
+      ),
+    ).toContain("explicit user clarification")
+    expect(
+      workspacePrepareClarificationBlock(
+        { symbol: "SPY", assetClass: "equity", interval: "1d", duration: "6m" },
+        "Use SPY equity, 1d bars, trailing 6 months, and long/flat positions.",
+      ),
+    ).toBeUndefined()
+    expect(
+      workspacePrepareClarificationBlock(
+        { requestSummary: "SPY momentum strategy to beat buy-and-hold" },
+        "Build me a strategy that can beat buy and hold; you choose the idea",
+      ),
+    ).toContain("explicit user clarification")
+  })
+
+  test("trusts completed question answers but not assistant-authored identity", () => {
+    const user = {
+      info: { role: "user" },
+      parts: [{ type: "text", text: "Build me a strategy that can beat buy and hold; you choose the idea" }],
+    }
+    const assistant = {
+      info: { role: "assistant" },
+      parts: [
+        { type: "text", text: "I will choose BTC for you." },
+        {
+          type: "tool",
+          tool: "question",
+          state: {
+            status: "completed",
+            input: { questions: [{ question: "Confirm the requested market and window." }] },
+            output: "User answered",
+            title: "Asked 1 question",
+            metadata: { answers: [["SPY equity, 1d bars, 2026-01-16 to 2026-07-16"]] },
+            time: { start: 1, end: 2 },
+          },
+        },
+      ],
+    }
+    const context = workspacePrepareUserContext([user, assistant] as SessionV1.WithParts[])
+    expect(context).toContain("SPY equity, 1d bars, 2026-01-16 to 2026-07-16")
+    expect(context).not.toContain("choose BTC")
+    expect(
+      workspacePrepareClarificationBlock(
+        {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "1d",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+        context,
+      ),
+    ).toBeUndefined()
+  })
+
+  test("uses canonical asked-question metadata and descriptions as trusted identity", () => {
+    const questions = canonicalBuildDiscoveryQuestions(new Date("2026-07-16T12:00:00Z"))
+    const user = {
+      info: { role: "user" },
+      parts: [{ type: "text", text: "Build me a strategy that can beat buy and hold; you choose the idea" }],
+    }
+    const assistant = {
+      info: { role: "assistant" },
+      parts: [
+        {
+          type: "tool",
+          tool: "question",
+          state: {
+            status: "completed",
+            input: { questions: [{ question: "Which setup?", options: [] }] },
+            output: "User answered",
+            title: "Asked 4 questions",
+            metadata: {
+              questions,
+              answers: [
+                ["BTC.USD crypto 1d"],
+                ["1y, $10k, verified"],
+                ["Long/flat, DD 15%"],
+                ["Strict positive gates"],
+              ],
+            },
+            time: { start: 1, end: 2 },
+          },
+        },
+      ],
+    }
+    const context = workspacePrepareUserContext([user, assistant] as SessionV1.WithParts[])
+    expect(context).toContain("2025-07-15 to 2026-07-15")
+    expect(parseRequestFacts(context)).toMatchObject({
+      requested_symbol: "BTC",
+      requested_asset_class: "crypto",
+      requested_interval: "1d",
+    })
+    expect(
+      workspacePrepareIdentityConflict({ symbol: "BTC.USD", assetClass: "crypto", interval: "1d" }, context),
     ).toBeUndefined()
   })
 })

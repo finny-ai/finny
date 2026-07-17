@@ -28,6 +28,9 @@ Always keep requested coverage separate from actual saved coverage. If a provide
 truncates intraday history, returns no rows for part of the window, or rejects the
 requested lookback, report the source limitation honestly. The runtime finalizer
 keeps the bound requested window immutable and derives actual coverage from saved rows.
+For duration-generated US equity requests, the runtime ends date-only windows on
+the last fully completed XNYS session. Do not extend that bound to today's open
+session or tomorrow in an attempt to make the dataset fresher.
 
 ## Environment
 
@@ -201,6 +204,12 @@ silently drops the entire final session — the single most common cause of
 - Alpaca `end`, yfinance `end`, Binance `endTime`: pass `requested_end + 1 day`
   (e.g. requested_end `2026-07-02` → `end=2026-07-03T00:00:00Z`). Never pass
   `requested_end` + `T00:00:00Z` directly.
+- For Alpaca SIP, never send an end timestamp newer than the entitlement-safe
+  boundary. Cap it at `now - 20 minutes`; requesting the live SIP window can
+  return HTTP 403 on delayed-data accounts. A duration-generated strict equity
+  window should already end on the last fully completed XNYS session. If the
+  user explicitly requested today's open session, save only the delayed closed
+  bars and report it as research-only instead of retrying with tomorrow's date.
 - Polygon `/range/{start}/{end}` is date-inclusive; pass `requested_end` as-is.
 - After fetching, drop bars from periods still in progress: any bar whose
   session/candle has not closed at fetch time (for US equities, bars from
@@ -536,13 +545,17 @@ Example: AAPL 5-minute bars with pagination (preferred for multi-month intraday)
 
 ```bash
 "$FINNY_PYTHON_BIN" <<'PY'
-import csv, json, os, sys, urllib.parse, urllib.request
+import csv, datetime, json, os, sys, urllib.parse, urllib.request
+from zoneinfo import ZoneInfo
 symbol = "AAPL"
 timeframe = "5Min"
 start = "2026-03-16T00:00:00Z"
-end = "2026-06-17T00:00:00Z"  # requested_end 2026-06-16 + 1 day: bars ON the end date must be fetched
+requested_end_exclusive = datetime.datetime(2026, 6, 17, tzinfo=datetime.timezone.utc)
 out = "stock/AAPL_5m_2026-03-16_2026-06-16.csv"
 feed = os.environ.get("ALPACA_DATA_FEED", "iex")
+safe_end = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=20)
+end = min(requested_end_exclusive, safe_end if feed.lower() == "sip" else requested_end_exclusive)
+end = end.replace(microsecond=0).isoformat().replace("+00:00", "Z")
 headers = {
     "APCA-API-KEY-ID": os.environ["ALPACA_API_KEY_ID"],
     "APCA-API-SECRET-KEY": os.environ["ALPACA_API_SECRET_KEY"],
@@ -572,6 +585,19 @@ while True:
         break
 if not rows:
     raise SystemExit("alpaca returned no bars for requested window")
+
+# DatasetEvidenceV2 defaults US equities to the regular XNYS session. Alpaca
+# may return pre/post-market bars, so keep regular-session timestamps only.
+ny = ZoneInfo("America/New_York")
+regular_rows = []
+for row in rows:
+    local = datetime.datetime.fromisoformat(row["t"].replace("Z", "+00:00")).astimezone(ny)
+    minute = local.hour * 60 + local.minute
+    if local.weekday() < 5 and 9 * 60 + 30 <= minute < 16 * 60:
+        regular_rows.append(row)
+rows = regular_rows
+if not rows:
+    raise SystemExit("alpaca returned no regular-session bars for requested window")
 with open(out, "w", newline="") as f:
     w = csv.writer(f)
     w.writerow(["timestamp", "open", "high", "low", "close", "volume"])
@@ -580,6 +606,12 @@ with open(out, "w", newline="") as f:
 print(f"wrote {len(rows)} rows to {out}")
 PY
 ```
+
+For an XNYS half-day, stop at the scheduled early close during preprocessing.
+Verify that no out-of-session rows remain before the one finalization call; the
+runtime finalizer's calendar is authoritative and will reject extras. Never rename
+a file that ends on yesterday so it can contain today's bars; the filename and
+saved coverage must describe the same request window.
 
 After Alpaca writes the CSV, verify coverage and timestamp cadence. The shortest
 positive intraday timestamp delta must not be smaller than the requested interval;

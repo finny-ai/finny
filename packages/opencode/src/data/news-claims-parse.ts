@@ -13,7 +13,7 @@ import {
   type ParsedNewsClaims,
 } from "./news-claims-types"
 
-const CLAIMS_FENCE_RE = /```(?:json)?\s*\n([\s\S]*?)\n```/gi
+const CLAIMS_FENCE_RE = /```(?:json|finny\.news\.claims\.v1)?\s*\n([\s\S]*?)\n```/gi
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)

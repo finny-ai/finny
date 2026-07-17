@@ -7,6 +7,8 @@ import { Tool } from "./tool"
 import { Process } from "@/util/process"
 import { resolveSessionPythonEnv } from "@/python/session-env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
+import { Database } from "@opencode-ai/core/database/database"
+import { StrategyContext } from "@/task/strategy-context"
 
 const parameters = z.object({
   symbol: z
@@ -54,7 +56,9 @@ print(json.dumps(out))
 
 export const QuoteTool = Tool.define(
   "finny_get_quote",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Effect.serviceOption(Database.Service)
+    return {
     description:
       "Get the latest quote (price, OHLCV, timestamp) for a supported market symbol. " +
       "Use this when the user asks for a current price or to anchor a strategy parameter " +
@@ -62,6 +66,16 @@ export const QuoteTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
+        const contextBlock =
+          database._tag === "Some"
+            ? await StrategyContext.duplicateFetchBlock(
+                "Live market-data fetch",
+                ctx.sessionID,
+                database.value,
+                ctx.messages,
+              )
+            : undefined
+        if (contextBlock) return contextBlock
         await ctx.ask({
           permission: "finny_get_quote",
           patterns: ["*"],
@@ -157,5 +171,6 @@ export const QuoteTool = Tool.define(
           await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
         }
       }),
+    }
   }),
 )

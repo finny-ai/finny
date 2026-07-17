@@ -1,6 +1,6 @@
 /** @jsxImportSource @opentui/solid */
 import { expect, test } from "bun:test"
-import { RGBA, type BoxRenderable } from "@opentui/core"
+import { BoxRenderable, RGBA } from "@opentui/core"
 import { testRender, useRenderer } from "@opentui/solid"
 import { createSignal } from "solid-js"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
@@ -17,6 +17,7 @@ import {
   RunVariantSelectBody,
 } from "@/cli/cmd/run/footer.command"
 import { RunFooterView } from "@/cli/cmd/run/footer.view"
+import { createFooterTodoTray, RunTodoPanel } from "@/cli/cmd/run/footer.todo"
 import { RunEntryContent } from "@/cli/cmd/run/scrollback.writer"
 import { RUN_THEME_FALLBACK, type RunTheme } from "@/cli/cmd/run/theme"
 import type {
@@ -30,6 +31,7 @@ import type {
   RunProvider,
   RunTuiConfig,
   StreamCommit,
+  ToolTodoSnapshot,
 } from "@/cli/cmd/run/types"
 import { RunQuestionBody } from "@/cli/cmd/run/footer.question"
 import { RejectField } from "@/cli/cmd/run/footer.permission"
@@ -160,6 +162,7 @@ async function renderFooter(
     currentModel?: RunInput["model"]
     currentVariant?: string
     subagents?: FooterSubagentState
+    todo?: ToolTodoSnapshot
     backgroundSubagents?: boolean
     width?: number
     height?: number
@@ -172,6 +175,7 @@ async function renderFooter(
   const [subagents] = createSignal<FooterSubagentState>(
     input.subagents ?? { tabs: [], details: {}, permissions: [], questions: [] },
   )
+  const [todo] = createSignal<ToolTodoSnapshot>(input.todo ?? { kind: "todo", items: [], tail: "" })
   const state = footerState(input.state)
   const config = input.tuiConfig ?? tuiConfig
   let offKeymap: (() => void) | undefined
@@ -196,6 +200,7 @@ async function renderFooter(
           state={state}
           view={view}
           subagent={subagents}
+          todo={todo}
           theme={input.theme ?? (() => RUN_THEME_FALLBACK)}
           tuiConfig={config}
           backgroundSubagents={input.backgroundSubagents ?? true}
@@ -568,6 +573,7 @@ test("direct subagent panel renders active subagents", async () => {
     () => (
       <box width={100} height={RUN_SUBAGENT_PANEL_ROWS}>
         <RunSubagentSelectBody
+          active={() => true}
           theme={() => RUN_THEME_FALLBACK.footer}
           tabs={tabs}
           current={current}
@@ -957,23 +963,29 @@ test("direct footer shows editable prompts and additional queued work while runn
     const main = app.renderer.root.findDescendantById("run-direct-footer-statusline-main") as BoxRenderable
     const spinner = app.renderer.root.findDescendantById("run-direct-footer-status-spinner")
     const model = app.renderer.root.findDescendantById("run-direct-footer-statusline-model") as BoxRenderable
+    const taskTray = app.renderer.root.findDescendantById("run-direct-footer-statusline-task-tray")
     const queued = app.renderer.root.findDescendantById("run-direct-footer-statusline-queued") as BoxRenderable
     const hint = app.renderer.root.findDescendantById("run-direct-footer-statusline-hint") as BoxRenderable
 
     expect(spinner).toBeDefined()
+    if (!(taskTray instanceof BoxRenderable)) {
+      throw new Error("Expected active task tray")
+    }
     expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
     expect(frame).toContain("3 queued")
     expect(frame).toContain("ctrl+b background")
     expect(frame).toContain("ctrl+x q 3 queued")
-    expect(frame).toContain("ctrl+x down subagents")
+    expect(frame).toContain("● Explore")
+    expect(frame).toContain("ctrl+x down open")
     expect(frame).toContain("ctrl+p cmd")
     expect(frame).toContain("a-model-name-long-enough-to-force-responsive-truncation")
-    expect(frame).toContain("subagents · ctrl+p cmd")
+    expect(frame).toContain("open · ctrl+p cmd")
     expect(frame).not.toContain("1 agent")
     expect(statusline.backgroundColor.toInts()).toEqual(tinted)
     expect(mode.backgroundColor.toInts()).toEqual(accent)
     expect(main.backgroundColor.toInts()).toEqual(transparent)
     expect(model.backgroundColor.toInts()).toEqual(transparent)
+    expect(taskTray.backgroundColor.toInts()).toEqual(transparent)
     expect(queued.backgroundColor.toInts()).toEqual(transparent)
     expect(hint.backgroundColor.toInts()).toEqual(transparent)
   } finally {
@@ -1004,9 +1016,31 @@ test("direct footer separates a lone context hint from model and command hint", 
     const frame = app.captureCharFrame()
 
     expect(frame).toContain("GPT-5")
-    expect(frame).toContain("xhigh · ctrl+x down subagents · ctrl+p cmd")
+    expect(frame).toContain("xhigh · ● Explore · ctrl+x down open · ctrl+p cmd")
     expect(frame).not.toContain("ctrl+b background")
     expect(frame).not.toContain("queued")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer separates the task tray from the shell command hint", async () => {
+  const app = await renderFooter({
+    subagents: {
+      tabs: [subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow" })],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    width: 120,
+  })
+
+  try {
+    app.mockInput.pressKey("!")
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("● Explore · esc normal")
   } finally {
     app.cleanup()
   }
@@ -1033,7 +1067,153 @@ test("direct footer hides the subagent hint when only completed subagents remain
 
     expect(frame).toContain("GPT-5")
     expect(frame).toContain("xhigh · ctrl+p cmd")
-    expect(frame).not.toContain("ctrl+x down subagents")
+    expect(frame).not.toContain("ctrl+x down open")
+    expect(frame).not.toContain("● Explore")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer caps the active task tray and reports additional tasks", async () => {
+  const app = await renderFooter({
+    subagents: {
+      tabs: [
+        subagent({ sessionID: "s-1", label: "Data Extractor", description: "Fetch SPY data" }),
+        subagent({ sessionID: "s-2", label: "News Agent", description: "Gather market context" }),
+        subagent({ sessionID: "s-3", label: "Reviewer", description: "Review evidence" }),
+      ],
+      details: {},
+      permissions: [],
+      questions: [],
+    },
+    backgroundSubagents: false,
+    width: 160,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("● Data Extractor · ● News Agent +1")
+    expect(frame).not.toContain("● Reviewer")
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("direct footer keeps the latest todo list collapsed in the right-side task control", async () => {
+  const app = await renderFooter({
+    todo: {
+      kind: "todo",
+      items: [
+        { status: "completed", content: "Confirm request identity" },
+        { status: "in_progress", content: "Run initial backtest" },
+        { status: "pending", content: "Review metrics" },
+      ],
+      tail: "",
+    },
+    width: 120,
+  })
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("▶ Tasks 1/3")
+    expect(frame).not.toContain("Confirm request identity")
+    expect(frame).not.toContain("Run initial backtest")
+    expect(app.renderer.root.findDescendantById("run-direct-footer-statusline-todo-tray")).toBeDefined()
+    expect(app.renderer.root.findDescendantById("run-direct-footer-todo-panel")).toBeUndefined()
+  } finally {
+    app.cleanup()
+  }
+})
+
+test("expanded todo panel renders the current list and caps long snapshots", async () => {
+  const items: ToolTodoSnapshot["items"] = [
+    { status: "completed", content: "Confirm request identity" },
+    { status: "in_progress", content: "Run initial backtest" },
+    { status: "pending", content: "Review metrics" },
+    { status: "pending", content: "Tune parameters" },
+    { status: "pending", content: "Run validation" },
+    { status: "pending", content: "Generate review packet" },
+    { status: "pending", content: "Approve paper trading" },
+  ]
+  const app = await testRender(
+    () => {
+      const tray = createFooterTodoTray({
+        todo: () => ({ kind: "todo", items, tail: "" }),
+        canExpand: () => true,
+      })
+      tray.toggle()
+      return (
+        <box width={80} height={12}>
+          <RunTodoPanel tray={tray} theme={() => RUN_THEME_FALLBACK.footer} width={() => 80} />
+        </box>
+      )
+    },
+    { width: 80, height: 12 },
+  )
+
+  try {
+    await app.renderOnce()
+    const frame = app.captureCharFrame()
+
+    expect(frame).toContain("▼ Tasks")
+    expect(frame).toContain("1/7")
+    expect(frame).toContain("[✓] Confirm request identity")
+    expect(frame).toContain("[•] Run initial backtest")
+    expect(frame).toContain("+1 more")
+    expect(frame).not.toContain("Approve paper trading")
+  } finally {
+    app.renderer.destroy()
+  }
+})
+
+test("direct footer reuses stable surfaces across subagent inspect transitions", async () => {
+  const app = await renderFooter({
+    subagents: {
+      tabs: [subagent({ sessionID: "s-1", label: "Explore", description: "Inspect auth flow" })],
+      details: { "s-1": { sessionID: "s-1", commits: [] } },
+      permissions: [],
+      questions: [],
+    },
+    height: 18,
+  })
+
+  try {
+    await app.renderOnce()
+    const composer = app.renderer.root.findDescendantById("run-direct-footer-composer-surface")
+    const inspector = app.renderer.root.findDescendantById("run-direct-footer-subagent-frame")
+
+    if (!(composer instanceof BoxRenderable) || !(inspector instanceof BoxRenderable)) {
+      throw new Error("Expected stable subagent surfaces")
+    }
+
+    expect(composer.visible).toBe(true)
+    expect(inspector.visible).toBe(false)
+
+    for (let index = 0; index < 3; index++) {
+      app.mockInput.pressKey("x", { ctrl: true })
+      app.mockInput.pressKey("ARROW_DOWN")
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("Select subagent")
+
+      app.mockInput.pressEnter()
+      await app.renderOnce()
+      expect(app.captureCharFrame()).toContain("Inspect auth flow")
+      expect(app.renderer.root.findDescendantById("run-direct-footer-composer-surface")).toBe(composer)
+      expect(app.renderer.root.findDescendantById("run-direct-footer-subagent-frame")).toBe(inspector)
+      expect(composer.visible).toBe(false)
+      expect(inspector.visible).toBe(true)
+
+      app.mockInput.pressKey("ESCAPE")
+      await app.renderOnce()
+      expect(app.renderer.root.findDescendantById("run-direct-footer-composer-surface")).toBe(composer)
+      expect(app.renderer.root.findDescendantById("run-direct-footer-subagent-frame")).toBe(inspector)
+      expect(composer.visible).toBe(true)
+      expect(inspector.visible).toBe(false)
+    }
   } finally {
     app.cleanup()
   }

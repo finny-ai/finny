@@ -226,7 +226,7 @@ describe("validateDataExtractorTaskText", () => {
   test("session build gate blocks when no workspace is bound", async () => {
     const result = await requireVerifiedDataExtractorEvidenceForSession("ses_no_workspace")
     expect(result.ok).toBe(false)
-    expect(result.text).toContain("BLOCKED: evidence required before strategy build")
+    expect(result.text).toContain("required for strict qualification or promotion")
     expect(result.text).toContain("no session workspace is bound")
   })
 
@@ -244,7 +244,7 @@ describe("validateDataExtractorTaskText", () => {
       expect(result.ok).toBe(false)
       expect(result.workspaceSlug).toBe("sol-1d-strategy")
       expect(result.text).toContain("no matching data_extractor manifest found")
-      expect(result.text).toContain("Do not call finny_algorithm_scaffold")
+      expect(result.text).toContain("Exploratory provider-fetched backtests may proceed")
     } finally {
       await clearSessionWorkspace("ses_no_evidence")
     }
@@ -479,7 +479,7 @@ describe("validateDataExtractorTaskText", () => {
     try {
       const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
       expect(result.ok).toBe(false)
-      expect(result.text).toContain("BLOCKED: evidence required before strategy build")
+      expect(result.text).toContain("required for strict qualification or promotion")
     } finally {
       await clearSessionWorkspace(sessionID)
     }
@@ -545,7 +545,7 @@ describe("validateDataExtractorTaskText", () => {
     try {
       const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
       expect(result.ok).toBe(false)
-      expect(result.text).toContain("BLOCKED: evidence required before strategy build")
+      expect(result.text).toContain("required for strict qualification or promotion")
     } finally {
       await clearSessionWorkspace(sessionID)
     }
@@ -816,6 +816,73 @@ describe("validateDataExtractorTaskText", () => {
     })
     expect(existing.found).toBe(true)
     expect(existing.result?.ok).toBe(true)
+  })
+
+  test("ignores a matching sentiment manifest when discovering market-data evidence", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-ignore-sentiment-"))
+    const slug = "btc-daily-trend"
+    process.env.XDG_DATA_HOME = root
+    const dataRoot = path.join(root, "finny", "algos", slug, "data")
+    const csvRel = "crypto/BTC_1d_2025-07-15_2026-07-15.csv"
+    const csvPath = path.join(dataRoot, csvRel)
+    await fs.mkdir(path.dirname(csvPath), { recursive: true })
+    await fs.mkdir(path.join(dataRoot, "sentiment"), { recursive: true })
+    await fs.writeFile(csvPath, "timestamp,open,high,low,close,volume\n2025-07-15T00:00:00Z,100,110,90,105,1000\n")
+    await fs.writeFile(
+      csvPath.replace(/\.csv$/, ".manifest.json"),
+      JSON.stringify({
+        schema_version: 1,
+        source: "binance",
+        requested_symbol: "BTC",
+        actual_symbol: "BTC",
+        requested_interval: "1d",
+        actual_interval: "1d",
+        requested_asset_class: "crypto",
+        actual_asset_class: "crypto",
+        requested_algorithm_name: slug,
+        requested_start: "2025-07-15",
+        requested_end: "2026-07-15",
+        actual_start: "2025-07-15T00:00:00Z",
+        actual_end: "2025-07-15T00:00:00Z",
+        output_path: csvRel,
+        rows: 1,
+        run_id: "btc-market-data-run",
+        coverage: "complete",
+        usable_for_parent: "yes",
+      }),
+    )
+    await fs.writeFile(
+      path.join(dataRoot, "sentiment", "BTC_2025-07-15_2026-07-15_sentiment.manifest.json"),
+      JSON.stringify({
+        request_identity: {
+          requested_symbol: "BTC",
+          requested_interval: "1d",
+          requested_asset_class: "crypto",
+          requested_algorithm_name: slug,
+        },
+        actual_coverage: { start_date: "2025-07-15", end_date: "2026-07-15" },
+        rows: 732,
+        usable_for_parent: "yes",
+      }),
+    )
+
+    const existing = await validateExistingDataExtractorEvidence({
+      workspaceSlug: slug,
+      dataRoot,
+      context: {
+        requested_symbol: "BTC",
+        requested_interval: "1d",
+        requested_asset_class: "crypto",
+        requested_algorithm_name: slug,
+        requested_start: "2025-07-15",
+        requested_end: "2026-07-15",
+        request_id: "ses_btc_market_data",
+      },
+    })
+
+    expect(existing.found).toBe(true)
+    expect(existing.result?.ok).toBe(true)
+    expect(existing.dataset?.identity.runId).toBe("btc-market-data-run")
   })
 
   test("blocks internally consistent evidence when symbol is outside runtime universe", async () => {

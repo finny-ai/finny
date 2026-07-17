@@ -478,8 +478,7 @@ def _run_regime(StrategyCls, prices):
         # LEVERAGE_VIOLATION — the real position lives in the broker.
         if uses_broker_api:
             broker_pos = broker.position(SYMBOL)
-            if broker_pos not in (0, 1):
-                current_position = broker_pos
+            current_position = broker_pos
             current_equity = broker.equity()
 
         exposure_snapshots.append({
@@ -655,6 +654,12 @@ def analyze(source, symbol=None, required_history_bars=0):
         if not trades_fired:
             continue
         for attr, initial_val in res["initial_scalars"].items():
+            # Broker-API strategies get their authoritative account value from
+            # StubBroker.  Strategy parameters such as `cash_buffer_pct` are
+            # intentionally constant and must not be mistaken for a frozen
+            # capital ledger merely because their name contains "cash".
+            if res["uses_broker_api"] and attr != "__broker_equity__":
+                continue
             if not _looks_like_equity(attr):
                 continue
             final_val = res["last_scalars"].get(attr, initial_val)

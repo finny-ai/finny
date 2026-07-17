@@ -8,6 +8,7 @@ import { BacktestStore } from "./store"
 import { readSpec, readTrialEvents } from "./experiment-store"
 import type { ExperimentSpec, TrialEvent } from "./experiment-types"
 import { svgHeatmap, svgReportLineChart } from "./svg-charts"
+import { isRobustQualifiedResult } from "./verdict"
 
 export type ReviewConclusion = "recommended_for_paper" | "research_complete" | "concept_exhausted" | "optimization_exhausted" | "blocked" | "user_stopped"
 
@@ -31,6 +32,15 @@ export interface QuantReviewRun {
   warnings: string[]
 }
 
+export interface WorkflowReviewQualification {
+  workflowId: string
+  phase: string
+  status: string
+  runId: string
+  identityHash: string
+  verdict: string
+}
+
 export interface QuantReviewData {
   algorithm: Algorithm.Info
   versions: Algorithm.Info[]
@@ -41,9 +51,10 @@ export interface QuantReviewData {
   conclusion: ReviewConclusion
   conclusionReason: string
   generatedAt: string
+  qualification: WorkflowReviewQualification
 }
 
-type TerminalReviewInput = Pick<QuantReviewData, "experimentId" | "conclusion" | "specs" | "events" | "runs"> & {
+type TerminalReviewInput = Pick<QuantReviewData, "experimentId" | "conclusion" | "specs" | "events" | "runs" | "qualification"> & {
   algorithmId: string
 }
 
@@ -155,6 +166,42 @@ function performanceEligibilityErrors(evidence: TerminalEvidence): string[] {
   return metrics.map(positivePerformanceError).filter((error): error is string => error !== undefined)
 }
 
+function robustQualificationError(evidence: TerminalEvidence): string | undefined {
+  const run = terminalRun(evidence)
+  return isRobustQualifiedResult({
+    verdict: run?.verdict,
+    totalReturn: run?.manifest.results.totalReturn ?? run?.metrics.totalReturn,
+    stitchedOosReturn: run?.robustness?.stitched_oos_return,
+    alpha: run?.manifest.alpha ?? run?.metrics.alpha,
+  })
+    ? undefined
+    : "final review requires a persisted terminal recommended_for_paper run that passed deterministic robustness and all positive return/OOS/alpha gates"
+}
+
+function workflowQualificationErrors(evidence: TerminalEvidence): string[] {
+  const qualification = evidence.input.qualification
+  const run = terminalRun(evidence)
+  const errors: string[] = []
+  if (qualification.workflowId !== evidence.input.experimentId) {
+    errors.push("final review qualification workflowId must match the selected experimentId")
+  }
+  const qualifiedActive = qualification.phase === "qualified" && qualification.status === "active"
+  const qualifiedTerminal = qualification.phase === "terminal_complete" && qualification.status === "completed"
+  if (!qualifiedActive && !qualifiedTerminal) {
+    errors.push("final review requires an authoritative qualified WorkflowRun")
+  }
+  if (qualification.verdict !== "recommended_for_paper") {
+    errors.push("final review WorkflowRun verdict must be recommended_for_paper")
+  }
+  if (!run || qualification.runId !== run.manifest.id) {
+    errors.push("final review terminal runId must match the qualified WorkflowRun backtest")
+  }
+  if (!run?.identity?.identityHash || qualification.identityHash !== run.identity.identityHash) {
+    errors.push("final review terminal identityHash must match the qualified WorkflowRun backtest")
+  }
+  return errors
+}
+
 type ConclusionValidator = (evidence: TerminalEvidence) => string | undefined
 
 const conclusionValidators: Record<ReviewConclusion, ConclusionValidator> = {
@@ -198,7 +245,13 @@ function conclusionError(evidence: TerminalEvidence): string | undefined {
 export function validateTerminalReview(input: TerminalReviewInput): string[] {
   const evidence = terminalEvidence(input)
   const errors = [...lineageErrors(input), ...baseEvidenceErrors(evidence)]
+  errors.push(...workflowQualificationErrors(evidence))
   errors.push(...performanceEligibilityErrors(evidence))
+  const robustError = robustQualificationError(evidence)
+  if (robustError) errors.push(robustError)
+  if (input.conclusion !== "recommended_for_paper") {
+    errors.push("final review conclusion must be recommended_for_paper; unqualified research must continue iteration without a final packet")
+  }
   const terminalError = conclusionError(evidence)
   if (terminalError) errors.push(terminalError)
   return errors
@@ -239,8 +292,32 @@ async function lineage(experimentId: string): Promise<ExperimentSpec[]> {
   return specs.reverse()
 }
 
-function artifactRoots(manifest: BacktestStore.Manifest): string[] {
-  return [manifest.dir, manifest.artifacts.sourceArtifacts].filter((item): item is string => Boolean(item))
+function safeArtifactSegment(value: string): boolean {
+  return /^[a-zA-Z0-9._-]+$/.test(value)
+}
+
+export function canonicalStrictRunArtifactDir(
+  manifest: BacktestStore.Manifest,
+  algorithmsRoot = finnyHomeArtifacts().algorithms,
+): string | undefined {
+  if (!safeArtifactSegment(manifest.algorithmId) || !safeArtifactSegment(manifest.id)) return undefined
+  if (!Number.isSafeInteger(manifest.algorithmVersion) || manifest.algorithmVersion < 0) return undefined
+  return path.join(
+    algorithmsRoot,
+    manifest.algorithmId,
+    `v${String(manifest.algorithmVersion).padStart(2, "0")}`,
+    "runs",
+    manifest.id,
+  )
+}
+
+function artifactRoots(manifest: BacktestStore.Manifest, algorithmsRoot?: string): string[] {
+  const roots = [
+    manifest.dir,
+    manifest.artifacts.sourceArtifacts,
+    canonicalStrictRunArtifactDir(manifest, algorithmsRoot),
+  ].filter((item): item is string => Boolean(item))
+  return [...new Set(roots)]
 }
 
 async function firstJson(roots: string[], filename: string): Promise<any> {
@@ -287,8 +364,8 @@ type HydratedArtifacts = {
   rolling: Record<string, string>[]
 }
 
-async function hydratedArtifacts(manifest: BacktestStore.Manifest): Promise<HydratedArtifacts> {
-  const roots = artifactRoots(manifest)
+async function hydratedArtifacts(manifest: BacktestStore.Manifest, algorithmsRoot?: string): Promise<HydratedArtifacts> {
+  const roots = artifactRoots(manifest, algorithmsRoot)
   const rollingPath = roots[1] ? path.join(roots[1], "rolling_sharpe.csv") : undefined
   const [run, metricsFile, durability, equity, rolling] = await Promise.all([
     firstJson(roots, "run.json"),
@@ -418,8 +495,12 @@ function assembleReviewRun(
   }
 }
 
-async function hydrateRun(manifest: BacktestStore.Manifest, event?: TrialEvent): Promise<QuantReviewRun> {
-  return assembleReviewRun(manifest, event, await hydratedArtifacts(manifest))
+export async function hydrateReviewRun(
+  manifest: BacktestStore.Manifest,
+  event?: TrialEvent,
+  algorithmsRoot?: string,
+): Promise<QuantReviewRun> {
+  return assembleReviewRun(manifest, event, await hydratedArtifacts(manifest, algorithmsRoot))
 }
 
 function codeDiffSummary(previous: Algorithm.Info | undefined, current: Algorithm.Info): string {
@@ -432,8 +513,18 @@ function codeDiffSummary(previous: Algorithm.Info | undefined, current: Algorith
   return changed.length ? `Changed ${changed.join(", ")}.` : "No material saved-field change detected."
 }
 
-function displayMetric(label: string, value: unknown, format: "percent" | "ratio" | "number" = "ratio") {
-  const shown = format === "percent" ? pct(value) : format === "number" ? num(value, 1) : num(value)
+function displayMetric(
+  label: string,
+  value: unknown,
+  format: "percent" | "ratio" | "number" | "currency" = "ratio",
+) {
+  const shown = format === "percent"
+    ? pct(value)
+    : format === "number"
+      ? num(value, 1)
+      : format === "currency"
+        ? finite(value) ? `$${value.toFixed(2)}` : "N/A"
+        : num(value)
   return `<div class="metric"><span>${esc(label)}</span><strong>${esc(shown)}</strong></div>`
 }
 
@@ -466,7 +557,7 @@ function runComparison(runs: QuantReviewRun[]) {
 
 function extendedMetrics(run?: QuantReviewRun) {
   const m = run?.metrics ?? {}
-  return `<div class="metrics" style="grid-template-columns:repeat(5,1fr)">${displayMetric("Omega", m.omega)}${displayMetric("Time in market", m.timeInMarket, "percent")}${displayMetric("Turnover", m.turnover, "number")}${displayMetric("Avg gross exposure", m.avgGrossExposure, "percent")}${displayMetric("Avg net exposure", m.avgNetExposure, "percent")}</div>`
+  return `<div class="metrics" style="grid-template-columns:repeat(5,1fr)">${displayMetric("Omega", m.omega)}${displayMetric("Time in market", m.timeInMarket, "percent")}${displayMetric("Turnover", m.turnover, "number")}${displayMetric("Avg gross notional", m.avgGrossExposure, "currency")}${displayMetric("Avg net notional", m.avgNetExposure, "currency")}</div>`
 }
 
 function summaryButtons(run?: QuantReviewRun) {
@@ -558,6 +649,7 @@ type FinalReviewInput = {
   experimentId: string
   conclusion: ReviewConclusion
   conclusionReason: string
+  qualification: WorkflowReviewQualification
 }
 
 async function lineageEvents(specs: ExperimentSpec[], algorithmId: string): Promise<TrialEvent[]> {
@@ -596,7 +688,7 @@ async function reviewData(input: FinalReviewInput, specs: ExperimentSpec[]): Pro
   const eventsByRun = runEventIndex(events)
   const history = await BacktestStore.list({ algorithmId: input.algorithm.algorithmId, limit: 1000 })
   const manifests = participatingManifests(history, eventsByRun, experimentIds)
-  const runs = await Promise.all(manifests.map((manifest) => hydrateRun(manifest, eventsByRun.get(manifest.id))))
+  const runs = await Promise.all(manifests.map((manifest) => hydrateReviewRun(manifest, eventsByRun.get(manifest.id))))
   const participatingVersions = new Set(events.map((event) => event.algorithmVersion))
   const versions = (await Algorithm.listVersions(input.algorithm.algorithmId))
     .filter((version) => participatingVersions.has(version.version))
@@ -635,6 +727,7 @@ function reviewManifest(input: FinalReviewInput, data: QuantReviewData, manifest
     algorithmId: input.algorithm.algorithmId,
     experimentIds: data.specs.map((spec) => spec.experimentId),
     conclusion: input.conclusion,
+    workflowQualification: input.qualification,
     generatedAt: data.generatedAt,
     runs: manifests.map((manifest) => manifest.id),
     versions: data.versions.map((version) => version.version),

@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
-import { Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -16,8 +16,10 @@ import { SessionStatus } from "@/session/status"
 
 import {
   completedIntradayWindow,
+  evidenceDelegationBlock,
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalTaskText,
+  shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
   TaskBatchRunTool,
   TaskRunTool,
@@ -30,7 +32,12 @@ import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
+import { StrategyContext } from "@/task/strategy-context"
+import { AlgorithmScaffoldTool } from "@/tool/algorithm-scaffold"
+import { assertFinnyWorkspacePathPolicy, isStrategySynthesisPath } from "@/tool/finny-workspace-guard"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import { authoritativeWorkflowTodos } from "@/tool/todo"
 import { disposeAllInstances, provideTmpdirInstance } from "../fixture/fixture"
 import path from "path"
 import fs from "fs/promises"
@@ -42,7 +49,6 @@ import {
   parseMission,
 } from "@finny-ai/core/algo"
 import { syncWorkspaceRequestContext } from "../../src/agent/finny-workspace-context"
-import { commitRequestSpec } from "../../src/agent/request-spec"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -55,6 +61,104 @@ const ref = {
   providerID: ProviderV2.ID.make("test"),
   modelID: ModelV2.ID.make("test-model"),
 }
+
+describe("evidence-optional exploratory delegation", () => {
+  const workflow = {
+    requestVersion: 1,
+    phase: "identity_confirmed" as const,
+    evidence: [],
+    researchFreeze: undefined,
+    candidate: undefined,
+    experimentPlan: undefined,
+    attempts: [],
+  }
+
+  test("skips evidence agents for an ordinary backtest-only request", () => {
+    const dataExtractorResult = evidenceDelegationBlock({
+      subagentType: "data_extractor",
+      latestUserText: "Backtest the existing XRP daily strategy",
+      workflow,
+    })
+    expect(dataExtractorResult).toContain("SKIPPED:")
+    expect(dataExtractorResult).not.toContain("Run finny_backtest directly")
+    expect(
+      evidenceDelegationBlock({
+        subagentType: "news_agent",
+        latestUserText: "Rerun the XRP daily backtest",
+        workflow,
+      }),
+    ).toContain("SKIPPED:")
+  })
+
+  test("allows new builds, explicit evidence requests, and non-evidence agents", () => {
+    for (const subagentType of ["data_extractor", "news_agent", "sentiment_agent"]) {
+      expect(
+        evidenceDelegationBlock({
+          subagentType,
+          latestUserText: "Create and backtest a new SPY 5m strategy",
+          workflow,
+        }),
+      ).toBeUndefined()
+    }
+    expect(
+      evidenceDelegationBlock({
+        subagentType: "data_extractor",
+        latestUserText: "Extract XRP daily market data",
+        workflow,
+      }),
+    ).toBeUndefined()
+    expect(evidenceDelegationBlock({ subagentType: "general", latestUserText: "XRP daily", workflow })).toBeUndefined()
+  })
+
+  test("allows evidence after an accepted exploratory backtest", () => {
+    expect(
+      evidenceDelegationBlock({
+        subagentType: "news_agent",
+        latestUserText: "XRP daily",
+        workflow: {
+          ...workflow,
+          attempts: [
+            {
+              id: "attempt_research",
+              idempotencyKey: "finish",
+              fingerprint: "research",
+              operation: "finny_backtest:finish",
+              outcome: "accepted",
+              lifecycle: "terminal",
+              requiredChanges: [],
+              requestVersion: 1,
+              artifactIds: [],
+              evidenceIds: [],
+              trialIds: [],
+              createdAt: 2,
+            },
+          ],
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("keeps recommended new-build evidence in the background", () => {
+    for (const subagentType of ["data_extractor", "news_agent", "sentiment_agent"]) {
+      expect(
+        shouldBackgroundRecommendedEvidence({
+          agent: "finny",
+          subagentType,
+          latestUserText: "Create a new SPY 5m strategy",
+          workflow,
+        }),
+      ).toBe(true)
+    }
+    expect(
+      shouldBackgroundRecommendedEvidence({
+        agent: "finny",
+        subagentType: "data_extractor",
+        latestUserText: "Backtest the existing SPY 5m strategy",
+        workflow,
+      }),
+    ).toBe(false)
+  })
+})
 
 const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Layer.suspend(() =>
@@ -78,6 +182,48 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
 const it = testEffect(layer())
 const background = testEffect(layer())
 
+it.instance("finalizes a task when its synthetic completion is admitted to the parent", () =>
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    const { chat } = yield* seed()
+    const sessions = yield* Session.Service
+    const child = yield* sessions.create({ parentID: chat.id, title: "sentiment context" })
+    const taskID = child.id
+    yield* Effect.promise(() =>
+      TaskState.upsert(
+        {
+          id: taskID,
+          parentSessionID: chat.id,
+          description: "sentiment context",
+          subagentType: "sentiment_agent",
+          mode: "background",
+          status: TaskState.Status.running,
+        },
+        database,
+      ),
+    )
+
+    yield* Effect.promise(() =>
+      StrategyContext.finalizeDeliveredTasks(chat.id, database, [
+        {
+          parts: [
+            {
+              type: "text",
+              synthetic: true,
+              text: `<task id="${taskID}" state="completed">\n<task_result>sentiment context ready</task_result>\n</task>`,
+            },
+          ],
+        },
+      ]),
+    )
+
+    expect(yield* Effect.promise(() => TaskState.get(taskID, database))).toMatchObject({
+      status: TaskState.Status.completed,
+      resultSummary: "sentiment context ready",
+    })
+  }),
+)
+
 function defer<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void
   const promise = new Promise<T>((done) => {
@@ -86,7 +232,7 @@ function defer<T>() {
   return { promise, resolve }
 }
 
-const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
+const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned", userText?: string) {
   const session = yield* Session.Service
   const chat = yield* session.create({ title })
   const user = yield* session.updateMessage({
@@ -97,6 +243,15 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
     model: ref,
     time: { created: Date.now() },
   })
+  if (userText) {
+    yield* session.updatePart({
+      id: PartID.ascending(),
+      sessionID: chat.id,
+      messageID: user.id,
+      type: "text",
+      text: userText,
+    })
+  }
   const assistant: SessionV1.Assistant = {
     id: MessageID.ascending(),
     role: "assistant",
@@ -113,7 +268,7 @@ const seed = Effect.fn("TaskToolTest.seed")(function* (title = "Pinned") {
     time: { created: Date.now() },
   }
   yield* session.updateMessage(assistant)
-  return { chat, assistant }
+  return { chat, user, assistant }
 })
 
 function stubOps(opts?: {
@@ -383,7 +538,7 @@ describe("tool.task", () => {
     }),
   )
 
-  it.live("injects authoritative workspace context for data_extractor tasks", () =>
+  it.live("normalizes the parent-authored Data request without verbose runtime duplication", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const prev = process.env.XDG_DATA_HOME
@@ -391,18 +546,30 @@ describe("tool.task", () => {
         try {
           const { chat, assistant } = yield* seed()
           const slug = "spy-5m-strategy.1.1.00.00"
+          const dataDir = path.join(algoDir(slug), "data")
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
 
           const tool = yield* TaskRunTool
           const def = yield* tool.init()
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
+          const dataPrompt = [
+            "Acquire SPY OHLCV for an intraday strategy study.",
+            "Data request:",
+            "- symbol: SPY",
+            "- start_date: 2026-03-10",
+            "- end_date: 2026-06-10",
+            "- end_date_inclusive: true",
+            "- provider: auto",
+            `- workspace: ${dataDir}`,
+            "- asset_class: equity",
+            "- interval: 5m",
+          ].join("\n")
 
           yield* def.execute(
             {
               description: "SPY data extraction",
-              prompt:
-                "Extract 5-minute OHLCV data for SPY from 2026-03-10 to 2026-06-10. Read algos/_template/README.md first.",
+              prompt: dataPrompt,
               subagent_type: "data_extractor",
             },
             {
@@ -418,22 +585,19 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("<finny-subagent-context>")
-          expect(text).toContain("Data request context:")
-          expect(text).toContain("- workspace_slug: spy-5m-strategy.1.1.00.00")
-          expect(text).toContain("- requested_algorithm_name: spy-5m-strategy")
-          expect(text).not.toContain("- algorithm: spy-5m-strategy.1.1.00.00")
-          expect(text).toContain("- symbols or universe: SPY")
+          expect(text.match(/Data request:/g)).toHaveLength(1)
+          expect(text).toContain("- symbol: SPY")
+          expect(text).toContain("- start_date: 2026-03-10")
+          expect(text).toContain("- end_date: 2026-06-10")
+          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain("- provider: auto")
+          expect(text).toContain(`- workspace: ${dataDir}`)
+          expect(text).toContain("- asset_class: equity")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-03-10")
-          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-10")
-          expect(text).toContain(`- allowed_data_dir when known: ${path.join(algoDir(slug), "data")}`)
-          expect(text).toContain("Do not read `algos/_template/README.md`")
-          expect(text).toContain("runtime_owned_manifest_fields")
-          expect(text).toContain("Never hand-write a manifest; call finny_dataset_evidence_finalize")
-          expect(text).toContain("provider_capabilities: NONE")
-          expect(text).toContain("never probe guessed skill IDs or cookbook paths")
-          expect(text).not.toContain("skill_id=finny-provider-yfinance")
+          expect(text).toContain("Task intent:\nAcquire SPY OHLCV for an intraday strategy study.")
+          expect(text).not.toContain("<finny-subagent-context>")
+          expect(text).not.toContain("provider_capabilities")
+          expect(text).not.toContain("request_content_hash")
 
           const missionRaw = yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "mission.md"), "utf8"))
           const mission = parseMission(missionRaw)
@@ -491,9 +655,9 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("data request context mismatch")
           expect(seen).toBeDefined()
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: BTC")
+          expect(text).toContain("- symbol: BTC")
           expect(text).toContain("- interval: 1d")
-          expect(text).toContain("- asset_class when known: crypto")
+          expect(text).toContain("- asset_class: crypto")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -544,8 +708,8 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: DJT, RUM, GEO, CXW")
-          expect(text).not.toContain("- symbols or universe: ES")
+          expect(text).toContain("- symbol: DJT, RUM, GEO, CXW")
+          expect(text).not.toContain("- symbol: ES")
           expect(text).toContain("- interval: 1d")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
@@ -659,10 +823,10 @@ describe("tool.task", () => {
           const childWorkspace = yield* Effect.promise(() => getSessionWorkspace(seenInput.sessionID))
           expect(childWorkspace).toBe(slug)
           const text = seenInput.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: RUM")
-          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-01-01")
-          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-29")
-          expect(text).not.toContain("- symbols or universe: ES")
+          expect(text).toContain("- symbol: RUM")
+          expect(text).toContain("- start_date: 2026-01-01")
+          expect(text).toContain("- end_date: 2026-06-29")
+          expect(text).not.toContain("- symbol: ES")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -713,9 +877,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: DJT")
-          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-01-01")
-          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-29")
+          expect(text).toContain("- symbol: DJT")
+          expect(text).toContain("- start_date: 2026-01-01")
+          expect(text).toContain("- end_date: 2026-06-29")
 
           const request = JSON.parse(
             yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
@@ -879,8 +1043,154 @@ describe("tool.task", () => {
 
           expect(allowed.output).not.toContain("BLOCKED: incomplete authoritative data window")
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2025-06-30")
-          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-30")
+          expect(text).toContain("- start_date: 2025-06-30")
+          expect(text).toContain("- end_date: 2026-06-30")
+          expect(text).toContain("- end_date_inclusive: true")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("persists structured identity after a vague request is clarified through the question tool", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const vague = "Build me a strategy that can beat buy and hold; you choose the idea"
+          const { chat, user, assistant } = yield* seed("Clarified strategy", vague)
+          const slug = "spy-question-clarified.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+
+          const userPart: SessionV1.TextPart = {
+            id: PartID.ascending(),
+            sessionID: chat.id,
+            messageID: user.id,
+            type: "text",
+            text: vague,
+          }
+          const questionPart: SessionV1.ToolPart = {
+            id: PartID.ascending(),
+            sessionID: chat.id,
+            messageID: assistant.id,
+            type: "tool",
+            callID: "call_question_clarification",
+            tool: "question",
+            state: {
+              status: "completed",
+              input: {
+                questions: [{ question: "Confirm the market, interval, and absolute backtest window." }],
+              },
+              output: "User has answered your questions.",
+              title: "Asked 1 question",
+              metadata: {
+                answers: [["SPY equity, 1d bars, 2026-01-16 to 2026-07-16"]],
+              },
+              time: { start: 1, end: 2 },
+            },
+          }
+
+          const workspaceTool = yield* WorkspacePrepareTool
+          const workspaceDef = yield* workspaceTool.init()
+          const result = yield* workspaceDef.execute(
+            {
+              algorithmName: "spy-question-clarified",
+              symbol: "SPY",
+              assetClass: "equity",
+              interval: "1d",
+              startDate: "2026-01-16",
+              endDate: "2026-07-16",
+              strategyIntent: "delegated",
+              requestSummary: "Build the user-approved SPY strategy and beat same-window buy-and-hold.",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [
+                { info: user, parts: [userPart] },
+                { info: assistant, parts: [questionPart] },
+              ],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.title).not.toContain("clarification")
+          const request = JSON.parse(
+            yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
+          )
+          expect(request).toMatchObject({
+            requested_symbol: "SPY",
+            requested_asset_class: "equity",
+            requested_interval: "1d",
+            requested_start: "2026-01-16",
+            requested_end: "2026-07-16",
+          })
+          const workflows = yield* BuildWorkflowStore.listBySession(chat.id)
+          expect(workflows).toHaveLength(1)
+          expect(workflows[0]).toMatchObject({
+            sessionId: chat.id,
+            workspaceSlug: slug,
+            identityStatus: "confirmed",
+            identity: {
+              symbols: { value: ["SPY"] },
+              interval: { value: "1d" },
+              assetClass: { value: "equity" },
+              window: { value: { start: "2026-01-16", end: "2026-07-16" } },
+            },
+          })
+          expect(workflows[0]!.evidenceRequirements.map((requirement) => requirement.kind)).toEqual([
+            "market_data",
+            "news",
+          ])
+          yield* workspaceDef.execute(
+            {
+              algorithmName: "spy-question-clarified",
+              symbol: "SPY",
+              assetClass: "equity",
+              interval: "1d",
+              startDate: "2026-01-16",
+              endDate: "2026-07-16",
+              strategyIntent: "delegated",
+              requestSummary: "Build the user-approved SPY strategy and beat same-window buy-and-hold.",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              messages: [
+                { info: user, parts: [userPart] },
+                { info: assistant, parts: [questionPart] },
+              ],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+          expect(yield* BuildWorkflowStore.listBySession(chat.id)).toHaveLength(1)
+
+          const projectedTodos = yield* Effect.promise(() =>
+            authoritativeWorkflowTodos({
+              agent: "build",
+              modelTodos: [{ content: "Collect evidence", status: "in_progress", priority: "high" }],
+              load: async () => workflows,
+            }),
+          )
+          expect(projectedTodos).toEqual([
+            { content: "Collect evidence", status: "in_progress", priority: "high" },
+            { content: "Confirm request identity", status: "completed", priority: "high" },
+            {
+              content: "Run exploratory backtest (verified evidence optional)",
+              status: "pending",
+              priority: "high",
+            },
+            { content: "Review exploratory backtest results", status: "pending", priority: "high" },
+          ])
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -898,7 +1208,7 @@ describe("tool.task", () => {
           const { chat, assistant } = yield* seed()
           const slug = "eth-1d-custom.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
-          const expected = resolveWorkspacePrepareWindow({ duration: "1y" })
+          const expected = resolveWorkspacePrepareWindow({ duration: "1y", interval: "1d" })
 
           const workspaceTool = yield* WorkspacePrepareTool
           const workspaceDef = yield* workspaceTool.init()
@@ -1001,8 +1311,8 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("- interval: 1h")
-          expect(text).toContain(`- end date as absolute YYYY-MM-DD: ${yesterdayIso}`)
-          expect(text).toContain("window_adjustment: intraday rolling window capped")
+          expect(text).toContain(`- end_date: ${yesterdayIso}`)
+          expect(text).toContain("- end_date_inclusive: true")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1030,23 +1340,6 @@ describe("tool.task", () => {
           const dataDir = path.join(algoDir(slug), "data", "crypto")
           const csvRel = `crypto/ETHUSDT_1h_2025-06-16_${yesterdayIso}.csv`
           const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
-          // Manifests are tamper-evident: they must carry the runtime
-          // RequestSpec identity (request_id/version/content_hash) to be
-          // eligible for reuse.
-          const spec = yield* Effect.promise(() =>
-            commitRequestSpec({
-              requestID: chat.id,
-              identity: {
-                requested_symbol: "ETHUSDT",
-                requested_interval: "1h",
-                requested_asset_class: "crypto",
-                requested_algorithm_name: "eth-1h-mean-reversion",
-                requested_start: "2025-06-16",
-                requested_end: yesterdayIso,
-              },
-              actor: "user",
-            }),
-          )
           yield* Effect.promise(() => fs.mkdir(dataDir, { recursive: true }))
           yield* Effect.promise(() =>
             fs.writeFile(
@@ -1062,10 +1355,7 @@ describe("tool.task", () => {
                 {
                   schema_version: 1,
                   source: "binance",
-                  request_id: spec.request_id,
-                  request_version: spec.request_version,
-                  request_content_hash: spec.content_hash,
-                  requested_symbol: "ETHUSDT",
+                  requested_symbol: "ETH",
                   actual_symbol: "ETHUSDT",
                   requested_interval: "1h",
                   actual_interval: "1h",
@@ -1340,9 +1630,10 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- workspace_slug: spy-5m-strategy.1.1.00.00")
-          expect(text).toContain("- requested_algorithm_name: spy-5m-product-demo-20260614-v2")
-          expect(text).not.toContain("- algorithm: spy-5m-strategy.1.1.00.00")
+          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
+          expect(text).toContain("Task intent:")
+          expect(text).toContain("Name it spy-5m-product-demo-20260614-v2")
+          expect(text).not.toContain("- requested_algorithm_name:")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1351,10 +1642,7 @@ describe("tool.task", () => {
     ),
   )
 
-  // RequestSpec is runtime-owned and tamper-evident: once the parent session
-  // has a committed identity, child-task prompt wording cannot rewrite it.
-  // Identity changes must go through finny_workspace_prepare.
-  it.live("keeps runtime request identity when the prompt names a different algorithm", () =>
+  it.live("overrides stale workspace algorithm name from explicit existing algorithm prompt", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const prev = process.env.XDG_DATA_HOME
@@ -1397,13 +1685,14 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain(`- workspace_slug: ${slug}`)
-          expect(text).toContain("- requested_algorithm_name: p500-1hr-trade-1h-strategy")
-          expect(text).not.toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
+          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
+          expect(text).toContain("Task intent:")
+          expect(text).toContain("spy-1h-momentum-breakout")
+          expect(text).not.toContain("- requested_algorithm_name:")
           const persisted = yield* Effect.promise(() =>
             fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
           )
-          expect(persisted.requested_algorithm_name).toBe("p500-1hr-trade-1h-strategy")
+          expect(persisted.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1456,15 +1745,15 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: SPY")
+          expect(text).toContain("- symbol: SPY")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("- start date as absolute YYYY-MM-DD: 2026-03-10")
-          expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-10")
-          expect(text).toContain(`- allowed_data_dir when known: ${path.join(algoDir(slug), "data")}`)
-          expect(text).not.toContain("- symbols or universe: MISSING")
+          expect(text).toContain("- start_date: 2026-03-10")
+          expect(text).toContain("- end_date: 2026-06-10")
+          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
+          expect(text).not.toContain("- symbol: MISSING")
           expect(text).not.toContain("- interval: MISSING")
-          expect(text).not.toContain("- start date as absolute YYYY-MM-DD: MISSING")
-          expect(text).not.toContain("- end date as absolute YYYY-MM-DD: MISSING")
+          expect(text).not.toContain("- start_date: MISSING")
+          expect(text).not.toContain("- end_date: MISSING")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1684,20 +1973,29 @@ describe("tool.task", () => {
           const { chat, assistant } = yield* seed()
           const slug = "spy-15m-batch-success.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
-          const spec = yield* Effect.promise(() =>
-            commitRequestSpec({
-              requestID: chat.id,
-              identity: {
-                requested_symbol: "SPY",
-                requested_interval: "15m",
-                requested_asset_class: "equity",
-                requested_algorithm_name: "spy-batch-success",
-                requested_start: "2026-03-23",
-                requested_end: "2026-06-17",
+          const durableWorkflow = yield* BuildWorkflowStore.insert({
+            workflowId: `wf_${chat.id}`,
+            sessionId: chat.id,
+            workspaceSlug: slug,
+            intent: "build",
+            marketDataRequired: true,
+            identity: {
+              symbols: { value: ["SPY"], source: { kind: "structured_tool", tool: "test", callId: "call_spy" } },
+              interval: { value: "15m", source: { kind: "structured_tool", tool: "test", callId: "call_spy" } },
+              assetClass: {
+                value: "equity",
+                source: { kind: "structured_tool", tool: "test", callId: "call_spy" },
               },
-              actor: "user",
-            }),
-          )
+              algorithmName: {
+                value: "spy-batch-success",
+                source: { kind: "structured_tool", tool: "test", callId: "call_spy" },
+              },
+              window: {
+                value: { start: "2026-03-23", end: "2026-06-17" },
+                source: { kind: "structured_tool", tool: "test", callId: "call_spy" },
+              },
+            },
+          })
           const dataDir = path.join(algoDir(slug), "data", "stock")
           const csv = path.join(dataDir, "SPY_15m_2026-03-23_2026-06-17.csv")
           const manifestFile = path.join(dataDir, "SPY_15m_2026-03-23_2026-06-17.manifest.json")
@@ -1714,9 +2012,6 @@ describe("tool.task", () => {
               JSON.stringify({
                 schema_version: 1,
                 source: "alpaca",
-                request_id: spec.request_id,
-                request_version: spec.request_version,
-                request_content_hash: spec.content_hash,
                 requested_symbol: "SPY",
                 actual_symbol: "SPY",
                 requested_interval: "15m",
@@ -1739,9 +2034,6 @@ describe("tool.task", () => {
           const dataText = [
             "requested_algorithm_name: spy-batch-success",
             `workspace_slug: ${slug}`,
-            `request_id: ${spec.request_id}`,
-            `request_version: ${spec.request_version}`,
-            `request_content_hash: ${spec.content_hash}`,
             "requested_symbol: SPY",
             "actual_symbol: SPY",
             "requested_interval: 15m",
@@ -1791,6 +2083,17 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("BLOCKED:")
           expect(result.output).toContain("usable_for_parent: yes")
           expect(result.output).toContain("NO_SOURCED_CONTEXT")
+          expect(yield* BuildWorkflowStore.get(durableWorkflow.workflowId)).toMatchObject({
+            status: "active",
+            phase: "evidence_ready",
+            evidence: [
+              expect.objectContaining({
+                requirementId: "market_data:SPY",
+                kind: "market_data",
+                status: "verified",
+              }),
+            ],
+          })
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1838,8 +2141,184 @@ describe("tool.task", () => {
           expect(text).toContain("- requested_interval: 5m")
           expect(text).toContain("- requested_asset_class: equity")
           expect(text).toContain(`- workspace_news_dir: ${path.join(algoDir(slug), "data", "news")}`)
-          expect(text).toContain("at most one compact news/execution/provenance/risk markdown note")
-          expect(text).toContain("Do not write to `algos/_template/data/news`")
+          expect(text).toContain("Write at most one note directly under `workspace_news_dir`")
+          expect(text).toContain("follow the News Agent evidence contract")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("retries malformed news output once in the same child and records verified durable evidence", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed(undefined, "Build a new BTC.USD daily strategy with news context.")
+          const slug = "btc-usd-1d-news-retry.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          const durableWorkflow = yield* BuildWorkflowStore.insert({
+            workflowId: `wf_${chat.id}`,
+            sessionId: chat.id,
+            workspaceSlug: slug,
+            intent: "build",
+            marketDataRequired: false,
+            newsRequired: true,
+            identity: {
+              symbols: { value: ["BTC.USD"], source: { kind: "user_message", messageId: assistant.parentID } },
+              interval: { value: "1d", source: { kind: "user_message", messageId: assistant.parentID } },
+              assetClass: { value: "crypto", source: { kind: "user_message", messageId: assistant.parentID } },
+            },
+          })
+          yield* BuildWorkflowStore.append({
+            workflowId: durableWorkflow.workflowId,
+            expectedRevision: durableWorkflow.revision,
+            event: {
+              id: `evt_market_${chat.id}`,
+              type: "evidence.recorded",
+              occurredAt: Date.now(),
+              source: { actor: "tool" },
+              evidence: {
+                id: "market_data:BTC:fixture",
+                requirementId: "market_data:BTC",
+                kind: "market_data",
+                status: "verified",
+                artifactId: "fixture-market-hash",
+                issues: [],
+              },
+            },
+          })
+          const childSessions: string[] = []
+          const childPrompts: string[] = []
+          let promptCount = 0
+          const retrievedAt = new Date().toISOString()
+          const validClaims = [
+            "Corrected sourced context.",
+            "```json",
+            JSON.stringify({
+              schema: "finny.news.claims.v1",
+              result: "OK",
+              identity: {
+                requested_symbol: "BTC.USD",
+                requested_interval: "1d",
+                requested_asset_class: "crypto",
+              },
+              retrieved_at: retrievedAt,
+              claims: [
+                {
+                  class: "sourced_fact",
+                  statement: "The exchange published a BTC market notice.",
+                  source_url: "https://example.com/btc-notice",
+                  provider: "Example Exchange",
+                  published_at: retrievedAt,
+                  retrieved_at: retrievedAt,
+                  excerpt: "BTC market notice",
+                },
+              ],
+            }),
+            "```",
+          ].join("\n")
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          const result = yield* def.execute(
+            {
+              description: "Research BTC news",
+              prompt: "Research BTC.USD crypto 1d news context.",
+              subagent_type: "news_agent",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: {
+                promptOps: stubOps({
+                  onPrompt: (input) => {
+                    childSessions.push(input.sessionID)
+                    childPrompts.push(
+                      input.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+                    )
+                  },
+                  text: () => (++promptCount === 1 ? "Readable prose without the required claims block." : validClaims),
+                }),
+              },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(promptCount).toBe(2)
+          expect(new Set(childSessions).size).toBe(1)
+          expect(childPrompts[1]).toContain('"claims"')
+          expect(childPrompts[1]).toContain('"class":"sourced_fact"')
+          expect(childPrompts[1]).toContain("do not use top-level sourced_facts")
+          expect(result.output).toContain("result: OK")
+          const finishedWorkflow = yield* BuildWorkflowStore.get(durableWorkflow.workflowId)
+          expect(finishedWorkflow).toMatchObject({
+            stage: "evidence_ready",
+            phase: "evidence_ready",
+          })
+          expect(finishedWorkflow?.evidence.find((record) => record.requirementId === "news:request")).toMatchObject({
+            kind: "news",
+            status: "verified",
+            sourceSessionId: childSessions[0],
+          })
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("keeps auxiliary VIX research in the authoritative SPY workspace", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "spy-1d-momentum.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "Build SPY equity 1d from 2026-01-15 to 2026-07-15.",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const result = yield* def.execute(
+            {
+              description: "Gather SPY market context",
+              prompt:
+                "Research current SPY market context: recent performance, support/resistance, VIX regime, and major catalysts. Focus on the last 2-4 weeks.",
+              subagent_type: "news_agent",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("data request context mismatch")
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- requested_symbol: SPY")
+          expect(text).toContain("- requested_interval: 1d")
+          expect(yield* Effect.promise(() => getSessionWorkspace(seen!.sessionID))).toBe(slug)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1883,12 +2362,14 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("<finny-subagent-context>")
-          expect(text).toContain("Social sentiment request context:")
-          expect(text).toContain("- requested_symbol: AAPL")
-          expect(text).toContain("- requested_interval: 1d")
-          expect(text).toContain("- requested_asset_class: equity")
-          expect(text).toContain("- date window start as absolute YYYY-MM-DD: 2026-06-01")
-          expect(text).toContain("- date window end as absolute YYYY-MM-DD: 2026-06-29")
+          expect(text).toContain("Authoritative sentiment artifact context:")
+          expect(text).toContain("- symbol: AAPL")
+          expect(text).toContain("- interval: 1d")
+          expect(text).toContain("- asset_class: equity")
+          expect(text).toContain("- start_date: 2026-06-01")
+          expect(text).toContain("- end_date: 2026-06-29")
+          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data", "sentiment")}`)
           expect(text).toContain(`- allowed_sentiment_dir: ${path.join(algoDir(slug), "data", "sentiment")}`)
           expect(text).toContain(
             `- expected_sentiment_csv_path: ${path.join(algoDir(slug), "data", "sentiment", "AAPL_2026-06-01_2026-06-29_sentiment.csv")}`,
@@ -1896,9 +2377,8 @@ describe("tool.task", () => {
           expect(text).toContain(
             `- expected_sentiment_manifest_path: ${path.join(algoDir(slug), "data", "sentiment", "AAPL_2026-06-01_2026-06-29_sentiment.manifest.json")}`,
           )
-          expect(text).toContain("directly under `allowed_sentiment_dir`")
-          expect(text).toContain("Do not use alternate names")
-          expect(text).toContain("must not be persisted")
+          expect(text).toContain("Use the expected paths for useful aggregate artifacts")
+          expect(text).toContain("raw social text must remain transient")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1943,13 +2423,15 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("<finny-subagent-context>")
-          expect(text).toContain("SEC EDGAR request context:")
-          expect(text).toContain("- workspace_slug: msft-insider.1.1.00.00")
-          expect(text).toContain("- requested_person: Bill Gates")
-          expect(text).toContain("- date window start as YYYY-MM-DD: 2024-01-01")
-          expect(text).toContain("- date window end as YYYY-MM-DD: 2024-03-31")
+          expect(text).toContain("Authoritative SEC artifact context:")
+          expect(text).toContain("- company_or_ticker: Microsoft")
+          expect(text).toContain("- person: Bill Gates")
+          expect(text).toContain("- start_date: 2024-01-01")
+          expect(text).toContain("- end_date: 2024-03-31")
+          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data", "sec")}`)
           expect(text).toContain(`- allowed_sec_dir: ${path.join(algoDir(slug), "data", "sec")}`)
-          expect(text).toContain("Return `BLOCKED:` when company/person/date scope cannot be resolved")
+          expect(text).toContain("follow the SEC Agent evidence contract")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1972,10 +2454,10 @@ describe("tool.task", () => {
           let seen: SessionPrompt.PromptInput | undefined
           const promptOps = stubOps({ onPrompt: (input) => (seen = input) })
 
-          yield* def.execute(
+          const result = yield* def.execute(
             {
               description: "MSFT daily data",
-              prompt: "Extract MSFT 1d equity data from 2026-01-05 to 2026-06-30 for a mean reversion strategy.",
+              prompt: "Extract MSFT 1d equity data from 2026-01-01 to 2026-06-30 for a mean reversion strategy.",
               subagent_type: "data_extractor",
             },
             {
@@ -1990,6 +2472,9 @@ describe("tool.task", () => {
             },
           )
 
+          const jobs = yield* BackgroundJob.Service
+          yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+
           const childSession = seen?.sessionID
           expect(childSession).toBeDefined()
           const parentWorkspace = yield* Effect.promise(() => getSessionWorkspace(chat.id))
@@ -1999,9 +2484,9 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbols or universe: MSFT")
+          expect(text).toContain("- symbol: MSFT")
           expect(text).toContain("- interval: 1d")
-          expect(text).toContain(`- allowed_data_dir when known: ${path.join(algoDir(parentWorkspace!), "data")}`)
+          expect(text).toContain(`- workspace: ${path.join(algoDir(parentWorkspace!), "data")}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -2279,6 +2764,344 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("task_start keeps recommended data_extractor work in the background", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskStartTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "Extract SPY data",
+          prompt: "Extract SPY equity 15m data from 2026-01-15 to 2026-07-15.",
+          subagent_type: "data_extractor",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.background).toBe(true)
+      expect(result.output).toContain('state="running"')
+    }),
+  )
+
+  it.instance("task_run does not block the parent for recommended new-build evidence", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 5m strategy")
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "Research SPY news context",
+          prompt: "Research current SPY news context for the new strategy.",
+          subagent_type: "news_agent",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: { ...stubOps(), prompt: () => Effect.never } },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.metadata.background).toBe(true)
+      expect(result.output).toContain('state="running"')
+    }),
+  )
+
+  it.instance("batch metadata keeps background children running", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      const tool = yield* TaskBatchRunTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          tasks: [
+            {
+              description: "Research SPY news",
+              prompt: "Research SPY news for the new strategy.",
+              subagent_type: "news_agent",
+            },
+            {
+              description: "Research SPY sentiment",
+              prompt: "Research SPY sentiment for the new strategy.",
+              subagent_type: "sentiment_agent",
+            },
+          ],
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: { ...stubOps(), prompt: () => Effect.never } },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(result.output).toContain('<task_batch state="running">')
+      expect(result.metadata.subagents?.map((task) => task.state)).toEqual(["running", "running"])
+    }),
+  )
+
+  it.instance("reuses an active evidence role instead of launching a duplicate", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const active = yield* sessions.create({ parentID: chat.id, title: "Existing SPY extraction" })
+      const activeID = active.id
+      yield* Effect.promise(() =>
+        TaskState.upsert(
+          {
+            id: activeID,
+            parentSessionID: chat.id,
+            description: "Existing SPY extraction",
+            subagentType: "data_extractor",
+            mode: "background",
+            status: TaskState.Status.running,
+          },
+          database,
+        ),
+      )
+      let prompted = false
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          description: "Duplicate SPY extraction",
+          prompt: "Extract SPY 1d data for the new strategy.",
+          subagent_type: "data_extractor",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(prompted).toBe(false)
+      expect(result.metadata.sessionId).toBe(activeID)
+      expect(result.output).toContain("Existing background task reused")
+    }),
+  )
+
+  it.instance("returns active background task status without extending the child", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      const startTool = yield* TaskStartTool
+      const start = yield* startTool.init()
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: () => Effect.never,
+      }
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+      const launched = yield* start.execute(
+        {
+          description: "Inspect cache behavior",
+          prompt: "Inspect the cache behavior and report findings.",
+          subagent_type: "general",
+        },
+        context,
+      )
+      const originalExtend = jobs.extend
+      let extendCalls = 0
+      ;(jobs as { extend: typeof jobs.extend }).extend = (input) => {
+        extendCalls += 1
+        return originalExtend(input)
+      }
+
+      const runTool = yield* TaskRunTool
+      const run = yield* runTool.init()
+      const result = yield* run.execute(
+        {
+          description: "Get general result",
+          prompt: "Fetch output of background general task.",
+          subagent_type: "general",
+          task_id: launched.metadata.sessionId,
+        },
+        context,
+      )
+
+      expect(extendCalls).toBe(0)
+      expect(result.metadata.sessionId).toBe(launched.metadata.sessionId)
+      expect(result.output).toContain("will be delivered automatically")
+      expect(result.output).toContain('state="running"')
+    }),
+  )
+
+  it.instance("does not re-steer an active Build context task through explicit task_id", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new BTC 1d strategy")
+      const active = yield* sessions.create({ parentID: chat.id, title: "BTC data context" })
+      yield* Effect.promise(() =>
+        TaskState.upsert(
+          {
+            id: active.id,
+            parentSessionID: chat.id,
+            description: "BTC daily data",
+            subagentType: "data_extractor",
+            mode: "background",
+            status: TaskState.Status.running,
+          },
+          database,
+        ),
+      )
+      let prompted = false
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          description: "BTC daily data",
+          prompt: "Continue and finish the previously started BTC/USD daily data extraction task. Return the final structured digest only.",
+          subagent_type: "data_extractor",
+          task_id: active.id,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(prompted).toBe(false)
+      expect(result.metadata.sessionId).toBe(active.id)
+      expect(result.output).toContain("authoritative launch context")
+      expect(result.output).toContain("do not poll, re-steer, extend, restart, or duplicate")
+      expect(result.output).not.toContain("Additional context sent")
+    }),
+  )
+
+  it.instance("requires a fresh child when retrying a terminal Build context task", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new BTC 1d strategy")
+      const terminal = yield* sessions.create({ parentID: chat.id, title: "BTC news context" })
+      yield* Effect.promise(() =>
+        TaskState.upsert(
+          {
+            id: terminal.id,
+            parentSessionID: chat.id,
+            description: "BTC news context",
+            subagentType: "news_agent",
+            mode: "background",
+            status: TaskState.Status.completed,
+            resultSummary: "NO_SOURCED_CONTEXT",
+          },
+          database,
+        ),
+      )
+      let prompted = false
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        {
+          description: "Retry BTC news context",
+          prompt: "Retry structured sources and return only verified claims.",
+          subagent_type: "news_agent",
+          task_id: terminal.id,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: () => (prompted = true) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      expect(prompted).toBe(false)
+      expect(result.metadata.sessionId).toBeUndefined()
+      expect(result.output).toContain("terminal news_agent task")
+      expect(result.output).toContain("without task_id")
+      expect(yield* sessions.children(chat.id)).toHaveLength(1)
+    }),
+  )
+
+  it.instance("blocks strategy scaffolding while context subagents are active", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const active = yield* sessions.create({ parentID: chat.id, title: "Existing SPY news research" })
+      yield* Effect.promise(() =>
+        TaskState.upsert(
+          {
+            id: active.id,
+            parentSessionID: chat.id,
+            description: "Existing SPY news research",
+            subagentType: "news_agent",
+            mode: "background",
+            status: TaskState.Status.running,
+          },
+          database,
+        ),
+      )
+      let asked = false
+      const tool = yield* AlgorithmScaffoldTool
+      const def = yield* tool.init()
+      const result = yield* def.execute(
+        { template_type: "custom" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.sync(() => (asked = true)),
+        },
+      )
+
+      expect(asked).toBe(false)
+      expect(result.metadata.blocked).toBe(true)
+      expect(result.output).toContain("must wait for the active strategy-context subagents")
+    }),
+  )
+
   it.instance("promotes a running foreground task without restarting it", () =>
     Effect.gen(function* () {
       const jobs = yield* BackgroundJob.Service
@@ -2499,6 +3322,285 @@ describe("tool.task", () => {
       expect(parentAttempts).toBe(2)
       expect(notification.parts[0]?.type).toBe("text")
       if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("background done")
+    }),
+  )
+
+  background.instance(
+    "waits beyond the old retry budget and delivers a completion exactly once when the parent becomes idle",
+    () =>
+      Effect.gen(function* () {
+        const jobs = yield* BackgroundJob.Service
+        const database = yield* Database.Service
+        const status = yield* SessionStatus.Service
+        const { chat, assistant } = yield* seed()
+        const tool = yield* TaskStartTool
+        const def = yield* tool.init()
+        const injected = defer<SessionPrompt.PromptInput>()
+        let parentAttempts = 0
+        let parentDeliveries = 0
+
+        yield* status.set(chat.id, { type: "busy" })
+        const result = yield* def.execute(
+          {
+            description: "inspect long parent turn",
+            prompt: "look into the cache key path",
+            subagent_type: "general",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: {
+                ...stubOps(),
+                prompt: (input) => {
+                  if (input.sessionID !== chat.id) return Effect.succeed(reply(input, "background done"))
+                  parentAttempts++
+                  return status.get(chat.id).pipe(
+                    Effect.flatMap((current) => {
+                      if (current.type !== "idle") return Effect.die(new Session.BusyError({ sessionID: chat.id }))
+                      parentDeliveries++
+                      injected.resolve(input)
+                      return Effect.succeed(reply(input, "delivered"))
+                    }),
+                  )
+                },
+              } satisfies TaskPromptOps,
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+
+        const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+        expect(waited.info?.status).toBe("completed")
+        yield* Effect.sleep("1200 millis")
+        expect(parentAttempts).toBe(0)
+        expect(parentDeliveries).toBe(0)
+        expect((yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status).toBe(
+          TaskState.Status.running,
+        )
+
+        yield* status.set(chat.id, { type: "idle" })
+        const notification = yield* Effect.promise(() => injected.promise)
+        expect(notification.parts[0]?.type).toBe("text")
+        if (notification.parts[0]?.type === "text") expect(notification.parts[0].text).toContain("background done")
+        while (
+          (yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status ===
+          TaskState.Status.running
+        ) {
+          yield* Effect.sleep("10 millis")
+        }
+        yield* Effect.sleep("200 millis")
+        expect(parentAttempts).toBe(1)
+        expect(parentDeliveries).toBe(1)
+        expect((yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status).toBe(
+          TaskState.Status.completed,
+        )
+      }),
+  )
+
+  background.instance("keeps strategy synthesis blocked until context completion reaches the parent", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const database = yield* Database.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      const tool = yield* TaskStartTool
+      const def = yield* tool.init()
+      const deliveryStarted = yield* Deferred.make<void>()
+      const allowDelivery = yield* Deferred.make<void>()
+      let deliveryInput: SessionPrompt.PromptInput | undefined
+
+      const result = yield* def.execute(
+        {
+          description: "research SPY market context",
+          prompt: "Research SPY market context for a new daily strategy.",
+          subagent_type: "news_agent",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: {
+            promptOps: {
+              ...stubOps(),
+              prompt: (input) => {
+                if (input.sessionID !== chat.id) return Effect.succeed(reply(input, "context complete"))
+                deliveryInput = input
+                return Deferred.succeed(deliveryStarted, undefined).pipe(
+                  Effect.andThen(Deferred.await(allowDelivery)),
+                  Effect.as(reply(input, "completion delivered")),
+                )
+              },
+            } satisfies TaskPromptOps,
+          },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waited = yield* jobs.wait({ id: result.metadata.sessionId, timeout: 1_000 })
+      expect(waited.info?.status).toBe("completed")
+      yield* Deferred.await(deliveryStarted)
+      expect((yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status).toBe(
+        TaskState.Status.running,
+      )
+      expect(
+        (yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))).map((task) => task.id),
+      ).toEqual([result.metadata.sessionId])
+      const deliveryMessageID = MessageID.ascending()
+      const deliveredMessages = [
+        {
+          info: {
+            id: deliveryMessageID,
+            sessionID: chat.id,
+            role: "user" as const,
+            agent: "finny",
+            model: ref,
+            time: { created: Date.now() },
+          },
+          parts: (deliveryInput?.parts ?? [])
+            .filter((part) => part.type === "text")
+            .map((part) => ({
+              id: PartID.ascending(),
+              sessionID: chat.id,
+              messageID: deliveryMessageID,
+              type: "text" as const,
+              text: part.type === "text" ? part.text : "",
+              ...(part.type === "text" && part.synthetic !== undefined ? { synthetic: part.synthetic } : {}),
+            })),
+        },
+      ] as SessionV1.WithParts[]
+      expect(yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database, deliveredMessages))).toEqual(
+        [],
+      )
+
+      const guardContext = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "finny",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps() },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+      const deliveredGuardContext = { ...guardContext, messages: deliveredMessages }
+      const boundWorkspace = yield* Effect.promise(() => getSessionWorkspace(chat.id))
+      expect(boundWorkspace).not.toBeNull()
+      const workspacePath = algoDir(boundWorkspace!)
+      expect(isStrategySynthesisPath(workspacePath, path.join(workspacePath, "edge_analysis.md"))).toBe(true)
+      for (const file of [
+        path.join(workspacePath, "edge_analysis.md"),
+        path.join(workspacePath, "v01", "strategy.py"),
+        path.join(workspacePath, "v01", "config.json"),
+      ]) {
+        const blockedWrite = yield* Effect.exit(assertFinnyWorkspacePathPolicy(guardContext, file, "write", database))
+        expect(Exit.isFailure(blockedWrite)).toBe(true)
+        if (Exit.isFailure(blockedWrite)) {
+          expect(Cause.pretty(blockedWrite.cause)).toContain("must wait for the active strategy-context subagents")
+        }
+      }
+      for (const file of [
+        path.join(workspacePath, "mission.md"),
+        path.join(workspacePath, "todo.md"),
+        path.join(workspacePath, "analysis", "setup.py"),
+      ]) {
+        yield* assertFinnyWorkspacePathPolicy(guardContext, file, "write", database)
+      }
+
+      let asked = false
+      const scaffold = yield* AlgorithmScaffoldTool
+      const scaffoldDef = yield* scaffold.init()
+      const blocked = yield* scaffoldDef.execute(
+        { template_type: "custom" },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.sync(() => (asked = true)),
+        },
+      )
+      expect(asked).toBe(false)
+      expect(blocked.metadata.blocked).toBe(true)
+
+      // Admission of this synthetic completion turn is enough to release the
+      // matching gate even though TaskState remains running until ops.prompt
+      // returns successfully.
+      yield* assertFinnyWorkspacePathPolicy(
+        deliveredGuardContext,
+        path.join(workspacePath, "edge_analysis.md"),
+        "write",
+        database,
+      )
+      const admitted = yield* scaffoldDef.execute(
+        { template_type: "custom" },
+        {
+          ...deliveredGuardContext,
+          ask: () => Effect.void,
+        },
+      )
+      expect(admitted.metadata.blocked).toBe(false)
+      expect((yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status).toBe(
+        TaskState.Status.running,
+      )
+
+      const sessions = yield* Session.Service
+      const unrelated = yield* sessions.create({ parentID: chat.id, title: "Unrelated context" })
+      yield* Effect.promise(() =>
+        TaskState.upsert(
+          {
+            id: unrelated.id,
+            parentSessionID: chat.id,
+            description: "unrelated sentiment context",
+            subagentType: "sentiment_agent",
+            mode: "background",
+            status: TaskState.Status.running,
+            startedAt: Date.now(),
+          },
+          database,
+        ),
+      )
+      expect(
+        (yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database, deliveredMessages))).map(
+          (task) => task.id,
+        ),
+      ).toEqual([unrelated.id])
+      const unrelatedBlocked = yield* Effect.exit(
+        assertFinnyWorkspacePathPolicy(
+          deliveredGuardContext,
+          path.join(workspacePath, "edge_analysis.md"),
+          "write",
+          database,
+        ),
+      )
+      expect(Exit.isFailure(unrelatedBlocked)).toBe(true)
+      yield* Effect.promise(() =>
+        TaskState.finalizeActive(unrelated.id, { status: TaskState.Status.cancelled }, database),
+      )
+
+      yield* Deferred.succeed(allowDelivery, undefined)
+      while (
+        (yield* Effect.promise(() => TaskState.get(result.metadata.sessionId, database)))?.status ===
+        TaskState.Status.running
+      ) {
+        yield* Effect.sleep("10 millis")
+      }
+      expect(yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))).toEqual([])
+      yield* assertFinnyWorkspacePathPolicy(
+        guardContext,
+        path.join(workspacePath, "edge_analysis.md"),
+        "write",
+        database,
+      )
     }),
   )
 

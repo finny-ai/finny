@@ -133,7 +133,10 @@ function draftContractFields(
     ),
     universe: mission.universe ?? [symbol],
     interval: input.interval,
-    dataSnapshot: textValue([experiment?.dataSnapshot], "engine-data-hash-bound-at-completion"),
+    // The runtime owns the immutable snapshot identity. User/model prose such
+    // as "exact BTC window" is scientific context, not a data hash, and must
+    // never become the value later compared with engine run_metadata.data_hash.
+    dataSnapshot: "engine-data-hash-bound-at-completion",
     corporateActionPolicy: textValue(
       [experiment?.corporateActionPolicy, stringField(config, "corporate_action_policy")],
       "provider-adjusted",

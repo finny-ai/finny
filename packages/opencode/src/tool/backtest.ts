@@ -37,6 +37,7 @@ import type { ApprovalKind, ApprovalScope, BuildWorkflowState } from "@/algorith
 import {
   completeWorkflowBacktest,
   ensureWorkflowCandidate,
+  failActiveWorkflowBacktest,
   failWorkflowBacktest,
   pendingEvidenceRequirements,
   recordVerifiedMarketData,
@@ -45,6 +46,84 @@ import {
 } from "@/algorithm/build-workflow/lifecycle"
 import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
 import { qualificationInputForResearch } from "../backtest/qualification-policy"
+import { readRequestSpecForSession } from "@/agent/request-spec"
+
+export function backtestAttemptFingerprint(input: {
+  params: unknown
+  requestVersion?: number
+  evidence?: { manifestSha256: string; csvSha256: string }
+  candidate?: { algorithmId: string; version: number; code: string; config?: string }
+}): string {
+  return crypto
+    .createHash("sha256")
+    .update(JSON.stringify({
+      params: input.params,
+      requestVersion: input.requestVersion ?? null,
+      evidence: input.evidence
+        ? `${input.evidence.manifestSha256}:${input.evidence.csvSha256}`
+        : "provider_fetch_research_only",
+      candidate: input.candidate
+        ? {
+            algorithmId: input.candidate.algorithmId,
+            version: input.candidate.version,
+            codeSha256: crypto.createHash("sha256").update(input.candidate.code).digest("hex"),
+            configSha256: crypto.createHash("sha256").update(input.candidate.config ?? "").digest("hex"),
+          }
+        : null,
+    }))
+    .digest("hex")
+}
+
+export function experimentInputForBacktest(input: {
+  provided?: ExperimentInput
+  dataSourceKind: BacktestRunner.BacktestDataSource["kind"]
+  sessionId: string
+  fingerprint: string
+}): ExperimentInput | undefined {
+  if (input.provided) return input.provided
+  if (input.dataSourceKind === "verified_artifact") return undefined
+  // Provider-fetched runs are exploratory and may observe revised upstream
+  // candles or a different provider than an older run of the same algorithm.
+  // Keep their snapshot contract request-scoped so unrelated experiments do
+  // not block the research backtest.
+  return {
+    experimentId: `exp-research-${crypto
+      .createHash("sha256")
+      .update(`${input.sessionId}:${input.fingerprint}`)
+      .digest("hex")
+      .slice(0, 24)}`,
+  }
+}
+
+export function resolveBoundBacktestDates(input: {
+  params: { startDate?: string; endDate?: string }
+  workflowWindow?: { start: string; end: string }
+  requestSpecWindow?: { start?: string; end?: string }
+}) {
+  return {
+    startDate: input.workflowWindow?.start ?? input.requestSpecWindow?.start ?? input.params.startDate,
+    endDate: input.workflowWindow?.end ?? input.requestSpecWindow?.end ?? input.params.endDate,
+  }
+}
+
+export function authoritativeBacktestInputIssue(input: {
+  params: { startDate?: string; endDate?: string; interval?: string }
+  workflowWindow?: { start: string; end: string }
+  workflowInterval?: string
+}): string | undefined {
+  if (input.workflowWindow) {
+    if (input.params.startDate && input.params.startDate !== input.workflowWindow.start) {
+      return `startDate ${input.params.startDate} conflicts with confirmed workflow start ${input.workflowWindow.start}`
+    }
+    if (input.params.endDate && input.params.endDate !== input.workflowWindow.end) {
+      return `endDate ${input.params.endDate} conflicts with confirmed workflow end ${input.workflowWindow.end}`
+    }
+  }
+  if (input.workflowInterval && input.params.interval && input.params.interval !== input.workflowInterval) {
+    return `interval ${input.params.interval} conflicts with confirmed workflow interval ${input.workflowInterval}`
+  }
+  return undefined
+}
 
 type WfMeta = {
   n_folds: number
@@ -130,8 +209,12 @@ export function formatWalkForwardLines(input: {
 }
 
 const experimentParameters = z.object({
-  experimentId: z.string().optional(), parentExperimentId: z.string().optional(), hypothesis: z.string().optional(),
-  falsificationCriteria: z.string().optional(), dataSnapshot: z.string().optional(), corporateActionPolicy: z.string().optional(),
+  experimentId: z.string().optional().describe("Advanced only: reuse an existing persisted experiment ID or create an explicit named root. Never invent an ID for an ordinary run."),
+  parentExperimentId: z.string().optional().describe("Advanced lineage only: pass an ID confirmed to exist in the experiment store. Never invent or self-reference a parent."),
+  hypothesis: z.string().optional(),
+  falsificationCriteria: z.string().optional(),
+  dataSnapshot: z.string().optional().describe("Deprecated input. Omit it; runtime binds the actual engine data hash after the first completed run."),
+  corporateActionPolicy: z.string().optional(),
   costs: z.string().optional(), featureTiming: z.string().optional(), executionSemantics: z.string().optional(),
   permittedSearchSpace: z.string().optional(), optimizationBudget: z.number().int().positive().max(10000).optional(),
   primaryMetric: z.string().optional(), riskConstraints: z.string().optional(), benchmark: z.string().optional(),
@@ -198,8 +281,10 @@ const parameters = z.object({
     .boolean()
     .optional()
     .describe("Deprecated compatibility hint. It does not grant any workflow approval."),
-  experiment: experimentParameters.optional().describe("Scientific intent and constraints only. Runtime code compiles phase windows and sealed-holdout transitions; do not calculate phase timestamps."),
+  experiment: experimentParameters.optional().describe("Optional advanced scientific lineage. OMIT this entire object for ordinary autonomous backtests; runtime derives a safe root experiment and owns the data snapshot. Never invent experimentId, parentExperimentId, or dataSnapshot."),
 })
+
+type BacktestToolMetadata = { [key: string]: unknown }
 
 export type DataQualityFailureMetadata = {
   kind: "data_quality_failed"
@@ -269,8 +354,10 @@ export function strictDataQualityNextSteps() {
     "No performance metrics were produced; do not call this strategy backtested, ready, or paper/live eligible.",
     "Valid next steps:",
     "1. Verify the flagged candles first: inspect neighboring raw candles and compare another provider if available.",
-    "2. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
-    "3. Only after explicit user approval, run repair_outliers as a research-only rerun.",
+    "2. Keep the confirmed window/interval. Do not shrink duration or switch bars to chase strict_qualified.",
+    "3. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
+    "4. Only after explicit user approval, run repair_outliers as a research-only rerun on the same confirmed identity.",
+    "5. research_only verified evidence is a valid research path — present research metrics; do not thrash identity.",
   ].join("\n")
 }
 
@@ -401,7 +488,7 @@ async function verifyPersistedRecommendation(input: {
   }
 }
 
-export const BacktestTool = Tool.define(
+export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata, Database.Service, "finny_backtest">(
   "finny_backtest",
   Effect.gen(function* () {
     const database = yield* Database.Service
@@ -410,14 +497,56 @@ export const BacktestTool = Tool.define(
 
     return {
     description:
-      "Run the full research-only backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. A recommended research result may create a controller-scoped paper-approval challenge, but this operation cannot qualify a candidate or create a promotable run. For qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
+      "Run the full research-only backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. Verified evidence is optional for this exploratory operation: call it directly without launching evidence agents solely to unlock a backtest. Provider-fetched results remain research-only. A recommended research result may create a controller-scoped paper-approval challenge, but this operation cannot qualify a candidate or create a promotable run. For qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {
-        const fingerprint = crypto
-          .createHash("sha256")
-          .update(JSON.stringify(params))
-          .digest("hex")
+        const preflightWorkflow = (yield* Effect.promise(() =>
+          runWorkflow(BuildWorkflowStore.listBySession(ctx.sessionID)),
+        )).find((item) => item.status === "active" || item.status === "blocked")
+        const requestSpec = yield* Effect.promise(() => readRequestSpecForSession({ sessionID: ctx.sessionID }))
+        const authoritativeIssue = authoritativeBacktestInputIssue({
+          params,
+          workflowWindow: preflightWorkflow?.identity.window?.value,
+          workflowInterval: preflightWorkflow?.identity.interval?.value,
+        })
+        if (authoritativeIssue) {
+          return {
+            title: "Backtest blocked by confirmed request",
+            output: `BLOCKED: ${authoritativeIssue}. Use the confirmed WorkflowRun inputs; amend the request through the controller instead of shifting the evaluation scope.`,
+            metadata: { algorithmName: undefined, params: undefined, results: undefined },
+          }
+        }
+        const boundDates = resolveBoundBacktestDates({
+          params,
+          workflowWindow: preflightWorkflow?.identity.window?.value,
+          requestSpecWindow: { start: requestSpec?.requested_start, end: requestSpec?.requested_end },
+        })
+        const boundStartDate = boundDates.startDate
+        const boundEndDate = boundDates.endDate
+        const evidence = yield* Effect.promise(() => requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID))
+        const dataSource: BacktestRunner.BacktestDataSource = evidence.ok
+          ? { kind: "verified_artifact", dataset: evidence.dataset }
+          : { kind: "provider_fetch" }
+        const algo = yield* Effect.promise(() => Algorithm.get(params.algorithmName))
+        if (!algo) {
+          return {
+            title: "Backtest failed",
+            output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
+            metadata: { algorithmName: undefined, params: undefined, results: undefined },
+          }
+        }
+        const fingerprint = backtestAttemptFingerprint({
+          params: { ...params, startDate: boundStartDate, endDate: boundEndDate },
+          requestVersion: preflightWorkflow?.requestVersion,
+          evidence: evidence.ok ? evidence.dataset : undefined,
+          candidate: {
+            algorithmId: algo.algorithmId,
+            version: algo.version,
+            code: algo.code,
+            config: algo.config,
+          },
+        })
         const durableStart = yield* Effect.promise(() =>
           runWorkflow(recordWorkflowAttempt({
             sessionId: ctx.sessionID,
@@ -448,9 +577,7 @@ export const BacktestTool = Tool.define(
           metadata: {},
         })
 
-        let workflow = (await runWorkflow(BuildWorkflowStore.listBySession(ctx.sessionID))).find(
-          (item) => item.status === "active" || item.status === "blocked",
-        )
+        let workflow = preflightWorkflow
         let experiment: ExperimentRunContext | undefined
         let paperApprovalChallengeId: string | undefined
 
@@ -526,7 +653,16 @@ export const BacktestTool = Tool.define(
           algorithmName: params.algorithmName,
           dataQualityMode: "repair_outliers",
         }
-        if (params.dataQualityMode === "repair_outliers" && !exactApproval(workflow, "repair_outliers", repairScope)) {
+        // Research-only verified evidence already encodes non-promotable quality
+        // caveats (commonly isolated outliers). Allow the research repair path
+        // without a second approval so the confirmed window can be evaluated.
+        const researchOnlyVerified =
+          evidence.ok && evidence.dataset.identity.qualification === "research_only"
+        if (
+          params.dataQualityMode === "repair_outliers" &&
+          !researchOnlyVerified &&
+          !exactApproval(workflow, "repair_outliers", repairScope)
+        ) {
           const challengeId = await ensureChallenge(
             "repair_outliers",
             repairScope,
@@ -544,46 +680,13 @@ export const BacktestTool = Tool.define(
           }
         }
 
-        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
-        if (!evidence.ok) {
-          return {
-            title: "Backtest blocked by missing evidence",
-            output: evidence.text,
-            metadata: {
-              ...emptyMeta,
-              blocked: true,
-              evidenceRequired: true,
-              workspaceSlug: evidence.workspaceSlug,
-              issues: evidence.issues,
-            },
-          }
+        if (evidence.ok) {
+          const evidencedWorkflow = await runWorkflow(
+            recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
+          )
+          if (evidencedWorkflow) workflow = evidencedWorkflow
         }
-        const evidencedWorkflow = await runWorkflow(
-          recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
-        )
-        if (evidencedWorkflow) workflow = evidencedWorkflow
         const pendingEvidence = workflow ? pendingEvidenceRequirements(workflow) : []
-        if (pendingEvidence.length > 0) {
-          return {
-            title: "Backtest blocked by workflow evidence policy",
-            output: `The controller still requires: ${pendingEvidence.join(" | ")}`,
-            metadata: {
-              ...emptyMeta,
-              blocked: true,
-              workflowId: workflow?.workflowId,
-              pendingEvidence,
-            },
-          }
-        }
-
-        const algo = await Algorithm.get(params.algorithmName)
-        if (!algo) {
-          return {
-            title: "Backtest failed",
-            output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
-            metadata: { ...emptyMeta },
-          }
-        }
 
         const assetClass = typeof (algo.config as any)?.asset_class === "string" ? (algo.config as any).asset_class : undefined
         const codePatternWarnings = analyzeStrategyCodePatterns(algo.code, {
@@ -623,9 +726,9 @@ export const BacktestTool = Tool.define(
         }
 
         const savedBacktestDates = inferSavedBacktestDates(algo.config)
-        const effectiveStartDate = params.startDate ?? savedBacktestDates.startDate
-        const effectiveEndDate = params.endDate ?? savedBacktestDates.endDate
-        if (workflow) {
+        const effectiveStartDate = boundStartDate ?? savedBacktestDates.startDate
+        const effectiveEndDate = boundEndDate ?? savedBacktestDates.endDate
+        if (workflow && evidence.ok) {
           const candidate = await runWorkflow(ensureWorkflowCandidate({
             workflow,
             algorithm: algo,
@@ -650,7 +753,19 @@ export const BacktestTool = Tool.define(
         }
         let trial: Awaited<ReturnType<typeof beginTrial>>
         try {
-          trial = await beginTrial({ algorithm: algo, interval: params.interval, startDate: effectiveStartDate, endDate: effectiveEndDate, sessionId: ctx.sessionID, experiment: params.experiment as ExperimentInput | undefined })
+          trial = await beginTrial({
+            algorithm: algo,
+            interval: params.interval,
+            startDate: effectiveStartDate,
+            endDate: effectiveEndDate,
+            sessionId: ctx.sessionID,
+            experiment: experimentInputForBacktest({
+              provided: params.experiment as ExperimentInput | undefined,
+              dataSourceKind: dataSource.kind,
+              sessionId: ctx.sessionID,
+              fingerprint,
+            }),
+          })
         } catch (error) {
           const message = error instanceof ExperimentContractError ? error.message : `experiment ledger unavailable: ${String(error)}`
           return { title: "Backtest blocked by experiment contract", output: `Backtest blocked: ${message}`, metadata: { ...emptyMeta, blocked: true, experimentContract: true } }
@@ -686,7 +801,7 @@ export const BacktestTool = Tool.define(
           },
           experiment: trial.reference,
           sessionID: ctx.sessionID,
-          dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
+          dataSource,
         })
 
         if (!result.ok) {
@@ -791,12 +906,28 @@ export const BacktestTool = Tool.define(
         })
         const quality = evaluateBacktestQuality(r, qualification)
         const walkForwardVerdict = deriveWalkForwardVerdict(walkForward)
-        const unified = composeBacktestVerdict({
+        const computedUnified = composeBacktestVerdict({
           quality,
           walkForward: walkForwardVerdict,
           consistency: r.v2?.consistency,
           decay: r.v2?.alpha_decay,
         })
+        const researchOnlyArtifact =
+          dataSource.kind === "verified_artifact" &&
+          dataSource.dataset.identity.qualification === "research_only"
+        const unified =
+          computedUnified.verdict !== "failed" &&
+          (dataSource.kind === "provider_fetch" || researchOnlyArtifact)
+            ? {
+                verdict: "research_only" as const,
+                reasons: [
+                  ...computedUnified.reasons,
+                  ...(dataSource.kind === "provider_fetch"
+                    ? ["provider_fetch_research_only"]
+                    : ["verified_dataset_research_only"]),
+                ],
+              }
+            : computedUnified
         await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)
         if (workflow && experiment) {
           const controllerVerdict =
@@ -826,14 +957,14 @@ export const BacktestTool = Tool.define(
         }
         await verifyPersistedRecommendation({
           artifactDir: r.artifactDir,
-          unifiedVerdict: unified.verdict,
-          verdictReasons: unified.reasons,
+          unifiedVerdict: computedUnified.verdict,
+          verdictReasons: computedUnified.reasons,
         })
         const reviewPacket = await generateReviewPacket({
           algorithm: algo,
           results: r,
-          verdict: unified.verdict,
-          reasons: unified.reasons,
+          verdict: computedUnified.verdict,
+          reasons: computedUnified.reasons,
         })
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
@@ -846,6 +977,12 @@ export const BacktestTool = Tool.define(
           `Duration: ${params.duration}` +
             (effectiveStartDate && effectiveEndDate ? ` (${effectiveStartDate} → ${effectiveEndDate})` : "") +
             ` | Interval: ${params.interval} | Capital: $${params.capital}`,
+          evidence.ok
+            ? `Data source: verified data_extractor artifact (strict qualification eligible)`
+            : `Data source: provider fetch (research-only; evidence is optional, qualification/promotion disabled)`,
+          !evidence.ok && pendingEvidence.length > 0
+            ? `Optional evidence caveat: ${pendingEvidence.join(" | ")}`
+            : null,
           processedRange ? `Processed range: ${processedRange} | Bars processed: ${r.diagnostics?.barsProcessed ?? r.v2?.bars_processed ?? "N/A"}` : null,
           params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
           ``,
@@ -1196,6 +1333,9 @@ export const BacktestTool = Tool.define(
               endDate: effectiveEndDate,
             },
             results: { ...r, v2: undefined },
+            dataSourceMode: dataSource.kind,
+            qualificationEligible: dataSource.kind === "verified_artifact",
+            evidenceIssues: evidence.ok ? [] : evidence.issues,
             walkForward,
             verdict: unified.verdict,
             verdictReasons: unified.reasons,
@@ -1227,6 +1367,14 @@ export const BacktestTool = Tool.define(
         }
         }))
         if (resultExit._tag === "Failure") {
+          yield* Effect.promise(() =>
+            runWorkflow(
+              failActiveWorkflowBacktest({
+                sessionId: ctx.sessionID,
+                reason: "backtest execution threw after strict execution started",
+              }),
+            ).catch(() => undefined),
+          )
           yield* Effect.promise(() =>
             runWorkflow(recordWorkflowAttempt({
               sessionId: ctx.sessionID,

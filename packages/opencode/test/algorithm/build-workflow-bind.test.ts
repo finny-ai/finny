@@ -8,7 +8,12 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { MessageTable, PartTable, SessionTable } from "@opencode-ai/core/session/sql"
 import { Effect } from "effect"
 import { algoDir } from "@finny-ai/core/algo"
-import { ensurePrimaryBuildWorkflow, workflowClaimFlags } from "@/algorithm/build-workflow/bind"
+import {
+  ensurePrimaryBuildWorkflow,
+  requiresIdentityClarification,
+  structuredWorkflowClaimFlags,
+  workflowClaimFlags,
+} from "@/algorithm/build-workflow/bind"
 import { makeApprovalChallenge } from "@/algorithm/build-workflow/state"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
 import { testEffect } from "../lib/effect"
@@ -18,6 +23,23 @@ const it = testEffect(Database.defaultLayer)
 test("requires news only for an explicit current-regime or catalyst claim", () => {
   expect(workflowClaimFlags("Build the current saved SMA strategy for SPY.").newsRequired).toBe(false)
   expect(workflowClaimFlags("Build an SMA strategy for the current market regime.").newsRequired).toBe(true)
+})
+
+test("requires market and news context for the actual vague delegated strategy build", () => {
+  const prompt = "structured BTC.USD crypto 1d workspace"
+  expect(structuredWorkflowClaimFlags(prompt, true).newsRequired).toBe(true)
+  expect(structuredWorkflowClaimFlags(prompt, false).newsRequired).toBe(false)
+})
+
+test("requires clarification before provisioning a vague build request", () => {
+  expect(requiresIdentityClarification("Build me a strategy that can beat buy and hold; you choose the idea")).toBe(
+    true,
+  )
+  expect(
+    requiresIdentityClarification(
+      "Build SPY equity on 1d bars over the trailing 6 months with a 15% max drawdown.",
+    ),
+  ).toBe(false)
 })
 
 it.live("binds facts only from the persisted parent user message and ignores a six-month child prompt", () =>

@@ -4,6 +4,8 @@ import { Effect, Schema } from "effect"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import type { Tool } from "./tool"
 import { InstanceState } from "@/effect/instance-state"
+import { StrategyContext } from "@/task/strategy-context"
+import type { Database } from "@opencode-ai/core/database/database"
 
 export type FinnyWorkspaceOperation = "read" | "write" | "edit"
 
@@ -124,6 +126,21 @@ function isWorkspaceMetadataFile(workspacePath: string, filepath: string) {
   ]).has(path.resolve(filepath))
 }
 
+export function isStrategySynthesisPath(workspacePath: string, filepath: string) {
+  const resolvedWorkspace = path.resolve(workspacePath)
+  const resolvedFile = path.resolve(filepath)
+  if (!sameOrInside(resolvedWorkspace, resolvedFile)) return false
+
+  const relative = path.relative(resolvedWorkspace, resolvedFile)
+  if (relative === "edge_analysis.md") return true
+  if (new Set(["strategy.py", "config.json"]).has(relative)) return true
+
+  const parts = relative.split(path.sep)
+  if (!/^v\d+$/i.test(parts[0] ?? "")) return false
+  if (parts.length !== 2) return false
+  return parts[1] === "strategy.py" || /^config(?:\.[^.]+)?\.json$/i.test(parts[1] ?? "")
+}
+
 function blocked(code: string, message: string): FinnyWorkspacePolicyResult {
   return { allowed: false, code, message }
 }
@@ -148,6 +165,27 @@ async function evaluateDataAgentReadPolicy(
   return blocked(
     "data_agent_path_blocked",
     `Data Agent read blocked: ${filepath} is outside allowed data roots. Read the cookbook at ${path.join(root, "data-agent", "instructions.md")} and inspect artifacts under ${allowedHint}.`,
+  )
+}
+
+async function evaluateMainFinnyWritePolicy(
+  input: FinnyWorkspacePolicyInput,
+  filepath: string,
+): Promise<FinnyWorkspacePolicyResult> {
+  const workspace = await getSessionWorkspace(input.sessionID).catch(() => null)
+  if (!workspace) return { allowed: true }
+  const workspaceRoot = algoDir(workspace)
+  if (!sameOrInside(workspaceRoot, filepath)) {
+    return blocked(
+      "finny_strategy_write_outside_workspace",
+      `Finny ${input.operation} blocked: ${filepath} is outside the bound strategy workspace ${workspaceRoot}. During a strategy workflow, the main Finny agent may write only durable strategy artifacts inside that workspace; it may not modify repository source, scripts, or unrelated filesystem paths.`,
+    )
+  }
+  const dataRoot = path.join(workspaceRoot, "data")
+  if (!sameOrInside(dataRoot, filepath)) return { allowed: true }
+  return blocked(
+    "finny_workspace_data_write_blocked",
+    `Finny ${input.operation} blocked: ${filepath} is a tool-owned evidence artifact under ${dataRoot}. The main Finny agent may read workspace data, but only the owning subagent or evidence finalizer may write it. Relaunch clean evidence collection when identity or lineage does not match.`,
   )
 }
 
@@ -224,6 +262,9 @@ export async function evaluateFinnyWorkspacePathPolicy(
   const isDataRead = input.agent === "data_extractor" && input.operation === "read"
   if (isDataRead) return evaluateDataAgentReadPolicy(input, filepath)
 
+  const isMainFinnyWrite = input.agent === "finny" && input.operation !== "read"
+  if (isMainFinnyWrite) return evaluateMainFinnyWritePolicy(input, filepath)
+
   const kind = ARTIFACT_KIND_BY_AGENT[input.agent ?? ""]
   if (!kind) return { allowed: true }
   return evaluateArtifactAgentPolicy(input, filepath, kind)
@@ -233,17 +274,32 @@ export const assertFinnyWorkspacePathPolicy = Effect.fn("FinnyWorkspaceGuard.ass
   ctx: Tool.Context,
   filePath: string,
   operation: FinnyWorkspaceOperation,
+  database?: Database.Interface,
 ) {
   const instance = yield* InstanceState.context
+  const filepath = resolveFinnyWorkspacePath(filePath, instance.directory, instance.worktree)
   const result = yield* Effect.promise(() =>
     evaluateFinnyWorkspacePathPolicy({
       agent: ctx.agent,
       sessionID: ctx.sessionID,
-      filePath,
+      filePath: filepath,
       operation,
       directory: instance.directory,
       worktree: instance.worktree,
     }),
   )
   if (!result.allowed) return yield* Effect.die(new FinnyWorkspacePolicyError(result))
+
+  if (ctx.agent !== "finny" || operation === "read") return
+  const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
+  if (!workspace || !isStrategySynthesisPath(algoDir(workspace), filepath)) return
+
+  const pending = yield* Effect.promise(() => StrategyContext.pendingTasks(ctx.sessionID, database, ctx.messages))
+  if (pending.length === 0) return
+  return yield* Effect.die(
+    new FinnyWorkspacePolicyError({
+      code: "strategy_context_pending",
+      message: StrategyContext.blockedOutput(`Writing ${path.basename(filepath)}`, pending),
+    }),
+  )
 })

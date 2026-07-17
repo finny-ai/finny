@@ -102,6 +102,8 @@ export interface DataExtractorManifest {
   coverage?: string
   coverage_note?: string
   usable_for_parent?: string | boolean
+  usable_for_research?: string | boolean
+  strict_backtest_eligible?: string | boolean
   // Optional, lenient enrichment (issue #81). Never gates identity or reuse:
   // candidate edge analysis the data agent derives from the saved rows.
   analysis_summary_path?: string
@@ -367,18 +369,42 @@ async function findManifestCandidates(root: string): Promise<string[]> {
   return found
 }
 
+/**
+ * Data workspaces also contain sidecar manifests owned by news, sentiment, and
+ * SEC agents. Those files may repeat the request identity, but they are not
+ * OHLCV dataset evidence and must never make market-data discovery ambiguous.
+ *
+ * V2 evidence identifies itself with the canonical schema. Legacy extractor
+ * manifests predate that schema, so recognize them by the top-level requested
+ * and actual market identity plus their run id. Keep output_path out of this
+ * classifier because the validator intentionally hydrates that one field for
+ * otherwise valid legacy manifests.
+ */
+function isMarketDataManifest(manifest: DataExtractorManifest): boolean {
+  if (manifest.schema === DATASET_EVIDENCE_SCHEMA) return true
+  return Boolean(
+    manifest.run_id &&
+      manifest.requested_symbol &&
+      manifest.actual_symbol &&
+      manifest.requested_interval &&
+      manifest.actual_interval &&
+      manifest.requested_asset_class &&
+      manifest.actual_asset_class,
+  )
+}
+
 function evidenceRequiredBlock(reason: string, workspaceSlug?: string): RequireVerifiedEvidenceResult {
   const context = workspaceSlug ? `workspace_slug: ${workspaceSlug}\n` : ""
   return {
     ok: false,
     workspaceSlug,
     text: [
-      "BLOCKED: evidence required before strategy build — mandatory data_extractor evidence is not verified.",
+      "BLOCKED: verified data_extractor evidence is required for strict qualification or promotion.",
       context.trimEnd(),
       `reason: ${reason}`,
-      "Run the mandatory data_extractor subagent with concrete symbol, interval, asset class, start date, and end date.",
-      "Do not call finny_algorithm_scaffold, finny_algorithm_save, finny_algorithm_validate, or finny_backtest until a matching <data-extractor-manifest> has usable_for_parent: yes.",
-      "No strategy artifact or performance metrics produced.",
+      "Exploratory provider-fetched backtests may proceed without this evidence, but remain research-only and non-promotable.",
+      "Before strict qualification, run data_extractor with concrete symbol, interval, asset class, start date, and end date and require strict_backtest_eligible: yes.",
+      "No qualified or promotable result produced.",
     ]
       .filter(Boolean)
       .join("\n"),
@@ -720,6 +746,17 @@ function effectiveDigestFromManifest(
           ? "yes"
           : undefined),
     ),
+    usable_for_research: normalizeUsableForParent(
+      digest.usable_for_research ??
+        manifest.usable_for_research ??
+        digest.usable_for_parent ??
+        manifest.usable_for_parent,
+    ),
+    strict_backtest_eligible: normalizeUsableForParent(
+      digest.strict_backtest_eligible ??
+        manifest.strict_backtest_eligible ??
+        (evidenceQualification(manifest) === "strict_qualified" ? "yes" : "no"),
+    ),
   }
 }
 
@@ -768,6 +805,7 @@ async function matchArtifactManifest(
   if (!fromArtifacts || !(await fileExists(fromArtifacts))) return { issues: [] }
   try {
     const manifest = JSON.parse(await fs.readFile(fromArtifacts, "utf8")) as DataExtractorManifest
+    if (!isMarketDataManifest(manifest)) return { issues: [] }
     const issues = manifestDigestMismatches(manifest, digest)
     return issues.length === 0 ? { manifestFile: fromArtifacts, issues } : { issues }
   } catch {
@@ -782,6 +820,7 @@ async function findIdentityMatchingManifests(dataRoot: string, digest: ManifestD
   for (const candidate of candidates) {
     try {
       const manifest = JSON.parse(await fs.readFile(candidate, "utf8")) as DataExtractorManifest
+      if (!isMarketDataManifest(manifest)) continue
       if (manifestDigestMismatches(manifest, digest).length === 0) matches.push(candidate)
     } catch {
       // Unreadable candidates are reported only if no valid identity match exists.
@@ -870,8 +909,26 @@ async function hydrateRuntimeManifest(input: {
   manifestFile: string
   artifacts: string[]
   dataRoot: string
+  context?: WorkspaceRequestContext
 }): Promise<{ manifest?: DataExtractorManifest; issue?: string }> {
-  if (input.manifest.output_path) return { manifest: input.manifest }
+  const runtimeLineage = {
+    ...(input.manifest.request_id === undefined && input.context?.request_id
+      ? { request_id: input.context.request_id }
+      : {}),
+    ...(input.manifest.request_version === undefined && input.context?.request_version !== undefined
+      ? { request_version: input.context.request_version }
+      : {}),
+    ...(input.manifest.request_content_hash === undefined && input.context?.request_content_hash
+      ? { request_content_hash: input.context.request_content_hash }
+      : {}),
+  }
+  if (input.manifest.output_path) {
+    const manifest = { ...input.manifest, ...runtimeLineage }
+    if (Object.keys(runtimeLineage).length > 0) {
+      await fs.writeFile(input.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
+    }
+    return { manifest }
+  }
 
   const sibling = input.manifestFile.replace(/\.manifest\.json$/i, ".csv")
   const candidates = [
@@ -893,7 +950,7 @@ async function hydrateRuntimeManifest(input: {
   }
 
   const outputPath = path.relative(input.dataRoot, existing[0]).replaceAll(path.sep, "/")
-  const manifest = { ...input.manifest, output_path: outputPath }
+  const manifest = { ...input.manifest, output_path: outputPath, ...runtimeLineage }
   await fs.writeFile(input.manifestFile, `${JSON.stringify(manifest, null, 2)}\n`, "utf8")
   return { manifest }
 }
@@ -1063,6 +1120,8 @@ function renderManifestBlock(manifest: DataExtractorManifest, digest: Record<str
     ["coverage", manifest.coverage],
     ["rows", manifest.rows],
     ["usable_for_parent", digest.usable_for_parent],
+    ["usable_for_research", digest.usable_for_research],
+    ["strict_backtest_eligible", digest.strict_backtest_eligible],
     // Lenient enrichment (issue #81): preserved, never validated as identity.
     ["analysis_regime", manifest.analysis_regime],
     ["analysis_hypotheses", normalizeHypotheses(manifest.analysis_hypotheses)],
@@ -1274,6 +1333,7 @@ export async function validateDataExtractorTaskText(
     manifestFile,
     artifacts: resolved.artifacts,
     dataRoot,
+    context: input.context,
   })
   if (hydrated.issue) return blocked([...issues, hydrated.issue], "schema")
   const manifest = hydrated.manifest!
@@ -1292,6 +1352,7 @@ export async function validateExistingDataExtractorEvidence(input: {
   workspaceSlug: string | null
   context?: WorkspaceRequestContext
   dataRoot?: string
+  requestedProvider?: string
 }): Promise<ExistingDataExtractorEvidenceResult> {
   if (!input.workspaceSlug) return { found: false }
   if (input.context?.requested_symbols && input.context.requested_symbols.length > 1) return { found: false }
@@ -1330,6 +1391,7 @@ export async function validateExistingDataExtractorEvidence(input: {
       manifestFile,
       artifacts: [],
       dataRoot,
+      context: input.context,
     })
     if (hydrated.issue) {
       return { found: true, result: blocked([hydrated.issue], "schema") }
@@ -1352,6 +1414,17 @@ export async function validateExistingDataExtractorEvidence(input: {
   }
 
   const manifest = snapshot.manifest
+  if (
+    input.requestedProvider &&
+    normalizeProviderID(manifest.source) !== normalizeProviderID(input.requestedProvider)
+  ) {
+    return {
+      found: true,
+      result: blocked([
+        `existing evidence provider ${manifest.source ?? "unknown"} does not match explicitly requested provider ${input.requestedProvider}`,
+      ]),
+    }
+  }
   const artifacts = canonicalArtifacts(manifestFile, manifest, dataRoot)
   const preamble = {
     text: [
@@ -1391,6 +1464,13 @@ export async function validateExistingDataExtractorEvidence(input: {
       result: blocked([`failed to bind verified data artifacts: ${error?.message ?? String(error)}`]),
     }
   }
+}
+
+function normalizeProviderID(value: string | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]/g, "")
 }
 
 // finny_algorithm_save consolidates the workspace data tree into the saved

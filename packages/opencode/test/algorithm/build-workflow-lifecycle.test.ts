@@ -8,8 +8,12 @@ import { Effect } from "effect"
 import {
   completeWorkflowBacktest,
   ensureWorkflowCandidate,
+  failActiveWorkflowBacktest,
+  finishWorkflowRun,
+  recordVerifiedNewsEvidence,
   recordVerifiedMarketData,
   recordWorkflowAttempt,
+  resumeWorkflowRun,
   startWorkflowBacktest,
   transitionWorkflowIdentity,
 } from "@/algorithm/build-workflow/lifecycle"
@@ -22,6 +26,73 @@ import { testEffect } from "../lib/effect"
 
 const it = testEffect(Database.defaultLayer)
 const hash = (value: string) => RunIntegrity.sha256Text(value)
+
+it.live("resumes an interrupted WorkflowRun with a token-bound changed fingerprint", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_resume_${suffix}`,
+      sessionId: `ses_resume_${suffix}`,
+      workspaceSlug: `resume-${suffix}`,
+      intent: "build",
+      marketDataRequired: false,
+      identity: {
+        symbols: { value: ["SPY"], source: { kind: "user_message", messageId: `msg_${suffix}` } },
+      },
+    })
+    yield* finishWorkflowRun({
+      sessionId: workflow.sessionId,
+      classification: "interrupted",
+      reason: "test interruption",
+    })
+    const blocked = yield* BuildWorkflowStore.get(workflow.workflowId)
+    expect(blocked).toMatchObject({ status: "blocked", blocker: { code: "workflow_interrupted" } })
+
+    const resumed = yield* resumeWorkflowRun({
+      sessionId: workflow.sessionId,
+      changedFingerprint: `user:msg_continue_${suffix}:2000`,
+    })
+    expect(resumed).toMatchObject({ status: "active", blocker: undefined, terminal: undefined })
+    const event = (yield* BuildWorkflowStore.events(workflow.workflowId)).at(-1)
+    expect(event?.type).toBe("workflow.resumed")
+    expect(event?.payload.changedFingerprint).not.toBe(`user:msg_continue_${suffix}:2000`)
+    expect(event?.payload.changedFingerprint).toMatch(/^[a-f0-9]{64}$/)
+  }),
+)
+
+it.live("records provenance-validated news evidence with its artifact hash and child session", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_news_${suffix}`,
+      sessionId: `ses_news_${suffix}`,
+      workspaceSlug: `btc-news-${suffix}`,
+      intent: "build",
+      marketDataRequired: false,
+      newsRequired: true,
+      identity: {
+        symbols: { value: ["BTC.USD"], source: { kind: "user_message", messageId: `msg_${suffix}` } },
+        interval: { value: "1d", source: { kind: "user_message", messageId: `msg_${suffix}` } },
+        assetClass: { value: "crypto", source: { kind: "user_message", messageId: `msg_${suffix}` } },
+      },
+    })
+    const artifactText = "validated finny.news.claims.v1 artifact"
+    const childSessionId = `ses_news_child_${suffix}`
+    const evidenced = yield* recordVerifiedNewsEvidence({
+      sessionId: workflow.sessionId,
+      sourceSessionId: childSessionId,
+      artifactText,
+    })
+
+    expect(evidenced?.stage).toBe("evidence_pending")
+    expect(evidenced?.evidence.find((record) => record.requirementId === "news:request")).toMatchObject({
+      kind: "news",
+      status: "verified",
+      artifactId: hash(artifactText),
+      sourceSessionId: childSessionId,
+    })
+  }),
+)
 
 it.live("drives the single-symbol strict path from verified evidence through a reviewable run", () =>
   Effect.gen(function* () {
@@ -63,6 +134,18 @@ it.live("drives the single-symbol strict path from verified evidence through a r
         actualEnd: "2026-07-08",
       },
     } as unknown as VerifiedDatasetRef
+    expect(
+      yield* finishWorkflowRun({
+        sessionId: workflow.sessionId,
+        classification: "completed",
+      }),
+    ).toBeUndefined()
+    const stillActive = yield* BuildWorkflowStore.get(workflow.workflowId)
+    expect(stillActive).toMatchObject({
+      status: "active",
+      phase: "identity_confirmed",
+    })
+    expect(stillActive?.terminal).toBeUndefined()
     const evidenced = yield* recordVerifiedMarketData({ sessionId: workflow.sessionId, dataset })
     expect(evidenced?.stage).toBe("evidence_ready")
 
@@ -90,6 +173,13 @@ it.live("drives the single-symbol strict path from verified evidence through a r
 
     const running = yield* startWorkflowBacktest(candidate.workflow)
     expect(running.stage).toBe("backtest_running")
+    const failed = yield* failActiveWorkflowBacktest({
+      sessionId: workflow.sessionId,
+      reason: "experiment snapshot finalization failed",
+    })
+    expect(failed).toMatchObject({ stage: "candidate_ready", phase: "strict_blocked" })
+    const restarted = yield* startWorkflowBacktest(failed!)
+    expect(restarted).toMatchObject({ stage: "backtest_running", phase: "strict_running" })
     const artifactDir = yield* Effect.promise(() => fs.mkdtemp(path.join(os.tmpdir(), "finny-workflow-run-")))
     const strictIdentity = {
       schema: RunIntegrity.RUN_IDENTITY_SCHEMA,
@@ -129,12 +219,15 @@ it.live("drives the single-symbol strict path from verified evidence through a r
       ),
     )
     const reviewable = yield* completeWorkflowBacktest({
-      workflow: running,
-      experiment: { ...candidate.experiment, workflow: running },
+      workflow: restarted,
+      experiment: { ...candidate.experiment, workflow: restarted },
       results: {
         runId: "run_strict",
         engineVersion: "engine_v2",
         artifactDir,
+        totalReturn: 0.12,
+        alpha: 0.03,
+        v2: { walk_forward: { stitched_oos_return: 0.06 } },
       } as BacktestRunner.Results,
       verdict: "recommended_for_paper",
     })
@@ -157,7 +250,66 @@ it.live("drives the single-symbol strict path from verified evidence through a r
       },
     })
     expect(reviewable.backtest?.identityHash).toMatch(/^[a-f0-9]{64}$/)
+    const terminal = yield* finishWorkflowRun({
+      sessionId: workflow.sessionId,
+      classification: "completed",
+    })
+    expect(terminal).toMatchObject({ semanticSuccess: true, phase: "terminal_complete" })
+    expect(yield* BuildWorkflowStore.get(workflow.workflowId)).toMatchObject({
+      status: "completed",
+      phase: "terminal_complete",
+    })
     yield* Effect.promise(() => fs.rm(artifactDir, { recursive: true, force: true }))
+  }),
+)
+
+it.live("preserves an explicit blocker when a later ordinary turn finishes", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_blocked_turn_${suffix}`,
+      sessionId: `ses_blocked_turn_${suffix}`,
+      workspaceSlug: `spy-blocked-turn-${suffix}`,
+      intent: "build",
+      identity: {
+        symbols: { value: ["SPY"], source: { kind: "user_message", messageId: `msg_${suffix}` } },
+      },
+    })
+    const blocked = yield* BuildWorkflowStore.append({
+      workflowId: workflow.workflowId,
+      expectedRevision: workflow.revision,
+      event: {
+        id: `evt_explicit_blocker_${suffix}`,
+        type: "workflow.blocked",
+        occurredAt: Date.now(),
+        source: { actor: "tool" },
+        blocker: {
+          code: "explicit_tool_blocker",
+          message: "The tool found a real blocker.",
+          fingerprint: `blocked:${suffix}`,
+          requiredChanges: ["change the blocked input"],
+        },
+      },
+    })
+    expect(blocked).toMatchObject({ kind: "applied", decision: { state: { status: "blocked" } } })
+    if (blocked.kind !== "applied") return
+
+    const revision = blocked.decision.state.revision
+    const terminal = yield* finishWorkflowRun({
+      sessionId: workflow.sessionId,
+      classification: "completed",
+    })
+    expect(terminal).toMatchObject({ classification: "blocked", blockerCode: "explicit_tool_blocker" })
+    const preserved = yield* BuildWorkflowStore.get(workflow.workflowId)
+    expect(preserved).toMatchObject({
+      status: "blocked",
+      revision,
+      blocker: { code: "explicit_tool_blocker" },
+      terminal: { classification: "blocked", blockerCode: "explicit_tool_blocker" },
+    })
+    expect(
+      (yield* BuildWorkflowStore.events(workflow.workflowId)).filter((event) => event.type === "workflow.blocked"),
+    ).toHaveLength(1)
   }),
 )
 
@@ -247,7 +399,12 @@ it.live("keeps parser-proposed symbols request-bound until structured identity c
       identity: {
         symbols: {
           value: ["SPY"],
-          source: { kind: "parser_proposal", messageId: `msg_${suffix}`, confidence: 0.5, parser: "request_identity_v2" },
+          source: {
+            kind: "parser_proposal",
+            messageId: `msg_${suffix}`,
+            confidence: 0.5,
+            parser: "request_identity_v2",
+          },
         },
       },
     })

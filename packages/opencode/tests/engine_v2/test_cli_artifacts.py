@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from engine_v2.cli import _filter_requested_window
+from engine_v2.cli import _filter_requested_window, _load_csv
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +28,22 @@ def test_timestamp_window_is_exact_while_date_window_includes_the_day():
     whole_day = _filter_requested_window(df, "2026-01-05", "2026-01-05")
     assert list(exact["timestamp"].dt.strftime("%H:%M")) == ["14:35", "14:40"]
     assert list(whole_day["timestamp"].dt.strftime("%H:%M")) == ["14:30", "14:35", "14:40"]
+
+
+def test_load_csv_infers_binance_epoch_milliseconds_before_date_filter(tmp_path):
+    data = tmp_path / "btc-ms.csv"
+    data.write_text(
+        "\n".join([
+            "timestamp,open,high,low,close,volume",
+            "1752537600000,100,101,99,100,10",
+            "1784073600000,80,81,79,80,12",
+        ])
+    )
+
+    loaded = _load_csv(data)
+    filtered = _filter_requested_window(loaded, "2025-07-15", "2026-07-15")
+
+    assert list(filtered["timestamp"].dt.strftime("%Y-%m-%d")) == ["2025-07-15", "2026-07-15"]
 
 
 def _row_count(path: Path) -> int:

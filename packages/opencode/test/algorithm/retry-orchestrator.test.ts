@@ -38,7 +38,7 @@ describe("RetryOrchestrator warning handling", () => {
     expect(outcome.kind).toBe("passed")
   })
 
-  test("exhausted message is terminal", () => {
+  test("exhausted message redirects the agent to a materially different design", () => {
     const output = RetryOrchestrator.buildExhaustedMessage({
       kind: "exhausted",
       attempts: RetryOrchestrator.MAX_ATTEMPTS,
@@ -49,7 +49,9 @@ describe("RetryOrchestrator warning handling", () => {
     expect(output).toContain("Failed to save strategy: DIVISION_NO_ZERO_CHECK")
     expect(output).toContain("Fix:")
     expect(output).toContain("Add a denominator guard")
-    expect(output).toContain("Automatic fixing stopped after 3 attempts")
+    expect(output).toContain("exact strategy design exhausted 3 automatic save attempts")
+    expect(output).toContain("automatically create and save a materially different, simpler strategy")
+    expect(output).toContain("Report blocked only when no viable alternative design remains")
     expect(output).not.toContain("Last validator report")
   })
 

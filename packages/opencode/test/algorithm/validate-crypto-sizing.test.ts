@@ -124,6 +124,20 @@ describe("crypto whole-unit sizing diagnostics", () => {
     expect(result.warnings.some((w) => w.code === "CRYPTO_WHOLE_UNIT_QTY")).toBe(false)
   })
 
+  test("does not mistake max_position_pct configuration for broker exposure", async () => {
+    const strategy = `
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        self.max_position_pct = 0.95
+
+    def on_bar(self, symbol, bar):
+        return
+`
+    const result = await Validate.run(strategy, { config: { symbol: "BTC/USD" } })
+    expect(result.errors.some((e) => e.code === "LEVERAGE_VIOLATION")).toBe(false)
+  })
+
   test("does not flag int(...) floor for an equity symbol", async () => {
     const result = await Validate.run(INT_FLOOR_STRATEGY, {
       config: { symbol: "SPY" },

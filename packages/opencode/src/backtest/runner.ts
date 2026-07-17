@@ -34,6 +34,26 @@ export namespace BacktestRunner {
     | { kind: "verified_artifact"; dataset: VerifiedDatasetRef }
     | { kind: "provider_fetch" }
 
+  export function qualificationDataSourceIssue(input: {
+    engineMode: "strict_v2" | "legacy_unsafe"
+    sessionID?: string
+    dataSource: BacktestDataSource
+    qualification?: QualificationInputV1
+  }): string | undefined {
+    if (
+      input.engineMode === "strict_v2" &&
+      input.sessionID &&
+      input.qualification &&
+      input.dataSource.kind !== "verified_artifact"
+    ) {
+      return (
+        "Qualification requires the exact verified data_extractor artifact. " +
+        "Provider-fetched data is research-only and cannot create a promotable run."
+      )
+    }
+    return undefined
+  }
+
   export interface Params {
     algorithm: Algorithm.Info
     duration: string // "1w" | "1m" | "3m" | "6m" | "1y"
@@ -73,11 +93,7 @@ export namespace BacktestRunner {
     /** Mandatory verdict inputs. Omit only for legacy/research-only runs. */
     qualification?: QualificationInputV1
     sessionID?: string
-    /**
-     * Product/session strict runs must use the exact verified data_extractor
-     * artifact. Provider fetch remains available only to non-session internal
-     * callers and explicitly enabled legacy migration paths.
-     */
+    /** Verified artifacts can qualify; provider fetches are research-only. */
     dataSource?: BacktestDataSource
   }
 
@@ -568,6 +584,24 @@ with open("_data_provider.txt", "w") as f:
     return undefined
   }
 
+  /**
+   * Research-usable verified evidence may be staged even when it is not
+   * promotable. Only hard-blocked or non-V2 evidence is refused here.
+   * `strict_qualified` remains required for product publication/promotion.
+   */
+  function verifiedDatasetStagingIssue(dataset: VerifiedDatasetRef): string | undefined {
+    if (dataset.identity.evidenceVersion !== 2 || !dataset.identity.evidenceId) {
+      return "verified runs require DatasetEvidenceV2; legacy evidence is research_only_legacy"
+    }
+    if (dataset.identity.qualification === "blocked") {
+      return "dataset evidence is blocked and cannot be used for backtests"
+    }
+    if (dataset.identity.qualification !== "strict_qualified" && dataset.identity.qualification !== "research_only") {
+      return `dataset evidence is ${dataset.identity.qualification}, not usable for backtests`
+    }
+    return undefined
+  }
+
   async function prepareBacktestData(input: {
     dataSource: BacktestDataSource
     tmpDir: string
@@ -582,8 +616,8 @@ with open("_data_provider.txt", "w") as f:
     if (!isVerifiedDatasetRef(dataset)) {
       throw new Error("verified data reference was not issued by the data_extractor evidence gate")
     }
-    const strictIssue = strictDatasetEvidenceIssue(dataset)
-    if (strictIssue) throw new Error(strictIssue)
+    const stagingIssue = verifiedDatasetStagingIssue(dataset)
+    if (stagingIssue) throw new Error(stagingIssue)
     const manifestSize = await rehashAndCopyExact({
       source: dataset.manifestPath,
       destination: path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
@@ -683,8 +717,8 @@ with open("_data_provider.txt", "w") as f:
     assetClass: string
   }): string | undefined {
     const identity = input.dataset.identity
-    const strictIssue = strictDatasetEvidenceIssue(input.dataset)
-    if (strictIssue) return strictIssue
+    const stagingIssue = verifiedDatasetStagingIssue(input.dataset)
+    if (stagingIssue) return stagingIssue
     const expectedSymbol = normalizeRequestSymbol(input.symbol)
     const actualSymbol = normalizeRequestSymbol(identity.actualSymbol)
     if (actualSymbol !== expectedSymbol) {
@@ -2507,7 +2541,7 @@ if __name__ == "__main__":
       configOverrides,
       seed,
       engineMode = "strict_v2",
-      dataQualityMode = "strict",
+      dataQualityMode: requestedDataQualityMode = "strict",
       source = "run",
       robustness = {},
       experiment,
@@ -2515,6 +2549,16 @@ if __name__ == "__main__":
       sessionID,
       dataSource = { kind: "provider_fetch" },
     } = params
+    // Research-only verified evidence is intentionally usable for research but
+    // not promotable. Isolated outliers are the most common reason for that
+    // demotion — repair them for the research path instead of refusing the
+    // confirmed window and forcing the agent to thrash duration/interval.
+    const dataQualityMode =
+      dataSource.kind === "verified_artifact" &&
+      dataSource.dataset.identity.qualification === "research_only" &&
+      requestedDataQualityMode === "strict"
+        ? ("repair_outliers" as const)
+        : requestedDataQualityMode
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
     if (!sweepDone) {
       sweepDone = true
@@ -2539,15 +2583,8 @@ if __name__ == "__main__":
         kind: "unsafe_custom_runner",
       }
     }
-    if (engineMode === "strict_v2" && sessionID && dataSource.kind !== "verified_artifact") {
-      return {
-        ok: false,
-        error:
-          "Session-backed strict backtests require the exact verified data_extractor artifact. " +
-          "Pass dataSource.kind=verified_artifact from the session evidence gate; provider_fetch is internal-only.",
-        kind: "data_evidence",
-      }
-    }
+    const dataSourceIssue = qualificationDataSourceIssue({ engineMode, sessionID, dataSource, qualification })
+    if (dataSourceIssue) return { ok: false, error: dataSourceIssue, kind: "data_evidence" }
 
     // Fallbacks: synthesize default backtest.py and config.json if the algo is missing them.
     const backtestCode =
@@ -2949,26 +2986,11 @@ if __name__ == "__main__":
           assumptions,
           calendar: assetSpec.calendar,
         })
-        await persistBacktestEvidenceOrReport({
-          tmpDir,
-          runId,
-          algorithm,
-          config,
-          results,
-          duration,
-          interval,
-          capital,
-          startDate: start,
-          endDate: end,
-          source,
-          benchmark,
-          calendar: assetSpec.calendar,
-        })
-        if (
-          dataSource.kind === "verified_artifact" &&
-          hasProductRiskContract(config) &&
-          dataQualityMode === "strict"
-        ) {
+        const verifiedQualification =
+          dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.qualification : undefined
+        const promotableVerified =
+          dataSource.kind === "verified_artifact" && verifiedQualification === "strict_qualified"
+        if (promotableVerified && hasProductRiskContract(config) && dataQualityMode === "strict") {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -2986,21 +3008,42 @@ if __name__ == "__main__":
             qualification,
           })
         } else {
-          // Internal provider fetches remain useful for research, but they do
-          // not produce an immutable product run and can never be promoted.
-          // The same fail-closed rule applies to legacy v3 algorithms that do
-          // not own a schema-v4 executable risk contract.
+          // Provider fetches and research_only verified artifacts remain useful
+          // for research, but they do not produce an immutable product run and
+          // can never be promoted. Legacy v3 algorithms without a schema-v4
+          // risk contract are also fail-closed for promotion.
           results.runKind = "legacy"
           results.eligibilityStatus = "backtested"
           results.v2.run_metadata = {
             ...(results.v2.run_metadata ?? {}),
             product_eligibility_blockers: [
               ...(dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
+              ...(dataSource.kind === "verified_artifact" && verifiedQualification !== "strict_qualified"
+                ? [`verified_dataset_${verifiedQualification ?? "unqualified"}`]
+                : []),
               ...(!hasProductRiskContract(config) ? ["schema_v4_risk_contract_required"] : []),
               ...(dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
             ],
           }
         }
+        // Strict publication assigns results.artifactDir. Persist the history
+        // manifest only afterwards so sourceArtifacts points at immutable
+        // metrics/run/durability evidence instead of being stored as null.
+        await persistBacktestEvidenceOrReport({
+          tmpDir,
+          runId,
+          algorithm,
+          config,
+          results,
+          duration,
+          interval,
+          capital,
+          startDate: start,
+          endDate: end,
+          source,
+          benchmark,
+          calendar: assetSpec.calendar,
+        })
 
         emit({
           eventType: "backtest.completed",

@@ -199,6 +199,7 @@ function selectedCommand(text: string, command: RunPrompt["command"]) {
 }
 
 export function RunPromptBody(props: {
+  visible: () => boolean
   theme: () => RunFooterTheme
   background: () => ColorInput
   placeholder: () => StyledText | string
@@ -254,6 +255,7 @@ export function RunPromptBody(props: {
       <box id="run-direct-footer-input-shell" paddingTop={1} paddingBottom={1} paddingRight={2}>
         <textarea
           id="run-direct-footer-composer"
+          visible={props.visible()}
           width="100%"
           minHeight={TEXTAREA_MIN_ROWS}
           maxHeight={TEXTAREA_MAX_ROWS}

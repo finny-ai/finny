@@ -232,7 +232,7 @@ function startBacktest(state: BuildWorkflowState) {
   if (!BACKTEST_START_STAGES.includes(state.stage)) {
     return rejected(state, "backtest_not_allowed", `A backtest cannot start from workflow stage ${state.stage}.`)
   }
-  if (state.phase !== "experiment_planned" || !state.experimentPlan) {
+  if ((state.phase !== "experiment_planned" && state.phase !== "strict_blocked") || !state.experimentPlan) {
     return rejected(state, "experiment_plan_required", "A bound durable experiment plan is required before strict execution.")
   }
   return { ...state, stage: "backtest_running" as const, phase: "strict_running" as const, backtest: undefined }
@@ -414,6 +414,20 @@ function blockWorkflow(state: BuildWorkflowState, event: Extract<WorkflowEvent, 
   }
   return {
     ...state,
+    attempts:
+      event.blocker.code === "workflow_interrupted"
+        ? state.attempts.map((attempt) =>
+            attempt.lifecycle === "in_progress"
+              ? {
+                  ...attempt,
+                  lifecycle: "terminal" as const,
+                  outcome: "failed" as const,
+                  blockerCode: "workflow_interrupted",
+                  requiredChanges: ["resume or rerun the interrupted operation"],
+                }
+              : attempt,
+          )
+        : state.attempts,
     status: "blocked" as const,
     blocker: { ...event.blocker, eventId: event.id },
     phase: state.phase === "strict_running" ? ("strict_blocked" as const) : state.phase,

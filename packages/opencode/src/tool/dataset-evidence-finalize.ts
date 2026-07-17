@@ -99,6 +99,8 @@ function digest(input: {
     `coverage: ${manifest.coverage}; ${manifest.coverage_note}`,
     `quality: rows=${manifest.rows}, duplicates=${manifest.quality.duplicate_count}, gaps=${manifest.timestamps.missing_count}, invalid_ohlc=${manifest.quality.ohlc_violation_count}, zero_volume=${manifest.quality.zero_volume_count}, outliers=${manifest.quality.outlier_count}, partial_provider_coverage=${manifest.coverage === "full" ? "no" : "yes"}`,
     `usable_for_parent: ${manifest.usable_for_parent}`,
+    `usable_for_research: ${manifest.usable_for_research}`,
+    `strict_backtest_eligible: ${manifest.strict_backtest_eligible}`,
     `analysis_summary_path: ${manifest.analysis_summary_path ?? "not_returned"}`,
     `analysis_regime: ${manifest.analysis_regime ?? "not_returned"}`,
     `analysis_hypotheses: ${manifest.analysis_hypotheses?.join(" | ") ?? "not_returned"}`,

@@ -58,6 +58,8 @@ describe("DatasetEvidenceV2 builder", () => {
     })
     expect(built.manifest.coverage).toBe("partial_current_open_candle")
     expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(built.manifest.usable_for_research).toBe("yes")
+    expect(built.manifest.strict_backtest_eligible).toBe("no")
     expect(
       validateDatasetEvidenceV2({
         manifest: built.manifest,
@@ -97,6 +99,43 @@ describe("DatasetEvidenceV2 builder", () => {
         csvFacts: built.csvFacts,
       }),
     ).toEqual([])
+  })
+
+  test("keeps an entitlement-delayed current equity session research-usable", () => {
+    const equityRequest = {
+      ...request,
+      request_id: "request-spy-intraday",
+      requested_algorithm_name: "spy-intraday",
+      requested_symbol: "SPY",
+      requested_asset_class: "equity" as const,
+      requested_interval: "5m",
+      requested_start: "2026-07-16",
+      requested_end: "2026-07-16",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-16T13:30:00Z,100,101,99,100.5,1000",
+      "2026-07-16T13:35:00Z,100.5,101,100,100.75,1100",
+      "2026-07-16T13:40:00Z,100.75,101,100.5,100.8,900",
+    ].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: equityRequest,
+      workspaceSlug: "spy-intraday.1.1.00.00",
+      outputPath: "stock/SPY_5m_2026-07-16_2026-07-16.csv",
+      provider: { id: "alpaca", feed: "sip", venue: "CONSOLIDATED", providerSymbol: "SPY" },
+      priceBasis,
+      now: new Date("2026-07-16T10:01:00-04:00"),
+    })
+
+    expect(built.manifest.timestamps.missing_count).toBe(75)
+    expect(built.manifest.qualification).toEqual({
+      status: "research_only",
+      reason_codes: ["INCOMPLETE_FINAL_BAR"],
+    })
+    expect(built.manifest.coverage).toBe("partial_current_open_candle")
+    expect(built.manifest.usable_for_parent).toBe("yes")
   })
 
   test("rejects malformed rows instead of blessing a broken manifest", () => {

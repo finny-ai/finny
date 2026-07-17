@@ -6,6 +6,7 @@ import { normalizeSymbol } from "@/agent/request-identity"
 import type { Algorithm } from "@/algorithm"
 import type { BacktestRunner } from "@/backtest/runner"
 import * as RunIntegrity from "@/backtest/run-integrity"
+import { enforceRobustWorkflowVerdict } from "@/backtest/verdict"
 import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
 import { experimentRunContext, sha256Text, type ExperimentRunContext } from "./experiment"
 import { backtestIdentityHash } from "./state"
@@ -70,6 +71,32 @@ export const transitionWorkflowIdentity = Effect.fn("BuildWorkflowLifecycle.tran
   if (result.kind === "rejected" && result.decision.code === "identity_unchanged") return workflow
   const code = result.kind === "rejected" ? result.decision.code : result.kind
   return yield* Effect.fail(new Error(`workflow identity transition failed: ${code}`))
+})
+
+export const resumeWorkflowRun = Effect.fn("BuildWorkflowLifecycle.resume")(function* (input: {
+  sessionId: string
+  changedFingerprint: string
+}) {
+  const workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return yield* Effect.fail(new Error("No resumable Build workflow was found."))
+  if (workflow.status !== "blocked" || workflow.blocker?.code !== "workflow_interrupted") {
+    return yield* Effect.fail(new Error("Only a workflow blocked by interruption can resume with a token."))
+  }
+  const tokenBoundFingerprint = sha256Text(`${workflow.resumeToken}:${input.changedFingerprint}`)
+  const result = yield* BuildWorkflowStore.append({
+    workflowId: workflow.workflowId,
+    expectedRevision: workflow.revision,
+    event: {
+      id: eventID("evt_workflow_resumed"),
+      type: "workflow.resumed",
+      occurredAt: Date.now(),
+      source: { actor: "tool" },
+      changedFingerprint: tokenBoundFingerprint,
+    },
+  })
+  if (result.kind === "applied") return result.decision.state
+  const code = result.kind === "rejected" ? result.decision.code : result.kind
+  return yield* Effect.fail(new Error(`workflow resume failed: ${code}`))
 })
 
 export const recordWorkflowAttempt = Effect.fn("BuildWorkflowLifecycle.recordAttempt")(function* (input: {
@@ -174,6 +201,15 @@ export const finishWorkflowRun = Effect.fn("BuildWorkflowLifecycle.finishRun")(f
 }) {
   let workflow = yield* activeWorkflowForSession(input.sessionId)
   if (!workflow) return undefined
+  // A normal assistant turn is only one checkpoint in a long-running Build
+  // workflow. Background evidence delivery and subsequent synthetic turns can
+  // continue after that turn ends, so an ordinary finish before qualification
+  // must leave the durable WorkflowRun active. Real blockers/failures are
+  // recorded explicitly by their tools and the non-completed classifications
+  // below; qualified completion remains terminal.
+  if (input.classification === "completed" && workflow.phase !== "qualified") {
+    return workflow.status === "active" ? undefined : workflow.terminal
+  }
   const occurredAt = Date.now()
   const terminalEvent: WorkflowEvent =
     input.classification === "completed"
@@ -278,6 +314,49 @@ export const recordVerifiedMarketData = Effect.fn("BuildWorkflowLifecycle.record
   return workflow
 })
 
+/** Bind a provenance-validated news result to every matching news requirement. */
+export const recordVerifiedNewsEvidence = Effect.fn("BuildWorkflowLifecycle.recordVerifiedNewsEvidence")(function* (input: {
+  sessionId: string
+  sourceSessionId: string
+  artifactText: string
+  issues?: string[]
+}) {
+  let workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return undefined
+  const artifactId = sha256Text(input.artifactText)
+  for (const requirement of workflow.evidenceRequirements.filter((item) => item.kind === "news")) {
+    const already = workflow.evidence.some(
+      (item) =>
+        item.requirementId === requirement.id &&
+        item.status === "verified" &&
+        item.artifactId === artifactId &&
+        item.sourceSessionId === input.sourceSessionId,
+    )
+    if (already) continue
+    workflow = yield* appendRequired(
+      workflow.workflowId,
+      {
+        id: eventID("evt_evidence"),
+        type: "evidence.recorded",
+        occurredAt: Date.now(),
+        source: { actor: "subagent" },
+        evidence: {
+          id: `${requirement.id}:${artifactId}`,
+          requirementId: requirement.id,
+          kind: "news",
+          status: "verified",
+          artifactId,
+          sourceSessionId: input.sourceSessionId,
+          verifiedAt: Date.now(),
+          issues: input.issues ?? [],
+        },
+      },
+      workflow.revision,
+    )
+  }
+  return workflow
+})
+
 export function pendingEvidenceRequirements(state: BuildWorkflowState): string[] {
   return state.evidenceRequirements
     .filter(
@@ -305,7 +384,10 @@ export const freezeWorkflowResearch = Effect.fn("BuildWorkflowLifecycle.freezeRe
       freeze: {
         id: `freeze_${sha256Text(`${workflow.workflowId}:${workflow.requestVersion}:${workflow.revision}`).slice(0, 24)}`,
         requestVersion: workflow.requestVersion,
-        evidenceIds: workflow.evidence.filter((item) => item.status === "verified").map((item) => item.id).sort(),
+        evidenceIds: workflow.evidence
+          .filter((item) => item.status === "verified")
+          .map((item) => item.id)
+          .sort(),
         createdAt: Date.now(),
       },
     },
@@ -317,7 +399,8 @@ export const bindWorkflowExperimentPlan = Effect.fn("BuildWorkflowLifecycle.bind
   workflow: BuildWorkflowState,
 ) {
   if (workflow.experimentPlan && workflow.phase !== "candidate_validated") return workflow
-  if (!workflow.candidate) return yield* Effect.fail(new Error("workflow candidate is required for experiment planning"))
+  if (!workflow.candidate)
+    return yield* Effect.fail(new Error("workflow candidate is required for experiment planning"))
   const fingerprint = sha256Text(
     JSON.stringify({
       workflowId: workflow.workflowId,
@@ -451,6 +534,20 @@ export const failWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.failBackte
     source: { actor: "tool" },
     reason: input.reason,
   })
+})
+
+/**
+ * Best-effort terminalization for exceptions thrown after backtest.started.
+ * This keeps a transport, experiment-ledger, or snapshot failure from leaving
+ * the session permanently stranded in strict_running.
+ */
+export const failActiveWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.failActiveBacktest")(function* (input: {
+  sessionId: string
+  reason: string
+}) {
+  const workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow || workflow.stage !== "backtest_running") return workflow
+  return yield* failWorkflowBacktest({ workflowId: workflow.workflowId, reason: input.reason })
 })
 
 interface StrictRunHashProjection {
@@ -589,6 +686,12 @@ export const completeWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.comple
 }) {
   const hashes = yield* Effect.tryPromise(() => strictRunHashes(input.results, input.experiment))
   if (!hashes.runId) return yield* Effect.fail(new Error("strict backtest completed without a runId"))
+  const controllerVerdict = enforceRobustWorkflowVerdict({
+    verdict: input.verdict,
+    totalReturn: input.results.totalReturn,
+    stitchedOosReturn: input.results.v2?.walk_forward?.stitched_oos_return,
+    alpha: input.results.alpha,
+  })
   return yield* appendRequired(input.workflow.workflowId, {
     id: eventID("evt_backtest_completed"),
     type: "backtest.completed",
@@ -602,7 +705,7 @@ export const completeWorkflowBacktest = Effect.fn("BuildWorkflowLifecycle.comple
       engineHash: hashes.engineHash,
       hashes: hashes.hashes,
       identityHash: hashes.identityHash,
-      verdict: input.verdict,
+      verdict: controllerVerdict,
     },
   })
 })

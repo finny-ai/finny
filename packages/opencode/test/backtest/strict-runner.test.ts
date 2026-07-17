@@ -7,6 +7,7 @@ import { BacktestRunner } from "../../src/backtest/runner"
 import type { Algorithm } from "../../src/algorithm"
 import { validateExistingDataExtractorEvidence, type VerifiedDatasetRef } from "../../src/data/data-extractor-evidence"
 import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
+import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
 
 function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
   return {
@@ -250,19 +251,22 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     }
   })
 
-  test("requires a verified artifact for session-backed strict runs", async () => {
-    const r = await BacktestRunner.run({
-      algorithm: algo(),
-      duration: "1m",
-      interval: "1d",
-      capital: "10000",
-      sessionID: "ses_product_backtest",
-    })
-    expect(r.ok).toBe(false)
-    if (!r.ok) {
-      expect(r.kind).toBe("data_evidence")
-      expect(r.error).toContain("require the exact verified data_extractor artifact")
-    }
+  test("allows provider fetch for research but requires verified evidence for qualification", () => {
+    expect(
+      BacktestRunner.qualificationDataSourceIssue({
+        engineMode: "strict_v2",
+        sessionID: "ses_product_backtest",
+        dataSource: { kind: "provider_fetch" },
+      }),
+    ).toBeUndefined()
+    expect(
+      BacktestRunner.qualificationDataSourceIssue({
+        engineMode: "strict_v2",
+        sessionID: "ses_product_backtest",
+        dataSource: { kind: "provider_fetch" },
+        qualification: qualificationInputForResearch(),
+      }),
+    ).toContain("research-only")
   })
 
   test("rejects structurally forged verified dataset references", async () => {
@@ -360,7 +364,36 @@ describe("BacktestRunner strict_v2 guardrails", () => {
           dataSource: { kind: "verified_artifact", dataset },
           tmpDir: runDir,
         }),
-      ).rejects.toThrow("strict runs require DatasetEvidenceV2")
+      ).rejects.toThrow("verified runs require DatasetEvidenceV2")
+    } finally {
+      await Promise.all([
+        fs.rm(sourceDir, { recursive: true, force: true }),
+        fs.rm(runDir, { recursive: true, force: true }),
+      ])
+    }
+  })
+
+  test("stages research_only verified evidence for non-promotable research runs", async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-research-only-source-"))
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-research-only-run-"))
+    try {
+      const dataset = await verifiedDataset(sourceDir)
+      // Simulate the BTC 1h case: full coverage with a couple statistical outliers.
+      const researchOnly: typeof dataset = {
+        ...dataset,
+        identity: {
+          ...dataset.identity,
+          qualification: "research_only",
+        },
+      }
+      const prepared = await BacktestRunner._internalForTests.prepareBacktestData({
+        dataSource: { kind: "verified_artifact", dataset: researchOnly },
+        tmpDir: runDir,
+      })
+      expect(prepared.provenance.mode).toBe("verified_artifact")
+      if (prepared.provenance.mode !== "verified_artifact") throw new Error("expected verified provenance")
+      expect(prepared.provenance.identity.qualification).toBe("research_only")
+      expect(await fs.readFile(path.join(runDir, "ohlcv.csv"))).toEqual(await fs.readFile(researchOnly.csvPath))
     } finally {
       await Promise.all([
         fs.rm(sourceDir, { recursive: true, force: true }),

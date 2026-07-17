@@ -61,6 +61,13 @@ describe("parseNewsClaimsBlock", () => {
     expect(parsed.block?.claims).toHaveLength(3)
   })
 
+  test("accepts a finny.news.claims.v1 language-tagged fence", () => {
+    const text = "```finny.news.claims.v1\n" + JSON.stringify(okClaims(), null, 2) + "\n```"
+    const parsed = parseNewsClaimsBlock(text)
+    expect(parsed.block).not.toBeNull()
+    expect(parsed.block?.claims).toHaveLength(3)
+  })
+
   test("returns parse error for missing block", () => {
     const parsed = parseNewsClaimsBlock("## Brief\n\nno claims here")
     expect(parsed.block).toBeNull()

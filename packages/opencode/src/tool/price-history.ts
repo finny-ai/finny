@@ -7,6 +7,8 @@ import { Tool } from "./tool"
 import { Process } from "@/util/process"
 import { resolveSessionPythonEnv } from "@/python/session-env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
+import { Database } from "@opencode-ai/core/database/database"
+import { StrategyContext } from "@/task/strategy-context"
 
 export const PRICE_HISTORY_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
 type Interval = (typeof PRICE_HISTORY_INTERVALS)[number]
@@ -87,7 +89,9 @@ print(json.dumps({"rows": rows, "count": len(rows)}))
 
 export const PriceHistoryTool = Tool.define(
   "finny_get_history",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Effect.serviceOption(Database.Service)
+    return {
     description:
       "Fetch historical OHLCV bars for a supported symbol (capped at 500 bars). " +
       "Use this when sizing thresholds against actual volatility, sanity-checking a strategy's " +
@@ -96,6 +100,16 @@ export const PriceHistoryTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
+        const contextBlock =
+          database._tag === "Some"
+            ? await StrategyContext.duplicateFetchBlock(
+                "Historical market-data fetch",
+                ctx.sessionID,
+                database.value,
+                ctx.messages,
+              )
+            : undefined
+        if (contextBlock) return contextBlock
         await ctx.ask({
           permission: "finny_get_history",
           patterns: ["*"],
@@ -190,5 +204,6 @@ export const PriceHistoryTool = Tool.define(
           await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
         }
       }),
+    }
   }),
 )

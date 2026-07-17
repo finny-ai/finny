@@ -30,6 +30,8 @@ import { render } from "@opentui/solid"
 import { createComponent, createSignal, type Accessor, type Setter } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { OpencodeKeymapProvider } from "@opencode-ai/tui/keymap"
+import { Permission } from "@/permission"
+import { entryBody } from "./entry.body"
 import { RUN_COMMAND_PANEL_ROWS, RUN_SUBAGENT_PANEL_ROWS } from "./footer.command"
 import { SUBAGENT_INSPECTOR_ROWS } from "./footer.subagent"
 import { PROMPT_MAX_ROWS, TEXTAREA_MIN_ROWS } from "./footer.prompt"
@@ -45,6 +47,7 @@ import type {
   FooterQueuedPrompt,
   FooterState,
   FooterSubagentState,
+  ToolTodoSnapshot,
   FooterView,
   PermissionReply,
   QuestionReject,
@@ -65,6 +68,27 @@ type CycleResult = {
   status?: string
   variant?: string | undefined
   variants?: string[]
+}
+
+export function showInParentTranscript(commit: StreamCommit): boolean {
+  if (commit.kind !== "tool") {
+    return true
+  }
+
+  const tool = commit.tool ?? commit.part?.tool
+  return !tool || (tool !== "todowrite" && !Permission.isTaskTool(tool))
+}
+
+export function todoSnapshot(commit: StreamCommit): ToolTodoSnapshot | undefined {
+  if (commit.kind !== "tool" || (commit.tool ?? commit.part?.tool) !== "todowrite") {
+    return undefined
+  }
+
+  const body = entryBody(commit)
+  if (body.type !== "structured" || body.snapshot.kind !== "todo") {
+    return undefined
+  }
+  return body.snapshot
 }
 
 type RunFooterOptions = {
@@ -200,10 +224,13 @@ export class RunFooter implements FooterApi {
   private setView: Setter<FooterView>
   private subagent: Accessor<FooterSubagentState>
   private setSubagent: (next: FooterSubagentState) => void
+  private todo: Accessor<ToolTodoSnapshot>
+  private setTodo: Setter<ToolTodoSnapshot>
   private queuedPrompts: Accessor<FooterQueuedPrompt[]>
   private setQueuedPrompts: Setter<FooterQueuedPrompt[]>
   private promptRoute: FooterPromptRoute = { type: "composer" }
   private subagentMenuRows = SUBAGENT_ROWS
+  private todoRows = 0
   private autocomplete = false
   private interruptTimeout: NodeJS.Timeout | undefined
   private exitTimeout: NodeJS.Timeout | undefined
@@ -285,6 +312,9 @@ export class RunFooter implements FooterApi {
       setSubagent("permissions", reconcile(next.permissions, { key: "id" }))
       setSubagent("questions", reconcile(next.questions, { key: "id" }))
     }
+    const [todo, setTodo] = createSignal<ToolTodoSnapshot>({ kind: "todo", items: [], tail: "" })
+    this.todo = todo
+    this.setTodo = setTodo
     const [queuedPrompts, setQueuedPrompts] = createSignal<FooterQueuedPrompt[]>([])
     this.queuedPrompts = queuedPrompts
     this.setQueuedPrompts = setQueuedPrompts
@@ -308,6 +338,7 @@ export class RunFooter implements FooterApi {
               state: footer.state,
               view: footer.view,
               subagent: footer.subagent,
+              todo: footer.todo,
               queuedPrompts: footer.queuedPrompts,
               findFiles: options.findFiles,
               agents: footer.agents,
@@ -537,6 +568,13 @@ export class RunFooter implements FooterApi {
       return
     }
 
+    const todo = todoSnapshot(commit)
+    if (todo) {
+      this.setTodo(todo)
+      this.applyHeight()
+    }
+    if (!showInParentTranscript(commit)) return
+
     const last = this.queue.at(-1)
     if (
       last &&
@@ -599,6 +637,7 @@ export class RunFooter implements FooterApi {
 
     this.scrollback.destroy()
     this.scrollback = this.createScrollback(wrote)
+    this.setTodo({ kind: "todo", items: [], tail: "" })
   }
 
   public currentTheme(): RunTheme {
@@ -714,7 +753,7 @@ export class RunFooter implements FooterApi {
                       ? 1 + this.subagentMenuRows
                       : this.promptRoute.type === "subagent"
                         ? this.base + SUBAGENT_INSPECTOR_ROWS
-                        : this.base + Math.max(TEXTAREA_MIN_ROWS, Math.min(PROMPT_MAX_ROWS, this.rows))
+                        : this.base + Math.max(TEXTAREA_MIN_ROWS, Math.min(PROMPT_MAX_ROWS, this.rows)) + this.todoRows
 
     if (height !== this.renderer.footerHeight) {
       this.renderer.footerHeight = height
@@ -737,10 +776,16 @@ export class RunFooter implements FooterApi {
     }
   }
 
-  private syncLayout = (next: { route: FooterPromptRoute; autocomplete: boolean; subagentRows: number }): void => {
+  private syncLayout = (next: {
+    route: FooterPromptRoute
+    autocomplete: boolean
+    subagentRows: number
+    todoRows: number
+  }): void => {
     this.promptRoute = next.route
     this.autocomplete = next.autocomplete
     this.subagentMenuRows = next.subagentRows
+    this.todoRows = next.todoRows
     if (this.view().type === "prompt") {
       this.applyHeight()
     }

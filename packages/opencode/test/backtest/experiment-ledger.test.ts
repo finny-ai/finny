@@ -276,4 +276,30 @@ describe("durable ExperimentSpec and trial ledger", () => {
       }),
     ).rejects.toThrow("first observed experiment data snapshot")
   })
+
+  test("runtime owns the data snapshot when scientific input contains prose", async () => {
+    const request = {
+      algorithm: algorithm("runtime-owned-snapshot"),
+      interval: "1d",
+      startDate: "2025-07-15",
+      endDate: "2026-07-15",
+      sessionId: "session-runtime-snapshot",
+      experiment: {
+        experimentId: "runtime-owned-snapshot-exp",
+        hypothesis: "Stable BTC source data",
+        dataSnapshot: "Exact BTC daily window 2025-07-15 to 2026-07-15",
+      },
+    }
+    const trial = await beginTrial(request)
+    expect(trial.spec.dataSnapshot).toBe("engine-data-hash-bound-at-completion")
+    await expect(
+      completeTrial({
+        reference: trial.reference,
+        sessionId: request.sessionId,
+        algorithm: request.algorithm,
+        outcome: "passed",
+        actualDataHash: "actual-engine-data-hash",
+      }),
+    ).resolves.toBeUndefined()
+  })
 })

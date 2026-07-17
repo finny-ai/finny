@@ -174,7 +174,7 @@ export namespace RetryOrchestrator {
   export function buildExhaustedMessage(signal: ExhaustedSignal): string {
     return [
       formatSaveFailure(signal.diagnostics),
-      `Automatic fixing stopped after ${signal.attempts} attempts. Do not retry this save again in the current request.`,
+      `This exact strategy design exhausted ${signal.attempts} automatic save attempts. Do not retry the same design again. Re-read the strategy contract, then automatically create and save a materially different, simpler strategy that preserves the confirmed request constraints. Report blocked only when no viable alternative design remains.`,
     ].join("\n")
   }
 }

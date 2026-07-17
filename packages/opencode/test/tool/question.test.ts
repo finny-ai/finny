@@ -47,6 +47,52 @@ const pending = Effect.fn("QuestionToolTest.pending")(function* (question: Quest
 })
 
 describe("tool.question", () => {
+  it.instance("replaces an incomplete vague-build clarification with one canonical complete ask", () =>
+    Effect.gen(function* () {
+      const question = yield* Question.Service
+      const toolInfo = yield* QuestionTool
+      const tool = yield* toolInfo.init()
+      const fiber = yield* tool.execute(
+        {
+          questions: [
+            {
+              question: "Which symbol and asset class?",
+              header: "Market",
+              options: [{ label: "BTC.USD", description: "Crypto" }],
+            },
+          ],
+        },
+        {
+          ...ctx,
+          agent: "finny",
+          messages: [
+            {
+              info: { id: ctx.messageID, sessionID: ctx.sessionID, role: "user" },
+              parts: [{ type: "text", text: "Build me a strategy that can beat buy and hold; you choose the idea" }],
+            },
+          ] as any,
+        },
+      ).pipe(Effect.forkScoped)
+      const item = yield* pending(question)
+      expect(item.questions).toHaveLength(4)
+      expect(item.questions.map((entry) => entry.header)).toEqual(["Market", "Window", "Risk", "Success"])
+      yield* question.reply({
+        requestID: item.id,
+        answers: [
+          ["BTC.USD crypto 1d"],
+          ["1y, $10k, verified"],
+          ["Long/flat, DD 15%"],
+          ["Strict positive gates"],
+        ],
+      })
+      const result = yield* Fiber.join(fiber)
+      expect(result.title).toBe("Asked 4 questions")
+      expect(result.output).toContain("User has answered your questions")
+      expect(result.output).toContain("2025-07-15 to 2026-07-15")
+      expect(result.metadata.questions).toHaveLength(4)
+    }),
+  )
+
   it.instance("should successfully execute with valid question parameters", () =>
     Effect.gen(function* () {
       const question = yield* Question.Service
