@@ -8,7 +8,7 @@
 
                                       Claude Code for Financial Markets
 ```
-<a href="https://www.npmjs.com/package/finny-pro"><img alt="npm" src="https://img.shields.io/badge/npm-finny--pro-3381C3?style=flat-square" /></a>
+<a href="https://www.npmjs.com/package/@finny-ai/finny-pro"><img alt="npm" src="https://img.shields.io/npm/v/%40finny-ai%2Ffinny-pro?style=flat-square&label=npm" /></a>
 
 <img width="1546" height="1046" alt="Screenshot 2026-04-14 at 4 55 14 PM" src="https://github.com/user-attachments/assets/be2784d6-ced1-4259-96de-69518f22b444" />
 
@@ -20,14 +20,14 @@ Build, backtest, and iterate on trading algorithms using natural language. Built
 
 ```bash
 curl -fsSL https://finnyai.tech/cli/install | bash
-finny --license-key finny_...
+finny
 ```
 
 Or via npm:
 
 ```bash
 npm i -g @finny-ai/finny-pro
-finny-pro --license-key finny_...
+finny
 ```
 
 > **Try it:** _"Build me a momentum-based ETH trading strategy with RSI signals"_

@@ -565,6 +565,10 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
           "run",
           "--format",
           "json",
+          // Headless fixtures have no human to click Allow; without this flag
+          // run.ts auto-rejects permission prompts and tools that still ask
+          // (or re-ask) can stall the scripted session until wall-clock timeout.
+          "--dangerously-skip-permissions",
           "--agent",
           options.agent,
           "--model",

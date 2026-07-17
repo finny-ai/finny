@@ -94,6 +94,10 @@ export async function createIsolation(runId: string): Promise<HarnessIsolation> 
     FINNY_HARNESS_MODE: "1",
     FINNY_RUN_ID: runId,
     PHOENIX_PROJECT: phoenixProject,
+    // Consumer Convex telemetry is orthogonal to the offline harness contract
+    // and must not phone home from isolated fixture runs.
+    FINNY_TELEMETRY: "0",
+    OPENCODE_TELEMETRY: "0",
   }
   if (process.env.FINNY_HARNESS_CONFIG_CONTENT) env.OPENCODE_CONFIG_CONTENT = process.env.FINNY_HARNESS_CONFIG_CONTENT
   const credentialPresence: Array<{ name: string; present: true }> = []

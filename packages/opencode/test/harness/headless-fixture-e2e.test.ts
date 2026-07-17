@@ -44,7 +44,9 @@ async function run(mode: FixtureScriptMode, source: "test_current_checkout" | "d
     ...(source === "test_current_checkout" ? { testOnlyUseCurrentSource: true } : {}),
     fixtureMode: mode,
     collectorEndpoint,
-    timeoutMs: 240_000,
+    // Per-run wall clock. Failures run two modes; negative runs two isolates.
+    // Keep under the job budget (20m) but above a cold Python env + backtest.
+    timeoutMs: 300_000,
   })
 }
 
@@ -79,7 +81,10 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
       const secret = "sk-headless-e2e-secret-must-not-appear"
       process.env.OPENAI_API_KEY = secret
       try {
-        const [left, right] = await Promise.all([run("negative", "detached"), run("negative")])
+        // Sequential isolates: two full cold-start harnesses in parallel on a
+        // 2-vCPU GHA runner contended the Python/backtest path past wall-clock.
+        const left = await run("negative", "detached")
+        const right = await run("negative")
 
         for (const result of [left, right]) {
           expect(result.exitCode).toBe(0)
@@ -158,7 +163,7 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
         else process.env.OPENAI_API_KEY = prior
       }
     },
-    285_000,
+    360_000,
   )
 
   test.skipIf(requestedGroup === "negative")(
@@ -168,7 +173,11 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
       const secret = "sk-headless-e2e-failure-secret-must-not-appear"
       process.env.OPENAI_API_KEY = secret
       try {
-        const [midstream, drift] = await Promise.all([run("midstream_failure"), run("strategy_drift")])
+        // Sequential: parallel dual-harness contention on GHA was blowing the
+        // wall clock (midstream finishes in ~12s; strategy_drift was starved
+        // and the suite timed out with only one bundle uploaded).
+        const midstream = await run("midstream_failure")
+        const drift = await run("strategy_drift")
         for (const result of [midstream, drift]) {
           expect(await bundleText(result.bundlePath)).not.toContain(secret)
           expect(result.manifest.observability).toMatchObject({
@@ -190,6 +199,6 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
         else process.env.OPENAI_API_KEY = prior
       }
     },
-    240_000,
+    420_000,
   )
 })

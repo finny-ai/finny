@@ -24,7 +24,10 @@ jobs:
     name: Offline workflow contract (${{ matrix.group }})
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # Negative runs two full isolated harnesses (up to ~4m each wall-clock when
+    # contended) plus unit contracts and Phoenix boot. 5m was too tight and
+    # cancelled mid-run on GHA, masking the real fixture result.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -68,6 +71,9 @@ jobs:
           FINNY_HARNESS_E2E_GROUP: ${{ matrix.group }}
           FINNY_HARNESS_COLLECTOR_ENDPOINT: http://127.0.0.1:6006
           FINNY_HARNESS_E2E_OUTPUT: .artifacts/headless-${{ matrix.group }}
+          # Keep consumer telemetry out of CI harness runs — it is unrelated to
+          # the offline contract and can add fire-and-forget network work.
+          FINNY_TELEMETRY: "0"
         run: >-
           bun --cwd packages/opencode test
           test/harness/headless-fixture-e2e.test.ts
