@@ -190,6 +190,12 @@ function contextReminderDecision(input: ContinuationInput, workflow: BuildWorkfl
 }
 
 export function buildWorkflowContinuationReminder(input: ContinuationInput) {
+  // Offline/scripted harness runs are one-shot: prepare → evidence → save →
+  // backtest → final report. Auto-iteration after a failed metric trial is a
+  // live Build-mode product behavior and will spin forever against a fixed
+  // scripted model that only knows one save/backtest sequence.
+  if (process.env.FINNY_HARNESS_MODE === "1") return undefined
+
   const workflow = input.workflow
   if (!workflow || workflow.status !== "active") return undefined
   const context = contextReminderDecision(input, workflow)

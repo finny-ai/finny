@@ -215,6 +215,17 @@ describe("active Build workflow continuation", () => {
     expect(buildWorkflowContinuationReminder({ workflow: failedWorkflow(1), pendingContextTasks: 0 })).toBeDefined()
   })
 
+  test("disables auto-iteration entirely in offline harness mode", () => {
+    const prior = process.env.FINNY_HARNESS_MODE
+    process.env.FINNY_HARNESS_MODE = "1"
+    try {
+      expect(buildWorkflowContinuationReminder({ workflow: failedWorkflow(1), pendingContextTasks: 0 })).toBeUndefined()
+    } finally {
+      if (prior === undefined) delete process.env.FINNY_HARNESS_MODE
+      else process.env.FINNY_HARNESS_MODE = prior
+    }
+  })
+
   test("does not skip a user-facing handoff question after a failed trial", () => {
     const assistantText =
       "v12 failed with negative alpha. Would you like me to try a slow EMA crossover next, or pivot to mean reversion?"

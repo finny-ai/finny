@@ -388,7 +388,9 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
   }
   return {
     type: "text",
-    text: "Return: negative fixture result. Sharpe: below zero. Max drawdown: measured in the review packet. Eligibility: backtested only. Blockers: no promotion evidence. Next step: inspect the immutable review bundle; do not pivot strategy family.",
+    // End with a user-facing question so Build workflow auto-iteration (when
+    // harness mode is off) yields control instead of forcing another save loop.
+    text: "Return: negative fixture result. Sharpe: below zero. Max drawdown: measured in the review packet. Eligibility: backtested only. Blockers: no promotion evidence. Next step: inspect the immutable review bundle; do not pivot strategy family. Would you like me to try a different approach?",
   }
 }
 
