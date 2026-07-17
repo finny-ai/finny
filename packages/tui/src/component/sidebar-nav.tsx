@@ -14,10 +14,10 @@ type NavItem = {
 
 const TOP_ITEMS: NavItem[] = [
   { icon: "/^\\", label: "Home", action: { kind: "route", type: "home" } },
+  { icon: "≡≡≡", label: "Sessions", action: { kind: "route", type: "sessions" } },
   { icon: "</>", label: "My Algos", action: { kind: "route", type: "algorithms" } },
   { icon: "▁▄█", label: "Backtest", action: { kind: "route", type: "backtests" } },
   { icon: "$$$", label: "Portfolio", action: { kind: "route", type: "portfolio" } },
-  { icon: "≡≡≡", label: "Sessions", action: { kind: "route", type: "sessions" } },
 ]
 
 const BOTTOM_ITEMS: NavItem[] = [

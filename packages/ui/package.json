@@ -2,7 +2,7 @@
   "name": "@opencode-ai/ui",
   "version": "1.17.4",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "exports": {
     "./package.json": "./package.json",
     "./*": "./src/components/*.tsx",

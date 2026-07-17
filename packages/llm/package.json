@@ -3,7 +3,7 @@
   "version": "1.17.4",
   "name": "@opencode-ai/llm",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "scripts": {
     "setup:recording-env": "bun run script/setup-recording-env.ts",

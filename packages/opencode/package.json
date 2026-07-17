@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "name": "finny-internal-prop",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "scripts": {
     "typecheck": "tsgo --noEmit",

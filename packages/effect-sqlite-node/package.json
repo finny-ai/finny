@@ -3,7 +3,7 @@
   "version": "1.17.4",
   "name": "@opencode-ai/effect-sqlite-node",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "private": true,
   "scripts": {
     "typecheck": "tsgo --noEmit"

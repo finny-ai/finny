@@ -3,7 +3,7 @@
   "name": "@opencode-ai/sdk",
   "version": "1.17.4",
   "type": "module",
-  "license": "MIT",
+  "license": "PolyForm-Noncommercial-1.0.0",
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "build": "bun ./script/build.ts"
