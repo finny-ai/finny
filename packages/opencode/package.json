@@ -17,7 +17,7 @@
     "finnybench:trajectory:validate": "bun run script/finnybench-trajectory.ts --validate-suite",
     "finnybench:trajectory:smoke": "bun test --timeout 30000 test/finnybench/trajectory-grader.test.ts && bun run finnybench:trajectory:validate",
     "build": "bun run script/build.ts",
-    "dev": "bun run --conditions=browser ./src/index.ts",
+    "dev": "bun run --conditions=browser ./script/dev.ts",
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts",
     "db": "bun drizzle-kit",
     "convex": "npx convex"
