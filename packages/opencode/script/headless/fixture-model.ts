@@ -77,7 +77,7 @@ scope:
   universe: ["SPY"]
   horizon: intraday
 strategy:
-  bar_interval: "5min"
+  bar_interval: "5m"
   type: "${strategyType}"
   direction: long
   entry_signal: |
@@ -115,7 +115,7 @@ Deterministic offline harness candidate.
 const CONFIG = JSON.stringify({
   symbol: "SPY",
   asset_class: "equity",
-  interval: "5min",
+  interval: "5m",
   required_history_bars: 24,
   params: { fast: 8, slow: 24, risk_pct: 0.01, stop_pct: 0.015 },
   risk_contract: {

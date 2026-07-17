@@ -93,6 +93,14 @@ describe("backtest data selection", () => {
         workflowInterval: "1d",
       }),
     ).toBeUndefined()
+    // Tool schema uses display form ("5min"); workflow identity is canonical ("5m").
+    expect(
+      authoritativeBacktestInputIssue({
+        params: { startDate: "2026-01-09", endDate: "2026-07-08", interval: "5min" },
+        workflowWindow: { start: "2026-01-09", end: "2026-07-08" },
+        workflowInterval: "5m",
+      }),
+    ).toBeUndefined()
   })
 
   test("isolates provider-fetched research from unrelated experiment snapshots", () => {

@@ -47,6 +47,7 @@ import {
 import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInput } from "../backtest/experiment"
 import { qualificationInputForResearch } from "../backtest/qualification-policy"
 import { readRequestSpecForSession } from "@/agent/request-spec"
+import { normalizeInterval } from "@/agent/request-identity"
 
 export function backtestAttemptFingerprint(input: {
   params: unknown
@@ -119,8 +120,15 @@ export function authoritativeBacktestInputIssue(input: {
       return `endDate ${input.params.endDate} conflicts with confirmed workflow end ${input.workflowWindow.end}`
     }
   }
-  if (input.workflowInterval && input.params.interval && input.params.interval !== input.workflowInterval) {
-    return `interval ${input.params.interval} conflicts with confirmed workflow interval ${input.workflowInterval}`
+  // Workflow identity stores canonical intervals ("5m"); the backtest tool
+  // schema still accepts display forms ("5min"). Compare after normalization
+  // so a confirmed 5m window is not falsely blocked by a 5min tool arg.
+  if (input.workflowInterval && input.params.interval) {
+    const workflow = normalizeInterval(input.workflowInterval) ?? input.workflowInterval
+    const requested = normalizeInterval(input.params.interval) ?? input.params.interval
+    if (workflow !== requested) {
+      return `interval ${input.params.interval} conflicts with confirmed workflow interval ${input.workflowInterval}`
+    }
   }
   return undefined
 }
