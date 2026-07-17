@@ -42,6 +42,7 @@ import {
   parseMission,
 } from "@finny-ai/core/algo"
 import { syncWorkspaceRequestContext } from "../../src/agent/finny-workspace-context"
+import { commitRequestSpec } from "../../src/agent/request-spec"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -428,8 +429,8 @@ describe("tool.task", () => {
           expect(text).toContain("- end date as absolute YYYY-MM-DD: 2026-06-10")
           expect(text).toContain(`- allowed_data_dir when known: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("Do not read `algos/_template/README.md`")
-          expect(text).toContain("requested_start/requested_end")
-          expect(text).toContain("actual_start/actual_end")
+          expect(text).toContain("runtime_owned_manifest_fields")
+          expect(text).toContain("Never hand-write a manifest; call finny_dataset_evidence_finalize")
           expect(text).toContain("provider_capabilities: NONE")
           expect(text).toContain("never probe guessed skill IDs or cookbook paths")
           expect(text).not.toContain("skill_id=finny-provider-yfinance")
@@ -1029,6 +1030,23 @@ describe("tool.task", () => {
           const dataDir = path.join(algoDir(slug), "data", "crypto")
           const csvRel = `crypto/ETHUSDT_1h_2025-06-16_${yesterdayIso}.csv`
           const manifestRel = csvRel.replace(/\.csv$/, ".manifest.json")
+          // Manifests are tamper-evident: they must carry the runtime
+          // RequestSpec identity (request_id/version/content_hash) to be
+          // eligible for reuse.
+          const spec = yield* Effect.promise(() =>
+            commitRequestSpec({
+              requestID: chat.id,
+              identity: {
+                requested_symbol: "ETHUSDT",
+                requested_interval: "1h",
+                requested_asset_class: "crypto",
+                requested_algorithm_name: "eth-1h-mean-reversion",
+                requested_start: "2025-06-16",
+                requested_end: yesterdayIso,
+              },
+              actor: "user",
+            }),
+          )
           yield* Effect.promise(() => fs.mkdir(dataDir, { recursive: true }))
           yield* Effect.promise(() =>
             fs.writeFile(
@@ -1044,7 +1062,10 @@ describe("tool.task", () => {
                 {
                   schema_version: 1,
                   source: "binance",
-                  requested_symbol: "ETH",
+                  request_id: spec.request_id,
+                  request_version: spec.request_version,
+                  request_content_hash: spec.content_hash,
+                  requested_symbol: "ETHUSDT",
                   actual_symbol: "ETHUSDT",
                   requested_interval: "1h",
                   actual_interval: "1h",
@@ -1330,7 +1351,10 @@ describe("tool.task", () => {
     ),
   )
 
-  it.live("overrides stale workspace algorithm name from explicit existing algorithm prompt", () =>
+  // RequestSpec is runtime-owned and tamper-evident: once the parent session
+  // has a committed identity, child-task prompt wording cannot rewrite it.
+  // Identity changes must go through finny_workspace_prepare.
+  it.live("keeps runtime request identity when the prompt names a different algorithm", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const prev = process.env.XDG_DATA_HOME
@@ -1374,12 +1398,12 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain(`- workspace_slug: ${slug}`)
-          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
-          expect(text).not.toContain("- requested_algorithm_name: p500-1hr-trade-1h-strategy")
+          expect(text).toContain("- requested_algorithm_name: p500-1hr-trade-1h-strategy")
+          expect(text).not.toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
           const persisted = yield* Effect.promise(() =>
             fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
           )
-          expect(persisted.requested_algorithm_name).toBe("spy-1h-momentum-breakout")
+          expect(persisted.requested_algorithm_name).toBe("p500-1hr-trade-1h-strategy")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1660,6 +1684,20 @@ describe("tool.task", () => {
           const { chat, assistant } = yield* seed()
           const slug = "spy-15m-batch-success.1.1.00.00"
           yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          const spec = yield* Effect.promise(() =>
+            commitRequestSpec({
+              requestID: chat.id,
+              identity: {
+                requested_symbol: "SPY",
+                requested_interval: "15m",
+                requested_asset_class: "equity",
+                requested_algorithm_name: "spy-batch-success",
+                requested_start: "2026-03-23",
+                requested_end: "2026-06-17",
+              },
+              actor: "user",
+            }),
+          )
           const dataDir = path.join(algoDir(slug), "data", "stock")
           const csv = path.join(dataDir, "SPY_15m_2026-03-23_2026-06-17.csv")
           const manifestFile = path.join(dataDir, "SPY_15m_2026-03-23_2026-06-17.manifest.json")
@@ -1676,6 +1714,9 @@ describe("tool.task", () => {
               JSON.stringify({
                 schema_version: 1,
                 source: "alpaca",
+                request_id: spec.request_id,
+                request_version: spec.request_version,
+                request_content_hash: spec.content_hash,
                 requested_symbol: "SPY",
                 actual_symbol: "SPY",
                 requested_interval: "15m",
@@ -1698,6 +1739,9 @@ describe("tool.task", () => {
           const dataText = [
             "requested_algorithm_name: spy-batch-success",
             `workspace_slug: ${slug}`,
+            `request_id: ${spec.request_id}`,
+            `request_version: ${spec.request_version}`,
+            `request_content_hash: ${spec.content_hash}`,
             "requested_symbol: SPY",
             "actual_symbol: SPY",
             "requested_interval: 15m",
@@ -1931,7 +1975,7 @@ describe("tool.task", () => {
           yield* def.execute(
             {
               description: "MSFT daily data",
-              prompt: "Extract MSFT 1d equity data for a mean reversion strategy.",
+              prompt: "Extract MSFT 1d equity data from 2026-01-05 to 2026-06-30 for a mean reversion strategy.",
               subagent_type: "data_extractor",
             },
             {

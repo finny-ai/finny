@@ -19,6 +19,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { bindSessionWorkspace, clearSessionWorkspace } from "@finny-ai/core/algo"
 import { Auth } from "../../src/auth"
 import { generateAlpacaProviderID } from "../../src/live/brokers/alpaca"
+import { commitRequestSpec } from "../../src/agent/request-spec"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -164,7 +165,10 @@ describe("tool.shell data_extractor write guard", () => {
     }),
   )
 
-  live("loads arbitrary project .env values without an allowlist", () =>
+  // Worker shell env is deny-by-default (security/worker-shell.ts): project
+  // .env values reach Data Agent bash only for allowlisted provider keys of
+  // the requested asset class; everything else is stripped.
+  live("loads allowlisted provider keys from project .env and strips other keys", () =>
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({
         init: (dir) =>
@@ -176,19 +180,24 @@ describe("tool.shell data_extractor write guard", () => {
           ),
       })
       const next = dataContext()
-      yield* sessionWorkspace(next)
+      yield* sessionWorkspace(next, async (dir) => {
+        const workspacePath = path.join(dir, "finny/algos/aapl-breakout")
+        await fs.mkdir(path.join(workspacePath, "data"), { recursive: true })
+        await Bun.write(path.join(workspacePath, "request.json"), JSON.stringify({ requested_asset_class: "equity" }))
+      })
       yield* runIn(
         tmp,
         Effect.gen(function* () {
           const result = yield* run(
             {
-              command: 'printf "$ENTERPRISE_RANDOM_SECRET:$POLYGON_API_KEY"',
+              command:
+                '[ "$POLYGON_API_KEY" = "polygon_dotenv" ] && [ -z "$ENTERPRISE_RANDOM_SECRET" ] && printf policy_ok',
               workdir: tmp,
-              description: "Print data env values",
+              description: "Check worker env policy",
             },
             next,
           )
-          expect(result.output).toContain("from_dotenv:polygon_dotenv")
+          expect(result.output).toContain("policy_ok")
         }),
       )
     }),
@@ -198,25 +207,27 @@ describe("tool.shell data_extractor write guard", () => {
     Effect.gen(function* () {
       const tmp = yield* tmpdirScoped({
         init: (dir) =>
-          Effect.promise(() =>
-            Bun.write(path.join(dir, ".env"), "ENTERPRISE_RANDOM_SECRET=from_dotenv\n").then(() => {}),
-          ),
+          Effect.promise(() => Bun.write(path.join(dir, ".env"), "ALPACA_DATA_FEED=iex_dotenv\n").then(() => {})),
       })
       const next = dataContext()
-      yield* sessionWorkspace(next)
-      yield* withEnv("ENTERPRISE_RANDOM_SECRET", "from_export")
+      yield* sessionWorkspace(next, async (dir) => {
+        const workspacePath = path.join(dir, "finny/algos/aapl-breakout")
+        await fs.mkdir(path.join(workspacePath, "data"), { recursive: true })
+        await Bun.write(path.join(workspacePath, "request.json"), JSON.stringify({ requested_asset_class: "equity" }))
+      })
+      yield* withEnv("ALPACA_DATA_FEED", "sip_export")
       yield* runIn(
         tmp,
         Effect.gen(function* () {
           const result = yield* run(
             {
-              command: 'printf "$ENTERPRISE_RANDOM_SECRET"',
+              command: 'printf "$ALPACA_DATA_FEED"',
               workdir: tmp,
               description: "Print exported env value",
             },
             next,
           )
-          expect(result.output).toContain("from_export")
+          expect(result.output).toContain("sip_export")
         }),
       )
     }),
@@ -240,6 +251,20 @@ describe("tool.shell data_extractor write guard", () => {
           }),
         )
       })
+      // The preflight reads the runtime-owned RequestSpec, not workspace request.json.
+      yield* Effect.promise(() =>
+        commitRequestSpec({
+          requestID: next.sessionID,
+          identity: {
+            requested_symbol: "SPY",
+            requested_interval: "5m",
+            requested_asset_class: "equity",
+            requested_start: "2026-03-13",
+            requested_end: "2026-06-13",
+          },
+          actor: "user",
+        }),
+      )
       yield* runIn(
         project,
         Effect.gen(function* () {
@@ -288,6 +313,19 @@ describe("tool.shell data_extractor write guard", () => {
           }),
         )
       })
+      yield* Effect.promise(() =>
+        commitRequestSpec({
+          requestID: next.sessionID,
+          identity: {
+            requested_symbol: "SPY",
+            requested_interval: "5m",
+            requested_asset_class: "equity",
+            requested_start: "2026-05-24",
+            requested_end: "2026-06-13",
+          },
+          actor: "user",
+        }),
+      )
       yield* runIn(
         project,
         Effect.gen(function* () {
@@ -525,20 +563,24 @@ describe("tool.shell data_extractor write guard", () => {
           path.join(workspacePath, ".env"),
           "ALPACA_API_KEY_ID=from_algo_workspace\nALPACA_API_SECRET_KEY=algo_secret\n",
         )
+        await Bun.write(path.join(workspacePath, "request.json"), JSON.stringify({ requested_asset_class: "equity" }))
       })
       yield* runIn(
         project,
         Effect.gen(function* () {
           const dataDir = path.join(xdg, "finny/algos/aapl-breakout/data")
+          // Compare in-shell: credential values are redacted from tool output,
+          // so asserting the printed secret would only ever see [REDACTED].
           const result = yield* run(
             {
-              command: 'printf "%s:%s" "$ALPACA_API_KEY_ID" "$ALPACA_API_SECRET_KEY"',
+              command:
+                '[ "$ALPACA_API_KEY_ID" = "from_algo_workspace" ] && [ "$ALPACA_API_SECRET_KEY" = "algo_secret" ] && printf workspace_env_ok',
               workdir: dataDir,
-              description: "Print algo workspace env values",
+              description: "Check algo workspace env values",
             },
             next,
           )
-          expect(result.output).toBe("from_algo_workspace:algo_secret")
+          expect(result.output).toContain("workspace_env_ok")
         }),
       )
     }),
@@ -560,9 +602,11 @@ describe("tool.shell data_extractor write guard", () => {
           },
         }),
       )
-      const xdg = yield* sessionWorkspace(next, (dir) =>
-        fs.mkdir(path.join(dir, "finny/algos/aapl-breakout/data/stock"), { recursive: true }).then(() => {}),
-      )
+      const xdg = yield* sessionWorkspace(next, async (dir) => {
+        const workspacePath = path.join(dir, "finny/algos/aapl-breakout")
+        await fs.mkdir(path.join(workspacePath, "data/stock"), { recursive: true })
+        await Bun.write(path.join(workspacePath, "request.json"), JSON.stringify({ requested_asset_class: "equity" }))
+      })
       try {
         yield* runIn(
           project,
@@ -570,13 +614,14 @@ describe("tool.shell data_extractor write guard", () => {
             const dataDir = path.join(xdg, "finny/algos/aapl-breakout/data")
             const result = yield* run(
               {
-                command: 'printf "%s:%s" "$ALPACA_API_KEY_ID" "$ALPACA_API_SECRET_KEY"',
+                command:
+                  '[ "$ALPACA_API_KEY_ID" = "brokerage_key_id" ] && [ "$ALPACA_API_SECRET_KEY" = "brokerage_secret" ] && printf brokerage_env_ok',
                 workdir: dataDir,
-                description: "Print brokerage auth env values",
+                description: "Check brokerage auth env values",
               },
               next,
             )
-            expect(result.output).toBe("brokerage_key_id:brokerage_secret")
+            expect(result.output).toContain("brokerage_env_ok")
           }),
         )
       } finally {
@@ -1164,7 +1209,9 @@ describe("tool.shell sentiment_agent write guard", () => {
     }),
   )
 
-  live("blocks sentiment_agent credential-like environment output", () =>
+  // Sentiment workers get only the runtime allowlist (no provider credentials),
+  // so credential env vars are stripped before the shell ever starts.
+  live("strips credential-like env from sentiment_agent bash", () =>
     Effect.gen(function* () {
       const project = yield* tmpdirScoped()
       const next = sentimentContext()
@@ -1173,14 +1220,14 @@ describe("tool.shell sentiment_agent write guard", () => {
       yield* runIn(
         project,
         Effect.gen(function* () {
-          const err = yield* fail(
+          const result = yield* run(
             {
-              command: 'printf "%s\\n" "$POLYGON_API_KEY"',
+              command: 'printf "%s" "${POLYGON_API_KEY:-stripped}"',
               description: "Print sentiment credential",
             },
             next,
           )
-          expect(err.message).toContain("Sentiment Agent bash read blocked")
+          expect(result.output).toBe("stripped")
         }),
       )
     }),
