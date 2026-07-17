@@ -4,14 +4,15 @@ run-name: "publish finny ${{ inputs.version || 'snapshot' }}"
 # Manual, approved releases only (no auto-publish on push). Trigger from the
 # Actions tab → finny-publish → Run workflow, providing a version.
 #
-# Publishes the compiled, signed CLI to npm as:
-#   wrapper:  @finny-ai/finny-pro
-#   platform: @finny-ai/finny-pro-<os>-<arch>[-baseline][-musl]
+# Publishes the compiled, signed CLI to npm as the public package:
+#   wrapper:  finny
+#   platform: finny-<os>-<arch>[-baseline][-musl]
+# (Override FINNY_PUBLISH_NAME=@finny-ai/finny-pro for private Pro builds.)
 # The wrapper ships only postinstall.mjs + bin/; each platform binary embeds
 # the versioned engine_v2 tree that the packaged smoke verifies below.
 #
 # Required repo secrets:
-#   NPM_TOKEN                              npm automation token with publish rights to @finny-ai
+#   NPM_TOKEN                              npm automation token with publish rights
 #   macOS signing (Developer ID Application):
 #     APPLE_CERTIFICATE                    base64 of the .p12 cert
 #     APPLE_CERTIFICATE_PASSWORD           .p12 password
@@ -55,7 +56,8 @@ permissions:
 
 env:
   ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
-  PUBLISH_SLUG_PREFIX: finny-ai-finny-pro
+  FINNY_PUBLISH_NAME: finny
+  PUBLISH_SLUG_PREFIX: finny
 
 jobs:
   # Secrets cannot be referenced in job-level `if:`. Convert presence to outputs
@@ -96,13 +98,14 @@ jobs:
         env:
           OPENCODE_VERSION: ${{ steps.version.outputs.version }}
           OPENCODE_CHANNEL: latest
+          FINNY_PUBLISH_NAME: ${{ env.FINNY_PUBLISH_NAME }}
       - name: Sync locked packaged-smoke runtime
         run: uv sync --frozen --project packages/opencode/python --python 3.12
       - name: Compare source and packaged Linux semantic hashes
         run: >-
           bun packages/opencode/script/verify-packaged-engine-smoke.ts
           --python packages/opencode/python/.venv/bin/python
-          --binary packages/opencode/dist/finny-ai-finny-pro-linux-x64/bin/opencode
+          --binary packages/opencode/dist/${{ env.PUBLISH_SLUG_PREFIX }}-linux-x64/bin/opencode
       - uses: actions/upload-artifact@v4
         with:
           name: finny-cli
@@ -230,7 +233,7 @@ jobs:
           VERSION: ${{ needs.build.outputs.version }}
           DIST_TAG: ${{ inputs.dist_tag }}
           DRY_RUN: ${{ inputs.dry_run }}
-          PUBLISH_NAME: "@finny-ai/finny-pro"
+          PUBLISH_NAME: ${{ env.FINNY_PUBLISH_NAME }}
         run: |
           set -euo pipefail
           # Build-only safety: with dry_run (the default), npm validates and packs

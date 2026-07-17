@@ -199,7 +199,7 @@ jobs:
         run: >-
           bun run script/verify-packaged-engine-smoke.ts
           --python python/.venv/bin/python
-          --binary dist/finny-ai-finny-pro-linux-x64/bin/opencode
+          --binary dist/finny-linux-x64/bin/opencode
 
   live-harness:
     name: Live model and provider signal
