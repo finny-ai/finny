@@ -1,6 +1,7 @@
-export type BrokerKind = "alpaca" | "binance"
-export type AssetClass = "equity" | "crypto"
-export type BrokerMode = "paper" | "testnet"
+export type BrokerKind = "alpaca" | "binance" | "ibkr"
+export type AssetClass = "equity" | "crypto" | "option" | "future"
+export type BrokerMode = "paper" | "testnet" | "live"
+export type BrokerConnection = "tws" | "gateway"
 
 export interface BrokerAccount {
   providerID: string
@@ -8,20 +9,26 @@ export interface BrokerAccount {
   label: string
   keyId: string
   endpoint: string
+  mode?: BrokerMode
+  connection?: BrokerConnection
 }
 
 export interface BrokerCredentials {
   keyId: string
   secret: string
   endpoint: string
+  mode?: BrokerMode
+  connection?: BrokerConnection
 }
 
 export interface CredentialField {
-  name: "keyId" | "secret" | "endpoint" | "label"
+  name: "keyId" | "secret" | "endpoint" | "label" | "mode" | "connection"
   label: string
   placeholder?: string
   secret?: boolean
+  required?: boolean
   default?: string
+  choices?: string[]
 }
 
 export interface PythonDep {
@@ -41,8 +48,13 @@ export interface BrokerSpec {
   defaultEndpoint: string
   docsUrl: string
   credentialFields: CredentialField[]
+  promptFragment: string
   normalizeSymbol(canonical: string): string
   resolvePair(canonical: string): string
   detectAssetClass(canonical: string): AssetClass | null
   envVars(creds: BrokerCredentials): Record<string, string>
+  // Optional. Returns the canonical endpoint for a mode and optional credential
+  // context. Used by the add-account dialog and live-trading guardrails to keep
+  // default endpoints in sync while preserving custom endpoints after edits.
+  endpointForMode?(mode: BrokerMode, creds?: Pick<BrokerCredentials, "connection">): string
 }

@@ -5,31 +5,59 @@ const fs = require("fs")
 const path = require("path")
 const os = require("os")
 
+const forwardedSignals = ["SIGINT", "SIGTERM", "SIGHUP"]
+
 function run(target) {
-  const result = childProcess.spawnSync(target, process.argv.slice(2), {
+  const child = childProcess.spawn(target, process.argv.slice(2), {
     stdio: "inherit",
   })
-  if (result.error) {
-    console.error(result.error.message)
+
+  child.on("error", (error) => {
+    console.error(error.message)
     process.exit(1)
+  })
+
+  const forwarders = {}
+  for (const signal of forwardedSignals) {
+    forwarders[signal] = () => {
+      try {
+        child.kill(signal)
+      } catch {
+        // The child may have already exited.
+      }
+    }
+    process.on(signal, forwarders[signal])
   }
-  const code = typeof result.status === "number" ? result.status : 0
-  process.exit(code)
+
+  child.on("exit", (code, signal) => {
+    for (const forwardedSignal of forwardedSignals) {
+      process.removeListener(forwardedSignal, forwarders[forwardedSignal])
+    }
+
+    if (signal) {
+      process.kill(process.pid, signal)
+      return
+    }
+
+    process.exit(typeof code === "number" ? code : 0)
+  })
 }
 
 const envPath = process.env.FINNY_BIN_PATH ?? process.env.OPENCODE_BIN_PATH
-if (envPath) {
-  run(envPath)
-}
 
 const scriptPath = fs.realpathSync(__filename)
 const scriptDir = path.dirname(scriptPath)
 
-//
-const cached = path.join(scriptDir, ".opencode")
-if (fs.existsSync(cached)) {
-  run(cached)
-}
+// Derive the platform-package base from this wrapper's own name so the launcher
+// resolves the published scoped packages (e.g. @finny-ai/finny-internal-darwin-arm64),
+// not the legacy unscoped "opencode-*" names.
+const wrapperName = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(scriptDir, "..", "package.json"), "utf8")).name
+  } catch {
+    return "opencode"
+  }
+})()
 
 const platformMap = {
   darwin: "darwin",
@@ -50,8 +78,12 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "finny-" + platform + "-" + arch
+const base = wrapperName + "-" + platform + "-" + arch
 const binary = platform === "windows" ? "opencode.exe" : "opencode"
+
+// Fast path: the binary postinstall.mjs copies next to this launcher. Keep this
+// filename in sync with postinstall.mjs's targetBinary.
+const cached = path.join(scriptDir, platform === "windows" ? ".opencode.exe" : ".opencode")
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -166,12 +198,83 @@ function findBinary(startDir) {
   }
 }
 
-const resolved = findBinary(scriptDir)
+const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
 if (!resolved) {
   console.error(
     "It seems that your package manager failed to install the right version of the Finny CLI for your platform. You can try manually installing " +
       names.map((n) => `\"${n}\"`).join(" or ") +
       " package",
+  )
+  process.exit(1)
+}
+
+// ------------------------------------------------------------------
+// Windows Terminal compatibility: the TUI requires a modern terminal
+// emulator on Windows. Detect and auto-relaunch, or show a clear error.
+// ------------------------------------------------------------------
+const nonInteractiveFlags = new Set(["--version", "-v", "--help", "-h", "--headless", "version", "help"])
+const isNonInteractive = process.argv.slice(2).some((arg) => nonInteractiveFlags.has(arg))
+
+if (os.platform() === "win32" && !isNonInteractive && !process.env.WT_SESSION && process.env.TERM_PROGRAM !== "vscode") {
+  const wtCandidates = [
+    path.join(process.env.LOCALAPPDATA || "", "Microsoft", "WindowsApps", "wt.exe"),
+    path.join(process.env.USERPROFILE || "", "AppData", "Local", "Microsoft", "WindowsApps", "wt.exe"),
+    "wt.exe",
+  ]
+
+  let wtExe = null
+  for (const candidate of wtCandidates) {
+    try {
+      if (fs.existsSync(candidate)) {
+        wtExe = candidate
+        break
+      }
+    } catch {}
+  }
+
+  if (!wtExe) {
+    try {
+      const result = childProcess.spawnSync("where", ["wt.exe"], {
+        encoding: "utf8",
+        windowsHide: true,
+      })
+      if (result.status === 0 && result.stdout) {
+        const first = result.stdout.trim().split(/\r?\n/)[0]
+        if (first) wtExe = first
+      }
+    } catch {}
+  }
+
+  if (wtExe) {
+    const argsForWt = [
+      "powershell",
+      "-NoExit",
+      "-Command",
+      "& " + JSON.stringify(resolved) + " " + process.argv.slice(2).map((a) => JSON.stringify(a)).join(" "),
+    ]
+
+    const child = childProcess.spawn(wtExe, argsForWt, {
+      detached: true,
+      windowsHide: false,
+      stdio: "ignore",
+    })
+
+    child.on("error", (err) => {
+      console.error("Failed to launch Windows Terminal:", err.message)
+      process.exit(1)
+    })
+
+    child.unref()
+    process.exit(0)
+  }
+
+  console.error(
+    "Finny requires a modern terminal emulator.\n" +
+      "The legacy Windows Console Host does not support the interactive TUI.\n\n" +
+      "Please run this from Windows Terminal (https://aka.ms/terminal) or VS Code.\n" +
+      "You can also use the web interface at http://127.0.0.1:4096 once the daemon starts.\n\n" +
+      "To install Windows Terminal:\n" +
+      "  winget install Microsoft.WindowsTerminal"
   )
   process.exit(1)
 }

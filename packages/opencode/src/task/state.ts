@@ -1,7 +1,15 @@
-import { and, desc, eq } from "@/storage/db"
-import { Database } from "@/storage/db"
+import { Database } from "@opencode-ai/core/database/database"
+import { makeRuntime } from "@opencode-ai/core/effect/runtime"
+import { and, desc, eq } from "drizzle-orm"
+import { Effect } from "effect"
 import type { SessionID } from "@/session/schema"
 import { TaskRunTable } from "./state.sql"
+
+const runtime = makeRuntime(Database.Service, Database.defaultLayer)
+
+function run<A>(database: Database.Interface | undefined, effect: (database: Database.Interface) => Effect.Effect<A>) {
+  return database ? Effect.runPromise(effect(database)) : runtime.runPromise(effect)
+}
 
 export namespace TaskState {
   export const Status = {
@@ -43,7 +51,12 @@ export namespace TaskState {
     lastError?: string
   }
 
-  export type UpdateInput = Partial<Pick<Info, "description" | "subagentType" | "mode" | "status" | "startedAt" | "finishedAt" | "resultSummary" | "lastError">>
+  export type UpdateInput = Partial<
+    Pick<
+      Info,
+      "description" | "subagentType" | "mode" | "status" | "startedAt" | "finishedAt" | "resultSummary" | "lastError"
+    >
+  >
 
   function rowToInfo(row: typeof TaskRunTable.$inferSelect): Info {
     return {
@@ -74,27 +87,39 @@ export namespace TaskState {
     }
   }
 
-  export async function get(id: SessionID | string): Promise<Info | undefined> {
-    const row = Database.use((db) => db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get())
+  export async function get(id: SessionID | string, database?: Database.Interface): Promise<Info | undefined> {
+    const row = await run(database, ({ db }) =>
+      db
+        .select()
+        .from(TaskRunTable)
+        .where(eq(TaskRunTable.id, id as SessionID))
+        .get()
+        .pipe(Effect.orDie),
+    )
     return row ? rowToInfo(row) : undefined
   }
 
-  export async function listByParent(parentSessionID: SessionID | string): Promise<Info[]> {
-    const rows = Database.use((db) =>
+  export async function listByParent(
+    parentSessionID: SessionID | string,
+    database?: Database.Interface,
+  ): Promise<Info[]> {
+    const rows = await run(database, ({ db }) =>
       db
         .select()
         .from(TaskRunTable)
         .where(eq(TaskRunTable.parent_session_id, parentSessionID as SessionID))
         .orderBy(desc(TaskRunTable.time_updated), desc(TaskRunTable.id))
-        .all(),
+        .all()
+        .pipe(Effect.orDie),
     )
     return rows.map(rowToInfo)
   }
 
-  export async function upsert(input: CreateInput): Promise<Info> {
+  export async function upsert(input: CreateInput, database?: Database.Interface): Promise<Info> {
     const now = Date.now()
-    Database.transaction((db) => {
-      db.insert(TaskRunTable)
+    await run(database, ({ db }) =>
+      db
+        .insert(TaskRunTable)
         .values({
           id: input.id,
           parent_session_id: input.parentSessionID,
@@ -125,13 +150,18 @@ export namespace TaskState {
           },
         })
         .run()
-    })
-    return (await get(input.id))!
+        .pipe(Effect.orDie),
+    )
+    return (await get(input.id, database))!
   }
 
-  export async function update(id: SessionID | string, patch: UpdateInput): Promise<Info | undefined> {
+  export async function update(
+    id: SessionID | string,
+    patch: UpdateInput,
+    database?: Database.Interface,
+  ): Promise<Info | undefined> {
     const now = Date.now()
-    Database.use((db) =>
+    await run(database, ({ db }) =>
       db
         .update(TaskRunTable)
         .set({
@@ -146,9 +176,10 @@ export namespace TaskState {
           time_updated: now,
         })
         .where(eq(TaskRunTable.id, id as SessionID))
-        .run(),
+        .run()
+        .pipe(Effect.orDie),
     )
-    return get(id)
+    return get(id, database)
   }
 
   export async function finalizeActive(
@@ -158,33 +189,46 @@ export namespace TaskState {
       resultSummary?: string | null
       lastError?: string | null
     },
+    database?: Database.Interface,
   ): Promise<Info | undefined> {
     let next: Info | undefined
-    Database.transaction((db) => {
-      const row = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
-      if (!row) return
-      const current = rowToInfo(row)
-      if (isTerminal(current.status)) {
-        next = current
-        return
-      }
-      const now = Date.now()
-      // Use `in` to distinguish "field omitted" (leave existing value) from
-      // "explicit null" (clear it). `lastError: undefined` previously left
-      // stale errors in place after cancellation.
-      db.update(TaskRunTable)
-        .set({
-          status: input.status,
-          finished_at: now,
-          ...("resultSummary" in input ? { result_summary: input.resultSummary ?? null } : {}),
-          ...("lastError" in input ? { last_error: input.lastError ?? null } : {}),
-          time_updated: now,
-        })
-        .where(eq(TaskRunTable.id, id as SessionID))
-        .run()
-      const updated = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
-      next = updated ? rowToInfo(updated) : undefined
-    })
+    await run(database, ({ db }) =>
+      db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const row = yield* tx
+              .select()
+              .from(TaskRunTable)
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .get()
+            if (!row) return
+            const current = rowToInfo(row)
+            if (isTerminal(current.status)) {
+              next = current
+              return
+            }
+            const now = Date.now()
+            yield* tx
+              .update(TaskRunTable)
+              .set({
+                status: input.status,
+                finished_at: now,
+                ...("resultSummary" in input ? { result_summary: input.resultSummary ?? null } : {}),
+                ...("lastError" in input ? { last_error: input.lastError ?? null } : {}),
+                time_updated: now,
+              })
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .run()
+            const updated = yield* tx
+              .select()
+              .from(TaskRunTable)
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .get()
+            next = updated ? rowToInfo(updated) : undefined
+          }),
+        )
+        .pipe(Effect.orDie),
+    )
     return next
   }
 
@@ -193,46 +237,68 @@ export namespace TaskState {
    * single transaction so a concurrent finalizeActive cannot land a terminal
    * status between our read and our write.
    */
-  export async function markRunning(id: SessionID | string): Promise<Info | undefined> {
+  export async function markRunning(id: SessionID | string, database?: Database.Interface): Promise<Info | undefined> {
     let next: Info | undefined
-    Database.transaction((db) => {
-      const row = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
-      if (!row) return
-      const current = rowToInfo(row)
-      if (current.status === Status.running || isTerminal(current.status)) {
-        next = current
-        return
-      }
-      const now = Date.now()
-      db.update(TaskRunTable)
-        .set({
-          status: Status.running,
-          started_at: current.startedAt ?? now,
-          finished_at: null,
-          time_updated: now,
-        })
-        .where(eq(TaskRunTable.id, id as SessionID))
-        .run()
-      const updated = db.select().from(TaskRunTable).where(eq(TaskRunTable.id, id as SessionID)).get()
-      next = updated ? rowToInfo(updated) : undefined
-    })
+    await run(database, ({ db }) =>
+      db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const row = yield* tx
+              .select()
+              .from(TaskRunTable)
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .get()
+            if (!row) return
+            const current = rowToInfo(row)
+            if (current.status === Status.running || isTerminal(current.status)) {
+              next = current
+              return
+            }
+            const now = Date.now()
+            yield* tx
+              .update(TaskRunTable)
+              .set({
+                status: Status.running,
+                started_at: current.startedAt ?? now,
+                finished_at: null,
+                time_updated: now,
+              })
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .run()
+            const updated = yield* tx
+              .select()
+              .from(TaskRunTable)
+              .where(eq(TaskRunTable.id, id as SessionID))
+              .get()
+            next = updated ? rowToInfo(updated) : undefined
+          }),
+        )
+        .pipe(Effect.orDie),
+    )
     return next
   }
 
-  export async function cancel(id: SessionID | string): Promise<Info | undefined> {
-    return finalizeActive(id, { status: Status.cancelled, lastError: null })
+  export async function cancel(id: SessionID | string, database?: Database.Interface): Promise<Info | undefined> {
+    return finalizeActive(id, { status: Status.cancelled, lastError: null }, database)
   }
 
-  export async function listRunningByParent(parentSessionID: SessionID | string): Promise<Info[]> {
-    const rows = Database.use((db) =>
+  export async function listRunningByParent(
+    parentSessionID: SessionID | string,
+    database?: Database.Interface,
+  ): Promise<Info[]> {
+    const rows = await run(database, ({ db }) =>
       db
         .select()
         .from(TaskRunTable)
         .where(
-          and(eq(TaskRunTable.parent_session_id, parentSessionID as SessionID), eq(TaskRunTable.status, Status.running)),
+          and(
+            eq(TaskRunTable.parent_session_id, parentSessionID as SessionID),
+            eq(TaskRunTable.status, Status.running),
+          ),
         )
         .orderBy(desc(TaskRunTable.time_updated), desc(TaskRunTable.id))
-        .all(),
+        .all()
+        .pipe(Effect.orDie),
     )
     return rows.map(rowToInfo)
   }

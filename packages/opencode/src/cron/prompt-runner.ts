@@ -2,7 +2,7 @@ import { Log } from "../util/log"
 import { Job } from "./job"
 import { Server } from "../server/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import type { Permission } from "../permission"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export namespace PromptRunner {
   const log = Log.create({ service: "cron.prompt-runner" })
@@ -38,7 +38,7 @@ export namespace PromptRunner {
     }) as typeof globalThis.fetch
     const sdk = createOpencodeClient({ baseUrl: "http://opencode.internal", fetch: fetchFn })
 
-    const rules: Permission.Ruleset = [
+    const rules: PermissionV1.Ruleset = [
       { permission: "question", action: "deny", pattern: "*" },
       { permission: "plan_enter", action: "deny", pattern: "*" },
       { permission: "plan_exit", action: "deny", pattern: "*" },
@@ -49,7 +49,10 @@ export namespace PromptRunner {
     let cancelled = false
 
     try {
-      const created = await sdk.session.create({ title: `cron:${job.name}`, permission: rules })
+      const created = await sdk.session.create({
+        title: `cron:${job.name}`,
+        permission: rules.map((rule) => ({ ...rule })),
+      })
       sessionID = created.data?.id
       if (!sessionID) return { ok: false, error: "session creation returned no id" }
 

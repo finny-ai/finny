@@ -16,7 +16,6 @@ function row(over: Partial<Algorithm.Info>): Algorithm.Info {
     description: over.description,
     config: over.config,
     backtestCode: over.backtestCode,
-    localPath: over.localPath,
     time_created: over.time_created ?? 0,
     time_updated: over.time_updated ?? 0,
     ...over,
@@ -25,8 +24,8 @@ function row(over: Partial<Algorithm.Info>): Algorithm.Info {
 
 describe("buildAlgorithmListPayload", () => {
   test("empty input still returns a JSON-shaped payload", () => {
-    const p = buildAlgorithmListPayload([], "free")
-    expect(p).toEqual({ count: 0, capacity: 5, remaining: 5, tier: "free", algorithms: [] })
+    const p = buildAlgorithmListPayload([])
+    expect(p).toEqual({ count: 0, capacity: null, remaining: null, algorithms: [] })
   })
 
   test("collapses duplicate-name rows to the highest version", () => {
@@ -36,7 +35,7 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "capital", version: 4, time_updated: 150 }),
       row({ name: "capital", version: 1, time_updated: 50 }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.count).toBe(2)
     expect(p.algorithms.map((a) => `${a.name}@${a.version}`)).toEqual(["orb@7", "capital@4"])
   })
@@ -47,37 +46,33 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "x", version: 3, time_updated: 500, algorithmId: "new" }),
       row({ name: "x", version: 3, time_updated: 200, algorithmId: "mid" }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.count).toBe(1)
     // The Map collapses to a single entry; verify it's the most recently updated.
     expect(p.algorithms[0].updated).toBe(new Date(500).toISOString())
   })
 
-  test("free tier reports remaining slots", () => {
+  test("local capacity is unlimited", () => {
     const algos = [
       row({ name: "a", version: 1 }),
       row({ name: "b", version: 1 }),
       row({ name: "c", version: 1 }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
-    expect(p.capacity).toBe(5)
-    expect(p.remaining).toBe(2)
+    const p = buildAlgorithmListPayload(algos)
+    expect(p.capacity).toBeNull()
+    expect(p.remaining).toBeNull()
   })
 
-  test("clamps remaining to 0 when over cap", () => {
+  test("does not report capacity exhaustion as algorithm count grows", () => {
     const algos = Array.from({ length: 8 }, (_, i) => row({ name: `n${i}`, version: 1 }))
-    const p = buildAlgorithmListPayload(algos, "free")
-    expect(p.remaining).toBe(0)
-  })
-
-  test("pro (unlimited) tier reports null capacity and remaining", () => {
-    const p = buildAlgorithmListPayload([row({ name: "a", version: 1 })], "pro")
+    const p = buildAlgorithmListPayload(algos)
+    expect(p.count).toBe(8)
     expect(p.capacity).toBeNull()
     expect(p.remaining).toBeNull()
   })
 
   test("payload is JSON-serializable without losing capacity/remaining", () => {
-    const p = buildAlgorithmListPayload([], "pro")
+    const p = buildAlgorithmListPayload([])
     const round = JSON.parse(JSON.stringify(p))
     expect(round.capacity).toBeNull()
     expect(round.remaining).toBeNull()
@@ -89,7 +84,7 @@ describe("buildAlgorithmListPayload", () => {
       row({ name: "new", version: 1, time_updated: 300 }),
       row({ name: "mid", version: 1, time_updated: 200 }),
     ]
-    const p = buildAlgorithmListPayload(algos, "free")
+    const p = buildAlgorithmListPayload(algos)
     expect(p.algorithms.map((a) => a.name)).toEqual(["new", "mid", "old"])
   })
 })
@@ -114,15 +109,12 @@ describe("countUniqueAlgorithms", () => {
     expect(countUniqueAlgorithms([{ name: "a" }, { name: "b" }, { name: "c" }])).toBe(3)
   })
 
-  test("matches the cap when uniqueCount === cap (would block a new save)", () => {
-    // 5 distinct names → on free tier this equals SAVE_CAP and blocks new saves.
-    // The block decision lives in the tool itself; here we verify the
-    // count returns the value that decision keys on.
+  test("counts distinct names independently of local save policy", () => {
     const algos = ["a", "b", "c", "d", "e"].map((name) => ({ name }))
     expect(countUniqueAlgorithms(algos)).toBe(5)
   })
 
-  test("duplicate-name rows do NOT push uniqueCount over cap", () => {
+  test("duplicate-name rows collapse to their visible unique count", () => {
     // 4 unique names with one duplicate → 4, not 5.
     // This is the orphan-row scenario from the issue this PR fixes.
     const algos = [{ name: "a" }, { name: "a" }, { name: "b" }, { name: "c" }, { name: "d" }]

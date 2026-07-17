@@ -5,11 +5,13 @@ import fs from "fs/promises"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Process } from "@/util/process"
-import { ensurePythonEnv } from "@/python/env"
+import { resolveSessionPythonEnv } from "@/python/session-env"
 import { resolveSymbol, SUPPORTED_SYMBOLS } from "../data/symbols"
+import { Database } from "@opencode-ai/core/database/database"
+import { StrategyContext } from "@/task/strategy-context"
 
-const INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
-type Interval = (typeof INTERVALS)[number]
+export const PRICE_HISTORY_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "1d"] as const
+type Interval = (typeof PRICE_HISTORY_INTERVALS)[number]
 
 // yfinance's native intervals. There is intentionally no `4h` here — yfinance
 // does not provide native 4h bars, and silently aliasing it to 1h was lying
@@ -25,7 +27,7 @@ const YF_INTERVAL: Record<Interval, string> = {
 }
 
 // yfinance period limits — keep `period` aligned with the interval to avoid empty frames.
-const YF_PERIOD: Record<Interval, string> = {
+export const PRICE_HISTORY_RETENTION: Record<Interval, string> = {
   "1m": "5d",
   "5m": "30d",
   "15m": "60d",
@@ -39,7 +41,7 @@ const parameters = z.object({
     .string()
     .describe("Symbol to fetch (BTC, BTC/USD, BTC-USD, AAPL, etc.). Must be a supported market."),
   interval: z
-    .enum(INTERVALS)
+    .enum(PRICE_HISTORY_INTERVALS)
     .default("1h")
     .describe("Bar interval. yfinance only supports the listed natives; 4h was removed because it aliased to 1h and lied about bar size."),
   limit: z
@@ -87,7 +89,9 @@ print(json.dumps({"rows": rows, "count": len(rows)}))
 
 export const PriceHistoryTool = Tool.define(
   "finny_get_history",
-  Effect.succeed({
+  Effect.gen(function* () {
+    const database = yield* Effect.serviceOption(Database.Service)
+    return {
     description:
       "Fetch historical OHLCV bars for a supported symbol (capped at 500 bars). " +
       "Use this when sizing thresholds against actual volatility, sanity-checking a strategy's " +
@@ -96,6 +100,16 @@ export const PriceHistoryTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
+        const contextBlock =
+          database._tag === "Some"
+            ? await StrategyContext.duplicateFetchBlock(
+                "Historical market-data fetch",
+                ctx.sessionID,
+                database.value,
+                ctx.messages,
+              )
+            : undefined
+        if (contextBlock) return contextBlock
         await ctx.ask({
           permission: "finny_get_history",
           patterns: ["*"],
@@ -115,7 +129,7 @@ export const PriceHistoryTool = Tool.define(
 
         const interval = params.interval
         const yfInterval = YF_INTERVAL[interval]
-        const yfPeriod = YF_PERIOD[interval]
+        const yfPeriod = PRICE_HISTORY_RETENTION[interval]
 
         const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-history-"))
         try {
@@ -124,7 +138,9 @@ export const PriceHistoryTool = Tool.define(
 
           let pythonCmd: string
           try {
-            const env = await ensurePythonEnv([{ spec: "yfinance", importCheck: "yfinance" }])
+            const env = await resolveSessionPythonEnv(ctx.sessionID, [
+              { spec: "yfinance", importCheck: "yfinance" },
+            ])
             pythonCmd = env.python
           } catch (e: any) {
             return {
@@ -188,5 +204,6 @@ export const PriceHistoryTool = Tool.define(
           await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {})
         }
       }),
+    }
   }),
 )

@@ -10,9 +10,7 @@ CREATE TABLE `task_run` (
 	`result_summary` text,
 	`last_error` text,
 	`time_created` integer NOT NULL,
-	`time_updated` integer NOT NULL,
-	FOREIGN KEY (`id`) REFERENCES `session`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`parent_session_id`) REFERENCES `session`(`id`) ON UPDATE no action ON DELETE cascade
+	`time_updated` integer NOT NULL
 );
 CREATE INDEX `task_run_parent_idx` ON `task_run` (`parent_session_id`);
 CREATE INDEX `task_run_status_idx` ON `task_run` (`status`);

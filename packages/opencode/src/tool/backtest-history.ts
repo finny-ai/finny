@@ -1,38 +1,49 @@
 import z from "zod"
-import path from "path"
 import { Effect } from "effect"
 import { Tool } from "./tool"
-import { Global } from "../global"
-import { Filesystem } from "../util/filesystem"
+import { BacktestStore } from "../backtest/store"
 
-interface BacktestHistoryEntry {
-  id: string
-  algorithmId: string
-  algorithmName: string
-  params: { duration: string; interval: string; capital: string }
-  results: {
-    totalReturn: number
-    maxDrawdown: number
-    annualizedVolatility: number
-    sharpeRatio: number
-    endingEquity: number
-    totalTrades: number
-    winRate: number
-    profitFactor: number
-  }
-  symbol?: string
-  timestamp: number
-}
+export function formatBacktestHistoryEntries(entries: BacktestStore.Manifest[]): string {
+  const groups = [
+    ["Crucible 2.0 runs", entries.filter((e) => e.results.runKind === "crucible_2_0")],
+    ["Legacy runs", entries.filter((e) => e.results.runKind !== "crucible_2_0")],
+  ] as const
 
-async function readHistory(): Promise<BacktestHistoryEntry[]> {
-  try {
-    const kvPath = path.join(Global.Path.state, "kv.json")
-    const kv = await Filesystem.readJson(kvPath)
-    const raw = kv?.backtest_history
-    return Array.isArray(raw) ? raw : []
-  } catch {
-    return []
-  }
+  return groups
+    .filter(([, group]) => group.length > 0)
+    .map(([title, group]) => {
+      const formatted = group.map((e) => {
+        const r = e.results
+        return [
+          `--- ${e.algorithmName} ---`,
+          `Run ID: ${e.id}`,
+          `Source: ${e.source}`,
+          `Run surface: ${r.productLabel ?? (r.runKind === "crucible_2_0" ? "Crucible 2.0" : "Legacy backtest")}`,
+          `Date: ${new Date(e.timestamp).toISOString().slice(0, 19)}`,
+          `Params: duration=${e.params.duration} interval=${e.params.interval} capital=$${e.params.capital}` +
+            (e.params.startDate && e.params.endDate ? ` window=${e.params.startDate}→${e.params.endDate}` : ""),
+          e.symbol ? `Symbol: ${e.symbol}` : null,
+          r.eligibilityStatus ? `Eligibility: ${r.eligibilityStatus}` : null,
+          `Total Return: ${(r.totalReturn * 100).toFixed(2)}%`,
+          `Max Drawdown: ${(r.maxDrawdown * 100).toFixed(2)}%`,
+          `Sharpe Ratio: ${r.sharpeRatio.toFixed(2)}`,
+          `Ending Equity: $${r.endingEquity.toFixed(2)}`,
+          `Total Trades: ${r.totalTrades}`,
+          `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
+          `Profit Factor: ${r.profitFactor == null ? "N/A" : r.profitFactor.toFixed(2)}`,
+          e.benchmark
+            ? `Benchmark Return: ${(e.benchmark.totalReturn * 100).toFixed(2)}% | Alpha: ${e.alpha == null ? "N/A" : `${(e.alpha * 100).toFixed(2)} pts`}`
+            : `Benchmark: N/A`,
+          e.dir ? `Evidence: ${e.dir}` : null,
+          e.artifacts.sourceArtifacts ? `Source artifacts: ${e.artifacts.sourceArtifacts}` : null,
+          ``,
+        ]
+          .filter(Boolean)
+          .join("\n")
+      })
+      return [`== ${title} ==`, ...formatted].join("\n")
+    })
+    .join("\n")
 }
 
 const parameters = z.object({
@@ -63,20 +74,15 @@ export const BacktestHistoryTool = Tool.define(
           metadata: {},
         })
 
-        let entries = await readHistory()
-        entries.sort((a, b) => b.timestamp - a.timestamp)
-
-        if (params.algorithmName) {
-          const name = params.algorithmName.toLowerCase()
-          entries = entries.filter((e) => e.algorithmName.toLowerCase() === name)
-        }
-
-        entries = entries.slice(0, params.limit)
+        const entries = await BacktestStore.list({
+          algorithmName: params.algorithmName,
+          limit: params.limit,
+        })
 
         if (entries.length === 0) {
           const msg = params.algorithmName
-            ? `No backtest history found for "${params.algorithmName}". Run a backtest first with finny_backtest_run.`
-            : "No backtest history found. Run a backtest first with finny_backtest_run."
+            ? `No backtest history found for "${params.algorithmName}". Run a backtest first with finny_backtest.`
+            : "No backtest history found. Run a backtest first with finny_backtest."
           return {
             title: "No backtest history",
             output: msg,
@@ -84,29 +90,9 @@ export const BacktestHistoryTool = Tool.define(
           }
         }
 
-        const formatted = entries.map((e) => {
-          const r = e.results
-          return [
-            `--- ${e.algorithmName} ---`,
-            `Date: ${new Date(e.timestamp).toISOString().slice(0, 19)}`,
-            `Params: duration=${e.params.duration} interval=${e.params.interval} capital=$${e.params.capital}`,
-            e.symbol ? `Symbol: ${e.symbol}` : null,
-            `Total Return: ${(r.totalReturn * 100).toFixed(2)}%`,
-            `Max Drawdown: ${(r.maxDrawdown * 100).toFixed(2)}%`,
-            `Sharpe Ratio: ${r.sharpeRatio.toFixed(2)}`,
-            `Ending Equity: $${r.endingEquity.toFixed(2)}`,
-            `Total Trades: ${r.totalTrades}`,
-            `Win Rate: ${(r.winRate * 100).toFixed(1)}%`,
-            `Profit Factor: ${r.profitFactor.toFixed(2)}`,
-            ``,
-          ]
-            .filter(Boolean)
-            .join("\n")
-        })
-
         return {
           title: `${entries.length} backtest result${entries.length === 1 ? "" : "s"}`,
-          output: formatted.join("\n"),
+          output: formatBacktestHistoryEntries(entries),
           metadata: { count: entries.length },
         }
       }),

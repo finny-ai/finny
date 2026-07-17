@@ -8,16 +8,22 @@
 
                                       Claude Code for Financial Markets
 ```
-<a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/badge/npm-v0.6.7-3381C3?style=flat-square" /></a>
+<a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/npm/v/finny?style=flat-square&label=npm" /></a>
 
 <img width="1546" height="1046" alt="Screenshot 2026-04-14 at 4 55 14 PM" src="https://github.com/user-attachments/assets/be2784d6-ced1-4259-96de-69518f22b444" />
-
 
 Build, backtest, and iterate on trading algorithms using natural language. Built on the [OpenCode](https://github.com/anomalyco/opencode) AI agent harness.
 
 ---
 
 ### Quick Start
+
+```bash
+curl -fsSL https://finnyai.tech/cli/install | bash
+finny
+```
+
+Or via npm (same public package the curl installer uses):
 
 ```bash
 npm i -g finny
@@ -91,7 +97,7 @@ Press `Tab` to switch between modes.
 Every generated strategy is checked for:
 
 - **Python syntax** errors
-- **Strategy class structure** — requires `__init__` and `on_tick` methods
+- **Strategy class structure** — strict v2 requires `Strategy(broker, params=None)` and `on_bar(self, symbol, bar)`
 - **Forbidden imports** — `os`, `subprocess`, `socket`, `requests`, etc.
 - **Dangerous calls** — `exec`, `eval`, `compile`, `__import__`
 - **Trading pitfalls** — lookahead bias, unbounded lists, division by zero
@@ -124,17 +130,19 @@ Fork of [OpenCode](https://github.com/anomalyco/opencode) by Anomaly.
 ### License
 
 Finny is available for noncommercial use under the
-[PolyForm Noncommercial License 1.0.0](./LICENSE).
+[Finny Source-Available License 1.0](./LICENSE) (PolyForm Noncommercial
+1.0.0 with Additional Conditions).
 
-Commercial or enterprise use requires prior written approval from Finny and a
-separate commercial license agreement. This includes using Finny in a business,
-selling or reselling it, offering it as a hosted or managed service, bundling it
-with a commercial product or service, or forking Finny and building upon it for
-commercial sale.
+In short: you may use official Finny releases and read the source freely.
+If you fork or modify Finny, you must publish your changed source publicly
+within 30 days — private forks are not licensed. Nobody may host Finny, or
+any fork of it, as a web or network service for others. Commercial or
+enterprise use requires prior written approval from Finny and a separate
+commercial license agreement.
 
 The original OpenCode codebase is licensed under the MIT License. Finny's
-modifications and new features are licensed under PolyForm Noncommercial
-License 1.0.0.
+modifications and new features are licensed under the Finny Source-Available
+License 1.0.
 
 ---
 

@@ -1,10 +1,10 @@
 {
   "name": "@opencode-ai/console-function",
-  "version": "1.4.3",
+  "version": "1.17.4",
   "$schema": "https://json.schemastore.org/package.json",
   "private": true,
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "typecheck": "tsgo --noEmit"
   },
@@ -17,15 +17,13 @@
     "@typescript/native-preview": "catalog:"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "3.0.64",
+    "@ai-sdk/anthropic": "3.0.82",
     "@ai-sdk/openai": "3.0.48",
     "@ai-sdk/openai-compatible": "2.0.37",
-    "@hono/zod-validator": "catalog:",
     "@opencode-ai/console-core": "workspace:*",
     "@opencode-ai/console-resource": "workspace:*",
     "@openauthjs/openauth": "0.0.0-20250322224806",
     "ai": "catalog:",
-    "hono": "catalog:",
     "zod": "catalog:"
   }
 }

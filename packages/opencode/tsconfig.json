@@ -10,14 +10,15 @@
     "customConditions": ["browser"],
     "paths": {
       "@/*": ["./src/*"],
-      "@tui/*": ["./src/cli/cmd/tui/*"]
-    },
-    "plugins": [
-      {
-        "name": "@effect/language-service",
-        "transform": "@effect/language-service/transform",
-        "namespaceImportPackages": ["effect", "@effect/*"]
-      }
-    ]
-  }
+      "@test/*": ["./test/*"],
+      "@tui/*": ["../tui/src/*"],
+      "@finny-ai/core/*": ["../finny-core/src/*"]
+    }
+  },
+  "exclude": [
+    "src/project/project.sql.ts",
+    "src/session/session.sql.ts",
+    "src/share/share.sql.ts",
+    "src/storage/json-migration.ts"
+  ]
 }

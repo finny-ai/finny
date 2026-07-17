@@ -1,10 +1,10 @@
 {
   "name": "@opencode-ai/function",
-  "version": "1.4.3",
+  "version": "1.17.4",
   "$schema": "https://json.schemastore.org/package.json",
   "private": true,
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "devDependencies": {
     "@cloudflare/workers-types": "catalog:",
     "@tsconfig/node22": "22.0.2",

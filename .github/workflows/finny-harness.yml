@@ -1,0 +1,259 @@
+name: Finny harness
+
+on:
+  pull_request:
+  push:
+    branches: [dev, staging-dev]
+  workflow_dispatch:
+  schedule:
+    - cron: "17 6 * * 1-5"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finny-harness-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  BUN_VERSION: "1.3.14"
+  UV_VERSION: "0.11.28"
+
+jobs:
+  fixture-contract:
+    name: Offline workflow contract (${{ matrix.group }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    # Negative runs two full isolated harnesses (up to ~4m each wall-clock when
+    # contended) plus unit contracts and Phoenix boot. 5m was too tight and
+    # cancelled mid-run on GHA, masking the real fixture result.
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [negative, failures]
+    services:
+      phoenix:
+        image: arizephoenix/phoenix:version-17.22.0
+        ports:
+          - 6006:6006
+          - 4317:4317
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Frozen Bun install
+        run: bun install --frozen-lockfile
+      - name: Wait for pinned Phoenix
+        run: |
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:6006/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+      - name: Headless and observability contracts
+        if: matrix.group == 'negative'
+        run: >-
+          bun --cwd packages/opencode test
+          test/harness/headless-harness.test.ts
+          test/observability/phoenix-trace-grader.test.ts
+          test/observability/telemetry-shutdown.test.ts
+      - name: Execute real isolated scripted-model fixture matrix
+        env:
+          FINNY_HARNESS_E2E: "1"
+          FINNY_HARNESS_E2E_GROUP: ${{ matrix.group }}
+          FINNY_HARNESS_COLLECTOR_ENDPOINT: http://127.0.0.1:6006
+          FINNY_HARNESS_E2E_OUTPUT: .artifacts/headless-${{ matrix.group }}
+          # Keep consumer telemetry out of CI harness runs — it is unrelated to
+          # the offline contract and can add fire-and-forget network work.
+          FINNY_TELEMETRY: "0"
+        run: >-
+          bun --cwd packages/opencode test
+          test/harness/headless-fixture-e2e.test.ts
+      - name: Upload fixture evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finny-fixture-headless-${{ matrix.group }}-${{ github.run_id }}
+          path: .artifacts/headless-${{ matrix.group }}
+          if-no-files-found: error
+
+  engine-v2:
+    name: engine_v2 Python ${{ matrix.python }}
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Sync locked runtime
+        run: uv sync --frozen --project packages/opencode/python --python ${{ matrix.python }}
+      - name: Record runtime fingerprint
+        run: >-
+          uv run --frozen --project packages/opencode/python --python ${{ matrix.python }}
+          python -c "import hashlib,importlib.metadata as m,json,platform;
+          p=sorted(f'{d.metadata[\"Name\"]}=={d.version}' for d in m.distributions());
+          print(json.dumps({'python':platform.python_version(),'packages_sha256':hashlib.sha256(('\\n'.join(p)+'\\n').encode()).hexdigest()}))"
+      - name: Run every engine_v2 test
+        env:
+          PYTHONPATH: packages/opencode
+        run: >-
+          uv run --frozen --project packages/opencode/python --python ${{ matrix.python }}
+          pytest -q packages/opencode/tests/engine_v2
+
+  phoenix-integration:
+    name: Phoenix attribution and pagination
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      phoenix:
+        image: arizephoenix/phoenix:version-17.22.0
+        ports:
+          - 6006:6006
+          - 4317:4317
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Frozen installs
+        run: |
+          bun install --frozen-lockfile
+          uv sync --frozen --project packages/opencode/python --python 3.12
+      - name: Wait for pinned Phoenix
+        run: |
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:6006/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+      - name: Export attributed fixture spans
+        run: >-
+          uv run --frozen --project packages/opencode/python --python 3.12
+          python packages/opencode/script/seed-phoenix-integration.py
+          --project ci-finny-harness --session ci-session --run-id ci-run
+      - name: Grade exact project, session, run and time bounds
+        run: |
+          since=$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)
+          until=$(date -u -d '5 minutes' +%Y-%m-%dT%H:%M:%SZ)
+          for attempt in $(seq 1 30); do
+            if bun packages/opencode/script/phoenix-trace-grader.ts \
+              --endpoint http://127.0.0.1:6006 \
+              --project ci-finny-harness \
+              --session ci-session \
+              --run-id ci-run \
+              --commit ci-fixture \
+              --since "$since" \
+              --until "$until" \
+              --require-complete; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+
+  packaged-engine:
+    name: Clean-install packaged engine smoke
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Frozen installs
+        run: |
+          bun install --frozen-lockfile
+          uv sync --frozen --project packages/opencode/python --python 3.12
+      - name: Build clean Linux package
+        working-directory: packages/opencode
+        run: bun run script/build.ts --single --skip-install --skip-embed-web-ui
+      - name: Compare source and packaged semantic hashes
+        working-directory: packages/opencode
+        run: >-
+          bun run script/verify-packaged-engine-smoke.ts
+          --python python/.venv/bin/python
+          --binary dist/finny-linux-x64/bin/opencode
+
+  live-harness:
+    name: Live model and provider signal
+    if: >-
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      vars.FINNY_LIVE_HARNESS_ENABLED == '1' &&
+      vars.FINNY_HARNESS_MODEL != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      phoenix:
+        image: arizephoenix/phoenix:version-17.22.0
+        ports:
+          - 6006:6006
+          - 4317:4317
+    env:
+      FINNY_HARNESS_MODEL: ${{ vars.FINNY_HARNESS_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID || secrets.ALPACA_API_KEY }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY || secrets.ALPACA_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: ${{ env.UV_VERSION }}
+          enable-cache: true
+      - name: Frozen Bun install
+        run: bun install --frozen-lockfile
+      - name: Wait for pinned Phoenix
+        run: |
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:6006/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          exit 1
+      - name: Run live contract
+        run: >-
+          bun --cwd packages/opencode run harness:headless --
+          --ref ${{ github.sha }}
+          --scenario harness/scenarios/spy-5m-sma-crossover.v1.json
+          --agent finny
+          --model "${FINNY_HARNESS_MODEL}"
+          --collector http://127.0.0.1:6006
+          --output ../../.artifacts/headless
+      - name: Upload evidence bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finny-live-headless-${{ github.run_id }}
+          path: .artifacts/headless
+          if-no-files-found: error

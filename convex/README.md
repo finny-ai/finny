@@ -88,3 +88,37 @@ function handleButtonPress() {
 Use the Convex CLI to push your functions to a deployment. See everything
 the Convex CLI can do by running `npx convex -h` in your project root
 directory. To learn more, launch the docs with `npx convex docs`.
+
+## Legacy Finny License Checks
+
+The commercial license source of truth lives in `finny-platform`, not in this
+runtime repo. The local Finny client calls `https://api.finnyai.tech/v1/license/check`
+by default. `FINNY_LICENSE_CHECK_URL` can override this for development.
+
+The customer-facing install and activation flow is:
+
+```bash
+npm i -g finny-pro
+finny-pro --license-key finny_...
+```
+
+The future platform endpoint resolves organization, plan, seat, and device
+policy server-side from the license key. Do not add new commercial licensing
+tables or source-of-truth behavior to this repo.
+
+The client-facing route returns `200 OK` or `403 Forbidden` with user-safe JSON.
+
+Client payload is limited to:
+
+- `licenseKeyHash`
+- `machineIdHash`
+- `appVersion`
+- `client`
+- `timestamp`
+
+Do not add requested feature, plan, seat count, prompt text, strategy code,
+symbols, market data, backtest metrics, P&L, or extra fields to this request.
+Plan and device policy resolution stays server-side in `finny-platform`.
+
+For local development only, `FINNY_LICENSE_BYPASS=1` skips the client gate.
+Pilot/customer builds should not set it.

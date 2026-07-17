@@ -1,5 +1,10 @@
 import path from "path"
+import fs from "fs"
+import os from "os"
 import { Process } from "../util/process"
+import { resolveAssetSpec } from "../backtest/asset-spec"
+
+declare const OPENCODE_VALIDATOR_SCRIPTS: Record<string, string> | undefined
 
 export namespace Validate {
   export type ErrorCode =
@@ -8,18 +13,24 @@ export namespace Validate {
     | "MISSING_INIT_METHOD"
     | "MISSING_ON_TICK_METHOD"
     | "ON_TICK_BAD_PARAMS"
+    | "STRICT_SHAPE_REQUIRED"
     | "FORBIDDEN_IMPORT"
     | "DANGEROUS_CALL"
     // Phase 1 AST-based errors
     | "STATE_RESET_IN_ON_TICK"
     | "GAINS_LOSSES_ASYMMETRY"
     | "LOOKAHEAD_BIAS_FLOW"
+    | "PRIVATE_BROKER_ACCESS"
+    | "FORBIDDEN_REFLECTION"
     // Phase 2 AST-based errors
     | "SAME_BAR_EXECUTION_BIAS"
     | "EQUITY_NEVER_UPDATED"
     | "POSITION_SIZE_UNCAPPED"
+    | "PROTECTIVE_STOP_CAPABILITY_MISSING"
+    | "UNSUPPORTED_ENGINE_STOP"
     // Phase 1 smoke-test errors
     | "SMOKE_TEST_EXCEPTION"
+    | "SMOKE_TEST_INCONCLUSIVE"
     | "INVARIANT_BAD_RETURN"
     | "INVARIANT_CONSTANT_TRADES"
     | "INVARIANT_RSI_STUCK"
@@ -29,6 +40,9 @@ export namespace Validate {
     | "LEVERAGE_VIOLATION"
     // Config cross-reference errors
     | "CONFIG_KEY_UNUSED"
+    | "UNSUPPORTED_STRATEGY_CONTRACT"
+    // Validator engine errors
+    | "VALIDATOR_RUNTIME_ERROR"
 
   export type WarningCode =
     | "LOOKAHEAD_BIAS"
@@ -40,8 +54,12 @@ export namespace Validate {
     | "RMS_NOT_STDDEV"
     | "POPULATION_VARIANCE"
     | "MISSING_POSITION_SIZING"
+    | "STOP_PARAM_NOT_ENFORCED"
     // Phase 2 AST-based warnings
     | "FRACTIONAL_SHARES_EQUITY"
+    | "FUTURES_FRACTIONAL_QTY"
+    | "FUTURES_NOTIONAL_SIZING"
+    | "CRYPTO_WHOLE_UNIT_QTY"
     | "NEAR_ZERO_DIVISION"
     // Phase 1 smoke-test warnings
     | "INVARIANT_DIRECTIONAL_SANITY"
@@ -63,6 +81,12 @@ export namespace Validate {
     valid: boolean
     errors: Diagnostic[]
     warnings: Diagnostic[]
+    capabilities?: {
+      protectiveStop: {
+        mode: "none" | "strategy_next_open" | "engine_stop" | "undeclared"
+        astVerified: boolean | null
+      }
+    }
   }
 
   export interface Options {
@@ -72,11 +96,27 @@ export namespace Validate {
     skipSmokeTest?: boolean
   }
 
-  const FORBIDDEN_MODULES = ["os", "subprocess", "sys", "socket", "requests", "pickle", "threading", "asyncio"]
+  const FORBIDDEN_MODULES = [
+    "asyncio", "importlib", "io", "os", "pathlib", "pickle", "random", "requests",
+    "shutil", "socket", "statistics", "subprocess", "sys", "tempfile", "threading",
+  ]
   const DANGEROUS_CALLS = ["exec(", "eval(", "__import__(", "compile(", "open("]
 
   // Config keys that are legitimately metadata (not expected to appear in strategy code).
-  const CONFIG_META_KEYS = new Set(["symbol", "interval", "risk", "starting_equity_usd"])
+  const CONFIG_META_KEYS = new Set([
+    // Strategy-level metadata
+    "symbol", "interval", "required_history_bars", "risk", "starting_equity_usd",
+    // Platform-level metadata (injected by runner / used by backtest harness, not by strategy code)
+    "asset_class", "asset_type", "asset_spec", "assetClass", "venue", "currency",
+    "calendar", "tickSize", "lotSize", "multiplier", "feeModel", "marginModel",
+    "dataProvider", "productionEligible", "blockingReason", "execution",
+    "max_leverage", "initial_margin_pct", "maintenance_margin_pct", "funding_rate_bps",
+    "funding_interval_hours", "spread_enabled", "maker_fee_bps", "taker_fee_bps", "commission_per_contract",
+    "slippage_bps", "participation_pct", "k_atr", "k_vol",
+    "start_date", "end_date", "duration",
+    "max_risk_per_trade_pct",
+    "_generated",
+  ])
 
   // Known error codes that mirror AST/smoke diagnostic codes. Used to coerce Python-side
   // string codes into our typed unions safely.
@@ -84,25 +124,52 @@ export namespace Validate {
     "STATE_RESET_IN_ON_TICK",
     "GAINS_LOSSES_ASYMMETRY",
     "LOOKAHEAD_BIAS_FLOW",
+    "PRIVATE_BROKER_ACCESS",
+    "FORBIDDEN_REFLECTION",
+    "FORBIDDEN_IMPORT",
+    "DANGEROUS_CALL",
     "SAME_BAR_EXECUTION_BIAS",
     "EQUITY_NEVER_UPDATED",
     "POSITION_SIZE_UNCAPPED",
+    "PROTECTIVE_STOP_CAPABILITY_MISSING",
+    "UNSUPPORTED_ENGINE_STOP",
     "SMOKE_TEST_EXCEPTION",
+    "SMOKE_TEST_INCONCLUSIVE",
     "INVARIANT_BAD_RETURN",
     "INVARIANT_CONSTANT_TRADES",
     "INVARIANT_RSI_STUCK",
     "INVARIANT_STATE_NOT_ACCUMULATING",
     "EQUITY_STATIC",
     "LEVERAGE_VIOLATION",
+    "UNSUPPORTED_STRATEGY_CONTRACT",
+    "VALIDATOR_RUNTIME_ERROR",
   ])
   const KNOWN_WARNING_CODES = new Set<WarningCode>([
     "RMS_NOT_STDDEV",
     "POPULATION_VARIANCE",
     "MISSING_POSITION_SIZING",
+    "STOP_PARAM_NOT_ENFORCED",
     "FRACTIONAL_SHARES_EQUITY",
+    "FUTURES_FRACTIONAL_QTY",
+    "FUTURES_NOTIONAL_SIZING",
+    "CRYPTO_WHOLE_UNIT_QTY",
     "NEAR_ZERO_DIVISION",
+    "DIVISION_NO_ZERO_CHECK",
     "INVARIANT_DIRECTIONAL_SANITY",
     "GUARD_NEVER_BINDING",
+  ])
+
+  const RISK_HARD_CODES = new Set<string>([
+    "LOOKAHEAD_BIAS_FLOW",
+    "SAME_BAR_EXECUTION_BIAS",
+    "LEVERAGE_VIOLATION",
+    "POSITION_SIZE_UNCAPPED",
+    "PROTECTIVE_STOP_CAPABILITY_MISSING",
+    "UNSUPPORTED_ENGINE_STOP",
+    "INVARIANT_RSI_STUCK",
+    "INVARIANT_CONSTANT_TRADES",
+    "INVARIANT_STATE_NOT_ACCUMULATING",
+    "EQUITY_STATIC",
   ])
 
   function normalize(code: string): string {
@@ -165,8 +232,8 @@ export namespace Validate {
 
   /**
    * Spawn a Python script, feed `code` to stdin, and parse its JSON stdout as diagnostics.
-   * Returns [] on any failure — the Python script is advisory; upstream syntax/structure
-   * checks are authoritative for blocking save.
+   * Fail closed on subprocess/parse/runtime failures: a broken validator must
+   * never make unsafe strategy code appear valid.
    */
   async function runPythonDiagnostic(
     scriptPath: string,
@@ -174,6 +241,7 @@ export namespace Validate {
     timeoutMs: number,
     extraArgs: string[] = [],
   ): Promise<Diagnostic[]> {
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     try {
       const proc = Process.spawn(
         ["python3", scriptPath, ...extraArgs],
@@ -182,48 +250,97 @@ export namespace Validate {
       proc.stdin!.write(code)
       proc.stdin!.end()
 
-      const timeout = new Promise<number>((resolve) => setTimeout(() => {
-        try { proc.kill("SIGKILL") } catch {}
-        resolve(124)
-      }, timeoutMs))
+      // Cancellable timeout — clear it on natural exit so we don't SIGKILL
+      // a reaped pid (race) or leave a dangling timer.
+      let timedOut = false
+      const timeout = new Promise<number>((resolve) => {
+        timeoutHandle = setTimeout(() => {
+          timedOut = true
+          try { proc.kill("SIGKILL") } catch {}
+          resolve(124)
+        }, timeoutMs)
+      })
 
-      const [exitCode, stdout] = await Promise.all([
-        Promise.race([proc.exited, timeout]),
-        new Promise<string>((resolve) => {
-          const chunks: Buffer[] = []
-          proc.stdout!.on("data", (c: Buffer) => chunks.push(c))
-          proc.stdout!.on("end", () => resolve(Buffer.concat(chunks).toString()))
-        }),
-      ])
+      // Drain BOTH stdout and stderr. Leaving stderr unconsumed can fill the
+      // pipe buffer and block the Python subprocess mid-write.
+      const stdoutP = new Promise<string>((resolve) => {
+        const chunks: Buffer[] = []
+        proc.stdout!.on("data", (c: Buffer) => chunks.push(c))
+        proc.stdout!.on("end", () => resolve(Buffer.concat(chunks).toString()))
+      })
+      const stderrP = new Promise<string>((resolve) => {
+        const chunks: Buffer[] = []
+        proc.stderr!.on("data", (c: Buffer) => chunks.push(c))
+        proc.stderr!.on("end", () => resolve(Buffer.concat(chunks).toString()))
+      })
 
-      if (exitCode !== 0) return []
+      const exitCode = await Promise.race([proc.exited, timeout])
+      if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = undefined }
+      const [stdout, stderr] = await Promise.all([stdoutP, stderrP])
+
+      if (exitCode !== 0) {
+        const reason = timedOut ? `timed out after ${timeoutMs}ms` : `exited ${exitCode}`
+        const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""
+        return [{
+          code: "VALIDATOR_RUNTIME_ERROR",
+          severity: "error",
+          message: `${path.basename(scriptPath)} ${reason}${detail}`,
+          fix: "Fix the validator runtime before trusting validation or backtests.",
+        }]
+      }
       const raw = stdout.trim()
       if (!raw) return []
-      const parsed = JSON.parse(raw)
-      if (!Array.isArray(parsed)) return []
+      let parsed: unknown
+      try { parsed = JSON.parse(raw) } catch {
+        return [{
+          code: "VALIDATOR_RUNTIME_ERROR",
+          severity: "error",
+          message: `${path.basename(scriptPath)} produced non-JSON output`,
+          fix: "Fix the validator runtime before trusting validation or backtests.",
+        }]
+      }
+      if (!Array.isArray(parsed)) {
+        return [{
+          code: "VALIDATOR_RUNTIME_ERROR",
+          severity: "error",
+          message: `${path.basename(scriptPath)} produced an invalid diagnostics payload`,
+          fix: "Fix the validator runtime before trusting validation or backtests.",
+        }]
+      }
 
       const diags: Diagnostic[] = []
       for (const d of parsed) {
         if (typeof d !== "object" || d === null) continue
-        const code = String(d.code ?? "")
-        const severity = d.severity === "error" ? "error" : "warning"
+        const code = String((d as any).code ?? "")
+        let severity: "error" | "warning" = (d as any).severity === "error" ? "error" : "warning"
+        if (RISK_HARD_CODES.has(code)) severity = "error"
         if (severity === "error" && !KNOWN_ERROR_CODES.has(code as ErrorCode)) continue
         if (severity === "warning" && !KNOWN_WARNING_CODES.has(code as WarningCode)) continue
         diags.push({
           code: code as ErrorCode | WarningCode,
           severity,
-          message: String(d.message ?? ""),
-          line: typeof d.line === "number" ? d.line : undefined,
-          fix: typeof d.fix === "string" ? d.fix : undefined,
+          message: String((d as any).message ?? ""),
+          line: typeof (d as any).line === "number" ? (d as any).line : undefined,
+          fix: typeof (d as any).fix === "string" ? (d as any).fix : undefined,
         })
       }
       return diags
-    } catch {
-      return []
+    } catch (e: any) {
+      return [{
+        code: "VALIDATOR_RUNTIME_ERROR",
+        severity: "error",
+        message: `${path.basename(scriptPath)} failed to run: ${e?.message ?? String(e)}`,
+        fix: "Fix the validator runtime before trusting validation or backtests.",
+      }]
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle)
     }
   }
 
   function scriptPath(name: string): string {
+    const bundled = bundledScriptPath(name)
+    if (bundled) return bundled
+
     // `import.meta.dir` works in Bun and is the directory of this .ts file.
     // The Python scripts are co-located.
     // Fall back to process.cwd() if import.meta.dir is not available (e.g. Jest).
@@ -234,13 +351,42 @@ export namespace Validate {
     return path.join(dir, name)
   }
 
-  async function checkAST(code: string, symbol?: string): Promise<Diagnostic[]> {
+  function bundledScriptPath(name: string): string | undefined {
+    if (typeof OPENCODE_VALIDATOR_SCRIPTS === "undefined") return undefined
+    const source = OPENCODE_VALIDATOR_SCRIPTS[name]
+    if (!source) return undefined
+
+    const base =
+      process.env.OPENCODE_VALIDATOR_SCRIPT_DIR ||
+      path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "opencode", "validator-scripts")
+    fs.mkdirSync(base, { recursive: true })
+    const file = path.join(base, name)
+    try {
+      if (!fs.existsSync(file) || fs.readFileSync(file, "utf8") !== source) {
+        fs.writeFileSync(file, source, "utf8")
+      }
+      return file
+    } catch (e: any) {
+      throw new Error(`failed to materialize bundled validator script ${name}: ${e?.message ?? String(e)}`)
+    }
+  }
+
+  async function checkAST(
+    code: string,
+    symbol?: string,
+    protectiveStopMode?: "none" | "strategy_next_open" | "engine_stop",
+  ): Promise<Diagnostic[]> {
     const args = symbol ? ["--symbol", symbol] : []
+    if (protectiveStopMode) args.push("--protective-stop-mode", protectiveStopMode)
     return runPythonDiagnostic(scriptPath("ast_analyzer.py"), code, 5_000, args)
   }
 
-  async function checkSmokeTest(code: string): Promise<Diagnostic[]> {
-    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, 15_000)
+  async function checkSmokeTest(code: string, symbol?: string, requiredHistoryBars?: number): Promise<Diagnostic[]> {
+    const args: string[] = []
+    if (symbol) args.push("--symbol", symbol)
+    if (requiredHistoryBars !== undefined) args.push("--required-history-bars", String(requiredHistoryBars))
+    const timeoutMs = Math.min(60_000, 15_000 + Math.max(0, requiredHistoryBars ?? 0) * 8)
+    return runPythonDiagnostic(scriptPath("smoke_test.py"), code, timeoutMs, args)
   }
 
   async function checkSyntax(code: string): Promise<Diagnostic | null> {
@@ -272,9 +418,13 @@ export namespace Validate {
         }
       }
       return null
-    } catch {
-      // python3 not found — downgrade to warning-level skip
-      return null
+    } catch (e: any) {
+      return {
+        code: "VALIDATOR_RUNTIME_ERROR",
+        severity: "error",
+        message: `Python syntax checker failed to run: ${e?.message ?? String(e)}`,
+        fix: "Fix the Python validator runtime before trusting validation or backtests.",
+      }
     }
   }
 
@@ -296,47 +446,58 @@ export namespace Validate {
     if (!classResult) return diagnostics
     const { body: classBody, startLine: classStartLine } = classResult
 
-    // MISSING_INIT_METHOD
-    if (!/def\s+__init__\s*\(\s*self/.test(classBody)) {
+    function normalizeParamList(raw: string): string[] {
+      return raw
+        .split(",")
+        .map((p) => p.trim().replace(/\s+/g, ""))
+        .filter(Boolean)
+    }
+
+    const initMatch = classBody.match(/def\s+__init__\s*\(([^)]*)\)/)
+    if (!initMatch) {
       diagnostics.push({
         code: "MISSING_INIT_METHOD",
         severity: "error",
-        message: "Missing `__init__(self)` method in Strategy class",
-        fix: "Add `def __init__(self):` to your Strategy class",
+        message: "Missing strict constructor `__init__(self, broker, params=None)` in Strategy class",
+        fix: "Add `def __init__(self, broker, params=None):` and store only `self.broker = broker` plus your own state.",
       })
+    } else {
+      const params = normalizeParamList(initMatch[1])
+      if (params.length !== 3 || params[0] !== "self" || params[1] !== "broker" || params[2] !== "params=None") {
+        diagnostics.push({
+          code: "STRICT_SHAPE_REQUIRED",
+          severity: "error",
+          message: "Strict v2 requires the exact constructor `__init__(self, broker, params=None)`.",
+          fix: "Change the constructor to `def __init__(self, broker, params=None):`.",
+        })
+      }
     }
 
-    // MISSING ENTRY METHOD — accept either legacy `on_tick(self, bar)` or
-    // broker-API `on_bar(self, symbol, bar)`.
     const onTickMatch = classBody.match(/def\s+on_tick\s*\(([^)]*)\)/)
     const onBarMatch = classBody.match(/def\s+on_bar\s*\(([^)]*)\)/)
-    if (!onTickMatch && !onBarMatch) {
+    if (onTickMatch) {
+      diagnostics.push({
+        code: "STRICT_SHAPE_REQUIRED",
+        severity: "error",
+        message: "Strict v2 rejects legacy `on_tick`; strategies must implement `on_bar(self, symbol, bar)`.",
+        fix: "Replace `on_tick(self, bar)` with `on_bar(self, symbol, bar)` and use `self.broker.buy/sell` order intents.",
+      })
+    }
+    if (!onBarMatch) {
       diagnostics.push({
         code: "MISSING_ON_TICK_METHOD",
         severity: "error",
-        message: "Missing entry method: add either `on_tick(self, bar)` (legacy) or `on_bar(self, symbol, bar)` (broker-API).",
-        fix: "Add `def on_tick(self, bar):` or `def on_bar(self, symbol, bar):` to your Strategy class",
+        message: "Missing strict entry method `on_bar(self, symbol, bar)`.",
+        fix: "Add `def on_bar(self, symbol, bar):` to your Strategy class.",
       })
-    } else if (onTickMatch) {
-      const params = onTickMatch[1]
-      if (!/\bbar\b/.test(params)) {
-        const onTickLine = classBody.split("\n").findIndex((l) => /def\s+on_tick/.test(l))
-        diagnostics.push({
-          code: "ON_TICK_BAD_PARAMS",
-          severity: "error",
-          message: "`on_tick` method is missing the `bar` parameter",
-          line: onTickLine >= 0 ? classStartLine + onTickLine + 1 : undefined,
-          fix: "Change signature to `def on_tick(self, bar):`",
-        })
-      }
     } else if (onBarMatch) {
-      const params = onBarMatch[1]
-      if (!/\bbar\b/.test(params)) {
+      const params = normalizeParamList(onBarMatch[1])
+      if (params.length !== 3 || params[0] !== "self" || params[1] !== "symbol" || params[2] !== "bar") {
         const onBarLine = classBody.split("\n").findIndex((l) => /def\s+on_bar/.test(l))
         diagnostics.push({
           code: "ON_TICK_BAD_PARAMS",
           severity: "error",
-          message: "`on_bar` method is missing the `bar` parameter",
+          message: "Strict v2 requires `on_bar(self, symbol, bar)`.",
           line: onBarLine >= 0 ? classStartLine + onBarLine + 1 : undefined,
           fix: "Change signature to `def on_bar(self, symbol, bar):`",
         })
@@ -360,7 +521,7 @@ export namespace Validate {
             severity: "error",
             message: `Forbidden import: \`${mod}\` is not allowed`,
             line: i + 1,
-            fix: `Remove the \`${mod}\` import. Allowed: math, statistics, collections, dataclasses, typing, decimal, random, itertools, functools`,
+            fix: `Remove the \`${mod}\` import. Allowed: math, collections, dataclasses, typing, decimal, itertools, functools`,
           })
         }
       }
@@ -405,25 +566,6 @@ export namespace Validate {
         line: appendLine >= 0 ? appendLine + 1 : undefined,
         fix: "Use `collections.deque(maxlen=N)` instead of unbounded lists",
       })
-    }
-
-    // DIVISION_NO_ZERO_CHECK: / without nearby != 0 or > 0
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim()
-      if (line.startsWith("#") || line.startsWith("def ") || line.startsWith("class ")) continue
-      if (/[^/]\/[^/=]/.test(line) || /^\s*\w.*\/[^/]/.test(line)) {
-        const context = lines.slice(Math.max(0, i - 3), i + 1).join("\n")
-        if (!/!=\s*0/.test(context) && !/>\s*0/.test(context) && !/if\s+.*\b\w+\b/.test(context)) {
-          diagnostics.push({
-            code: "DIVISION_NO_ZERO_CHECK",
-            severity: "warning",
-            message: "Division without a nearby zero-check guard",
-            line: i + 1,
-            fix: "Add `if denominator != 0:` before dividing",
-          })
-          break
-        }
-      }
     }
 
     // on_tick warnings
@@ -493,6 +635,26 @@ export namespace Validate {
     return typeof sym === "string" ? sym : undefined
   }
 
+  function extractRequiredHistoryBars(config: Options["config"]): number | undefined {
+    const parsed = parseConfig(config)
+    if (!parsed) return undefined
+    const value = parsed.required_history_bars
+    if (typeof value !== "number" || !Number.isFinite(value)) return undefined
+    return Math.max(0, Math.floor(value))
+  }
+
+  function extractProtectiveStopMode(
+    config: Options["config"],
+  ): "none" | "strategy_next_open" | "engine_stop" | undefined {
+    const parsed = parseConfig(config)
+    const risk = parsed?.risk_contract
+    if (!risk || typeof risk !== "object" || Array.isArray(risk)) return undefined
+    const stop = (risk as Record<string, unknown>).protective_stop
+    if (!stop || typeof stop !== "object" || Array.isArray(stop)) return undefined
+    const mode = (stop as Record<string, unknown>).mode
+    return mode === "none" || mode === "strategy_next_open" || mode === "engine_stop" ? mode : undefined
+  }
+
   function flattenConfigLeaves(obj: unknown, prefix = ""): Array<{ key: string; value: unknown }> {
     const out: Array<{ key: string; value: unknown }> = []
     if (typeof obj !== "object" || obj === null || Array.isArray(obj)) return out
@@ -510,8 +672,39 @@ export namespace Validate {
     const diagnostics: Diagnostic[] = []
     const parsed = parseConfig(config)
     if (!parsed) return diagnostics
+    const protectiveStopMode = extractProtectiveStopMode(parsed)
+    if (protectiveStopMode === "engine_stop") {
+      diagnostics.push({
+        code: "UNSUPPORTED_ENGINE_STOP",
+        severity: "error",
+        message:
+          "risk_contract.protective_stop.mode=engine_stop is not eligible because engine_v2 has no contract-bound protective-stop producer.",
+        fix: "Use strategy_next_open with AST-verifiable strategy logic, or none, until engine-stop semantics are implemented.",
+      })
+    }
+    try {
+      const spec = resolveAssetSpec(parsed, typeof parsed.symbol === "string" ? parsed.symbol : "AAPL")
+      if (spec.assetClass === "option" && process.env.FINNY_ALLOW_EXPERIMENTAL_OPTIONS !== "1") {
+        diagnostics.push({
+          code: "UNSUPPORTED_STRATEGY_CONTRACT",
+          severity: "error",
+          message: `Options are represented but not production-backtest eligible. ${spec.blockingReason}`,
+          fix: "Use equity/future/fx/crypto_spot/crypto_perp, or set FINNY_ALLOW_EXPERIMENTAL_OPTIONS=1 only for internal options model work.",
+        })
+      }
+    } catch (e: any) {
+      diagnostics.push({
+        code: "UNSUPPORTED_STRATEGY_CONTRACT",
+        severity: "error",
+        message: `Invalid asset specification: ${e?.message ?? String(e)}`,
+        fix: "Set a supported asset_class and complete required asset_spec fields.",
+      })
+    }
 
-    const leaves = flattenConfigLeaves(parsed)
+    // risk_contract is enforced by the platform and must not be mistaken for
+    // a collection of unused strategy parameters.
+    const { risk_contract: _riskContract, ...strategyVisibleConfig } = parsed
+    const leaves = flattenConfigLeaves(strategyVisibleConfig)
     for (const { key, value } of leaves) {
       if (CONFIG_META_KEYS.has(key)) continue
       const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
@@ -549,7 +742,7 @@ export namespace Validate {
 
       diagnostics.push({
         code: "CONFIG_KEY_UNUSED",
-        severity: "error",
+        severity: "warning",
         message: (
           `Config key \`${key}\` is declared but never referenced in the strategy code. ` +
           `Either remove it from config.json or use it (e.g. self.${key} = config["${key}"]).`
@@ -582,9 +775,10 @@ export namespace Validate {
 
     if (!hardFailed) {
       const symbol = extractSymbol(options.config)
-      astDiagnostics = await checkAST(normalized, symbol)
+      const protectiveStopMode = extractProtectiveStopMode(options.config)
+      astDiagnostics = await checkAST(normalized, symbol, protectiveStopMode)
       if (!options.skipSmokeTest) {
-        smokeDiagnostics = await checkSmokeTest(normalized)
+        smokeDiagnostics = await checkSmokeTest(normalized, symbol, extractRequiredHistoryBars(options.config))
       }
     }
 
@@ -601,16 +795,88 @@ export namespace Validate {
 
     const errors = allDiagnostics.filter((d) => d.severity === "error")
     const warnings = allDiagnostics.filter((d) => d.severity === "warning")
+    const blocking = allDiagnostics.filter((d) => diagnosticDisposition(d) === "blocking")
+    const protectiveStopMode = extractProtectiveStopMode(options.config)
+    const protectiveStopAstVerified = protectiveStopMode === "strategy_next_open"
+      ? !errors.some((diagnostic) => diagnostic.code === "PROTECTIVE_STOP_CAPABILITY_MISSING")
+      : protectiveStopMode === "engine_stop"
+        ? false
+        : null
 
     return {
-      valid: errors.length === 0,
+      valid: blocking.length === 0,
       errors,
       warnings,
+      capabilities: {
+        protectiveStop: {
+          mode: protectiveStopMode ?? "undeclared",
+          astVerified: protectiveStopAstVerified,
+        },
+      },
     }
+  }
+
+  export type DiagnosticDisposition = "blocking" | "advisory"
+
+  /**
+   * One policy point for every validator consumer. Python risk diagnostics are
+   * normalized to errors before this function; warnings remain advisory and
+   * must not be silently promoted by save/backtest callers.
+   */
+  export function diagnosticDisposition(diagnostic: Diagnostic): DiagnosticDisposition {
+    return diagnostic.severity === "error" ? "blocking" : "advisory"
+  }
+
+  export function blockingDiagnostics(result: Result): Diagnostic[] {
+    return [...result.errors, ...result.warnings].filter((d) => diagnosticDisposition(d) === "blocking")
+  }
+
+  export function advisoryDiagnostics(result: Result): Diagnostic[] {
+    return [...result.errors, ...result.warnings].filter((d) => diagnosticDisposition(d) === "advisory")
+  }
+
+  /**
+   * True when the result carries any risk-flavored warning (lookahead, leverage,
+   * position sizing, or invariant-violation smoke diagnostics). Tools that run a
+   * backtest can use this to decide whether to prepend a [!] RISK block.
+   */
+  export function hasRiskWarnings(result: Result): boolean {
+    return result.warnings.some(w => RISK_HARD_CODES.has(w.code))
+  }
+
+  /** Formatted risk-warning banner — empty string when none. */
+  function displayCode(code: ErrorCode | WarningCode): string {
+    const aliases: Partial<Record<ErrorCode | WarningCode, string>> = {
+      MISSING_ON_TICK_METHOD: "MISSING_ON_BAR_METHOD",
+      ON_TICK_BAD_PARAMS: "ON_BAR_BAD_PARAMS",
+      STATE_RESET_IN_ON_TICK: "STATE_RESET_IN_ON_BAR",
+      NO_RETURN_IN_ON_TICK: "NO_RETURN_IN_ON_BAR",
+      ON_TICK_BAD_RETURN: "ON_BAR_BAD_RETURN",
+    }
+    return aliases[code] ?? code
+  }
+
+  export function formatRiskBanner(result: Result): string {
+    const risky = [...result.errors, ...result.warnings].filter(w => RISK_HARD_CODES.has(w.code))
+    if (risky.length === 0) return ""
+    const lines: string[] = [`[!] RISK DIAGNOSTICS (${risky.length}) — backtest results may overstate edge or understate drawdown:`]
+    for (const w of risky) {
+      const loc = w.line ? ` (line ${w.line})` : ""
+      lines.push(`  - ${displayCode(w.code)}${loc}: ${w.message}`)
+      if (w.fix) lines.push(`    Fix: ${w.fix}`)
+    }
+    return lines.join("\n")
   }
 
   export function format(result: Result): string {
     const parts: string[] = []
+
+    // Risk banner first so it can't be missed.
+    const risk = formatRiskBanner(result)
+    if (risk) {
+      parts.push(risk)
+      parts.push("")
+    }
 
     if (result.valid && result.warnings.length === 0) {
       parts.push("Validation passed with no issues.")
@@ -618,20 +884,26 @@ export namespace Validate {
     }
 
     if (!result.valid) {
-      parts.push(`Validation FAILED — ${result.errors.length} error(s):\n`)
-      for (const e of result.errors) {
-        const loc = e.line ? ` (line ${e.line})` : ""
-        parts.push(`  [ERROR] ${e.code}${loc}: ${e.message}`)
-        if (e.fix) parts.push(`          Fix: ${e.fix}`)
+      if (result.errors.length > 0) {
+        parts.push(`Validation FAILED — ${result.errors.length} error(s):\n`)
+        for (const e of result.errors) {
+          const loc = e.line ? ` (line ${e.line})` : ""
+          parts.push(`  [ERROR] ${displayCode(e.code)}${loc}: ${e.message}`)
+          if (e.fix) parts.push(`          Fix: ${e.fix}`)
+        }
+      } else {
+        parts.push("Validation FAILED — warnings must be cleared before save/backtest.")
       }
     }
 
-    if (result.warnings.length > 0) {
+    // Separate non-risk warnings to avoid duplicating the risk banner content.
+    const nonRiskWarnings = result.warnings.filter(w => !RISK_HARD_CODES.has(w.code))
+    if (nonRiskWarnings.length > 0) {
       if (parts.length > 0) parts.push("")
-      parts.push(`${result.warnings.length} warning(s):\n`)
-      for (const w of result.warnings) {
+      parts.push(`${nonRiskWarnings.length} warning(s):\n`)
+      for (const w of nonRiskWarnings) {
         const loc = w.line ? ` (line ${w.line})` : ""
-        parts.push(`  [WARN] ${w.code}${loc}: ${w.message}`)
+        parts.push(`  [WARN] ${displayCode(w.code)}${loc}: ${w.message}`)
         if (w.fix) parts.push(`         Fix: ${w.fix}`)
       }
     }

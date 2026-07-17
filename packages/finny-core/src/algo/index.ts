@@ -6,21 +6,33 @@ import {
   BACKTEST_FILE,
   Backtest,
   CURRENT_FILE,
+  DATA_SUBDIRS,
   DECISIONS_FILE,
+  MEMORY_FILE,
   MISSION_FILE,
   MissionFrontmatter,
-  NOTES_FILE,
+  MissionFrontmatterV2,
   PREFS_FILE,
+  REASONING_FILE,
   STRATEGY_FILE,
   VERSION_DIR_RE,
   parseCurrent,
+  humanNameOf,
+  isSlug,
+  makeSlug,
 } from "./schemas"
-import { algoDir, algosRoot, discoverAlgos, discoverVersions, versionDir } from "./paths"
+import { algoDir, algosRoot, discoverAlgos, discoverVersions, resolveAlgoDir, versionDir } from "./paths"
 
 export * from "./schemas"
 export * from "./paths"
+export * from "./active"
+export * from "./session-workspace"
+export * from "./memory"
 
 const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/
+
+const DEFAULT_MEMORY_SEED = (name: string) =>
+  `# Memory: ${name}\n\n<!-- Append-only. Agent writes via finny_record_memory on /compact. Humans: edit decisions.md instead. -->\n`
 
 export interface ParsedMission {
   frontmatter: MissionFrontmatter
@@ -40,21 +52,101 @@ export function serializeMission(mission: ParsedMission): string {
   return `---\n${fm}\n---${body}`
 }
 
+export interface MissionMigrationResult {
+  mission: string
+  migrated: boolean
+  fromVersion: 2 | 3
+  toVersion: 3
+  provenance?: {
+    kind: "deterministic_migration"
+    migratedAt: string
+    source: string
+  }
+}
+
+const CORE8_QUESTIONS: Record<(typeof import("./schemas").MISSION_CORE8_IDS)[number], string> = {
+  market_universe: "What market and universe does this strategy trade?",
+  timeframe_bar_interval: "What timeframe and bar interval does it use?",
+  strategy_family: "What strategy family does it belong to?",
+  directional_thesis_regime: "What directional thesis and regime does it target?",
+  entry_signal_idea: "What is the entry signal idea?",
+  exit_invalidation_rules: "What are the exit and invalidation rules?",
+  risk_tolerance_max_drawdown: "What risk tolerance and maximum drawdown apply?",
+  backtest_window_success_metric: "What backtest window and success metric apply?",
+}
+
+/** Deterministically upgrades a legacy v2 mission while recording provenance. */
+export function migrateMissionToV3(raw: string, input: { migratedAt: string; source: string }): MissionMigrationResult {
+  const m = FRONTMATTER_RE.exec(raw)
+  if (!m) throw new Error("mission.md missing YAML frontmatter (`---` fenced block at start)")
+  const data = YAML.parse(m[1]!)
+  if (data?.schema_version === 3) {
+    MissionFrontmatter.parse(data)
+    return { mission: raw, migrated: false, fromVersion: 3, toVersion: 3 }
+  }
+
+  const legacy = MissionFrontmatterV2.parse(data)
+  const created = legacy.created
+  const frontmatter: MissionFrontmatter = {
+    ...legacy,
+    created,
+    schema_version: 3,
+    strategy: {
+      bar_interval: "legacy-unspecified",
+      type: "legacy-unspecified",
+      direction: "both",
+      entry_signal: "Legacy v2 mission did not record a typed entry signal.",
+      risk_profile: "legacy-unspecified",
+      max_drawdown_pct: "legacy-unspecified",
+      backtest_window: "legacy-unspecified",
+      success_metric: "Legacy v2 mission did not record a typed success metric.",
+    },
+    questionnaire: Object.entries(CORE8_QUESTIONS).map(([id, question]) => ({
+      id: id as keyof typeof CORE8_QUESTIONS,
+      question,
+      answer: "",
+      status: "skipped" as const,
+    })),
+  }
+  const provenance = { kind: "deterministic_migration" as const, migratedAt: input.migratedAt, source: input.source }
+  const originalBody = m[2]?.trim() ?? ""
+  const body = [
+    originalBody,
+    "## Artifact Migration Provenance",
+    `- Migrated from mission schema v2 to v3 at ${input.migratedAt}.`,
+    `- Source: ${input.source}.`,
+    "- Newly required strategy and Core 8 fields unavailable in v2 are explicitly marked legacy-unspecified or skipped.",
+  ]
+    .filter(Boolean)
+    .join("\n\n")
+  return {
+    mission: serializeMission({ frontmatter, body: `${body}\n` }),
+    migrated: true,
+    fromVersion: 2,
+    toVersion: 3,
+    provenance,
+  }
+}
+
 export interface AlgoVersion {
   name: string
   dir: string
   strategy(): Promise<string>
   backtest(): Promise<Backtest | null>
-  notes(): Promise<string | null>
+  reasoning(): Promise<string | null>
 }
 
 export interface Algo {
+  /** The slug (e.g. `btc-mean-reversion-1h.a3f8c9e2`) or legacy plain name. */
   name: string
+  /** Human-readable name extracted from the slug. */
+  displayName: string
   dir: string
   mission: ParsedMission
   current: string
   versions: string[]
   decisions(): Promise<string>
+  memory(): Promise<string>
   prefs(): Promise<string>
   archive(): Promise<string[]>
   version(name?: string): AlgoVersion
@@ -83,32 +175,53 @@ function buildVersion(algoRoot: string, version: string): AlgoVersion {
       if (raw === null) return null
       return Backtest.parse(JSON.parse(raw))
     },
-    async notes() {
-      return await readOptional(path.join(dir, NOTES_FILE))
+    async reasoning() {
+      return await readOptional(path.join(dir, REASONING_FILE))
     },
   }
 }
 
-export async function loadAlgo(name: string, root: string = algosRoot()): Promise<Algo> {
-  const dir = algoDir(name, root)
+/**
+ * Load an algo by slug or human name.
+ * - Slug: used directly (e.g. `btc-mean-reversion-1h.a3f8c9e2`)
+ * - Human name: resolved via `resolveAlgoDir` (glob for `<name>.*` or legacy exact match)
+ */
+export async function loadAlgo(nameOrSlug: string, root: string = algosRoot()): Promise<Algo> {
+  let dir: string
+  let slug: string
+
+  if (isSlug(nameOrSlug)) {
+    slug = nameOrSlug
+    dir = algoDir(slug, root)
+  } else {
+    const resolved = await resolveAlgoDir(nameOrSlug, root)
+    dir = resolved.dir
+    slug = resolved.slug
+  }
+
   const missionRaw = await fs.readFile(path.join(dir, MISSION_FILE), "utf8")
   const mission = parseMission(missionRaw)
-  if (mission.frontmatter.name !== name) {
-    throw new Error(
-      `mission.name (${mission.frontmatter.name}) does not match folder name (${name}) at ${dir}`,
-    )
+  const displayName = humanNameOf(slug)
+
+  // Mission frontmatter stores the human name, not the slug
+  if (mission.frontmatter.name !== displayName) {
+    throw new Error(`mission.name (${mission.frontmatter.name}) does not match folder name (${slug}) at ${dir}`)
   }
   const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
   const current = parseCurrent(currentRaw)
-  const versions = await discoverVersions(name, root)
+  const versions = await discoverVersions(slug, root)
   return {
-    name,
+    name: slug,
+    displayName,
     dir,
     mission,
     current,
     versions,
     async decisions() {
       return (await readOptional(path.join(dir, DECISIONS_FILE))) ?? ""
+    },
+    async memory() {
+      return (await readOptional(path.join(dir, MEMORY_FILE))) ?? ""
     },
     async prefs() {
       return (await readOptional(path.join(dir, PREFS_FILE))) ?? ""
@@ -132,7 +245,10 @@ export async function loadAlgo(name: string, root: string = algosRoot()): Promis
 }
 
 export interface AlgoHeader {
+  /** Slug or legacy plain name (the directory name). */
   name: string
+  /** Human-readable display name. */
+  displayName: string
   dir: string
   mission: ParsedMission
   current: string
@@ -148,6 +264,7 @@ export async function listAlgos(root: string = algosRoot()): Promise<AlgoHeader[
       const currentRaw = await fs.readFile(path.join(dir, CURRENT_FILE), "utf8")
       out.push({
         name,
+        displayName: humanNameOf(name),
         dir,
         mission: parseMission(missionRaw),
         current: parseCurrent(currentRaw),
@@ -161,38 +278,58 @@ export async function listAlgos(root: string = algosRoot()): Promise<AlgoHeader[
 
 export async function writeAlgo(params: {
   root?: string
+  /** Optional slug to use as directory name. If omitted, generates one from mission.frontmatter.name. */
+  slug?: string
   mission: ParsedMission
   current: string
   decisions?: string
+  memory?: string
   prefs?: string
   versions: Record<
     string,
     {
       strategy: string
-      notes?: string
+      reasoning?: string
       backtest?: Backtest
     }
   >
-}): Promise<string> {
+}): Promise<{ dir: string; slug: string }> {
   const root = params.root ?? algosRoot()
-  const name = params.mission.frontmatter.name
-  const dir = algoDir(name, root)
+  const humanName = params.mission.frontmatter.name
+  const slug = params.slug ?? makeSlug(humanName)
+  const dir = algoDir(slug, root)
   await fs.mkdir(dir, { recursive: true })
   await fs.writeFile(path.join(dir, MISSION_FILE), serializeMission(params.mission), "utf8")
   await fs.writeFile(path.join(dir, CURRENT_FILE), parseCurrent(params.current) + "\n", "utf8")
-  await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${name}\n`, "utf8")
-  await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${name}\n`, "utf8")
+  await fs.writeFile(path.join(dir, DECISIONS_FILE), params.decisions ?? `# Decisions log: ${humanName}\n`, "utf8")
+  // memory.md is append-only. Only seed it on first creation, or overwrite
+  // when an explicit `memory` arg is provided. Never clobber existing history.
+  const memoryPath = path.join(dir, MEMORY_FILE)
+  if (params.memory !== undefined) {
+    await fs.writeFile(memoryPath, params.memory, "utf8")
+  } else {
+    try {
+      await fs.stat(memoryPath)
+    } catch (err: any) {
+      if (err?.code !== "ENOENT") throw err
+      await fs.writeFile(memoryPath, DEFAULT_MEMORY_SEED(humanName), "utf8")
+    }
+  }
+  await fs.writeFile(path.join(dir, PREFS_FILE), params.prefs ?? `# Preferences: ${humanName}\n`, "utf8")
+  for (const sub of DATA_SUBDIRS) {
+    await fs.mkdir(path.join(dir, sub), { recursive: true })
+  }
   for (const [v, content] of Object.entries(params.versions)) {
-    const vdir = versionDir(name, v, root)
+    const vdir = versionDir(slug, v, root)
     await fs.mkdir(vdir, { recursive: true })
     await fs.writeFile(path.join(vdir, STRATEGY_FILE), content.strategy, "utf8")
-    if (content.notes !== undefined) {
-      await fs.writeFile(path.join(vdir, NOTES_FILE), content.notes, "utf8")
+    if (content.reasoning !== undefined) {
+      await fs.writeFile(path.join(vdir, REASONING_FILE), content.reasoning, "utf8")
     }
     if (content.backtest !== undefined) {
       const parsed = Backtest.parse(content.backtest)
       await fs.writeFile(path.join(vdir, BACKTEST_FILE), JSON.stringify(parsed, null, 2) + "\n", "utf8")
     }
   }
-  return dir
+  return { dir, slug }
 }

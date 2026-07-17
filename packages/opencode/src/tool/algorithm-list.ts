@@ -2,7 +2,6 @@ import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
-import { Plan } from "../plan"
 
 const parameters = z.object({})
 
@@ -17,25 +16,21 @@ export type AlgorithmSummary = {
 
 export type AlgorithmListPayload = {
   count: number
-  /** number of slots, or null when the tier is unlimited */
+  /** always null — local saves are unlimited; retained for schema compatibility */
   capacity: number | null
-  /** remaining slots, or null when the tier is unlimited */
+  /** always null — local saves are unlimited; retained for schema compatibility */
   remaining: number | null
-  tier: Plan.Tier
   algorithms: AlgorithmSummary[]
 }
 
 /**
  * Pure helper — exposed for testing. Collapses rows to one entry per unique
  * name (latest version wins) and reports cap usage in a JSON-safe shape:
- * `null` is used for both `capacity` and `remaining` when the tier has no
- * cap, so callers never have to deal with `Infinity` (which JSON.stringify
- * coerces to `null` anyway).
+ * `null` is used for both `capacity` and `remaining` because local saves are
+ * unlimited, so callers never have to deal with `Infinity` (which
+ * JSON.stringify coerces to `null` anyway).
  */
-export function buildAlgorithmListPayload(
-  algos: ReadonlyArray<Algorithm.Info>,
-  tier: Plan.Tier,
-): AlgorithmListPayload {
+export function buildAlgorithmListPayload(algos: ReadonlyArray<Algorithm.Info>): AlgorithmListPayload {
   // Pick the "latest" row per name: highest version, with time_updated as
   // the tiebreaker so the choice is deterministic when duplicate-name rows
   // share a version (e.g., config-only updates that didn't bump version).
@@ -52,10 +47,6 @@ export function buildAlgorithmListPayload(
   }
   const unique = Array.from(latestByName.values()).sort((a, b) => b.time_updated - a.time_updated)
 
-  const rawCap = Plan.SAVE_CAP[tier]
-  const capacity = Number.isFinite(rawCap) ? rawCap : null
-  const remaining = capacity === null ? null : Math.max(0, capacity - unique.length)
-
   const algorithms: AlgorithmSummary[] = unique.map((a) => ({
     name: a.name,
     version: a.version,
@@ -65,20 +56,19 @@ export function buildAlgorithmListPayload(
     updated: new Date(a.time_updated).toISOString(),
   }))
 
-  return { count: unique.length, capacity, remaining, tier, algorithms }
+  return { count: unique.length, capacity: null, remaining: null, algorithms }
 }
 
 function buildTitle(p: AlgorithmListPayload): string {
-  if (p.count === 0) return `No algorithms (${p.tier} tier)`
-  const slotPart = p.capacity === null ? "" : `, ${p.remaining} slot${p.remaining === 1 ? "" : "s"} left`
-  return `${p.count} algorithm${p.count === 1 ? "" : "s"} (${p.tier} tier${slotPart})`
+  if (p.count === 0) return "No algorithms"
+  return `${p.count} algorithm${p.count === 1 ? "" : "s"}`
 }
 
 export const AlgorithmListTool = Tool.define(
   "finny_algorithm_list",
   Effect.succeed({
     description:
-      "List all saved trading algorithms for the current user. Returns one entry per unique algorithm name (latest version) plus the user's plan capacity so the model can reason about whether a new save will fit.",
+      "List all saved trading algorithms for the current user. Returns one entry per unique algorithm name (latest version). Capacity fields are retained for compatibility; null means local saves are unlimited.",
     parameters,
     execute: (_params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
@@ -89,8 +79,8 @@ export const AlgorithmListTool = Tool.define(
           metadata: {},
         })
 
-        const [algos, tier] = await Promise.all([Algorithm.list(), Plan.getTier()])
-        const payload = buildAlgorithmListPayload(algos, tier)
+        const algos = await Algorithm.list()
+        const payload = buildAlgorithmListPayload(algos)
 
         return {
           title: buildTitle(payload),
@@ -101,7 +91,6 @@ export const AlgorithmListTool = Tool.define(
             count: payload.count,
             capacity: payload.capacity,
             remaining: payload.remaining,
-            tier: payload.tier,
           },
         }
       }),

@@ -8,10 +8,9 @@ import type {
   UserMessage,
   Message,
   Part,
-  Auth,
   Config as SDKConfig,
 } from "@opencode-ai/sdk"
-import type { Provider as ProviderV2, Model as ModelV2 } from "@opencode-ai/sdk/v2"
+import type { Provider as ProviderV2, Model as ModelV2, Auth } from "@opencode-ai/sdk/v2"
 
 import type { BunShell } from "./shell.js"
 import { type ToolDefinition } from "./tool.js"
@@ -24,11 +23,44 @@ export type ProviderContext = {
   options: Record<string, any>
 }
 
+export type WorkspaceInfo = {
+  id: string
+  type: string
+  name: string
+  branch: string | null
+  directory: string | null
+  extra: unknown | null
+  projectID: string
+}
+
+export type WorkspaceTarget =
+  | {
+      type: "local"
+      directory: string
+    }
+  | {
+      type: "remote"
+      url: string | URL
+      headers?: HeadersInit
+    }
+
+export type WorkspaceAdapter = {
+  name: string
+  description: string
+  configure(config: WorkspaceInfo): WorkspaceInfo | Promise<WorkspaceInfo>
+  create(config: WorkspaceInfo, env: Record<string, string | undefined>, from?: WorkspaceInfo): Promise<void>
+  remove(config: WorkspaceInfo): Promise<void>
+  target(config: WorkspaceInfo): WorkspaceTarget | Promise<WorkspaceTarget>
+}
+
 export type PluginInput = {
   client: ReturnType<typeof createOpencodeClient>
   project: Project
   directory: string
   worktree: string
+  experimental_workspace: {
+    register(type: string, adapter: WorkspaceAdapter): void
+  }
   serverUrl: URL
   $: BunShell
 }
@@ -120,6 +152,7 @@ export type AuthHook = {
               type: "success"
               key: string
               provider?: string
+              metadata?: Record<string, string>
             }
           | {
               type: "failed"
@@ -144,7 +177,7 @@ export type AuthOAuthResult = { url: string; instructions: string } & (
                 accountId?: string
                 enterpriseUrl?: string
               }
-            | { key: string }
+            | { key: string; metadata?: Record<string, string> }
           ))
         | {
             type: "failed"
@@ -165,7 +198,7 @@ export type AuthOAuthResult = { url: string; instructions: string } & (
                 accountId?: string
                 enterpriseUrl?: string
               }
-            | { key: string }
+            | { key: string; metadata?: Record<string, string> }
           ))
         | {
             type: "failed"
@@ -183,10 +216,28 @@ export type ProviderHook = {
   models?: (provider: ProviderV2, ctx: ProviderHookContext) => Promise<Record<string, ModelV2>>
 }
 
+export type ToolHookContext = {
+  tool: string
+  sessionID: string
+  callID: string
+  messageID?: string
+  parentSessionID?: string
+  agent?: string
+}
+
+export type ToolHookErrorPhase = "before" | "execute" | "after"
+
+export type ToolHookErrorOutput = {
+  error: unknown
+  phase: ToolHookErrorPhase
+  interrupted: boolean
+}
+
 /** @deprecated Use AuthOAuthResult instead. */
 export type AuthOuathResult = AuthOAuthResult
 
 export interface Hooks {
+  dispose?: () => Promise<void>
   event?: (input: { event: Event }) => Promise<void>
   config?: (input: Config) => Promise<void>
   tool?: {
@@ -229,22 +280,25 @@ export interface Hooks {
     input: { command: string; sessionID: string; arguments: string },
     output: { parts: Part[] },
   ) => Promise<void>
-  "tool.execute.before"?: (
-    input: { tool: string; sessionID: string; callID: string },
-    output: { args: any },
-  ) => Promise<void>
+  "tool.execute.before"?: (input: ToolHookContext, output: { args: any }) => Promise<void>
   "shell.env"?: (
     input: { cwd: string; sessionID?: string; callID?: string },
     output: { env: Record<string, string> },
   ) => Promise<void>
   "tool.execute.after"?: (
-    input: { tool: string; sessionID: string; callID: string; args: any },
+    input: ToolHookContext & { args: any },
     output: {
       title: string
       output: string
       metadata: any
     },
   ) => Promise<void>
+  /**
+   * Observe a tool failure or cancellation. This hook is notification-only:
+   * mutations are ignored and hook failures must never replace the original
+   * tool failure.
+   */
+  "tool.execute.error"?: (input: ToolHookContext & { args: any }, output: ToolHookErrorOutput) => Promise<void>
   "experimental.chat.messages.transform"?: (
     input: {},
     output: {
@@ -260,6 +314,7 @@ export interface Hooks {
       system: string[]
     },
   ) => Promise<void>
+  "experimental.provider.small_model"?: (input: { provider: ProviderV2 }, output: { model?: ModelV2 }) => Promise<void>
   /**
    * Called before session compaction starts. Allows plugins to customize
    * the compaction prompt.
@@ -270,6 +325,24 @@ export interface Hooks {
   "experimental.session.compacting"?: (
     input: { sessionID: string },
     output: { context: string[]; prompt?: string },
+  ) => Promise<void>
+  /**
+   * Called after compaction succeeds and before a synthetic user
+   * auto-continue message is added.
+   *
+   * - `enabled`: Defaults to `true`. Set to `false` to skip the synthetic
+   *   user "continue" turn.
+   */
+  "experimental.compaction.autocontinue"?: (
+    input: {
+      sessionID: string
+      agent: string
+      model: Model
+      provider: ProviderContext
+      message: UserMessage
+      overflow: boolean
+    },
+    output: { enabled: boolean },
   ) => Promise<void>
   "experimental.text.complete"?: (
     input: { sessionID: string; messageID: string; partID: string },

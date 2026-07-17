@@ -11,14 +11,22 @@ import {
   listBinanceAccounts,
   readBinanceCredentials,
 } from "./binance"
+import {
+  ibkrSpec,
+  generateIbkrProviderID,
+  listIbkrAccounts,
+  readIbkrCredentials,
+} from "./ibkr"
 
-export type { BrokerAccount, BrokerCredentials, BrokerKind, BrokerSpec, PythonDep } from "./types"
+export type { BrokerAccount, BrokerConnection, BrokerCredentials, BrokerKind, BrokerMode, BrokerSpec, PythonDep } from "./types"
 export { ALPACA_PROVIDER_PREFIX } from "./alpaca"
 export { BINANCE_PROVIDER_PREFIX } from "./binance"
+export { IBKR_PROVIDER_PREFIX } from "./ibkr"
 
 const SPECS: Record<BrokerKind, BrokerSpec> = {
   alpaca: alpacaSpec,
   binance: binanceSpec,
+  ibkr: ibkrSpec,
 }
 
 export namespace BrokerRegistry {
@@ -44,6 +52,7 @@ export namespace BrokerRegistry {
   export function generateProviderID(kind: BrokerKind): string {
     if (kind === "alpaca") return generateAlpacaProviderID()
     if (kind === "binance") return generateBinanceProviderID()
+    if (kind === "ibkr") return generateIbkrProviderID()
     throw new Error(`generateProviderID not implemented for ${kind}`)
   }
 
@@ -51,6 +60,7 @@ export namespace BrokerRegistry {
     const all: BrokerAccount[] = []
     if (!kind || kind === "alpaca") all.push(...(await listAlpacaAccounts()))
     if (!kind || kind === "binance") all.push(...(await listBinanceAccounts()))
+    if (!kind || kind === "ibkr") all.push(...(await listIbkrAccounts()))
     return all
   }
 
@@ -59,6 +69,7 @@ export namespace BrokerRegistry {
     if (!kind) return null
     if (kind === "alpaca") return readAlpacaCredentials(providerID)
     if (kind === "binance") return readBinanceCredentials(providerID)
+    if (kind === "ibkr") return readIbkrCredentials(providerID)
     return null
   }
 

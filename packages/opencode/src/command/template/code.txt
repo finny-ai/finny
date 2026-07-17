@@ -7,8 +7,9 @@ Input: $ARGUMENTS
 If `$ARGUMENTS` is provided (an algorithm name):
 1. Use the `finny_algorithm_get` tool with that name
 2. Display the algorithm's code with syntax highlighting (use a python code block)
-3. If the algorithm also has config or backtestCode, show those in separate code blocks
-4. Show metadata: version, status, last updated
+3. If the algorithm also has config, show it in a separate code block
+4. If `legacyUnsafeCustomRunner` is true, state that the imported custom runner is quarantined; do not display or recommend it
+5. Show metadata: version, status, last updated
 
 If `$ARGUMENTS` is empty:
 1. Use the `finny_algorithm_list` tool to show all available algorithms

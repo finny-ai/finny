@@ -57,11 +57,24 @@ function lines(prs: PR[]) {
   return prs.map((x) => `- #${x.number}: ${x.title}`).join("\n") || "(none)"
 }
 
+function group(title: string) {
+  if (process.env.GITHUB_ACTIONS !== "true") {
+    console.log(title)
+    return { [Symbol.dispose]() {} }
+  }
+  console.log(`::group::${title}`)
+  return {
+    [Symbol.dispose]() {
+      console.log("::endgroup::")
+    },
+  }
+}
+
 async function typecheck() {
   console.log("  Running typecheck...")
 
   try {
-    await $`bun typecheck`.cwd("packages/opencode")
+    await $`bun typecheck`
     return true
   } catch (err) {
     console.log(`Typecheck failed: ${err}`)
@@ -81,6 +94,39 @@ async function build() {
   }
 }
 
+async function validate() {
+  if (!(await typecheck())) return false
+  if (!(await build())) return false
+  return true
+}
+
+async function commitSmokeChanges() {
+  const out = await $`git status --porcelain`.text()
+  if (!out.trim()) {
+    console.log("Smoke check passed")
+    return true
+  }
+
+  try {
+    await $`git add -A`
+    await $`git commit -m "Fix beta integration"`
+  } catch (err) {
+    console.log(`Failed to commit smoke fixes: ${err}`)
+    return false
+  }
+
+  if (!(await validate())) return false
+
+  const left = await $`git status --porcelain`.text()
+  if (!left.trim()) {
+    console.log("Smoke check passed")
+    return true
+  }
+
+  console.log(`Smoke check left uncommitted changes:\n${left}`)
+  return false
+}
+
 async function install() {
   console.log("  Regenerating bun.lock...")
 
@@ -96,7 +142,7 @@ async function install() {
 }
 
 async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: number) {
-  console.log(`  Trying to auto-resolve ${files.length} conflict(s) with finny...`)
+  console.log(`  Trying to auto-resolve ${files.length} conflict(s) with opencode...`)
 
   const done = lines(prs.filter((x) => applied.includes(x.number)))
   const next = lines(prs.slice(idx + 1))
@@ -113,7 +159,7 @@ async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: n
     "If bun.lock is conflicted, do not hand-merge it. Delete bun.lock and run bun install after the code conflicts are resolved.",
     "If a PR already deleted a file/directory, do not re-add it, instead apply changes in the new semantic location.",
     "If a PR already changed an import, keep that change.",
-    "After resolving the conflicts, run `bun typecheck` in `packages/opencode`.",
+    "After resolving the conflicts, run `bun typecheck` at the repo root.",
     "If typecheck fails, you may also update any files reported by typecheck.",
     "Keep any non-conflict edits narrowly scoped to restoring a valid merged state for the current PR batch.",
     "Fix any merge-caused typecheck errors before finishing.",
@@ -122,9 +168,9 @@ async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: n
   ].join("\n")
 
   try {
-    await $`finny run -m ${model} ${prompt}`
+    await $`opencode run -m ${model} ${prompt}`
   } catch (err) {
-    console.log(`  finny failed: ${err}`)
+    console.log(`  opencode failed: ${err}`)
     return false
   }
 
@@ -138,62 +184,36 @@ async function fix(pr: PR, files: string[], prs: PR[], applied: number[], idx: n
 
   if (!(await typecheck())) return false
 
-  console.log("  Conflicts resolved with finny")
+  console.log("  Conflicts resolved with opencode")
   return true
 }
 
 async function smoke(prs: PR[], applied: number[]) {
-  console.log("\nRunning final smoke check with finny...")
+  console.log("\nRunning final smoke check...")
+
+  if (await validate()) return commitSmokeChanges()
+
+  console.log("\nTrying to fix final smoke check with opencode...")
 
   const done = lines(prs.filter((x) => applied.includes(x.number)))
   const prompt = [
-    "The beta merge batch is complete.",
+    "The beta merge batch is complete, but the deterministic final smoke check failed.",
     `Merged PRs on HEAD:\n${done}`,
-    "Run `bun typecheck` in `packages/opencode`.",
+    "Run `bun typecheck` at the repo root.",
     "Run `./script/build.ts --single` in `packages/opencode`.",
     "Fix any merge-caused issues until both commands pass.",
     "Do not create a commit.",
   ].join("\n")
 
   try {
-    await $`finny run -m ${model} ${prompt}`
+    await $`opencode run -m ${model} ${prompt}`
   } catch (err) {
     console.log(`Smoke fix failed: ${err}`)
     return false
   }
 
-  if (!(await typecheck())) {
-    return false
-  }
-
-  if (!(await build())) {
-    return false
-  }
-
-  const out = await $`git status --porcelain`.text()
-  if (!out.trim()) {
-    console.log("Smoke check passed")
-    return true
-  }
-
-  try {
-    await $`git add -A`
-    await $`git commit -m "Fix beta integration"`
-  } catch (err) {
-    console.log(`Failed to commit smoke fixes: ${err}`)
-    return false
-  }
-
-  if (!(await typecheck())) {
-    return false
-  }
-
-  if (!(await build())) {
-    return false
-  }
-
-  console.log("Smoke check passed")
-  return true
+  if (!(await validate())) return false
+  return commitSmokeChanges()
 }
 
 async function main() {
@@ -220,8 +240,8 @@ async function main() {
   const failed: FailedPR[] = []
 
   for (const [idx, pr] of prs.entries()) {
-    console.log(`\nProcessing PR ${idx + 1}/${prs.length} #${pr.number}: ${pr.title}`)
-
+    console.log()
+    using _ = group(`Processing PR ${idx + 1}/${prs.length} #${pr.number}: ${pr.title}`)
     console.log("  Fetching PR head...")
     try {
       await $`git fetch origin pull/${pr.number}/head:pr/${pr.number}`
@@ -294,20 +314,13 @@ async function main() {
     throw new Error(`${failed.length} PR(s) failed to merge`)
   }
 
-  if (applied.length > 0) {
-    const ok = await smoke(prs, applied)
-    if (!ok) {
-      throw new Error("Final smoke check failed")
-    }
-  }
-
   console.log("\nChecking if beta branch has changes...")
   await $`git fetch origin beta`
 
-  const localTree = await $`git rev-parse beta^{tree}`.text()
+  const localTree = (await $`git rev-parse beta^{tree}`.text()).trim()
   const remoteTrees = (await $`git log origin/dev..origin/beta --format=%T`.text()).split("\n")
 
-  const matchIdx = remoteTrees.indexOf(localTree.trim())
+  const matchIdx = remoteTrees.indexOf(localTree)
   if (matchIdx !== -1) {
     if (matchIdx !== 0) {
       console.log(`Beta branch contains this sync, but additional commits exist after it. Leaving beta branch as is.`)
@@ -317,7 +330,25 @@ async function main() {
     return
   }
 
-  console.log("Force pushing beta branch...")
+  if (!(await smoke(prs, applied))) throw new Error("Final smoke check failed")
+
+  await $`git fetch origin beta`
+
+  const validatedTree = (await $`git rev-parse beta^{tree}`.text()).trim()
+  const remoteTreesAfterSmoke = (await $`git log origin/dev..origin/beta --format=%T`.text()).split("\n")
+  const matchIdxAfterSmoke = remoteTreesAfterSmoke.indexOf(validatedTree)
+  if (matchIdxAfterSmoke !== -1) {
+    if (matchIdxAfterSmoke !== 0) {
+      console.log(
+        `Beta branch contains this validated sync, but additional commits exist after it. Leaving beta branch as is.`,
+      )
+    } else {
+      console.log("Validated beta branch now matches remote contents, no push needed")
+    }
+    return
+  }
+
+  console.log("Force pushing validated beta branch...")
   await $`git push origin beta --force --no-verify`
 
   console.log("Successfully synced beta branch")

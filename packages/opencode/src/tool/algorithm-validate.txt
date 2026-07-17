@@ -10,20 +10,21 @@ Validate a trading algorithm's Python code without saving it. Finny's validator 
 ### Hard Errors (block save)
 - `SYNTAX_ERROR`: Python syntax errors
 - `MISSING_STRATEGY_CLASS`: no `class Strategy` defined
-- `MISSING_INIT_METHOD`: no `__init__(self)` method
-- `MISSING_ON_TICK_METHOD` / `ON_TICK_BAD_PARAMS`: `on_tick(self, bar)` is missing or has wrong signature
+- `MISSING_INIT_METHOD`: no strict `__init__(self, broker, params=None)` method
+- `MISSING_ON_BAR_METHOD` / `ON_BAR_BAD_PARAMS`: `on_bar(self, symbol, bar)` is missing or has wrong signature
+- `STRICT_SHAPE_REQUIRED`: legacy `on_tick` or non-broker constructors are rejected in strict v2
 - `FORBIDDEN_IMPORT`: `os`, `subprocess`, `sys`, `socket`, `requests`, `pickle`, `threading`, `asyncio`
 - `DANGEROUS_CALL`: `exec`, `eval`, `__import__`, `compile`, `open`
-- `STATE_RESET_IN_ON_TICK`: a mutable container (`deque`/`list`/`dict`/`set`) is created as a local variable inside `on_tick` and then mutated — its history is lost every tick. Move the container into `__init__` as `self.<name>`.
+- `STATE_RESET_IN_ON_BAR`: a mutable container (`deque`/`list`/`dict`/`set`) is created as a local variable inside the entry method and then mutated — its history is lost every bar. Move the container into `__init__` as `self.<name>`.
 - `GAINS_LOSSES_ASYMMETRY`: gains are persisted as `self.*` but losses are only a local (or vice versa). Both must be persisted the same way.
-- `LOOKAHEAD_BIAS_FLOW`: `bar["close"]` (directly or via a derived variable) gates a `return "BUY"` or `return "SELL"`. Use `bar["open"]` for decisions; reserve `bar["close"]` for end-of-bar state updates.
+- `LOOKAHEAD_BIAS_FLOW`: current-bar `close`/`high`/`low` use is blocked. Use `bar["open"]` for decisions and `bar["prev_close"]` / broker history for indicators.
 - `CONFIG_KEY_UNUSED`: a key declared in `config.json` is never referenced in the strategy. Either use it or drop it from config.
 - `SMOKE_TEST_EXCEPTION`: the strategy raised during the behavioral dry-run.
-- `INVARIANT_BAD_RETURN`: `on_tick` returned something other than `"BUY"`, `"SELL"`, or `"HOLD"`.
+- `INVARIANT_BAD_RETURN`: `on_bar` returned a value instead of placing broker intents and returning `None`.
 - `INVARIANT_CONSTANT_TRADES`: the strategy emitted trades on a perfectly flat price series (indicator miscalibration).
 - `INVARIANT_RSI_STUCK`: an indicator-shaped attribute (range 0–100) is pinned at an extreme for >90% of ticks — the indicator computation is broken.
 - `SAME_BAR_EXECUTION_BIAS`: `self.<state>.append(current-bar value)` precedes a BUY/SELL whose condition compares a bar-derived local against an indicator over `self.<state>`. Indicator includes the very tick you're trading on.
-- `EQUITY_NEVER_UPDATED`: `self.equity` (or `.capital`, `.balance`, `.cash`) is read in sizing arithmetic inside `on_tick` but never reassigned outside `__init__`. Update on every SELL.
+- `EQUITY_NEVER_UPDATED`: `self.equity` (or `.capital`, `.balance`, `.cash`) is read in sizing arithmetic inside `on_bar` but never reassigned outside `__init__`. Prefer `self.broker.equity()`.
 - `EQUITY_STATIC`: smoke test ran trades but `self.equity` never changed across 200 ticks. Same fix as `EQUITY_NEVER_UPDATED`.
 - `LEVERAGE_VIOLATION`: smoke test observed `position_qty * price > self.equity` at some tick. Cap size at capital before opening.
 
@@ -32,13 +33,13 @@ Validate a trading algorithm's Python code without saving it. Finny's validator 
 - `POPULATION_VARIANCE`: variance uses `/N` instead of `/(N-1)` — under-estimates stddev and inflates Sharpe.
 - `MISSING_POSITION_SIZING`: `self.position` is a 0/1 flag with no sizing arithmetic.
 - `POSITION_SIZE_UNCAPPED`: `qty = risk / stop_distance` without capping against `self.equity / price`. Implicit leverage.
-- `FRACTIONAL_SHARES_EQUITY`: config symbol looks like a stock/ETF but qty is a float. Floor with `math.floor(qty)`.
+- `FRACTIONAL_SHARES_EQUITY`: config symbol looks like a stock/ETF but submitted order qty may be fractional. Convert to whole shares before `broker.buy(..., qty=qty)` with `int(qty)` or `math.floor(qty)`.
 - `NEAR_ZERO_DIVISION`: an RSI-shaped denominator is guarded only by `!= 0` / `> 0` — near-zero values still produce unstable indicators. Use `> 1e-10`.
-- `GUARD_NEVER_BINDING` (smoke test): strategy produced zero BUYs across the random-walk regime — likely a threshold mis-scaling.
+- `GUARD_NEVER_BINDING` (smoke test): strategy produced zero opening orders across short and long random-walk regimes — likely a threshold mis-scaling.
 - `CONFIG_KEY_VALUE_MATCH`: a config key's name isn't in the code but its value is, as a literal. Rename the attribute to match for self-documentation.
 - `INVARIANT_DIRECTIONAL_SANITY`: mean-reversion-style BUYs firing on a rising market suggest inverted logic.
 - `CONFIG_KEY_UNDECLARED`: magic number in code that looks like it should be a config key.
-- Plus the original regex-based checks: `UNBOUNDED_LIST`, `DIVISION_NO_ZERO_CHECK`, `NO_RETURN_IN_ON_TICK`, `ON_TICK_BAD_RETURN`, `LOOKAHEAD_BIAS`.
+- Plus the original regex-based checks: `UNBOUNDED_LIST`, `DIVISION_NO_ZERO_CHECK`, `NO_RETURN_IN_ON_BAR`, `ON_BAR_BAD_RETURN`, `LOOKAHEAD_BIAS`.
 
 ## Output
 Returns validation results with error/warning codes, line numbers, and fix suggestions.

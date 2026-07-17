@@ -12,44 +12,77 @@ const dir = path.resolve(__dirname, "..")
 
 process.chdir(dir)
 
-await import("./generate.ts")
+const generated = await import("./generate.ts")
 
 import { Script } from "@opencode-ai/script"
 import pkg from "../package.json"
 
-// Load migrations from migration directories
-const migrationDirs = (
-  await fs.promises.readdir(path.join(dir, "migration"), {
-    withFileTypes: true,
-  })
-)
-  .filter((entry) => entry.isDirectory() && /^\d{4}\d{2}\d{2}\d{2}\d{2}\d{2}/.test(entry.name))
-  .map((entry) => entry.name)
-  .sort()
+// Honor the release version passed by CI (OPENCODE_VERSION). build.ts otherwise
+// bakes package.json's 0.0.0 into the binary, so `--version`, upgrade checks,
+// and the license app_version would all report 0.0.0 on a real release.
+const finnyVersion = process.env.OPENCODE_VERSION?.trim() || pkg.version
 
-const migrations = await Promise.all(
-  migrationDirs.map(async (name) => {
-    const file = path.join(dir, "migration", name, "migration.sql")
-    const sql = await Bun.file(file).text()
-    const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(name)
-    const timestamp = match
-      ? Date.UTC(
-          Number(match[1]),
-          Number(match[2]) - 1,
-          Number(match[3]),
-          Number(match[4]),
-          Number(match[5]),
-          Number(match[6]),
-        )
-      : 0
-    return { sql, timestamp, name }
-  }),
+// Published npm identity, decoupled from the internal workspace package name
+// (`finny-internal-prop`, referenced by packages/web as a workspace dep). The
+// wrapper publishes as PUBLISH_NAME and platform packages as
+// `${PUBLISH_NAME}-<os>-<arch>[-baseline][-musl]`.
+// Default is the public unscoped package `finny` (what curl install pulls).
+// Prop/private releases override via FINNY_PUBLISH_NAME=@finny-ai/finny-pro.
+const PUBLISH_NAME = process.env.FINNY_PUBLISH_NAME?.trim() || "finny"
+// Filesystem-safe slug for a scoped package name (dist dirs cannot contain `/`).
+const toDistSlug = (name: string) => name.replace(/^@/, "").replace(/\//g, "-")
+
+function migrationTimestamp(name: string) {
+  const match = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/.exec(name)
+  if (!match) return 0
+  return Date.UTC(
+    Number(match[1]),
+    Number(match[2]) - 1,
+    Number(match[3]),
+    Number(match[4]),
+    Number(match[5]),
+    Number(match[6]),
+  )
+}
+
+const migrationEntries = fs
+  .readdirSync(path.join(dir, "migration"), { withFileTypes: true })
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => {
+    const file = path.join(dir, "migration", entry.name, "migration.sql")
+    if (!fs.existsSync(file)) return
+    return {
+      sql: fs.readFileSync(file, "utf8"),
+      timestamp: migrationTimestamp(entry.name),
+      name: entry.name,
+    }
+  })
+  .filter((entry): entry is { sql: string; timestamp: number; name: string } => Boolean(entry))
+  .sort((a, b) => a.timestamp - b.timestamp)
+
+console.log(`Loaded ${migrationEntries.length} SQLite migrations`)
+
+const validatorScripts = Object.fromEntries(
+  ["ast_analyzer.py", "smoke_test.py"].map((name) => [
+    name,
+    fs.readFileSync(path.join(dir, "src", "algorithm", name), "utf8"),
+  ]),
 )
-console.log(`Loaded ${migrations.length} migrations`)
+
+console.log(`Loaded ${Object.keys(validatorScripts).length} Python validator scripts`)
+
+const engineV2Files = Object.fromEntries(
+  (await Array.fromAsync(new Bun.Glob("engine_v2/**/*.py").scan({ cwd: dir })))
+    .sort()
+    .map((file) => [file.replace(/^engine_v2\//, ""), fs.readFileSync(path.join(dir, file), "utf8")]),
+)
+
+console.log(`Loaded ${Object.keys(engineV2Files).length} engine_v2 Python files`)
 
 const singleFlag = process.argv.includes("--single")
 const baselineFlag = process.argv.includes("--baseline")
 const skipInstall = process.argv.includes("--skip-install")
+const sourcemapsFlag = process.argv.includes("--sourcemaps")
 const plugin = createSolidTransformPlugin()
 const skipEmbedWebUi = process.argv.includes("--skip-embed-web-ui")
 
@@ -57,9 +90,10 @@ const createEmbeddedWebUIBundle = async () => {
   console.log(`Building Web UI to embed in the binary`)
   const appDir = path.join(import.meta.dirname, "../../app")
   const dist = path.join(appDir, "dist")
-  await $`bun run --cwd ${appDir} build`
+  await $`OPENCODE_CHANNEL=${Script.channel} bun run --cwd ${appDir} build`
   const files = (await Array.fromAsync(new Bun.Glob("**/*").scan({ cwd: dist })))
     .map((file) => file.replaceAll("\\", "/"))
+    .filter((file) => !file.endsWith(".map"))
     .sort()
   const imports = files.map((file, i) => {
     const spec = path.relative(dir, path.join(dist, file)).replaceAll("\\", "/")
@@ -168,10 +202,10 @@ const binaries: Record<string, string> = {}
 if (!skipInstall) {
   await $`bun install --os="*" --cpu="*" @opentui/core@${pkg.dependencies["@opentui/core"]}`
   await $`bun install --os="*" --cpu="*" @parcel/watcher@${pkg.dependencies["@parcel/watcher"]}`
+  await $`bun install --os="*" --cpu="*" @ff-labs/fff-bun@${pkg.dependencies["@ff-labs/fff-bun"]}`
 }
 for (const item of targets) {
-  const name = [
-    pkg.name,
+  const suffix = [
     // changing to win32 flags npm for some reason
     item.os === "win32" ? "windows" : item.os,
     item.arch,
@@ -180,44 +214,57 @@ for (const item of targets) {
   ]
     .filter(Boolean)
     .join("-")
-  console.log(`building ${name}`)
+  // Published scoped package name, e.g. @finny-ai/finny-internal-darwin-arm64
+  const pkgName = `${PUBLISH_NAME}-${suffix}`
+  // Bun compile target, e.g. bun-darwin-arm64[-baseline][-musl]
+  const bunTarget = `bun-${suffix}`
+  // Dist directory slug (no scope slash), e.g. finny-ai-finny-internal-darwin-arm64
+  const name = toDistSlug(pkgName)
+  console.log(`building ${pkgName}`)
   await $`mkdir -p dist/${name}/bin`
 
   const localPath = path.resolve(dir, "node_modules/@opentui/core/parser.worker.js")
   const rootPath = path.resolve(dir, "../../node_modules/@opentui/core/parser.worker.js")
   const parserWorker = fs.realpathSync(fs.existsSync(localPath) ? localPath : rootPath)
-  const workerPath = "./src/cli/cmd/tui/worker.ts"
+  const workerPath = "./src/cli/tui/worker.ts"
 
   // Use platform-specific bunfs root path based on target OS
   const bunfsRoot = item.os === "win32" ? "B:/~BUN/root/" : "/$bunfs/root/"
   const workerRelativePath = path.relative(dir, parserWorker).replaceAll("\\", "/")
 
   await Bun.build({
-    conditions: ["browser"],
+    conditions: ["bun", "node"],
     tsconfig: "./tsconfig.json",
     plugins: [plugin],
     external: ["node-gyp"],
+    format: "esm",
+    minify: true,
+    sourcemap: sourcemapsFlag ? "linked" : "none",
+    splitting: true,
     compile: {
       autoloadBunfig: false,
       autoloadDotenv: false,
       autoloadTsconfig: true,
       autoloadPackageJson: true,
-      target: name.replace(pkg.name, "bun") as any,
+      target: bunTarget as any,
       outfile: `dist/${name}/bin/opencode`,
-      execArgv: [`--user-agent=opencode/${Script.version}`, "--use-system-ca", "--"],
+      execArgv: [`--user-agent=finny/${finnyVersion}`, "--use-system-ca", "--"],
       windows: {},
     },
-    files: {
-      ...(embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {}),
-    },
+    files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
     entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
     define: {
-      OPENCODE_VERSION: `'${Script.version}'`,
-      OPENCODE_MIGRATIONS: JSON.stringify(migrations),
+      FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
+      OPENCODE_VERSION: `'${finnyVersion}'`,
+      OPENCODE_MODELS_DEV: generated.modelsData,
+      OPENCODE_MIGRATIONS: JSON.stringify(migrationEntries),
+      OPENCODE_VALIDATOR_SCRIPTS: JSON.stringify(validatorScripts),
+      OPENCODE_ENGINE_V2_FILES: JSON.stringify(engineV2Files),
       OTUI_TREE_SITTER_WORKER_PATH: bunfsRoot + workerRelativePath,
       OPENCODE_WORKER_PATH: workerPath,
       OPENCODE_CHANNEL: `'${Script.channel}'`,
       OPENCODE_LIBC: item.os === "linux" ? `'${item.abi ?? "glibc"}'` : "",
+      ...(item.os === "linux" ? { "process.env.OPENTUI_LIBC": JSON.stringify(item.abi ?? "glibc") } : {}),
     },
   })
 
@@ -238,16 +285,18 @@ for (const item of targets) {
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
-        name,
-        version: Script.version,
+        name: pkgName,
+        version: finnyVersion,
+        preferUnplugged: true,
         os: [item.os],
         cpu: [item.arch],
+        ...(item.abi ? { libc: [item.abi] } : {}),
       },
       null,
       2,
     ),
   )
-  binaries[name] = Script.version
+  binaries[name] = finnyVersion
 }
 
 if (Script.release) {

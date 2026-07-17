@@ -19,22 +19,27 @@ const parameters = z.object({
 })
 
 const DESCRIPTION = [
-  "Record execution-context parameters the user mentioned in chat onto a saved algorithm.",
+  "Record non-identity runtime parameters the user mentioned in chat onto a saved algorithm.",
   "",
-  "Call this whenever the user states or revises one of:",
-  "  - symbol  (e.g. 'UCO', 'BTC/USD')",
-  "  - interval  (1min / 5min / 15min / 30min / 1h / 4h / 1d)",
+  "Call this only when the user states or revises one of:",
   "  - equity_usd  (starting capital in USD)",
-  "  - brokerage  (alpaca | binance)",
   "  - backtest.duration  ('2w', '4w', '5d', '1m', '1y', etc.)",
-  "  - asset_class  (equity | crypto)",
+  "  - strategy params under params",
   "",
-  "Call eagerly — once per parameter as it surfaces. Pass only the fields you have a value for.",
+  "Do not change execution identity fields here: symbol, asset_class, interval, required_history_bars, or brokerage.",
+  "If one of those changes, save a new version with complete config and matching code/name instead.",
+  "Call eagerly for allowed fields only — once per parameter as it surfaces. Pass only fields you have a value for.",
   "Use null to clear a field. The tool merges into the existing config, so prior values stick.",
   "Do NOT record outputs (returns, P&L) — only inputs the user supplies.",
   "",
-  "If no algorithm exists yet, scaffold + save one first via finny_algorithm_save, then call this.",
+  "If no algorithm exists yet, save one with complete config via finny_algorithm_save; do not save first and patch missing config here.",
 ].join("\n")
+
+const IDENTITY_KEYS = ["symbol", "asset_class", "interval", "required_history_bars", "brokerage"] as const
+
+export function blockedIdentityParamKeys(params: Partial<StrategyParams>): string[] {
+  return IDENTITY_KEYS.filter((key) => Object.prototype.hasOwnProperty.call(params, key))
+}
 
 export const AlgorithmSetParamsTool = Tool.define(
   "finny_algorithm_set_params",
@@ -59,6 +64,17 @@ export const AlgorithmSetParamsTool = Tool.define(
           }
         }
 
+        const blockedKeys = blockedIdentityParamKeys(input.params)
+        if (blockedKeys.length > 0) {
+          return {
+            title: "Param update blocked",
+            output:
+              `Refusing to patch execution identity on "${input.name}": ${blockedKeys.join(", ")}.\n\n` +
+              "Save a new version with complete config, matching code/name, and validation instead.",
+            metadata: { found: true, blocked: true, blockedKeys },
+          }
+        }
+
         const prev = parseConfig(algo.config)
         const merged = mergeConfig(prev, input.params)
         const serialized = serializeConfig(merged)
@@ -73,12 +89,14 @@ export const AlgorithmSetParamsTool = Tool.define(
         }
 
         return {
-          title: `Updated params on ${algo.name}`,
+          title: `Saved params as ${algo.name} v${updated.version}`,
           output: JSON.stringify(merged, null, 2),
           metadata: {
             found: true,
             algorithmId: algo.algorithmId,
             name: algo.name,
+            previousVersion: algo.version,
+            version: updated.version,
             params: merged,
           },
         }

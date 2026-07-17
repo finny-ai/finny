@@ -3,6 +3,8 @@ import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
+import { Validate } from "../algorithm/validate"
+import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 const MAX_COMBOS = 27
 
@@ -25,13 +27,29 @@ const parameters = z.object({
   duration: z
     .string()
     .regex(/^\d+[dwmy]$/i)
-    .default("1m")
-    .describe("Backtest period for each combo. Same format as finny_backtest_run."),
+    .default("3m")
+    .describe("Backtest period for each combo. Same format as finny_backtest."),
   interval: z
     .enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"])
-    .default("5min")
+    .default("1h")
     .describe("Bar interval"),
   capital: z.string().default("10000").describe("Starting capital in USD"),
+  walkForwardFolds: z
+    .number()
+    .int()
+    .min(2)
+    .default(10)
+    .describe("Number of rolling walk-forward folds to run for each parameter combination. Defaults to 10; use any integer of at least 2."),
+  feeBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional taker fee in basis points for each run. Overrides the saved execution fee without changing the algorithm."),
+  slippageBps: z
+    .number()
+    .nonnegative()
+    .optional()
+    .describe("Optional base slippage in basis points for each run. Overrides the saved execution slippage without changing the algorithm."),
 })
 
 type Combo = Record<string, number | string | boolean>
@@ -58,6 +76,15 @@ function fmtParams(p: Combo): string {
     .join(", ")
 }
 
+function nestedOosScore(metrics: BacktestRunner.Results): { sharpe: number; ret: number; trades: number } {
+  const wf = metrics.v2?.walk_forward
+  return {
+    sharpe: Number.isFinite(wf?.stitched_oos_sharpe) ? Number(wf?.stitched_oos_sharpe) : Number(wf?.oos_sharpe_mean ?? metrics.sharpeRatio),
+    ret: Number.isFinite(wf?.stitched_oos_return) ? Number(wf?.stitched_oos_return) : metrics.totalReturn,
+    trades: Number.isFinite(wf?.stitched_oos_trades) ? Number(wf?.stitched_oos_trades) : metrics.totalTrades,
+  }
+}
+
 export const BacktestSweepTool = Tool.define(
   "finny_backtest_sweep",
   Effect.succeed({
@@ -77,6 +104,20 @@ export const BacktestSweepTool = Tool.define(
           always: ["*"],
           metadata: {},
         })
+
+        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
+        if (!evidence.ok) {
+          return {
+            title: "Sweep blocked by missing evidence",
+            output: evidence.text,
+            metadata: {
+              blocked: true,
+              evidenceRequired: true,
+              workspaceSlug: evidence.workspaceSlug,
+              issues: evidence.issues,
+            } as Record<string, unknown>,
+          }
+        }
 
         const algo = await Algorithm.get(input.algorithmName)
         if (!algo) {
@@ -101,6 +142,15 @@ export const BacktestSweepTool = Tool.define(
               `            self.rsi_period = int(p.get("rsi_period", 14))\n` +
               `            # ...read every param from p\n\n` +
               `Then save the updated algorithm and re-run the sweep.`,
+            metadata: {},
+          }
+        }
+
+        const validation = await Validate.run(algo.code, { config: algo.config })
+        if (!validation.valid) {
+          return {
+            title: "Sweep blocked by validation",
+            output: Validate.format(validation),
             metadata: {},
           }
         }
@@ -134,7 +184,21 @@ export const BacktestSweepTool = Tool.define(
             duration: input.duration,
             interval: input.interval,
             capital: input.capital,
-            configOverrides: { params: combo },
+            configOverrides: {
+              params: combo,
+              ...(input.feeBps === undefined && input.slippageBps === undefined
+                ? {}
+                : {
+                    execution: {
+                      ...(input.feeBps === undefined ? {} : { taker_fee_bps: input.feeBps }),
+                      ...(input.slippageBps === undefined ? {} : { slippage_bps: input.slippageBps }),
+                    },
+                  }),
+            },
+            source: "sweep",
+            robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: input.walkForwardFolds },
+            sessionID: ctx.sessionID,
+            dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
           })
           if (r.ok) results.push({ params: combo, ok: true, metrics: r.results })
           else results.push({ params: combo, ok: false, error: r.error })
@@ -150,24 +214,28 @@ export const BacktestSweepTool = Tool.define(
           }
         }
 
-        const best = successes.reduce((a, b) =>
-          (b.metrics!.sharpeRatio > a.metrics!.sharpeRatio ? b : a),
-        )
-        const worst = successes.reduce((a, b) =>
-          (b.metrics!.sharpeRatio < a.metrics!.sharpeRatio ? b : a),
-        )
+        const best = successes.reduce((a, b) => {
+          const aa = nestedOosScore(a.metrics!)
+          const bb = nestedOosScore(b.metrics!)
+          return (bb.sharpe > aa.sharpe || (bb.sharpe === aa.sharpe && bb.ret > aa.ret) ? b : a)
+        })
+        const worst = successes.reduce((a, b) => {
+          const aa = nestedOosScore(a.metrics!)
+          const bb = nestedOosScore(b.metrics!)
+          return (bb.sharpe < aa.sharpe || (bb.sharpe === aa.sharpe && bb.ret < aa.ret) ? b : a)
+        })
 
-        const sharpes = successes.map((r) => r.metrics!.sharpeRatio)
-        const returns = successes.map((r) => r.metrics!.totalReturn)
+        const sharpes = successes.map((r) => nestedOosScore(r.metrics!).sharpe)
+        const returns = successes.map((r) => nestedOosScore(r.metrics!).ret)
         const sharpeRange = Math.max(...sharpes) - Math.min(...sharpes)
         const sharpeAbs = Math.max(...sharpes.map(Math.abs))
         const sharpeFragility = sharpeAbs > 0 ? sharpeRange / sharpeAbs : 0
 
         let verdict: "robust" | "fragile" | "broken"
         let verdictReason: string
-        if (best.metrics!.sharpeRatio <= 0) {
+        if (nestedOosScore(best.metrics!).sharpe <= 0) {
           verdict = "broken"
-          verdictReason = "Best Sharpe across the grid is non-positive — the strategy does not work in this regime."
+          verdictReason = "Best nested OOS Sharpe across the grid is non-positive — the strategy does not work in this regime."
         } else if (sharpeFragility > 0.5) {
           verdict = "fragile"
           verdictReason = `Sharpe range across the grid is ${(sharpeFragility * 100).toFixed(0)}% of the peak — the strategy's success depends heavily on specific parameter values (likely overfit).`
@@ -177,7 +245,7 @@ export const BacktestSweepTool = Tool.define(
         }
 
         const tableLines: string[] = []
-        const headers = ["params", "return%", "sharpe", "maxDD%", "trades", "winRate%", "PF"]
+        const headers = ["params", "nestedOOSReturn%", "nestedOOSSharpe", "nestedOOSTrades", "maxDD%", "winRate%", "PF"]
         tableLines.push(headers.join("\t"))
         for (const r of results) {
           if (!r.ok || !r.metrics) {
@@ -185,15 +253,16 @@ export const BacktestSweepTool = Tool.define(
             continue
           }
           const m = r.metrics
+          const oos = nestedOosScore(m)
           tableLines.push(
             [
               fmtParams(r.params),
-              (m.totalReturn * 100).toFixed(2),
-              m.sharpeRatio.toFixed(2),
+              (oos.ret * 100).toFixed(2),
+              oos.sharpe.toFixed(2),
+              String(oos.trades),
               (m.maxDrawdown * 100).toFixed(2),
-              String(m.totalTrades),
               (m.winRate * 100).toFixed(1),
-              m.profitFactor.toFixed(2),
+              m.profitFactor == null ? "N/A" : m.profitFactor.toFixed(2),
             ].join("\t"),
           )
         }
@@ -206,17 +275,20 @@ export const BacktestSweepTool = Tool.define(
           ``,
           ...tableLines,
           ``,
-          `Best:  ${fmtParams(best.params)}  →  Sharpe ${best.metrics!.sharpeRatio.toFixed(2)}, return ${(best.metrics!.totalReturn * 100).toFixed(2)}%`,
-          `Worst: ${fmtParams(worst.params)}  →  Sharpe ${worst.metrics!.sharpeRatio.toFixed(2)}, return ${(worst.metrics!.totalReturn * 100).toFixed(2)}%`,
+          `Best:  ${fmtParams(best.params)}  →  nested OOS Sharpe ${nestedOosScore(best.metrics!).sharpe.toFixed(2)}, return ${(nestedOosScore(best.metrics!).ret * 100).toFixed(2)}%`,
+          `Worst: ${fmtParams(worst.params)}  →  nested OOS Sharpe ${nestedOosScore(worst.metrics!).sharpe.toFixed(2)}, return ${(nestedOosScore(worst.metrics!).ret * 100).toFixed(2)}%`,
           `Sharpe range: ${sharpeRange.toFixed(2)} (${(sharpeFragility * 100).toFixed(0)}% of peak)`,
           `Return range: ${(Math.max(...returns) * 100 - Math.min(...returns) * 100).toFixed(2)}pp`,
           ``,
           `Verdict: ${verdict.toUpperCase()} — ${verdictReason}`,
         ]
 
+        const riskBanner = Validate.formatRiskBanner(validation)
+
+        const finalOutput = riskBanner ? `${riskBanner}\n\n${lines.join("\n")}` : lines.join("\n")
         return {
           title: `Sweep: ${algo.name} (${verdict}, ${results.length} combos)`,
-          output: lines.join("\n"),
+          output: finalOutput,
           metadata: {},
         }
       }),

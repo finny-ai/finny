@@ -42,12 +42,10 @@ Ask the user to choose:
 ### Step 3: Run the backtest
 Calculate the start and end dates based on the user's selection (end date defaults to today).
 
-If the algorithm has `backtestCode`, write it to `backtest.py` in the workspace first.
-
-Run the backtest using the bash tool:
-```
-python backtest.py --start-date YYYY-MM-DD --end-date YYYY-MM-DD --interval <interval> --capital <capital>
-```
+Call `finny_backtest`; the runtime generates the trusted strict-v2 engine shim.
+If `finny_algorithm_get` reports `legacyUnsafeCustomRunner: true`, explain that
+the imported runner is quarantined and the strategy must be migrated to the
+strict `Strategy(broker, params=None)` contract before product backtesting.
 
 If `--capital` was not specified, default to 10000.
 

@@ -10,6 +10,7 @@ describe("normalizeSymbol", () => {
     ["BTCUSD", "BTC/USD"],
     ["btcusd", "BTC/USD"],
     ["BTC-USD", "BTC/USD"],
+    ["BTC.USD", "BTC/USD"],
     ["BTC/USD", "BTC/USD"],
     ["BTCUSDT", "BTC/USD"],
     ["btc/usdt", "BTC/USD"],
@@ -50,6 +51,16 @@ describe("normalizeSymbol", () => {
     expect(normalizeSymbol("UCO")).toBe("UCO")
     expect(normalizeSymbol("uco")).toBe("UCO")
     expect(normalizeSymbol("SPY")).toBe("SPY")
+  })
+
+  test.each([
+    ["ES", "ES"],
+    ["es", "ES"],
+    ["ES=F", "ES"],
+    ["NQ=F", "NQ"],
+    ["6E=F", "6E"],
+  ])("futures roots canonicalize: %s -> %s", (input, expected) => {
+    expect(normalizeSymbol(input)).toBe(expected)
   })
 
   test("empty input throws UnknownSymbolError", () => {

@@ -16,7 +16,7 @@
  * Adding a symbol to {@link SUPPORTED_SYMBOLS} makes it appear in every
  * prompt's `<supported_markets/>` block and in the welcome dialog.
  */
-export type SymbolKind = "crypto" | "stock" | "etf"
+export type SymbolKind = "crypto" | "stock" | "etf" | "future"
 
 export interface SupportedSymbol {
   /** User-facing canonical name (e.g. "BTC", "AAPL"). */
@@ -101,6 +101,19 @@ export const SUPPORTED_SYMBOLS: readonly SupportedSymbol[] = [
   { name: "USO", kind: "etf", yfinance: "USO", canonical: "USO" },
   { name: "TLT", kind: "etf", yfinance: "TLT", canonical: "TLT" },
   { name: "HYG", kind: "etf", yfinance: "HYG", canonical: "HYG" },
+
+  // ──────── Futures (canonical bare roots; yfinance continuous contracts use =F) ────────
+  { name: "ES", kind: "future", yfinance: "ES=F", canonical: "ES" },
+  { name: "NQ", kind: "future", yfinance: "NQ=F", canonical: "NQ" },
+  { name: "RTY", kind: "future", yfinance: "RTY=F", canonical: "RTY" },
+  { name: "YM", kind: "future", yfinance: "YM=F", canonical: "YM" },
+  { name: "CL", kind: "future", yfinance: "CL=F", canonical: "CL" },
+  { name: "GC", kind: "future", yfinance: "GC=F", canonical: "GC" },
+  { name: "SI", kind: "future", yfinance: "SI=F", canonical: "SI" },
+  { name: "HG", kind: "future", yfinance: "HG=F", canonical: "HG" },
+  { name: "ZN", kind: "future", yfinance: "ZN=F", canonical: "ZN" },
+  { name: "ZB", kind: "future", yfinance: "ZB=F", canonical: "ZB" },
+  { name: "6E", kind: "future", yfinance: "6E=F", canonical: "6E" },
 ] as const
 
 export function listByKind(kind: SymbolKind): readonly SupportedSymbol[] {
@@ -138,7 +151,7 @@ function looksLikeCryptoBase(s: string): boolean {
  * Resolve any user-supplied symbol shape into a {@link SupportedSymbol}.
  *
  * 1. Curated registry hit → return rich metadata.
- * 2. Pair form (BTC/USD, BTC-USD, BTCUSDT, BTCUSDC, BTCUSD) → coerce base
+ * 2. Pair form (BTC/USD, BTC-USD, BTC.USD, BTCUSDT, BTCUSDC, BTCUSD) → coerce base
  *    to the BASE/USD canonical shape and yfinance BASE-USD.
  * 3. Bare ticker (1-5 caps, optionally one class-share suffix) → assume
  *    stock/ETF, return as-is for both yfinance and canonical.
@@ -155,15 +168,15 @@ export function resolveSymbol(input: string): SupportedSymbol | null {
   // (1) curated registry lookup — accepts name/yfinance/canonical forms
   // plus a few normalized pair shapes.
   const candidates = [upper]
-  const stripPair = upper.replace(new RegExp(`[-/]?(${QUOTE_CURRENCIES.join("|")})$`), "")
+  const stripPair = upper.replace(new RegExp(`[-/.]?(${QUOTE_CURRENCIES.join("|")})$`), "")
   if (stripPair !== upper) candidates.push(stripPair)
   for (const c of candidates) {
     const hit = SUPPORTED_SYMBOLS.find((s) => s.name === c || s.yfinance === c || s.canonical === c)
     if (hit) return hit
   }
 
-  // (2) crypto pair form: BASE/USD, BASE-USD, BASEUSD, BASEUSDT, BASEUSDC, BASEBUSD
-  const sep = upper.match(new RegExp(`^([A-Z0-9]{2,6})[-/](${QUOTE_CURRENCIES.join("|")})$`))
+  // (2) crypto pair form: BASE/USD, BASE-USD, BASE.USD, BASEUSD, BASEUSDT, BASEUSDC, BASEBUSD
+  const sep = upper.match(new RegExp(`^([A-Z0-9]{2,6})[-/.](${QUOTE_CURRENCIES.join("|")})$`))
   if (sep) return { name: sep[1], kind: "crypto", yfinance: `${sep[1]}-USD`, canonical: `${sep[1]}/USD`, unknown: true }
   const glued = upper.match(new RegExp(`^([A-Z0-9]{2,6})(${QUOTE_CURRENCIES.join("|")})$`))
   if (glued) return { name: glued[1], kind: "crypto", yfinance: `${glued[1]}-USD`, canonical: `${glued[1]}/USD`, unknown: true }
@@ -198,11 +211,13 @@ export function renderSupportedMarkets(): string {
   const crypto = listByKind("crypto").map((s) => s.name).join(", ")
   const stock = listByKind("stock").map((s) => s.name).join(", ")
   const etf = listByKind("etf").map((s) => s.name).join(", ")
+  const futures = listByKind("future").map((s) => s.name).join(", ")
   return [
     `- Crypto (24/7): ${crypto}`,
     `- Stocks (US market hours): ${stock}`,
     `- ETFs (US market hours): ${etf}`,
-    `- And: any other yfinance-compatible ticker (most US-listed equities, ETFs, and major crypto pairs work). Try the symbol; the data layer will tell you if there's no data.`,
+    `- Futures (continuous yfinance contracts): ${futures}`,
+    `- And: any other yfinance-compatible ticker (most US-listed equities, ETFs, futures roots, and major crypto pairs work). Try the symbol; the data layer will tell you if there's no data.`,
   ].join("\n")
 }
 

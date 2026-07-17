@@ -42,6 +42,8 @@ export namespace RetryOrchestrator {
     attempts: number
     /** Final report from the last failed attempt. */
     report: string
+    /** Structured blockers from the final attempt. */
+    diagnostics: Validate.Diagnostic[]
   }
 
   export interface PassedSignal {
@@ -52,6 +54,32 @@ export namespace RetryOrchestrator {
   }
 
   export type Outcome = RetrySignal | ExhaustedSignal | PassedSignal
+
+  export function outcomeFromValidationResult(input: {
+    result: Validate.Result
+    currentAttempt: number
+  }): Outcome {
+    const { result, currentAttempt } = input
+    const blockingDiagnostics = Validate.blockingDiagnostics(result)
+    const advisoryDiagnostics = Validate.advisoryDiagnostics(result)
+    if (blockingDiagnostics.length === 0) {
+      return { kind: "passed", attempts: currentAttempt, warnings: advisoryDiagnostics }
+    }
+
+    const report = Validate.format(result)
+
+    if (currentAttempt >= MAX_ATTEMPTS) {
+      return { kind: "exhausted", attempts: currentAttempt, report, diagnostics: blockingDiagnostics }
+    }
+
+    return {
+      kind: "retry",
+      attempt: currentAttempt,
+      maxAttempts: MAX_ATTEMPTS,
+      report,
+      diagnostics: blockingDiagnostics,
+    }
+  }
 
   /**
    * Run validation and decide what the save tool should do next.
@@ -68,29 +96,16 @@ export namespace RetryOrchestrator {
     const currentAttempt = priorAttempts + 1
 
     const result = await Validate.run(input.code, { config: input.config })
+    const outcome = outcomeFromValidationResult({ result, currentAttempt })
 
-    if (result.valid) {
-      // Success — clear counter for this algo.
+    if (outcome.kind === "passed" || outcome.kind === "exhausted") {
+      // Success or terminal failure — clear counter for this algo.
       attempts.delete(k)
-      return { kind: "passed", attempts: currentAttempt, warnings: result.warnings }
-    }
-
-    const report = Validate.format(result)
-
-    if (currentAttempt >= MAX_ATTEMPTS) {
-      // Max retries exhausted — reset counter so the next user request starts fresh.
-      attempts.delete(k)
-      return { kind: "exhausted", attempts: currentAttempt, report }
+      return outcome
     }
 
     attempts.set(k, currentAttempt)
-    return {
-      kind: "retry",
-      attempt: currentAttempt,
-      maxAttempts: MAX_ATTEMPTS,
-      report,
-      diagnostics: result.errors,
-    }
+    return outcome
   }
 
   /**
@@ -111,31 +126,55 @@ export namespace RetryOrchestrator {
    * the prompt can evolve without touching the orchestrator state machine.
    */
   export function buildRetryInstruction(signal: RetrySignal): string {
-    const errors = signal.diagnostics.map((d) => {
+    return [
+      formatSaveFailure(signal.diagnostics),
+      `Automatic fix attempt ${signal.attempt}/${signal.maxAttempts}: correct the strategy and call finny_algorithm_save again.`,
+    ].join("\n")
+  }
+
+  /** Compact user/agent-facing failure: causes first, then concrete fixes. */
+  export function formatSaveFailure(diagnostics: Validate.Diagnostic[]): string {
+    if (diagnostics.length === 0) return "Failed to save strategy: validation did not return a specific cause.\nFix: review the strategy contract and retry."
+    if (diagnostics.length === 1) {
+      const diagnostic = diagnostics[0]
+      const loc = diagnostic.line ? ` (line ${diagnostic.line})` : ""
+      return [
+        `Failed to save strategy: ${diagnostic.code}${loc} — ${diagnostic.message}`,
+        `Fix: ${diagnostic.fix ?? "Correct this validator error, then retry."}`,
+      ].join("\n")
+    }
+    const causes = diagnostics.map((d) => {
       const loc = d.line ? ` (line ${d.line})` : ""
-      const fix = d.fix ? `  Fix: ${d.fix}` : ""
-      return `- ${d.code}${loc}: ${d.message}\n${fix}`
-    }).join("\n")
+      return `- ${d.code}${loc}: ${d.message}`
+    })
+    const fixes = diagnostics.map((d) => `- ${d.code}: ${d.fix ?? "Correct this validator error, then retry."}`)
+    return [
+      `Failed to save strategy because validation found ${diagnostics.length} blocking issues:`,
+      ...causes,
+      `Fix:`,
+      ...fixes,
+    ].join("\n")
+  }
+
+  export function formatWarningRejection(warnings: Validate.Diagnostic[]): string {
+    const lines = warnings.map((d) => {
+      const loc = d.line ? ` (line ${d.line})` : ""
+      const fix = d.fix ? `\n  Fix: ${d.fix}` : ""
+      return `- ${d.code}${loc}: ${d.message}${fix}`
+    })
 
     return [
-      `Validation rejected attempt ${signal.attempt}/${signal.maxAttempts}.`,
+      `Validation advisory warnings:`,
       ``,
-      `Errors:`,
-      errors,
-      ``,
-      `Rewrite the full strategy fixing every error. Do not apologise. Do not narrate.`,
-      `Call finny_algorithm_save again with the corrected code.`,
+      `${warnings.length} warning(s):`,
+      ...lines,
     ].join("\n")
   }
 
   export function buildExhaustedMessage(signal: ExhaustedSignal): string {
     return [
-      `Sorry — I couldn't produce an algorithm that passes validation after ${signal.attempts} attempts.`,
-      ``,
-      `Please rephrase your request or give me more specifics (e.g. the indicator, timeframe, or risk rules you want).`,
-      ``,
-      `Last validator report:`,
-      signal.report,
+      formatSaveFailure(signal.diagnostics),
+      `This exact strategy design exhausted ${signal.attempts} automatic save attempts. Do not retry the same design again. Re-read the strategy contract, then automatically create and save a materially different, simpler strategy that preserves the confirmed request constraints. Report blocked only when no viable alternative design remains.`,
     ].join("\n")
   }
 }

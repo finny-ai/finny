@@ -3,6 +3,7 @@ import {
   _resetPythonAvailableCache,
   isPythonAvailable,
   looksLikePythonMissing,
+  validationWarningsBlock,
 } from "../../src/tool/algorithm-save"
 
 describe("looksLikePythonMissing", () => {
@@ -70,5 +71,39 @@ describe("isPythonAvailable", () => {
     const a = await isPythonAvailable()
     const b = await isPythonAvailable()
     expect(a).toBe(b)
+  })
+})
+
+describe("validationWarningsBlock", () => {
+  test("does not silently promote advisory warnings to save blockers", () => {
+    const block = validationWarningsBlock([
+      {
+        code: "DIVISION_NO_ZERO_CHECK",
+        severity: "warning",
+        message: "Guard division denominators before dividing.",
+      } as any,
+    ])
+
+    expect(block).toBeUndefined()
+  })
+
+  test("blocks diagnostics classified as errors", () => {
+    const block = validationWarningsBlock([
+      {
+        code: "SMOKE_TEST_INCONCLUSIVE",
+        severity: "error",
+        message: "No post-warmup probe was possible.",
+      } as any,
+    ])
+
+    expect(block?.title).toBe("Failed to save strategy")
+    expect(block?.output).toContain("Failed to save strategy:")
+    expect(block?.output).toContain("Fix:")
+    expect(block?.metadata.blocked).toBe(true)
+    expect(block?.metadata.diagnosticCodes).toEqual(["SMOKE_TEST_INCONCLUSIVE"])
+  })
+
+  test("allows saves with no validator warnings", () => {
+    expect(validationWarningsBlock([])).toBeUndefined()
   })
 })

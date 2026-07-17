@@ -1,11 +1,15 @@
 import crypto from "crypto"
 import { BusEvent } from "../bus/bus-event"
 import z from "zod"
-import { ConvexAlgorithms } from "../storage/convex/algorithms"
+import { LocalAlgorithmStore, type AlgorithmDocsMode } from "../storage/local/algorithm-store"
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
+import { emit } from "../analytics/emit"
+import type { BrokerKind } from "@/live/brokers"
+import { normalizeConfigForSave } from "./strategy-params"
 
 const log = Log.create({ service: "algorithm" })
+const BrokerKindSchema = z.enum(["alpaca", "binance", "ibkr"])
 
 export namespace Algorithm {
   export const Info = z.object({
@@ -19,7 +23,13 @@ export namespace Algorithm {
     description: z.string().optional(),
     config: z.string().optional(),
     backtestCode: z.string().optional(),
-    localPath: z.string().optional(),
+    reasoning: z.string().optional(),
+    mission: z.string().optional(),
+    prefs: z.string().optional(),
+    decisions: z.string().optional(),
+    riskContract: z.string().optional(),
+    brokerKind: BrokerKindSchema.optional(),
+    targetBrokerage: BrokerKindSchema.optional(),
     time_created: z.number(),
     time_updated: z.number(),
   })
@@ -46,9 +56,6 @@ export namespace Algorithm {
     ),
   }
 
-  // Caller picks `new` (sibling lineage, fresh algorithmId, version=1) or
-  // `version` (same lineage, version+1). The save() function refuses to
-  // guess — see the SaveModeError cases below.
   export type SaveMode = "new" | "version"
 
   export interface SaveInput {
@@ -58,12 +65,17 @@ export namespace Algorithm {
     description?: string
     config?: string
     backtestCode?: string
-    localPath?: string
+    reasoning?: string
+    mission?: string
+    prefs?: string
+    decisions?: string
+    riskContract?: string
+    docsMode?: AlgorithmDocsMode
+    brokerKind?: BrokerKind
+    targetBrokerage?: BrokerKind
     saveMode: SaveMode
   }
 
-  // Tagged errors so the tool layer can format clean messages without
-  // string-matching exception text.
   export class SaveModeConflictError extends Error {
     readonly kind: "name_taken" | "no_existing_to_version"
     readonly suggested?: string
@@ -74,11 +86,18 @@ export namespace Algorithm {
     }
   }
 
+  export class DocsModeRequiredError extends Error {
+    constructor(message: string) {
+      super(message)
+      this.name = "DocsModeRequiredError"
+    }
+  }
+
   export async function save(input: SaveInput): Promise<Info> {
     const userId = await DeviceProfile.userId()
     const now = Date.now()
 
-    const existing = await ConvexAlgorithms.getByName(userId, input.name)
+    const existing = await LocalAlgorithmStore.getByName(userId, input.name)
 
     let algorithmId: string
     let time_created: number
@@ -105,12 +124,28 @@ export namespace Algorithm {
       algorithmId = existing.algorithmId
       time_created = existing.time_created
       status = existing.status ?? "draft"
+      if (!input.docsMode) {
+        throw new DocsModeRequiredError(
+          `Version saves for "${input.name}" require docsMode: "inherit" or "replace".`,
+        )
+      }
+      if (
+        input.docsMode === "inherit" &&
+        (input.mission !== undefined || input.prefs !== undefined || input.riskContract !== undefined)
+      ) {
+        throw new DocsModeRequiredError(
+          `docsMode "inherit" cannot include replacement mission, preferences, or risk contract. Use docsMode: "replace".`,
+        )
+      }
     }
 
-    // Version is assigned atomically server-side; insertVersion returns the
-    // saved row including the resolved version number. Don't compute it
-    // here — concurrent saves on two devices would race otherwise.
-    const saved = (await ConvexAlgorithms.insertVersion({
+    const normalizedConfig = normalizeConfigForSave({
+      incoming: input.config,
+      previous: input.saveMode === "version" ? existing?.config : undefined,
+      preserveExecution: input.saveMode === "version",
+    })
+
+    const saved = (await LocalAlgorithmStore.insertVersion({
       algorithmId,
       userId,
       name: input.name,
@@ -118,36 +153,58 @@ export namespace Algorithm {
       language: input.language ?? "python",
       status,
       description: input.description,
-      config: input.config,
+      config: normalizedConfig,
       backtestCode: input.backtestCode,
-      localPath: input.localPath,
+      reasoning: input.reasoning,
+      mission: input.mission,
+      prefs: input.prefs,
+      decisions: input.decisions,
+      riskContract: input.riskContract,
+      docsMode: input.saveMode === "new" ? "replace" : input.docsMode,
+      brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
+      targetBrokerage: input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
       time_created,
       time_updated: now,
     })) as Info
     const record: Info = saved
     log.info("algorithm saved", { algorithmId, name: input.name, version: saved.version, saveMode: input.saveMode })
 
+    emit({
+      eventType: "algorithm.saved",
+      algorithmId,
+      payload: {
+        name: input.name,
+        code: input.code,
+        language: input.language ?? "python",
+        version: saved.version,
+        status,
+        description: input.description,
+        config: normalizedConfig,
+        backtestCode: input.backtestCode,
+        reasoning: input.reasoning,
+        brokerKind: record.brokerKind,
+        saveMode: input.saveMode,
+      },
+    })
+
     return record
   }
 
   export async function list(): Promise<Info[]> {
     const userId = await DeviceProfile.userId()
-    const results = await ConvexAlgorithms.listByUser(userId)
+    const results = await LocalAlgorithmStore.listByUser(userId)
     return results as Info[]
   }
 
   export async function get(name: string): Promise<Info | null> {
     const userId = await DeviceProfile.userId()
-    const result = await ConvexAlgorithms.getByName(userId, name)
+    const result = await LocalAlgorithmStore.getByName(userId, name)
     return (result as Info) ?? null
   }
 
   export async function getById(algorithmId: string): Promise<Info | null> {
-    const result = (await ConvexAlgorithms.getById(algorithmId)) as Info | null | undefined
+    const result = (await LocalAlgorithmStore.getById(algorithmId)) as Info | null | undefined
     if (!result) return null
-    // The backend `getById` query filters only by algorithmId — anyone with a
-    // valid ID could read another user's algorithm. Enforce tenant scoping at
-    // this boundary by dropping results that don't belong to the caller.
     const userId = await DeviceProfile.userId()
     const ownerId = (result as Info & { userId?: string }).userId
     if (ownerId && ownerId !== userId) return null
@@ -155,9 +212,6 @@ export namespace Algorithm {
   }
 
   export async function resolve(identifier: string): Promise<Info | null> {
-    // Algorithm IDs are UUIDv4 from crypto.randomUUID() (new saves) or ULIDs
-    // (legacy rows). Pick the right Convex lookup on the first try to avoid
-    // two round-trips on every watcher fire.
     const looksLikeUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(identifier)
     const looksLikeULID = /^[0-9A-HJKMNP-TV-Z]{26}$/i.test(identifier)
     if (looksLikeUUID || looksLikeULID) {
@@ -171,36 +225,72 @@ export namespace Algorithm {
     return algo?.code ?? null
   }
 
-  // All versions for a lineage, newest first. Capped at 100 server-side.
+  async function verifyOwnership(algorithmId: string): Promise<boolean> {
+    const result = await LocalAlgorithmStore.getById(algorithmId)
+    if (!result) return false
+    const userId = await DeviceProfile.userId()
+    return result.userId === userId
+  }
+
   export async function listVersions(algorithmId: string): Promise<Info[]> {
-    const results = await ConvexAlgorithms.listVersions(algorithmId)
+    if (!(await verifyOwnership(algorithmId))) return []
+    const results = await LocalAlgorithmStore.listVersions(algorithmId)
     return (results as Info[]) ?? []
   }
 
   export async function getVersion(algorithmId: string, version: number): Promise<Info | null> {
-    const result = await ConvexAlgorithms.getByIdAndVersion(algorithmId, version)
+    if (!(await verifyOwnership(algorithmId))) return null
+    const result = await LocalAlgorithmStore.getByIdAndVersion(algorithmId, version)
     return (result as Info) ?? null
   }
 
-  // Deletes ALL versions of the lineage.
   export async function remove(algorithmId: string): Promise<void> {
-    await ConvexAlgorithms.remove(algorithmId)
+    if (!(await verifyOwnership(algorithmId))) return
+    await LocalAlgorithmStore.remove(algorithmId)
     log.info("algorithm removed (all versions)", { algorithmId })
+
+    emit({
+      eventType: "algorithm.removed",
+      algorithmId,
+      payload: { algorithmId },
+    })
   }
 
-  // In-place patch on the latest version's config string. Does NOT bump
-  // version — used for chat-driven param tweaks where the strategy code
-  // hasn't changed.
   export async function updateConfig(algorithmId: string, config: string): Promise<Info | null> {
-    const result = await ConvexAlgorithms.patchLatestConfig(algorithmId, config)
+    if (!(await verifyOwnership(algorithmId))) return null
+    const existing = await LocalAlgorithmStore.getById(algorithmId)
+    if (!existing) return null
+    const now = Date.now()
+    const result = await LocalAlgorithmStore.insertVersion({
+      algorithmId: existing.algorithmId,
+      userId: existing.userId,
+      name: existing.name,
+      code: existing.code,
+      language: existing.language,
+      status: existing.status,
+      description: existing.description,
+      config,
+      backtestCode: existing.backtestCode,
+      reasoning: existing.reasoning,
+      docsMode: "inherit",
+      brokerKind: existing.brokerKind,
+      targetBrokerage: existing.targetBrokerage,
+      time_created: existing.time_created,
+      time_updated: now,
+    })
     if (!result) return null
-    log.info("algorithm config patched", { algorithmId })
+    log.info("algorithm config versioned", { algorithmId, version: result.version })
+
+    emit({
+      eventType: "algorithm.config_versioned",
+      algorithmId,
+      payload: { algorithmId, config, version: result.version },
+    })
+
     return result as Info
   }
 
   function deriveSiblingName(base: string): string {
-    // Strip a trailing `-vN` if present, then append `-2` / `-3` / ... so the
-    // suggestion doesn't collide with the conflicting name.
     const stripped = base.replace(/-v?\d+$/, "")
     return `${stripped}-2`
   }

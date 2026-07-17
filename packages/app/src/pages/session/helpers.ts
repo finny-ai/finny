@@ -20,6 +20,10 @@ type TabsInput = {
 
 export const getSessionKey = (dir: string | undefined, id: string | undefined) => `${dir ?? ""}${id ? `/${id}` : ""}`
 
+export function shouldShowFileTree(input: { desktopV2: boolean; showFileTree: boolean; opened: boolean }) {
+  return input.opened && (!input.desktopV2 || input.showFileTree)
+}
+
 export const createSessionTabs = (input: TabsInput) => {
   const review = input.review ?? (() => false)
   const hasReview = input.hasReview ?? (() => false)
@@ -117,7 +121,7 @@ export const createOpenReviewFile = (input: {
         input.openTab(tab)
         input.setActive(tab)
       }
-      if (maybePromise instanceof Promise) maybePromise.then(open)
+      if (maybePromise instanceof Promise) void maybePromise.then(open)
       else open()
     })
   }

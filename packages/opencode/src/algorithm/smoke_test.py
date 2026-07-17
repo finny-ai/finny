@@ -1,12 +1,16 @@
 """Finny strategy behavioral smoke test.
 
-Loads a Strategy class from stdin-provided source, runs it against four synthetic
+Loads a Strategy class from stdin-provided source, runs it against synthetic
 bar regimes (constant / up / down / random walk), and asserts behavioral invariants.
+For crypto symbols (pass --symbol) an additional HIGH-PRICE regime (~$60K random
+walk vs $10K equity) catches sizing that forces unaffordable whole-unit orders
+(e.g. `max(1, int(qty))` submitting 1 BTC on a $10K account).
 
 Emits a JSON array of diagnostics on stdout (same shape as ast_analyzer.py).
 
 Diagnostic codes:
   SMOKE_TEST_EXCEPTION            (error)   on_tick raised
+  SMOKE_TEST_INCONCLUSIVE         (error)   warmup leaves fewer than 200 bounded probe bars
   INVARIANT_BAD_RETURN            (error)   on_tick returned something other than BUY/SELL/HOLD
   INVARIANT_CONSTANT_TRADES       (error)   trades emitted on a flat-price series
   INVARIANT_RSI_STUCK             (error)   an indicator-shaped attribute stayed ≥95 (or ≤5) for >90% of ticks
@@ -19,7 +23,9 @@ Diagnostic codes:
 Exits 0 with diagnostics on stdout. If the strategy fails to import at all, emits
 SMOKE_TEST_EXCEPTION and exits 0 (upstream handles blocking save).
 """
+import argparse
 import importlib.util
+import inspect
 import json
 import math
 import random
@@ -32,6 +38,17 @@ from pathlib import Path
 
 
 VALID_RETURNS = {"BUY", "SELL", "HOLD", None}
+
+# Mirrors ast_analyzer.py's symbol heuristics (kept local: both scripts are run
+# standalone via stdin and must not depend on each other's import side effects).
+CRYPTO_SUFFIXES = ("USDT", "USDC", "BUSD", "DAI", "-USD", "/USD", "/USDT", ".USD")
+
+
+def _symbol_is_crypto(symbol):
+    if not symbol or not isinstance(symbol, str):
+        return False
+    s = symbol.strip().upper()
+    return any(suf in s for suf in CRYPTO_SUFFIXES) or s.endswith("-PERP")
 
 
 def _load_strategy(source):
@@ -62,54 +79,140 @@ class StubBroker:
         self._positions = {}      # symbol -> qty
         self._cost_basis = {}     # symbol -> avg entry price
         self._last_price = {}     # symbol -> last observed price
+        self._history = {}        # symbol -> completed bars
         self.calls = []           # [(side, symbol, qty, notional)]
 
     def set_price(self, symbol, price):
         self._last_price[symbol] = float(price)
 
     def buy(self, symbol, qty=None, notional=None):
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current >= 0: long entry or add (cap by cash)
+          - current  < 0: cover short — possibly with a residual that flips to long
+
+        Realized PnL on cover flows naturally into self._cash: short opened cash by
+        qty*basis, cover spends qty*mark, so the net change is qty*(basis - mark).
+        """
         mark = self._last_price.get(symbol, 0)
         # Record what the strategy ASKED for (before we cap) so leverage violations
-        # are observable even if the real broker would silently cap.
+        # are observable even if the real broker would silently cap. Position at
+        # call time distinguishes new exposure (open/add) from a closing trade.
         requested_qty = qty
         if notional is not None and qty is None:
             requested_qty = notional / mark if mark > 0 else 0
-        self.calls.append(("buy", symbol, requested_qty, notional))
+        self.calls.append(("buy", symbol, requested_qty, notional, self._positions.get(symbol, 0)))
         if mark <= 0:
             return None
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty if omitted
         if qty is None and notional is not None:
             qty = notional / mark
         if qty is None:
-            qty = self._cash / mark if mark > 0 else 0
-        cost = qty * mark
-        if cost > self._cash:
-            qty = self._cash / mark if mark > 0 else 0
+            # Default: cover the short if short; otherwise size to all cash.
+            qty = abs(current) if current < 0 else (self._cash / mark if mark > 0 else 0)
+        if qty <= 0:
+            return None
+
+        if current >= 0:
+            # Long entry or add — cap by cash, weighted-avg the basis
             cost = qty * mark
-        prev_qty = self._positions.get(symbol, 0)
-        prev_basis = self._cost_basis.get(symbol, 0)
-        new_qty = prev_qty + qty
-        new_basis = (prev_basis * prev_qty + mark * qty) / new_qty if new_qty > 0 else 0
-        self._positions[symbol] = new_qty
-        self._cost_basis[symbol] = new_basis
-        self._cash -= cost
+            if cost > self._cash:
+                qty = self._cash / mark if mark > 0 else 0
+                cost = qty * mark
+            if qty <= 0:
+                return None
+            prev_basis = self._cost_basis.get(symbol, 0)
+            new_qty = current + qty
+            new_basis = (prev_basis * current + mark * qty) / new_qty if new_qty > 0 else 0
+            self._positions[symbol] = new_qty
+            self._cost_basis[symbol] = new_basis
+            self._cash -= cost
+            return None
+
+        # current < 0: covering a short, possibly flipping to long with residual
+        cover_qty = min(qty, abs(current))
+        residual = qty - cover_qty
+        self._cash -= cover_qty * mark
+        new_current = current + cover_qty
+        self._positions[symbol] = new_current
+        if new_current == 0:
+            self._cost_basis.pop(symbol, None)
+
+        if residual > 0:
+            # Residual opens a long at mark, capped by remaining cash
+            cost = residual * mark
+            if cost > self._cash:
+                residual = self._cash / mark if mark > 0 else 0
+                cost = residual * mark
+            if residual > 0:
+                self._positions[symbol] = residual
+                self._cost_basis[symbol] = mark
+                self._cash -= cost
         return None
 
     def sell(self, symbol, qty=None, notional=None):
-        self.calls.append(("sell", symbol, qty, notional))
+        """Handle four position transitions, mirroring engine_v2 PositionBook.apply_fill:
+          - current  > 0: long reduce/close — realize PnL via cash inflow
+          - current == 0: open short — receive proceeds, position goes negative
+          - current  < 0: add to short — weighted-avg basis on the short side
+
+        A sell that crosses zero (current > 0 and qty > current) is treated as
+        close-then-open-short on the residual.
+        """
+        requested_qty = qty
         mark = self._last_price.get(symbol, 0)
-        current = self._positions.get(symbol, 0)
-        if mark <= 0 or current <= 0:
+        if notional is not None and qty is None:
+            requested_qty = notional / mark if mark > 0 else 0
+        self.calls.append(("sell", symbol, requested_qty, notional, self._positions.get(symbol, 0)))
+        if mark <= 0:
             return None
-        if qty is None and notional is None:
-            qty = current
-        elif notional is not None:
+
+        current = self._positions.get(symbol, 0)
+
+        # Resolve qty
+        if qty is None and notional is not None:
             qty = notional / mark
-        qty = min(qty, current)
-        proceeds = qty * mark
-        self._positions[symbol] = current - qty
-        if self._positions[symbol] == 0:
-            self._cost_basis.pop(symbol, None)
-        self._cash += proceeds
+        if qty is None:
+            # Default: close the long if long. From flat or short, require an
+            # explicit qty — refusing to open / add to a short on a bare sell()
+            # avoids silently magnifying exposure when the strategy is buggy.
+            if current > 0:
+                qty = current
+            else:
+                return None
+        if qty <= 0:
+            return None
+
+        if current > 0:
+            # Long reduce/close — proceed by min(qty, current), then handle residual
+            close_qty = min(qty, current)
+            self._cash += close_qty * mark
+            new_current = current - close_qty
+            self._positions[symbol] = new_current
+            if new_current == 0:
+                self._cost_basis.pop(symbol, None)
+            residual = qty - close_qty
+            if residual > 0:
+                # Flip to short with residual at mark
+                self._positions[symbol] = -residual
+                self._cost_basis[symbol] = mark
+                self._cash += residual * mark
+            return None
+
+        # current <= 0: open or add to short. Receive proceeds, average the basis.
+        self._cash += qty * mark
+        if current == 0:
+            self._positions[symbol] = -qty
+            self._cost_basis[symbol] = mark
+        else:
+            prev_basis = self._cost_basis.get(symbol, 0)
+            abs_prev = abs(current)
+            abs_new = abs_prev + qty
+            new_basis = (prev_basis * abs_prev + mark * qty) / abs_new
+            self._positions[symbol] = -abs_new
+            self._cost_basis[symbol] = new_basis
         return None
 
     def position(self, symbol):
@@ -127,28 +230,49 @@ class StubBroker:
     def price(self, symbol):
         return self._last_price.get(symbol)
 
+    def set_history(self, symbol, rows):
+        self._history[symbol] = list(rows)
+
+    def history(self, symbol, limit=100):
+        safe_limit = max(0, int(limit))
+        rows = self._history.get(symbol, [])
+        return tuple(dict(r) for r in (rows[-safe_limit:] if safe_limit else []))
+
 
 def _instantiate_strategy(StrategyCls, broker):
-    """Try broker-injection constructor first, fall back to no-arg.
-    Returns (strategy, uses_broker_api)."""
-    try:
-        return StrategyCls(broker), True
-    except TypeError:
-        return StrategyCls(), False
+    """Instantiate the strict Shape-C strategy."""
+    sig = inspect.signature(StrategyCls)
+    accepts_params = any(
+        p.kind == inspect.Parameter.VAR_KEYWORD or p.name == "params"
+        for p in sig.parameters.values()
+    )
+    if accepts_params:
+        return StrategyCls(broker, params={}), True
+    return StrategyCls(broker), True
 
 
 def _pick_entry(strategy):
     """Return (method_name, method_fn, accepts_symbol) for the strategy's entry point."""
-    for name in ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar"):
-        fn = getattr(strategy, name, None)
-        if callable(fn):
-            # on_bar(symbol, bar) takes symbol; on_tick(bar) doesn't.
-            accepts_symbol = name in ("on_bar", "handle_bar", "step", "process_bar")
-            return name, fn, accepts_symbol
-    raise AttributeError("Strategy has no recognised entry method")
+    fn = getattr(strategy, "on_bar", None)
+    if callable(fn):
+        return "on_bar", fn, True
+    raise AttributeError("Strict strategy has no on_bar method")
 
 
-def _make_bar(price, ts=0, symbol="TEST"):
+def _make_bar(price, ts=0, symbol="TEST", prev=None):
+    return {
+        "symbol": symbol,
+        "open": price,
+        "prev_open": None if prev is None else prev["open"],
+        "prev_high": None if prev is None else prev["high"],
+        "prev_low": None if prev is None else prev["low"],
+        "prev_close": None if prev is None else prev["close"],
+        "volume": 1_000_000,
+        "timestamp": ts,
+    }
+
+
+def _completed_row(price, ts=0, symbol="TEST"):
     return {
         "symbol": symbol,
         "open": price,
@@ -160,18 +284,47 @@ def _make_bar(price, ts=0, symbol="TEST"):
     }
 
 
-def _regimes(n=200):
-    base = 100.0
+def _regime_prices(n=200, seed=42, base=100.0):
     constant = [base] * n
     up = [base * (1 + 0.005) ** i for i in range(n)]
     down = [base * (1 - 0.005) ** i for i in range(n)]
-    rng = random.Random(42)
+    rng = random.Random(seed)
     rw = []
     p = base
     for _ in range(n):
         p *= 1 + rng.gauss(0, 0.01)
         rw.append(p)
-    return {"constant": constant, "up": up, "down": down, "random": rw}
+    return constant, up, down, rw
+
+
+MAX_SMOKE_BARS = 5_000
+MIN_SMOKE_BARS = 400
+POST_WARMUP_PROBE_BARS = 200
+
+
+def smoke_length(required_history_bars=0):
+    required = max(0, int(required_history_bars or 0))
+    return min(MAX_SMOKE_BARS, max(MIN_SMOKE_BARS, required + POST_WARMUP_PROBE_BARS))
+
+
+def _regimes(n=MIN_SMOKE_BARS, include_high_price=False):
+    constant, up, down, rw = _regime_prices(n, 42)
+    _, _, _, long_rw = _regime_prices(n, 4242)
+    regimes = {
+        "constant": constant,
+        "up": up,
+        "down": down,
+        "random": rw,
+        "long_random": long_rw,
+    }
+    if include_high_price:
+        # BTC-scale prices against the $10K stub account. A strategy that sizes
+        # fractionally requests ~0.01–0.2 units and passes; one that floors or
+        # min-clamps qty to whole units requests ≥1 unit (~$60K) and trips the
+        # requested-qty leverage check.
+        _, _, _, high_rw = _regime_prices(n, 7, base=60_000.0)
+        regimes["high_price"] = high_rw
+    return regimes
 
 
 def _snapshot_state(strategy):
@@ -186,11 +339,27 @@ def _snapshot_state(strategy):
     return snap
 
 
-def _looks_like_indicator(name, samples):
-    """An attribute looks like an indicator if its value stays in [0, 100] AND actually varies.
+# Only names that plausibly hold a 0-100 bounded oscillator VALUE. Internal
+# accumulators (avg_gain, gain_sum) and unbounded measures (ATR, stddev) happen
+# to sit in [0, 100] on many price series and were false-flagged as "stuck".
+OSCILLATOR_NAME_HINTS = ("rsi", "stoch", "adx", "mfi", "willr", "percent", "pct_k", "pct_d")
+OSCILLATOR_NAME_EXCLUDES = ("gain", "loss", "sum", "count", "avg", "atr", "std", "var", "period")
 
-    We require real variation (range > 1) to avoid flagging config constants like num_std=2.0.
+
+def _looks_like_indicator(name, samples):
+    """An attribute looks like an indicator if it is NAMED like a bounded
+    oscillator AND its value stays in [0, 100] AND actually varies.
+
+    The name gate matters: ATR on a low-vol series or an RSI gain accumulator
+    also sits in [0, 100] and hugs zero, but neither is a broken oscillator.
+    We require real variation (range > 1) to avoid flagging config constants
+    like num_std=2.0.
     """
+    n = name.lower()
+    if not any(h in n for h in OSCILLATOR_NAME_HINTS):
+        return False
+    if any(x in n for x in OSCILLATOR_NAME_EXCLUDES):
+        return False
     if len(samples) < 20:
         return False
     if not all(isinstance(v, (int, float)) for v in samples):
@@ -246,10 +415,13 @@ def _run_regime(StrategyCls, prices):
     exc = None
 
     requested_qty_events = []  # [{tick, requested_qty, price, equity}]
+    completed = []
 
     for i, price in enumerate(prices):
-        bar = _make_bar(price, ts=i, symbol=SYMBOL)
+        prev = completed[-1] if completed else None
+        bar = _make_bar(price, ts=i, symbol=SYMBOL, prev=prev)
         broker.set_price(SYMBOL, price)
+        broker.set_history(SYMBOL, completed)
         equity_before = broker.equity()
         pre_calls = len(broker.calls)
         try:
@@ -263,12 +435,23 @@ def _run_regime(StrategyCls, prices):
 
         new_broker_calls = broker.calls[pre_calls:]
         if new_broker_calls:
-            for side, _sym, req_qty, _notional in new_broker_calls:
+            for side, _sym, req_qty, _notional, pos_before in new_broker_calls:
                 returns.append("BUY" if side == "buy" else "SELL")
-                if side == "buy" and isinstance(req_qty, (int, float)) and req_qty > 0:
+                # Only opening/adding trades create new exposure. A buy that
+                # covers a short or a sell that closes a long is risk-reducing
+                # and must not count toward requested-qty leverage.
+                opens_exposure = (side == "buy" and pos_before >= 0) or (side == "sell" and pos_before <= 0)
+                # A broker order may intentionally omit qty/notional and use
+                # the documented default sizing. Infer the resulting opening
+                # quantity so default-sized entries participate in the guard.
+                effective_qty = req_qty
+                if effective_qty is None and opens_exposure:
+                    effective_qty = abs(broker.position(_sym) - pos_before)
+                if opens_exposure and isinstance(effective_qty, (int, float)) and effective_qty > 0:
                     requested_qty_events.append({
                         "tick": i,
-                        "requested_qty": float(req_qty),
+                        "side": side,
+                        "requested_qty": float(effective_qty),
                         "price": float(price),
                         "equity": float(equity_before),
                     })
@@ -295,8 +478,7 @@ def _run_regime(StrategyCls, prices):
         # LEVERAGE_VIOLATION — the real position lives in the broker.
         if uses_broker_api:
             broker_pos = broker.position(SYMBOL)
-            if broker_pos not in (0, 1):
-                current_position = broker_pos
+            current_position = broker_pos
             current_equity = broker.equity()
 
         exposure_snapshots.append({
@@ -305,6 +487,7 @@ def _run_regime(StrategyCls, prices):
             "position": current_position,
             "equity": current_equity,
         })
+        completed.append(_completed_row(price, ts=i, symbol=SYMBOL))
 
     # For broker-API strategies with no stored equity attribute, surface the
     # broker's equity as a pseudo-scalar so EQUITY_STATIC can reason about it.
@@ -325,8 +508,25 @@ def _run_regime(StrategyCls, prices):
     }
 
 
-def analyze(source):
+def analyze(source, symbol=None, required_history_bars=0):
     diagnostics = []
+
+    required_history_bars = max(0, int(required_history_bars or 0))
+    n = smoke_length(required_history_bars)
+    if n - required_history_bars < POST_WARMUP_PROBE_BARS:
+        diagnostics.append({
+            "code": "SMOKE_TEST_INCONCLUSIVE",
+            "severity": "error",
+            "message": (
+                f"Strategy requires {required_history_bars} warmup bars, but the {MAX_SMOKE_BARS}-bar "
+                f"smoke cap leaves only {max(0, n - required_history_bars)} post-warmup observations."
+            ),
+            "fix": (
+                f"Reduce required_history_bars to at most "
+                f"{MAX_SMOKE_BARS - POST_WARMUP_PROBE_BARS}, or validate with a bounded dedicated fixture."
+            ),
+        })
+        return diagnostics
 
     try:
         StrategyCls = _load_strategy(source)
@@ -339,7 +539,10 @@ def analyze(source):
         })
         return diagnostics
 
-    regimes = _regimes(200)
+    # High-price regime only for crypto: whole-share equities legitimately
+    # never trade at BTC-scale prices on a $10K account, and futures size in
+    # margin-backed whole contracts whose notional routinely exceeds equity.
+    regimes = _regimes(n, include_high_price=_symbol_is_crypto(symbol))
     results = {}
     for name, prices in regimes.items():
         try:
@@ -451,6 +654,12 @@ def analyze(source):
         if not trades_fired:
             continue
         for attr, initial_val in res["initial_scalars"].items():
+            # Broker-API strategies get their authoritative account value from
+            # StubBroker.  Strategy parameters such as `cash_buffer_pct` are
+            # intentionally constant and must not be mistaken for a frozen
+            # capital ledger merely because their name contains "cash".
+            if res["uses_broker_api"] and attr != "__broker_equity__":
+                continue
             if not _looks_like_equity(attr):
                 continue
             final_val = res["last_scalars"].get(attr, initial_val)
@@ -502,20 +711,8 @@ def analyze(source):
                 break
         if found:
             break
-        # Requested-qty leverage check (broker-API: detect intent to over-size
-        # even when the stub/real broker capped the actual fill).
-        if res.get("uses_broker_api"):
-            requested_violations = []
-            for tick_idx, snap in enumerate(res["exposure_snapshots"]):
-                # no direct link between calls and ticks; use the equity at the tick
-                # and compare against the per-tick price
-                pass  # handled via direct scan below
-            # Simpler: scan all snapshots and compare to per-tick max requested qty.
-            # broker.calls is module-level; we need per-regime isolation — already
-            # reset because a fresh broker is created per regime. Use the final
-            # equity and first trade price as a rough bound.
     # Requested-qty leverage detection done separately per regime via a second pass
-    # using the returns + exposure snapshots.
+    # using the recorded exposure-opening order intents.
     if not any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
         for regime_name, res in results.items():
             if not res.get("uses_broker_api"):
@@ -524,37 +721,51 @@ def analyze(source):
             for ev in requested:
                 exposure = ev["requested_qty"] * ev["price"]
                 if exposure > ev["equity"] * 1.01:
+                    whole_unit_hint = ""
+                    if ev["requested_qty"] >= 1.0 and float(ev["requested_qty"]).is_integer():
+                        whole_unit_hint = (
+                            " The requested qty is a whole unit — check for `max(1, int(qty))`-style sizing: "
+                            "the 1-unit minimum overrides the computed fractional size, and no allocation % "
+                            "can fix it. For crypto keep qty fractional (`round(qty, 6)`); for whole-share "
+                            "assets skip the trade when the computed qty floors to 0."
+                        )
                     diagnostics.append({
                         "code": "LEVERAGE_VIOLATION",
                         "severity": "error",
                         "message": (
                             f"On the {regime_name} regime, tick {ev['tick']}: strategy requested "
-                            f"a position of {ev['requested_qty']:.2f} @ {ev['price']:.2f} "
+                            f"a {ev.get('side', 'buy')} of {ev['requested_qty']:.2f} @ {ev['price']:.2f} "
                             f"(= ${exposure:,.0f}), exceeding equity (${ev['equity']:,.0f}). "
-                            "Real broker would cap the fill but the intent is leveraged."
+                            "Real broker would reject or cap the fill but the intent is leveraged."
+                            + whole_unit_hint
                         ),
-                        "fix": "Cap qty BEFORE calling broker.buy: `qty = min(qty, self.broker.equity() / price)`.",
+                        "fix": "Cap qty BEFORE calling broker.buy/sell: `qty = min(qty, self.broker.equity() / price)`.",
                     })
                     break
             if any(d["code"] == "LEVERAGE_VIOLATION" for d in diagnostics):
                 break
 
-    # GUARD_NEVER_BINDING: strategy produced zero trades on the random-walk regime.
-    # Conservative: only warns when the random regime saw zero BUYs AND the strategy has
-    # threshold-like scalar attributes (suggesting a tunable guard exists). Monotone-up /
-    # -down regimes can legitimately produce no mean-reversion trades.
-    rw_buys = sum(1 for r in results["random"]["returns"] if r == "BUY")
-    if rw_buys == 0:
+    # GUARD_NEVER_BINDING: strategy produced zero entry orders on random-walk regimes.
+    # Count requested entry intents (buy or sell) so short-only strategies are not
+    # false-positive warned. Only warn when a tunable threshold-like attribute exists.
+    rw_entries = sum(
+        len(results[regime_name].get("requested_qty_events", []))
+        for regime_name in ("random", "long_random")
+        if regime_name in results
+    )
+    if rw_entries == 0:
         has_threshold = any(
-            re.search(r"threshold|min_|max_", name, re.IGNORECASE)
-            for name in results["random"]["initial_scalars"]
+            re.search(r"threshold|min_|max_|oversold|overbought|num_std|stop_|risk_|period|lookback|entry_|exit_|lower|upper|band|level|cutoff", name, re.IGNORECASE)
+            for regime_name in ("random", "long_random")
+            if regime_name in results
+            for name in results[regime_name]["initial_scalars"]
         )
         if has_threshold:
             diagnostics.append({
                 "code": "GUARD_NEVER_BINDING",
                 "severity": "warning",
                 "message": (
-                    "Strategy produced zero BUYs across 200 ticks of random-walk prices. "
+                    "Strategy produced zero entry orders across 700 ticks of random-walk prices. "
                     "A guard threshold (e.g. volatility/rsi cutoff) is likely too strict — the "
                     "strategy will rarely trade in real markets."
                 ),
@@ -565,9 +776,18 @@ def analyze(source):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--symbol", default=None, help="Symbol from config.json (enables the crypto high-price regime).")
+    parser.add_argument("--required-history-bars", type=int, default=0)
+    args = parser.parse_args()
+
     source = sys.stdin.read()
     try:
-        diagnostics = analyze(source)
+        diagnostics = analyze(
+            source,
+            symbol=args.symbol,
+            required_history_bars=args.required_history_bars,
+        )
     except Exception as exc:
         sys.stderr.write(f"smoke_test error: {exc}\n")
         sys.stdout.write("[]")

@@ -4,11 +4,16 @@ import os from "node:os"
 import path from "node:path"
 import {
   Backtest,
+  DATA_SUBDIRS,
+  DATA_STOCK_DIR,
+  MEMORY_FILE,
   MissionFrontmatter,
   algoDir,
   algosRoot,
   discoverAlgos,
   discoverVersions,
+  humanNameOf,
+  isSlug,
   listAlgos,
   loadAlgo,
   parseCurrent,
@@ -16,9 +21,10 @@ import {
   serializeMission,
   writeAlgo,
 } from "./index"
+import { writeUserPrefs } from "../prefs"
 
 const EXAMPLE_MISSION_YAML = `---
-schema_version: 1
+schema_version: 2
 name: hanta-biotech-swing
 status: research
 created: 2026-05-10
@@ -42,8 +48,8 @@ Rationale body.
 `
 
 const EXAMPLE_BACKTEST = {
-  schema_version: 1 as const,
-  version: "v2",
+  schema_version: 2 as const,
+  version: "v02",
   ran_at: "2026-05-10T12:34:56Z",
   period: { start: "2024-01-01", end: "2026-05-09", interval: "1h", bars: 8400 },
   config: { starting_cash: 1000, symbols: ["MRNA", "GILD", "SIGA", "PFE"] },
@@ -74,7 +80,7 @@ describe("MissionFrontmatter schema", () => {
 
   test("rejects malformed frontmatter (bad status enum)", () => {
     const bad = {
-      schema_version: 1,
+      schema_version: 2,
       name: "ok-name",
       status: "yolo",
       created: "2026-05-10",
@@ -87,7 +93,7 @@ describe("MissionFrontmatter schema", () => {
 
   test("rejects non-kebab-case names", () => {
     const bad = {
-      schema_version: 1,
+      schema_version: 2,
       name: "Hanta_Biotech",
       status: "research",
       created: "2026-05-10",
@@ -97,13 +103,69 @@ describe("MissionFrontmatter schema", () => {
     }
     expect(() => MissionFrontmatter.parse(bad)).toThrow()
   })
+
+  test("rejects schema_version 1 (must migrate)", () => {
+    const oldVersion = {
+      schema_version: 1,
+      name: "ok-name",
+      status: "research",
+      created: "2026-05-10",
+      hypothesis: "x",
+      scope: { asset_class: "equities", universe: ["X"], horizon: "days" },
+      exit_conditions: "x",
+    }
+    expect(() => MissionFrontmatter.parse(oldVersion)).toThrow()
+  })
+
+  test("accepts schema_version 4 with the machine risk contract", () => {
+    const core8 = [
+      "market_universe",
+      "timeframe_bar_interval",
+      "strategy_family",
+      "directional_thesis_regime",
+      "entry_signal_idea",
+      "exit_invalidation_rules",
+      "risk_tolerance_max_drawdown",
+      "backtest_window_success_metric",
+    ] as const
+    const current = {
+      schema_version: 4,
+      name: "spy-sma-crossover",
+      status: "research",
+      created: "2026-07-09",
+      hypothesis: "Trend persistence can support a moving-average crossover.",
+      scope: { asset_class: "equities", universe: ["SPY"], horizon: "intraday" },
+      strategy: {
+        bar_interval: "5min",
+        type: "momentum",
+        direction: "long",
+        entry_signal: "Fast SMA crosses above slow SMA.",
+        risk_profile: "moderate",
+        max_drawdown_pct: 10,
+        backtest_window: "6mo",
+        success_metric: "Positive OOS Sharpe.",
+      },
+      risk_contract: {
+        sizing_stop_distance_pct: 2,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+      exit_conditions: "Exit on reverse crossover or protective stop.",
+      questionnaire: core8.map((id) => ({ id, question: id, answer: "answered", status: "answered" })),
+    }
+    expect(MissionFrontmatter.parse(current)).toMatchObject({
+      schema_version: 4,
+      risk_contract: { max_positions: 1 },
+    })
+  })
 })
 
 describe("Backtest schema", () => {
   test("accepts the example payload", () => {
     const parsed = Backtest.parse(EXAMPLE_BACKTEST)
     expect(parsed.metrics.ann_sharpe).toBe(1.4)
-    expect(parsed.version).toBe("v2")
+    expect(parsed.version).toBe("v02")
   })
 
   test("rejects payload missing a required metric field", () => {
@@ -118,16 +180,24 @@ describe("Backtest schema", () => {
     ok.metrics.total_trades = 0
     expect(() => Backtest.parse(ok)).not.toThrow()
   })
+
+  test("rejects unpadded version names", () => {
+    const bad = structuredClone(EXAMPLE_BACKTEST) as any
+    bad.version = "v2"
+    expect(() => Backtest.parse(bad)).toThrow()
+  })
 })
 
 describe("parseCurrent", () => {
-  test("accepts v1 / v17 with trailing newline", () => {
-    expect(parseCurrent("v1\n")).toBe("v1")
+  test("accepts v01 / v17 with trailing newline", () => {
+    expect(parseCurrent("v01\n")).toBe("v01")
     expect(parseCurrent("  v17  ")).toBe("v17")
   })
 
-  test("rejects v0, garbage, and empty", () => {
+  test("rejects v0, v00, unpadded v1, garbage, and empty", () => {
     expect(() => parseCurrent("v0")).toThrow()
+    expect(() => parseCurrent("v00")).toThrow()
+    expect(() => parseCurrent("v1")).toThrow()
     expect(() => parseCurrent("latest")).toThrow()
     expect(() => parseCurrent("")).toThrow()
   })
@@ -139,6 +209,28 @@ describe("algosRoot", () => {
     expect(got).toBe(path.join("/x/data", "finny", "algos"))
   })
 
+  test("respects FINNY_HOME before XDG_DATA_HOME", () => {
+    const got = algosRoot({ FINNY_HOME: "/custom/finny", XDG_DATA_HOME: "/x/data" } as any, "darwin")
+    expect(got).toBe(path.join("/custom/finny", "algos"))
+  })
+
+  test("uses saved Finny Home preference", async () => {
+    const root = await mkSandbox()
+    const prefsPath = path.join(root, "prefs.md")
+    await writeUserPrefs(
+      {
+        frontmatter: {
+          schema_version: 1,
+          finny_home: path.join(root, "saved"),
+        },
+        body: "\n",
+      },
+      prefsPath,
+    )
+    const got = algosRoot({ XDG_DATA_HOME: path.join(root, "xdg") } as any, "linux", prefsPath)
+    expect(got).toBe(path.join(root, "saved", "algos"))
+  })
+
   test("falls back to ~/.local/share on linux/darwin without XDG", () => {
     const got = algosRoot({} as any, "linux")
     expect(got.endsWith(path.join(".local", "share", "finny", "algos"))).toBe(true)
@@ -147,6 +239,18 @@ describe("algosRoot", () => {
   test("uses %LOCALAPPDATA% on win32", () => {
     const got = algosRoot({ LOCALAPPDATA: "C:\\\\users\\\\me\\\\AppData\\\\Local" } as any, "win32")
     expect(got).toBe(path.join("C:\\\\users\\\\me\\\\AppData\\\\Local", "finny", "algos"))
+  })
+
+  test("honors XDG_DATA_HOME for isolated win32 tests", () => {
+    const got = algosRoot(
+      {
+        OPENCODE_TEST_HOME: "C:\\\\tmp\\\\test-home",
+        XDG_DATA_HOME: "C:\\\\tmp\\\\xdg-data",
+        LOCALAPPDATA: "C:\\\\users\\\\me\\\\AppData\\\\Local",
+      } as any,
+      "win32",
+    )
+    expect(got).toBe(path.join("C:\\\\tmp\\\\xdg-data", "finny", "algos"))
   })
 
   test("falls back under AppData\\Local on win32 without LOCALAPPDATA", () => {
@@ -160,45 +264,74 @@ describe("loadAlgo + listAlgos", () => {
     const root = await mkSandbox()
     const mission = parseMission(EXAMPLE_MISSION_YAML)
 
-    const v2Strategy = "# v2 strategy code\nclass Strategy:\n    pass\n"
-    const v1Strategy = "# v1 strategy code\nclass Strategy:\n    pass\n"
+    const v02Strategy = "# v02 strategy code\nclass Strategy:\n    pass\n"
+    const v01Strategy = "# v01 strategy code\nclass Strategy:\n    pass\n"
 
-    await writeAlgo({
+    const { slug } = await writeAlgo({
       root,
       mission,
-      current: "v2",
+      current: "v02",
       decisions: "# Decisions log: hanta-biotech-swing\n\n2026-05-10: scoped universe\n",
       prefs: "# Preferences: hanta-biotech-swing\n",
       versions: {
-        v1: { strategy: v1Strategy, notes: "# v1 notes\n" },
-        v2: { strategy: v2Strategy, notes: "# v2 notes\n", backtest: EXAMPLE_BACKTEST as any },
+        v01: { strategy: v01Strategy, reasoning: "# v01 reasoning\n" },
+        v02: { strategy: v02Strategy, reasoning: "# v02 reasoning\n", backtest: EXAMPLE_BACKTEST as any },
       },
     })
 
+    expect(isSlug(slug)).toBe(true)
+    expect(humanNameOf(slug)).toBe("hanta-biotech-swing")
+
     const algo = await loadAlgo("hanta-biotech-swing", root)
-    expect(algo.current).toBe("v2")
-    expect(algo.versions).toEqual(["v1", "v2"])
+    expect(algo.current).toBe("v02")
+    expect(algo.versions).toEqual(["v01", "v02"])
     expect(algo.mission.frontmatter.name).toBe("hanta-biotech-swing")
-    expect(algo.dir).toBe(algoDir("hanta-biotech-swing", root))
+    expect(algo.name).toBe(slug)
+    expect(algo.displayName).toBe("hanta-biotech-swing")
+    expect(algo.dir).toBe(algoDir(slug, root))
 
     const decisions = await algo.decisions()
     expect(decisions).toContain("2026-05-10")
 
+    const memory = await algo.memory()
+    expect(memory).toContain("Memory: hanta-biotech-swing")
+
     const current = algo.version()
-    expect(current.name).toBe("v2")
-    expect(await current.strategy()).toBe(v2Strategy)
+    expect(current.name).toBe("v02")
+    expect(await current.strategy()).toBe(v02Strategy)
     const bt = await current.backtest()
     expect(bt?.metrics.ann_sharpe).toBe(1.4)
 
-    const v1 = algo.version("v1")
-    expect(await v1.strategy()).toBe(v1Strategy)
-    expect(await v1.backtest()).toBeNull()
+    const v01 = algo.version("v01")
+    expect(await v01.strategy()).toBe(v01Strategy)
+    expect(await v01.backtest()).toBeNull()
+    expect(await v01.reasoning()).toBe("# v01 reasoning\n")
 
     const headers = await listAlgos(root)
     expect(headers).toHaveLength(1)
-    expect(headers[0]!.name).toBe("hanta-biotech-swing")
-    expect(headers[0]!.current).toBe("v2")
+    expect(isSlug(headers[0]!.name)).toBe(true)
+    expect(headers[0]!.displayName).toBe("hanta-biotech-swing")
+    expect(headers[0]!.current).toBe("v02")
     expect(headers[0]!.mission.frontmatter.status).toBe("research")
+  })
+
+  test("writeAlgo creates the data/ skeleton", async () => {
+    const root = await mkSandbox()
+    const mission = parseMission(EXAMPLE_MISSION_YAML)
+    const { dir, slug } = await writeAlgo({
+      root,
+      mission,
+      current: "v01",
+      versions: { v01: { strategy: "class Strategy: pass\n" } },
+    })
+    expect(dir).toBe(algoDir(slug, root))
+    expect(DATA_SUBDIRS).toContain(DATA_STOCK_DIR)
+    for (const sub of DATA_SUBDIRS) {
+      const stat = await fs.stat(path.join(dir, sub))
+      expect(stat.isDirectory()).toBe(true)
+    }
+    const memorySeed = await fs.readFile(path.join(dir, MEMORY_FILE), "utf8")
+    expect(memorySeed).toContain("Memory: hanta-biotech-swing")
   })
 
   test("discoverAlgos skips _template and dotfiles", async () => {
@@ -213,19 +346,23 @@ describe("loadAlgo + listAlgos", () => {
   test("round-trips a populated algo through writeAlgo -> loadAlgo", async () => {
     const root = await mkSandbox()
     const mission = parseMission(EXAMPLE_MISSION_YAML)
-    await writeAlgo({
+    const { slug } = await writeAlgo({
       root,
       mission,
-      current: "v1",
+      current: "v01",
       versions: {
-        v1: { strategy: "class Strategy: pass\n", backtest: EXAMPLE_BACKTEST as any, notes: "# v1\n" },
+        v01: {
+          strategy: "class Strategy: pass\n",
+          backtest: { ...EXAMPLE_BACKTEST, version: "v01" } as any,
+          reasoning: "# v01\n",
+        },
       },
     })
 
-    const algo = await loadAlgo("hanta-biotech-swing", root)
+    const algo = await loadAlgo(slug, root)
     expect(algo.mission.frontmatter).toEqual(mission.frontmatter)
-    const bt = await algo.version("v1").backtest()
-    expect(bt).toEqual(Backtest.parse(EXAMPLE_BACKTEST))
+    const bt = await algo.version("v01").backtest()
+    expect(bt).toEqual(Backtest.parse({ ...EXAMPLE_BACKTEST, version: "v01" }))
   })
 })
 
@@ -239,14 +376,15 @@ describe("serializeMission", () => {
 })
 
 describe("discoverVersions", () => {
-  test("returns numeric-sorted version dirs only", async () => {
+  test("returns lexicographic-sorted padded version dirs only", async () => {
     const root = await mkSandbox()
     const dir = path.join(root, "x-algo")
-    await fs.mkdir(path.join(dir, "v1"), { recursive: true })
+    await fs.mkdir(path.join(dir, "v01"), { recursive: true })
     await fs.mkdir(path.join(dir, "v10"), { recursive: true })
-    await fs.mkdir(path.join(dir, "v2"), { recursive: true })
+    await fs.mkdir(path.join(dir, "v02"), { recursive: true })
     await fs.mkdir(path.join(dir, ".archive"), { recursive: true })
+    await fs.mkdir(path.join(dir, "v1"), { recursive: true }) // unpadded, ignored
     await fs.writeFile(path.join(dir, "mission.md"), "stub")
-    expect(await discoverVersions("x-algo", root)).toEqual(["v1", "v2", "v10"])
+    expect(await discoverVersions("x-algo", root)).toEqual(["v01", "v02", "v10"])
   })
 })

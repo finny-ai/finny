@@ -1,0 +1,27 @@
+{
+  "reportCalendarOrQuarter": "2024-03-31",
+  "filingManager": {
+    "name": "BERKSHIRE HATHAWAY INC",
+    "cik": "0001067983"
+  },
+  "holdings": [
+    {
+      "nameOfIssuer": "APPLE INC",
+      "titleOfClass": "COM",
+      "cusip": "037833100",
+      "value": 135000000,
+      "shrsOrPrnAmt": { "sshPrnamt": 789000000, "sshPrnamtType": "SH" },
+      "investmentDiscretion": "DFND",
+      "votingAuthority": { "Sole": 789000000, "Shared": 0, "None": 0 }
+    },
+    {
+      "nameOfIssuer": "MICROSOFT CORP",
+      "titleOfClass": "COM",
+      "cusip": "594918104",
+      "value": 42000000,
+      "shrsOrPrnAmt": { "sshPrnamt": 75000000, "sshPrnamtType": "SH" },
+      "investmentDiscretion": "DFND",
+      "votingAuthority": { "Sole": 75000000, "Shared": 0, "None": 0 }
+    }
+  ]
+}

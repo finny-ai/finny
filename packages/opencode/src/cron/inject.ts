@@ -1,6 +1,6 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { Effect } from "effect"
-import { Bus } from "@/bus"
+import { GlobalBus, type GlobalEvent } from "@/bus/global"
 import { SessionStatus } from "@/session/status"
 import { Session } from "@/session"
 import { SessionID } from "@/session/schema"
@@ -47,8 +47,9 @@ export namespace Inject {
     // Subscribe FIRST so we don't miss events that fire between the seed query
     // and us being ready to listen. Any keys the subscription writes will be
     // preserved by the merge step inside seedStatus.
-    unsubscribe = Bus.subscribe(SessionStatus.Event.Status, (event) => {
-      const { sessionID, status } = event.properties
+    const listener = (event: GlobalEvent) => {
+      if (event.payload?.type !== SessionStatus.Event.Status.type) return
+      const { sessionID, status } = event.payload.properties as typeof SessionStatus.Event.Status.data.Type
       if (status.type === "idle") sessionStatus.delete(sessionID)
       else sessionStatus.set(sessionID, status)
 
@@ -59,7 +60,9 @@ export namespace Inject {
       void retryPending(sessionID).catch((err) => {
         log.warn("inject.retry-pending.failed", { sessionID, err: String(err) })
       })
-    })
+    }
+    GlobalBus.on("event", listener)
+    unsubscribe = () => GlobalBus.off("event", listener)
     // Fire-and-forget; pending deliveries will await this via getStatus.
     seedPromise = seedStatus().catch((err) => {
       log.warn("inject.seed.failed", { err: String(err) })

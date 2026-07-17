@@ -1,8 +1,8 @@
 {
   "name": "@opencode-ai/web",
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
-  "version": "1.4.3",
+  "license": "SEE LICENSE IN LICENSE",
+  "version": "1.17.4",
   "scripts": {
     "dev": "astro dev",
     "dev:remote": "VITE_API_URL=https://api.opencode.ai astro dev",
@@ -36,7 +36,7 @@
     "vscode-languageserver-types": "3.17.5"
   },
   "devDependencies": {
-    "finny": "workspace:*",
+    "finny-internal-prop": "workspace:*",
     "@types/node": "catalog:",
     "@astrojs/check": "0.9.6",
     "typescript": "catalog:"

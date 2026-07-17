@@ -4,9 +4,9 @@ import { EffectLogger } from "@/effect/logger"
 import { Log } from "../util/log"
 import { BusEvent } from "./bus-event"
 import { GlobalBus } from "./global"
-import { WorkspaceContext } from "@/control-plane/workspace-context"
 import { InstanceState } from "@/effect/instance-state"
 import { makeRuntime } from "@/effect/run-service"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 
 export namespace Bus {
   const log = Log.create({ service: "bus" })
@@ -171,6 +171,7 @@ export namespace Bus {
   )
 
   export const defaultLayer = layer
+  export const node = LayerNode.make(layer, [])
 
   const { runPromise, runSync } = makeRuntime(Service, layer)
 

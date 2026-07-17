@@ -1,10 +1,10 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@opencode-ai/console-core",
-  "version": "1.4.3",
+  "version": "1.17.4",
   "private": true,
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "dependencies": {
     "@aws-sdk/client-sts": "3.782.0",
     "@jsx-email/render": "1.1.1",
@@ -37,6 +37,7 @@
     "update-limits": "script/update-limits.ts",
     "promote-limits-to-dev": "script/promote-limits.ts dev",
     "promote-limits-to-prod": "script/promote-limits.ts production",
+    "referral-backfill": "script/referral-backfill.ts",
     "typecheck": "tsgo --noEmit"
   },
   "devDependencies": {

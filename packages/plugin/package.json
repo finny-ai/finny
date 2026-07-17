@@ -1,9 +1,9 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "name": "@opencode-ai/plugin",
-  "version": "1.4.3",
+  "version": "1.17.4",
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "typecheck": "tsgo --noEmit",
     "build": "tsc"
@@ -22,11 +22,15 @@
     "zod": "catalog:"
   },
   "peerDependencies": {
-    "@opentui/core": ">=0.1.97",
-    "@opentui/solid": ">=0.1.97"
+    "@opentui/core": ">=0.4.3",
+    "@opentui/keymap": ">=0.4.3",
+    "@opentui/solid": ">=0.4.3"
   },
   "peerDependenciesMeta": {
     "@opentui/core": {
+      "optional": true
+    },
+    "@opentui/keymap": {
       "optional": true
     },
     "@opentui/solid": {
@@ -34,8 +38,9 @@
     }
   },
   "devDependencies": {
-    "@opentui/core": "0.1.97",
-    "@opentui/solid": "0.1.97",
+    "@opentui/core": "catalog:",
+    "@opentui/keymap": "catalog:",
+    "@opentui/solid": "catalog:",
     "@tsconfig/node22": "catalog:",
     "@types/node": "catalog:",
     "typescript": "catalog:",

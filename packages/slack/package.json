@@ -1,8 +1,8 @@
 {
   "name": "@opencode-ai/slack",
-  "version": "1.4.3",
+  "version": "1.17.4",
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "dev": "bun run src/index.ts",
     "typecheck": "tsgo --noEmit"

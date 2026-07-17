@@ -1,44 +1,19 @@
-import path from "path"
 import z from "zod"
 import { Effect } from "effect"
 import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { parseConfig } from "../algorithm/strategy-params"
 import { AlpacaData } from "../cron/alpaca-data"
-import { Global } from "../global"
-import { Filesystem } from "../util/filesystem"
+import { BacktestStore } from "../backtest/store"
 
-type BacktestHistoryEntry = {
-  algorithmId: string
-  algorithmName: string
-  params: { duration: string; interval: string; capital: string }
-  results: {
-    totalReturn: number
-    maxDrawdown: number
-    annualizedVolatility: number
-    sharpeRatio: number
-    endingEquity: number
-    totalTrades: number
-    winRate: number
-    profitFactor: number
-  }
-  symbol?: string
-  timestamp: number
-}
-
-async function latestBacktest(algorithm: Algorithm.Info | null): Promise<BacktestHistoryEntry | null> {
+async function latestBacktest(algorithm: Algorithm.Info | null): Promise<BacktestStore.Manifest | null> {
   if (!algorithm) return null
-  try {
-    const kvPath = path.join(Global.Path.state, "kv.json")
-    const kv = await Filesystem.readJson(kvPath)
-    const raw = Array.isArray(kv?.backtest_history) ? (kv.backtest_history as BacktestHistoryEntry[]) : []
-    const matches = raw
-      .filter((entry) => entry.algorithmId === algorithm.algorithmId || entry.algorithmName === algorithm.name)
-      .sort((a, b) => b.timestamp - a.timestamp)
-    return matches[0] ?? null
-  } catch {
-    return null
-  }
+  const exact = await BacktestStore.list({ algorithmName: algorithm.name, algorithmId: algorithm.algorithmId, limit: 1 })
+  if (exact[0]) return exact[0]
+  const byId = await BacktestStore.list({ algorithmId: algorithm.algorithmId, limit: 1 })
+  if (byId[0]) return byId[0]
+  const legacyByName = await BacktestStore.list({ algorithmName: algorithm.name, limit: 10 })
+  return legacyByName.find((entry) => !entry.algorithmId) ?? null
 }
 
 const parameters = z.object({
@@ -100,6 +75,9 @@ export const MonitorSnapshotTool = Tool.define(
                 symbol: backtest.symbol ?? null,
                 params: backtest.params,
                 results: backtest.results,
+                benchmark: backtest.benchmark,
+                alpha: backtest.alpha,
+                evidence: backtest.dir ?? null,
               }
             : null,
         }

@@ -6,13 +6,13 @@ import { LocalContext } from "../util/local-context"
 import { lazy } from "../util/lazy"
 import { Global } from "../global"
 import { Log } from "../util/log"
-import { NamedError } from "@opencode-ai/util/error"
+import { NamedError } from "../util/error"
 import z from "zod"
 import path from "path"
 import { readFileSync, readdirSync, existsSync } from "fs"
 import { Flag } from "../flag/flag"
 import { CHANNEL } from "../installation/meta"
-import { InstanceState } from "@/effect/instance-state"
+import { bind as bindCallback } from "@/effect/bridge"
 import { iife } from "@/util/iife"
 import { init } from "#db"
 
@@ -82,6 +82,12 @@ export namespace Database {
     return sql.sort((a, b) => a.timestamp - b.timestamp)
   }
 
+  function hasTable(db: Client, name: string) {
+    const client = (db as unknown as { $client: { prepare: (query: string) => { get: (...args: unknown[]) => unknown } } })
+      .$client
+    return Boolean(client.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name))
+  }
+
   export const Client = lazy(() => {
     log.info("opening database", { path: Path })
 
@@ -95,10 +101,17 @@ export namespace Database {
     db.run("PRAGMA wal_checkpoint(PASSIVE)")
 
     // Apply schema migrations
-    const entries =
+    let entries =
       typeof OPENCODE_MIGRATIONS !== "undefined"
         ? OPENCODE_MIGRATIONS
         : migrations(path.join(import.meta.dirname, "../../migration"))
+    if (!hasTable(db, "session")) {
+      entries = entries.filter((item) => item.name !== "20260511173437_session-metadata")
+    }
+    // Core owns unified task_run under the Finny storage root. Never re-run the
+    // legacy opencode task_run migrations against a core-managed DB — they fight
+    // CREATE TABLE / rebuild and can drop the FK-backed core table.
+    entries = entries.filter((item) => !item.name.includes("task_run"))
     if (entries.length > 0) {
       log.info("applying migrations", {
         count: entries.length,
@@ -142,7 +155,7 @@ export namespace Database {
   }
 
   export function effect(fn: () => any | Promise<any>) {
-    const bound = InstanceState.bind(fn)
+    const bound = bindCallback(fn)
     try {
       ctx.use().effects.push(bound)
     } catch {
@@ -163,7 +176,7 @@ export namespace Database {
     } catch (err) {
       if (err instanceof LocalContext.NotFound) {
         const effects: (() => void | Promise<void>)[] = []
-        const txCallback = InstanceState.bind((tx: TxOrDb) => ctx.provide({ tx, effects }, () => callback(tx)))
+        const txCallback = bindCallback((tx: TxOrDb) => ctx.provide({ tx, effects }, () => callback(tx)))
         const result = Client().transaction(txCallback, { behavior: options?.behavior })
         for (const effect of effects) effect()
         return result as NotPromise<T>
