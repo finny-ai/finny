@@ -28,6 +28,7 @@ afterEach(() => {
 
 describe("detectInstallMethod", () => {
   test.each([
+    ["/Users/x/.finny/bin/finny", "curl"],
     ["/Users/x/.opencode/bin/finny", "curl"],
     ["/home/x/.local/bin/finny", "curl"],
     ["/Users/x/.bun/bin/finny", "bun"],

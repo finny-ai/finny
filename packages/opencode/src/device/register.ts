@@ -7,12 +7,14 @@ import { Log } from "../util/log"
 
 const log = Log.create({ service: "device-register" })
 
-// Exec-path heuristics for install provenance. The curl installer (repo-root
-// `install` script) always lands in ~/.opencode/bin; package managers keep the
+// Exec-path heuristics for install provenance. The published curl installer
+// (https://finnyai.tech/cli/install) lands the binary in ~/.finny/bin; older
+// OpenCode-era installs used ~/.opencode/bin. Package managers keep the
 // binary inside their own trees. Kept plain-TS (no Installation service) so it
 // can run before any Effect runtime exists.
 export function detectInstallMethod(execPath = process.execPath): string {
   const exec = execPath.toLowerCase()
+  if (exec.includes(path.join(".finny", "bin").toLowerCase())) return "curl"
   if (exec.includes(path.join(".opencode", "bin").toLowerCase())) return "curl"
   if (exec.includes(path.join(".local", "bin").toLowerCase())) return "curl"
   if (exec.includes(".bun")) return "bun"
