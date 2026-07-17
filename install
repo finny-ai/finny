@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Finny installer
+# Finny installer (public)
 #
 #   curl -fsSL https://finnyai.tech/cli/install | bash
 #
-# Downloads the platform binary published to the npm registry
-# (@finny-ai/finny-pro-<os>-<arch>) and installs it to ~/.finny/bin
-# as `finny`. No Node.js, npm, or postinstall scripts involved.
+# Downloads the platform binary published to the public npm registry
+# (finny-<os>-<arch>) and installs it to ~/.finny/bin as `finny`.
+# No Node.js, npm, or postinstall scripts involved.
 #
 # Options / env:
 #   --version <x.y.z>     Install a specific version (default: latest)
@@ -15,8 +15,8 @@ set -euo pipefail
 #   FINNY_INSTALL_DIR     Override install dir (default: $HOME/.finny/bin)
 
 APP=finny
-SCOPE="@finny-ai"
-WRAPPER_PKG="finny-pro"
+# Public npm identity for the open Finny CLI (NOT @finny-ai/finny-pro).
+WRAPPER_PKG="finny"
 REGISTRY="https://registry.npmjs.org"
 
 MUTED='\033[0;2m'
@@ -54,7 +54,7 @@ case "$raw_os" in
     Darwin*) os="darwin" ;;
     Linux*)  os="linux" ;;
     MINGW*|MSYS*|CYGWIN*)
-        error "Windows: install with 'npm i -g ${SCOPE}/${WRAPPER_PKG}' (PowerShell installer coming soon)." ;;
+        error "Windows: install with 'npm i -g ${WRAPPER_PKG}' (PowerShell installer coming soon)." ;;
     *) error "Unsupported OS: $raw_os" ;;
 esac
 
@@ -99,9 +99,12 @@ target="$os-$arch"
 
 json_field() { sed -n "s/.*\"$1\": *\"\([^\"]*\)\".*/\1/p" | head -1; }
 
+# Unscoped public packages: registry.npmjs.org/finny and finny-darwin-arm64, etc.
+pkg_url() { echo "$REGISTRY/$1"; }
+
 if [[ -z "$requested_version" ]]; then
-    version=$(curl -fsSL "$REGISTRY/$SCOPE/$WRAPPER_PKG/latest" | json_field version)
-    [[ -n "$version" ]] || error "Failed to resolve the latest version from the npm registry."
+    version=$(curl -fsSL "$(pkg_url "$WRAPPER_PKG")/latest" | json_field version)
+    [[ -n "$version" ]] || error "Failed to resolve the latest version of '${WRAPPER_PKG}' from the npm registry."
 else
     version="${requested_version#v}"
 fi
@@ -109,17 +112,17 @@ fi
 # Fetch per-target metadata; if the exact target isn't published, drop the
 # -baseline suffix (worst case the binary refuses to start on pre-AVX2 CPUs).
 pkg="$WRAPPER_PKG-$target"
-meta=$(curl -fsSL "$REGISTRY/$SCOPE/$pkg/$version" 2>/dev/null || true)
+meta=$(curl -fsSL "$(pkg_url "$pkg")/$version" 2>/dev/null || true)
 if [[ -z "$meta" && "$target" == *"-baseline"* ]]; then
     target="${target/-baseline/}"
     pkg="$WRAPPER_PKG-$target"
-    meta=$(curl -fsSL "$REGISTRY/$SCOPE/$pkg/$version" 2>/dev/null || true)
+    meta=$(curl -fsSL "$(pkg_url "$pkg")/$version" 2>/dev/null || true)
 fi
-[[ -n "$meta" ]] || error "Version $version is not published for $target ($SCOPE/$pkg)."
+[[ -n "$meta" ]] || error "Version $version is not published for $target (npm package: $pkg)."
 
 tarball=$(echo "$meta" | json_field tarball)
 integrity=$(echo "$meta" | json_field integrity)
-[[ -n "$tarball" ]] || error "Could not resolve download URL for $SCOPE/$pkg@$version."
+[[ -n "$tarball" ]] || error "Could not resolve download URL for $pkg@$version."
 
 # --- Skip if already installed ----------------------------------------------
 
@@ -137,7 +140,7 @@ fi
 
 # --- Download, verify, install -----------------------------------------------
 
-info "Installing finny $version ($target)..."
+info "Installing finny $version ($target) from npm:$pkg ..."
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/finny_install.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -155,11 +158,13 @@ if [[ "$integrity" == sha512-* ]] && command -v openssl >/dev/null 2>&1; then
 fi
 
 tar -xzf "$tmp_dir/pkg.tgz" -C "$tmp_dir"
-[[ -f "$tmp_dir/package/bin/opencode" ]] || error "Unexpected package layout in $SCOPE/$pkg@$version."
+[[ -f "$tmp_dir/package/bin/opencode" ]] || error "Unexpected package layout in $pkg@$version."
 
 mkdir -p "$INSTALL_DIR"
 mv "$tmp_dir/package/bin/opencode" "$INSTALL_DIR/$APP"
 chmod 755 "$INSTALL_DIR/$APP"
+# Keep a finny-pro alias for muscle memory / older docs, but the source package
+# is the public `finny` binary.
 ln -sf "$INSTALL_DIR/$APP" "$INSTALL_DIR/finny-pro"
 
 # --- PATH setup ---------------------------------------------------------------
@@ -210,8 +215,10 @@ echo -e "${GREEN}█▀▀░ █ █░░█ █░░█ █▄▄█${NC}"
 echo -e "${GREEN}▀░░░ ▀ ▀░░▀ ▀░░▀ ▄▄▄█${NC}"
 echo ""
 info "Finny $version installed to $INSTALL_DIR/$APP"
+info "Source package: npm:$pkg@$version (public)"
 echo ""
 echo -e "Get started:"
+echo -e "  export PATH=$INSTALL_DIR:\$PATH   ${MUTED}# if needed${NC}"
 echo -e "  finny    ${MUTED}# then try: \"Build me a momentum-based ETH strategy\"${NC}"
 echo ""
 info "Docs: https://finnyai.tech/docs"

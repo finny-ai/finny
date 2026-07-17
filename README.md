@@ -8,7 +8,7 @@
 
                                       Claude Code for Financial Markets
 ```
-<a href="https://www.npmjs.com/package/@finny-ai/finny-pro"><img alt="npm" src="https://img.shields.io/npm/v/%40finny-ai%2Ffinny-pro?style=flat-square&label=npm" /></a>
+<a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/npm/v/finny?style=flat-square&label=npm" /></a>
 
 <img width="1546" height="1046" alt="Screenshot 2026-04-14 at 4 55 14 PM" src="https://github.com/user-attachments/assets/be2784d6-ced1-4259-96de-69518f22b444" />
 
@@ -23,10 +23,10 @@ curl -fsSL https://finnyai.tech/cli/install | bash
 finny
 ```
 
-Or via npm:
+Or via npm (same public package the curl installer uses):
 
 ```bash
-npm i -g @finny-ai/finny-pro
+npm i -g finny
 finny
 ```
 
