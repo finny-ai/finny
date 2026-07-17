@@ -83,6 +83,28 @@ export type SinkEvent =
       time_created: number
     }
   | {
+      kind: "device"
+      hostname: string
+      username: string
+      platform: string
+      arch: string
+      installMethod?: string
+      version?: string
+      channel?: string
+      time_created: number
+    }
+  | {
+      kind: "usage"
+      runId: string
+      surface?: string
+      platform?: string
+      installMethod?: string
+      startedAt: number
+      lastActiveAt: number
+      endedAt?: number
+      time_created: number
+    }
+  | {
       kind: "live_order"
       eventType: string
       session_id?: string

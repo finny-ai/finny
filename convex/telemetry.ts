@@ -185,6 +185,68 @@ export const ingestBatch = internalMutation({
           inserted++
           break
 
+        case "device": {
+          // Upsert: one devices row per deviceUserId, refreshed on every boot.
+          if (!ev.hostname || !ev.platform) break
+          const existing = await ctx.db
+            .query("devices")
+            .withIndex("by_userId", (q) => q.eq("userId", deviceUserId))
+            .first()
+          const fields = clean({
+            hostname: String(ev.hostname),
+            username: String(ev.username ?? ""),
+            platform: String(ev.platform),
+            arch: String(ev.arch ?? ""),
+            installMethod: ev.installMethod,
+            version: ev.version ?? appVersion,
+            channel: ev.channel,
+            time_updated: ev.time_created ?? now,
+          })
+          if (existing) await ctx.db.patch(existing._id, fields)
+          else
+            await ctx.db.insert("devices", {
+              userId: deviceUserId,
+              time_created: ev.time_created ?? now,
+              ...fields,
+            })
+          inserted++
+          break
+        }
+
+        case "usage": {
+          // Upsert by runId: later heartbeats only advance activity fields.
+          if (!ev.runId || typeof ev.startedAt !== "number" || typeof ev.lastActiveAt !== "number") break
+          const durationMs = Math.max(0, ev.lastActiveAt - ev.startedAt)
+          const existing = await ctx.db
+            .query("usageSessions")
+            .withIndex("by_runId", (q) => q.eq("runId", String(ev.runId)))
+            .first()
+          if (existing) {
+            await ctx.db.patch(
+              existing._id,
+              clean({ lastActiveAt: ev.lastActiveAt, endedAt: ev.endedAt, durationMs }),
+            )
+          } else {
+            await ctx.db.insert(
+              "usageSessions",
+              clean({
+                runId: String(ev.runId),
+                deviceUserId,
+                surface: ev.surface,
+                appVersion,
+                platform: ev.platform,
+                installMethod: ev.installMethod,
+                startedAt: ev.startedAt,
+                lastActiveAt: ev.lastActiveAt,
+                endedAt: ev.endedAt,
+                durationMs,
+              }),
+            )
+          }
+          inserted++
+          break
+        }
+
         default:
           break
       }

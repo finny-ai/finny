@@ -13,6 +13,7 @@ import { AppRuntime } from "@/effect/app-runtime"
 import { Effect } from "effect"
 import { disposeAllInstancesAndEmitGlobalDisposed } from "@/server/global-lifecycle"
 import { Analytics } from "@/analytics/tracker"
+import { UsageTracker } from "@/analytics/usage"
 import { TelemetryLifecycle } from "@/analytics/lifecycle"
 
 Heap.start()
@@ -29,7 +30,7 @@ GlobalBus.on("event", (event) => {
 // telemetry (SessionSync) is normally started. Start it here so interactive TUI
 // sessions emit telemetry. Idempotent with the listen() path used by external/
 // headless mode (SessionSync.start no-ops once started).
-void TelemetryLifecycle.refreshAndStart().catch(() => {})
+void TelemetryLifecycle.refreshAndStart("tui").catch(() => {})
 
 let server: Awaited<ReturnType<typeof Server.listen>> | undefined
 
@@ -78,13 +79,14 @@ export const rpc = {
   },
   // Re-run telemetry init once the TUI signals readiness. Idempotent.
   async refreshTelemetry() {
-    await TelemetryLifecycle.refreshAndStart()
+    await TelemetryLifecycle.refreshAndStart("tui")
   },
   async shutdown() {
     // Flush buffered telemetry before tearing down. The TUI quits by calling
     // this RPC and then worker.terminate(), which kills the thread before
     // `beforeExit`/signal drains can run - so without this, the 5s-debounced
     // buffer is lost on every normal quit.
+    await UsageTracker.stop().catch(() => {})
     await Analytics.drain(1500).catch(() => {})
     await InstanceRuntime.disposeAllInstances()
     if (server) await server.stop(true)

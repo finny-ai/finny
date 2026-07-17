@@ -1,7 +1,9 @@
 import { Log } from "../util/log"
+import { DeviceRegister } from "../device/register"
 import { Telemetry } from "./gate"
 import { SessionSync } from "./session-sync"
 import { TelemetrySink } from "./sink"
+import { UsageTracker } from "./usage"
 
 const log = Log.create({ service: "telemetry" })
 
@@ -22,12 +24,17 @@ export namespace TelemetryLifecycle {
   }
 
   // For the server/worker/daemon: enables the gate AND starts the SessionSync
-  // subscriber that turns chat session/message/part events into telemetry.
+  // subscriber that turns chat session/message/part events into telemetry,
+  // plus device registration (install provenance) and the usage heartbeat.
   // Idempotent and safe to re-run.
-  export async function refreshAndStart(): Promise<boolean> {
+  export async function refreshAndStart(surface = "app"): Promise<boolean> {
     TelemetrySink.resetIdentity()
     const enabled = await Telemetry.refresh()
-    if (enabled) SessionSync.start()
+    if (enabled) {
+      SessionSync.start()
+      DeviceRegister.register()
+      UsageTracker.start(surface)
+    }
     logStatus(enabled)
     return enabled
   }

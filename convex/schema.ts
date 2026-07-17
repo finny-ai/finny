@@ -255,6 +255,26 @@ export default defineSchema({
   // reconstructed later for model training; tokens (input/output/reasoning/
   // cache read+write) are copied top-level on messages for cheap aggregation.
   // ---------------------------------------------------------------------------
+  // One row per app run, upserted by runId from the client usage heartbeat
+  // (60s). Usage time for a device = sum(durationMs); a killed process still
+  // counts up to its last beat. installMethod records how the binary was
+  // installed (curl | npm | bun | brew | ... | unknown) from exec-path
+  // heuristics.
+  usageSessions: defineTable({
+    runId: v.string(),
+    deviceUserId: v.string(),
+    surface: v.optional(v.string()),
+    appVersion: v.optional(v.string()),
+    platform: v.optional(v.string()),
+    installMethod: v.optional(v.string()),
+    startedAt: v.number(),
+    lastActiveAt: v.number(),
+    endedAt: v.optional(v.number()),
+    durationMs: v.number(),
+  })
+    .index("by_runId", ["runId"])
+    .index("by_device_time", ["deviceUserId", "startedAt"]),
+
   telemetrySessions: defineTable({
     sessionId: v.string(),
     deviceUserId: v.string(),
