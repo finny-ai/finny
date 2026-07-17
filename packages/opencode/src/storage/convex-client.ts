@@ -13,9 +13,12 @@ export const NotFoundError = NamedError.create(
 
 const log = Log.create({ service: "convex" })
 
-// No default Convex deployment is baked in. When CONVEX_URL is unset, the
-// client is a no-op proxy whose every method resolves to null, so the CLI
-// makes no outbound Convex calls. Set CONVEX_URL explicitly to opt in.
+// Production deployment of the finny-merge Convex project. Used by email
+// subscription (and any caller that wants a guaranteed target) when
+// CONVEX_URL is unset. The shared client stays no-op without CONVEX_URL so
+// tests and offline runs never hit production by accident.
+export const DEFAULT_CONVEX_URL = "https://wry-mastiff-821.convex.cloud"
+
 export const convexClient = lazy(() => {
   const url = process.env.CONVEX_URL
   if (!url) {
@@ -23,6 +26,19 @@ export const convexClient = lazy(() => {
     return noopConvexClient()
   }
   log.info("connecting to Convex", { url })
+  return new ConvexHttpClient(url)
+})
+
+// Prefer CONVEX_URL; fall back to production so consumer features like email
+// capture work out of the box. Pass CONVEX_URL="" to force the no-op client.
+export const convexClientOrDefault = lazy(() => {
+  const env = process.env.CONVEX_URL
+  if (env === "") {
+    log.info("CONVEX_URL empty, Convex client disabled (no-op)")
+    return noopConvexClient()
+  }
+  const url = env || DEFAULT_CONVEX_URL
+  log.info("connecting to Convex (defaulted)", { url })
   return new ConvexHttpClient(url)
 })
 

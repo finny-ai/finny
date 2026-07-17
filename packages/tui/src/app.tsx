@@ -46,6 +46,8 @@ import { DialogAgent } from "./component/dialog-agent"
 import { DialogSessionList } from "./component/dialog-session-list"
 import { DialogWorkspaceList } from "./component/dialog-workspace-list"
 import { DialogConsoleOrg } from "./component/dialog-console-org"
+import { DialogEmailCapture } from "./component/dialog-email-capture"
+import { DialogOnboardingChoosePath } from "./component/dialog-onboarding-choose-path"
 import { ThemeProvider, useTheme } from "./context/theme"
 import { Home } from "./routes/home"
 import { Session } from "./routes/session"
@@ -563,12 +565,94 @@ function App(props: {
     })
   })
 
+  // First TUI launch — runs once per install (KV: onboarding_v2_status).
+  // Grandfathered users with experience_level_status from the old flow skip.
+  // Sequence: email (required submit) → choose path → welcome session on a free
+  // model. Provider setup stays in the Home prompt capsules.
+  let firstLaunchOnboardingStarted = false
+
+  function ensureWelcomeFreeModel() {
+    const ordered = [
+      sync.data.provider.find((x) => x.id === "opencode"),
+      ...sync.data.provider.filter((x) => x.id !== "opencode"),
+    ].filter((x): x is NonNullable<typeof x> => !!x)
+
+    for (const provider of ordered) {
+      const free = Object.values(provider.models).find(
+        (m) => (m.cost?.input ?? 1) === 0 && !m.id.includes("-nano"),
+      )
+      if (!free) continue
+      local.model.set({ providerID: provider.id, modelID: free.id }, { recent: true })
+      return
+    }
+  }
+
+  async function runFirstLaunchOnboarding() {
+    while (!kv.get("email_capture_status")) {
+      await DialogEmailCapture.show(dialog, undefined, { allowSkip: false })
+    }
+
+    const path = await DialogOnboardingChoosePath.show(dialog)
+    if (path.type === "dismissed") {
+      kv.set("onboarding_v2_status", "skipped")
+      return
+    }
+    if (path.type === "back") {
+      // Path dialog only offers back when no provider is connected; reopen the
+      // provider list and re-run choose-path after it closes.
+      await new Promise<void>((resolve) => {
+        dialog.replace(
+          () => <DialogProviderList />,
+          () => resolve(),
+        )
+      })
+      firstLaunchOnboardingStarted = false
+      return
+    }
+
+    if (sync.data.agent.some((a) => a.name === "chat")) {
+      local.agent.set("chat")
+    }
+    ensureWelcomeFreeModel()
+    kv.set("onboarding_v2_status", "completed")
+    kv.set("experience_level_status", path.level)
+    dialog.clear()
+    route.navigate({
+      type: "home",
+      initialPrompt: { input: path.prompt, parts: [] },
+      autoSubmit: true,
+    })
+  }
+
+  createEffect(
+    on(
+      () => sync.status === "complete" && kv.ready && dialog.stack.length === 0,
+      (ready) => {
+        if (!ready) return
+        if (kv.get("onboarding_v2_status")) return
+        if (kv.get("experience_level_status")) return
+        if (firstLaunchOnboardingStarted) return
+        // Skip onboarding when the user already passed an explicit session/prompt
+        // (scripted launches, --continue, --session).
+        if (args.sessionID || args.continue || args.prompt) {
+          kv.set("onboarding_v2_status", "skipped")
+          return
+        }
+        firstLaunchOnboardingStarted = true
+        void runFirstLaunchOnboarding()
+      },
+    ),
+  )
+
   createEffect(
     on(
       () => sync.status === "complete" && sync.data.provider.length === 0,
       (isEmpty, wasEmpty) => {
         // only trigger when we transition into an empty-provider state
         if (!isEmpty || wasEmpty) return
+        // Don't steal the stack from first-launch onboarding.
+        if (!kv.get("onboarding_v2_status") && !kv.get("experience_level_status")) return
+        if (dialog.stack.length > 0) return
         dialog.replace(() => <DialogProviderList />)
       },
     ),
@@ -831,6 +915,19 @@ function App(props: {
           dialog.replace(() => <DialogHelp />)
         },
         category: "System",
+      },
+      {
+        name: "subscribe.release_notes",
+        title: "Subscribe to release notes",
+        slashName: "subscribe",
+        category: "System",
+        run: () => {
+          void DialogEmailCapture.show(dialog, () => {
+            if (!kv.get("email_capture_status")) {
+              kv.set("email_capture_status", "skipped")
+            }
+          })
+        },
       },
       {
         name: "docs.open",
