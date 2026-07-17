@@ -4,7 +4,7 @@
   "version": "1.17.4",
   "private": true,
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "exports": {
     "./*": "./src/*.ts"
   },

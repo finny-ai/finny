@@ -1,9 +1,34 @@
 Required Notice: Copyright (c) 2026 Finny
 
-# Commercial Use Notice
+# Finny Source-Available License 1.0
 
 Finny is made available for noncommercial use under the PolyForm
-Noncommercial License 1.0.0 below.
+Noncommercial License 1.0.0 below, subject to the Additional Conditions
+in this notice. The Additional Conditions are strict obligations and
+conditions to every license granted under these terms, and they prevail
+over anything in the base license that conflicts with them.
+
+## Additional Condition: Publication of Changes
+
+If you make changes or new works based on the software, you must make the
+complete corresponding source code of your changed or new version publicly
+available at no charge — for example, in a public source repository on the
+internet — within 30 days of first running, deploying, distributing, or
+sharing it, together with prominent notice describing what you changed.
+Keeping a changed or new version private or secret is not a permitted
+purpose, and no license is granted for it.
+
+## Additional Condition: No Hosting
+
+You may not provide the software, or any changed or new version of it, to
+anyone else as a hosted, managed, or network-accessible service. This
+includes, without limitation, offering the software's functionality to
+third parties over a website, web application, API, or any other network
+interface, whether free of charge or otherwise, and applies to individuals
+and organizations alike. Only Finny, and parties with Finny's prior
+written approval, may host the software.
+
+## Additional Condition: Commercial Use
 
 Any commercial or enterprise use requires prior written approval from Finny
 and a separate commercial license agreement. This includes, without limitation,

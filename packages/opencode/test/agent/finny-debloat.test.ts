@@ -72,9 +72,11 @@ const ALL_TOOL_IDS = [
 ]
 
 const EXPECTED_TOOLS = {
+  // The visible finny strategy controller runs in the strategy sandbox:
+  // no shell capability; file mutation is limited to its durable strategy
+  // files by later workspace-scoped grants.
   finny: [
     "apply_patch",
-    "bash",
     "edit",
     "finny_algorithm_export",
     "finny_algorithm_get",
@@ -262,7 +264,7 @@ describe("Finny debloat", () => {
       const finny = yield* agentService.get("finny")
       expect(finny, "missing agent finny").toBeDefined()
       const finnyDisabled = Permission.disabled(GENERIC_CODING_TOOLS, finny!.permission)
-      expect([...finnyDisabled].sort()).toEqual(["codesearch", "glob", "grep", "lsp"].toSorted())
+      expect([...finnyDisabled].sort()).toEqual(["bash", "codesearch", "glob", "grep", "lsp"].toSorted())
     }),
   )
 

@@ -181,7 +181,7 @@ export const dict = {
   "home.faq.q8": "What license does Finny use?",
   "home.faq.a8.p1": "Finny's source code is public on",
   "home.faq.a8.p2": "under the",
-  "home.faq.a8.mitLicense": "PolyForm Noncommercial License 1.0.0",
+  "home.faq.a8.mitLicense": "Finny Source-Available License 1.0",
   "home.faq.a8.p3":
     ", with commercial use requiring a separate license agreement.",
 

@@ -3,7 +3,7 @@
   "version": "1.17.4",
   "name": "@opencode-ai/effect-drizzle-sqlite",
   "type": "module",
-  "license": "PolyForm-Noncommercial-1.0.0",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "scripts": {
     "test": "bun test --timeout 30000 --only-failures",

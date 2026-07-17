@@ -123,17 +123,19 @@ Fork of [OpenCode](https://github.com/anomalyco/opencode) by Anomaly.
 ### License
 
 Finny is available for noncommercial use under the
-[PolyForm Noncommercial License 1.0.0](./LICENSE).
+[Finny Source-Available License 1.0](./LICENSE) (PolyForm Noncommercial
+1.0.0 with Additional Conditions).
 
-Commercial or enterprise use requires prior written approval from Finny and a
-separate commercial license agreement. This includes using Finny in a business,
-selling or reselling it, offering it as a hosted or managed service, bundling it
-with a commercial product or service, or forking Finny and building upon it for
-commercial sale.
+In short: you may use official Finny releases and read the source freely.
+If you fork or modify Finny, you must publish your changed source publicly
+within 30 days — private forks are not licensed. Nobody may host Finny, or
+any fork of it, as a web or network service for others. Commercial or
+enterprise use requires prior written approval from Finny and a separate
+commercial license agreement.
 
 The original OpenCode codebase is licensed under the MIT License. Finny's
-modifications and new features are licensed under PolyForm Noncommercial
-License 1.0.0.
+modifications and new features are licensed under the Finny Source-Available
+License 1.0.
 
 ---
 
