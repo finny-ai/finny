@@ -876,6 +876,7 @@ describe("validateDataExtractorTaskText", () => {
         requested_algorithm_name: slug,
         requested_start: "2025-07-15",
         requested_end: "2026-07-15",
+        request_id: "ses_btc_market_data",
       },
     })
 

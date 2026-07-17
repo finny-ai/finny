@@ -1232,18 +1232,14 @@ export const layer = Layer.effect(
 
           if (!lastUser) throw new Error("No user message found in stream. This should never happen.")
 
-          const lastUserMsg = msgs.findLast(
-            (msg) => msg.info.role === "user" && msg.info.id === lastUser.id,
-          )
+          const lastUserMsg = msgs.findLast((msg) => msg.info.role === "user" && msg.info.id === lastUser.id)
           const lastAssistantMsg = msgs.findLast(
             (msg) => msg.info.role === "assistant" && msg.info.id === lastAssistant?.id,
           )
-          let currentWorkflow = (
-            yield* BuildWorkflowStore.listBySession(sessionID).pipe(
-              Effect.provideService(Database.Service, database),
-              Effect.catch(() => Effect.succeed([])),
-            )
-          ).find((item) => item.status === "active" || item.status === "blocked")
+          let currentWorkflow = (yield* BuildWorkflowStore.listBySession(sessionID).pipe(
+            Effect.provideService(Database.Service, database),
+            Effect.catch(() => Effect.succeed([])),
+          )).find((item) => item.status === "active" || item.status === "blocked")
           const hasRealContinuationText =
             lastUserMsg?.parts.some(
               (part) => part.type === "text" && part.synthetic !== true && part.text.trim().length > 0,
@@ -1302,6 +1298,10 @@ export const layer = Layer.effect(
                   part.state.status === "completed" &&
                   (part.state.metadata.exhausted === true || Boolean(part.state.metadata.environmentBlock)),
               ) ?? false
+            const assistantText = lastAssistantMsg?.parts
+              .filter((part): part is Extract<typeof part, { type: "text" }> => part.type === "text")
+              .map((part) => part.text)
+              .join("\n")
             workflowContinuation = buildWorkflowContinuationReminder({
               workflow: activeWorkflow,
               pendingContextTasks: pendingContext.length,
@@ -1310,6 +1310,8 @@ export const layer = Layer.effect(
                 : [],
               parentOverlapComplete: hasParentOverlapActionAfterContextLaunch(msgs),
               saveHardBoundary,
+              assistantText,
+              assistantParts: lastAssistantMsg?.parts,
             })
           }
 

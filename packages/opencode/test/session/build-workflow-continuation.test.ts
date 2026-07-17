@@ -4,6 +4,8 @@ import type { BuildWorkflowState, ExperimentAttempt } from "@/algorithm/build-wo
 import {
   buildWorkflowContinuationReminder,
   hasParentOverlapActionAfterContextLaunch,
+  hasPresentableResearchResult,
+  isYieldingControlToUser,
   MIN_FAILED_METRIC_TRIALS,
   shouldResumeInterruptedWorkflow,
 } from "@/session/build-workflow-continuation"
@@ -67,6 +69,16 @@ function failedWorkflow(trials = 1): BuildWorkflowState {
   }
 }
 
+function withVerdict(
+  workflow: BuildWorkflowState,
+  verdict: NonNullable<BuildWorkflowState["backtest"]>["verdict"],
+): BuildWorkflowState {
+  return {
+    ...workflow,
+    backtest: workflow.backtest ? { ...workflow.backtest, verdict } : undefined,
+  }
+}
+
 describe("active Build workflow continuation", () => {
   test("only a newer real user continuation resumes an interrupted workflow", () => {
     const workflow = {
@@ -94,13 +106,14 @@ describe("active Build workflow continuation", () => {
 
   test("failed v1 forces an automatic v2 continuation instead of a final answer", () => {
     const reminder = buildWorkflowContinuationReminder({ workflow: failedWorkflow(1), pendingContextTasks: 0 })
-    expect(reminder).toContain("Do not stop")
-    expect(reminder).toContain("deterministic recommended_for_paper verdict")
-    expect(reminder).toContain("one recommended_for_paper final review packet")
+    expect(reminder).toContain("Do not stop with a narrative-only summary after a failed or missing metric trial")
+    expect(reminder).toContain("presentable non-failed result")
+    expect(reminder).toContain("recommended_for_paper final review packet")
     expect(reminder).toContain("next response MUST call finny_algorithm_save")
     expect(reminder).toContain("next required action is finny_backtest")
     expect(reminder).toContain("concept_exhausted is not an admissible outcome")
     expect(reminder).toContain("Completed metric trials: 1")
+    expect(reminder).toContain("User control wins")
   })
 
   test("a newly saved candidate requires backtest next rather than another save or a narrative", () => {
@@ -178,23 +191,94 @@ describe("active Build workflow continuation", () => {
       }),
     ).toBeUndefined()
   })
+
+  test("stops auto-iteration once a presentable research_only champion exists", () => {
+    const workflow = withVerdict(failedWorkflow(3), "research_only")
+    expect(hasPresentableResearchResult(workflow)).toBeTrue()
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow,
+        pendingContextTasks: 0,
+        assistantText: "Hourly champion is ready for paper-trading watchlist deployment on IBKR.",
+      }),
+    ).toBeUndefined()
+  })
+
+  test("stops auto-iteration once a presentable candidate champion exists", () => {
+    const workflow = withVerdict(failedWorkflow(2), "candidate")
+    expect(hasPresentableResearchResult(workflow)).toBeTrue()
+    expect(buildWorkflowContinuationReminder({ workflow, pendingContextTasks: 0 })).toBeUndefined()
+  })
+
+  test("keeps iterating only while the latest metric verdict is failed", () => {
+    expect(hasPresentableResearchResult(failedWorkflow(1))).toBeFalse()
+    expect(buildWorkflowContinuationReminder({ workflow: failedWorkflow(1), pendingContextTasks: 0 })).toBeDefined()
+  })
+
+  test("does not skip a user-facing handoff question after a failed trial", () => {
+    const assistantText =
+      "v12 failed with negative alpha. Would you like me to try a slow EMA crossover next, or pivot to mean reversion?"
+    expect(isYieldingControlToUser({ assistantText })).toBeTrue()
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(4),
+        pendingContextTasks: 0,
+        assistantText,
+      }),
+    ).toBeUndefined()
+  })
+
+  test("does not skip let-me-know handoffs that invite the next user decision", () => {
+    const assistantText =
+      "The champion candidates are fully validated and ready for deployment. Let me know if you would like to begin paper-trading these models!"
+    expect(isYieldingControlToUser({ assistantText })).toBeTrue()
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(6),
+        pendingContextTasks: 0,
+        assistantText,
+      }),
+    ).toBeUndefined()
+  })
+
+  test("detects question-tool handoffs as user control", () => {
+    expect(
+      isYieldingControlToUser({
+        assistantParts: [{ type: "tool", tool: "question", state: { status: "completed" } }],
+      }),
+    ).toBeTrue()
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(2),
+        pendingContextTasks: 0,
+        assistantParts: [{ type: "tool", tool: "question", state: { status: "completed" } }],
+      }),
+    ).toBeUndefined()
+  })
+
+  test("does not treat plain failed-result narration without a user ask as a handoff", () => {
+    const assistantText = "v8 failed. I will save a corrected short-only Supertrend and re-run the backtest."
+    expect(isYieldingControlToUser({ assistantText })).toBeFalse()
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(3),
+        pendingContextTasks: 0,
+        assistantText,
+      }),
+    ).toContain("next response MUST call finny_algorithm_save")
+  })
 })
 
 describe("parent/context overlap evidence", () => {
   const tool = (name: string, status = "completed") => ({ type: "tool", tool: name, state: { status } })
 
   test("does not count a preparation action completed before the context batch", () => {
-    expect(
-      hasParentOverlapActionAfterContextLaunch([{ parts: [tool("read"), tool("task_batch_run")] }]),
-    ).toBeFalse()
+    expect(hasParentOverlapActionAfterContextLaunch([{ parts: [tool("read"), tool("task_batch_run")] }])).toBeFalse()
   })
 
   test("counts a subsequent completed read or todo projection as useful parent overlap", () => {
     expect(
-      hasParentOverlapActionAfterContextLaunch([
-        { parts: [tool("task_batch_run")] },
-        { parts: [tool("todowrite")] },
-      ]),
+      hasParentOverlapActionAfterContextLaunch([{ parts: [tool("task_batch_run")] }, { parts: [tool("todowrite")] }]),
     ).toBeTrue()
   })
 

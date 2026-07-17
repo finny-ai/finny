@@ -89,6 +89,16 @@ function formatUtcDate(value: Date): string {
   return value.toISOString().slice(0, 10)
 }
 
+function utcDayDate(value: Date) {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate()))
+}
+
+function lastCompletedUtcDay(now: Date) {
+  const end = utcDayDate(now)
+  end.setUTCDate(end.getUTCDate() - 1)
+  return formatUtcDate(end)
+}
+
 function subtractCalendarMonths(value: Date, months: number): Date {
   const day = value.getUTCDate()
   const shifted = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() - months, 1))
@@ -106,6 +116,27 @@ function parseDuration(duration: string): { count: number; unit: "d" | "w" | "m"
   return { count, unit }
 }
 
+/**
+ * Date-only evidence windows require fully closed candles. Ending on "today"
+ * while the current equity session / crypto UTC day / open intraday bar is
+ * incomplete makes the data extractor report partial_current_open_candle and
+ * thrash verification. Clamp incomplete ends to the last completed coverage day.
+ */
+export function clampEndDateToCompletedCoverage(input: {
+  endDate: string
+  assetClass?: string
+  interval?: string
+  now?: Date
+}) {
+  const now = input.now ?? new Date()
+  const today = formatUtcDate(utcDayDate(now))
+  if (input.endDate < today) return input.endDate
+  if (input.assetClass === "equity") return lastCompletedXnysSessionDate({ now })
+  // Crypto is 24/7; any end on/after the current UTC day still has open candles.
+  // Same for daily bars of other classes when no equity calendar is in play.
+  return lastCompletedUtcDay(now)
+}
+
 export function resolveWorkspacePrepareWindow(
   params: Pick<WorkspacePrepareParams, "duration" | "startDate" | "endDate" | "interval" | "assetClass">,
   now = new Date(),
@@ -117,13 +148,24 @@ export function resolveWorkspacePrepareWindow(
           "Incomplete date window: provide both startDate and endDate, or omit both and provide a supported duration.",
       }
     }
-    return { startDate: params.startDate, endDate: params.endDate }
+    const endDate = clampEndDateToCompletedCoverage({
+      endDate: params.endDate,
+      assetClass: params.assetClass,
+      interval: params.interval,
+      now,
+    })
+    if (params.startDate > endDate) {
+      return {
+        error: `Date window is empty after clamping incomplete end coverage (${params.startDate} to ${endDate}).`,
+      }
+    }
+    return { startDate: params.startDate, endDate }
   }
   if (!params.duration) return {}
   const parsed = parseDuration(params.duration)
   if (!parsed) return {}
 
-  let end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  let end = utcDayDate(now)
   const interval = normalizeInterval(params.interval ?? "")
   if (params.assetClass === "equity") {
     // Duration-generated equity windows are date-only and imply the full end
@@ -132,9 +174,8 @@ export function resolveWorkspacePrepareWindow(
     // Agent to fill future candles.
     end = new Date(`${lastCompletedXnysSessionDate({ now })}T00:00:00Z`)
   } else if (params.assetClass === "crypto" || interval === "1d") {
-    // A date-only crypto window similarly requires the complete UTC day. Keep
-    // the existing daily default for callers that have not supplied an asset
-    // class, while explicit start/end dates remain authoritative above.
+    // A date-only crypto window requires the complete UTC day. Keep the existing
+    // daily default for callers that supply 1d without an asset class.
     end.setUTCDate(end.getUTCDate() - 1)
   }
   const start = new Date(end)
@@ -194,15 +235,11 @@ function trustedQuestionAnswers(message: Tool.Context["messages"][number]): stri
           ? question.options
           : []
       const expanded = values.map((value) => {
-        const option = options.find(
-          (candidate) =>
-            candidate &&
-            typeof candidate === "object" &&
-            "label" in candidate &&
-            candidate.label === value &&
-            "description" in candidate &&
-            typeof candidate.description === "string",
-        ) as { description?: string } | undefined
+        const option = options.find((candidate: unknown) => {
+          if (!candidate || typeof candidate !== "object") return false
+          const record = candidate as { label?: unknown; description?: unknown }
+          return record.label === value && typeof record.description === "string"
+        }) as { description?: string } | undefined
         return option?.description ? `${value} ${option.description}` : value
       })
       return [label ? `${label} ${expanded.join(", ")}` : expanded.join(", ")]
@@ -336,6 +373,169 @@ export function workspacePrepareIdentityConflict(
   ].join(" ")
 }
 
+type ConfirmedWorkflowIdentity = {
+  identityStatus?: string
+  identity: {
+    symbols?: { value: string[] }
+    assetClass?: { value: string }
+    interval?: { value: string }
+    window?: { value: { start: string; end: string } }
+  }
+}
+
+function userContextMentionsInterval(userPrompt: string, interval: string) {
+  const normalized = normalizeInterval(interval)
+  if (!normalized) return false
+  const facts = parseRequestFacts(userPrompt)
+  if (normalizeInterval(facts.requested_interval) === normalized) return true
+  if (normalized === "1h" && /\b(?:hourly|1\s*-?\s*(?:h|hr|hrs|hour|hours))\b/i.test(userPrompt)) return true
+  if (normalized === "1d" && /\b(?:daily|1\s*-?\s*(?:d|day|days))\b/i.test(userPrompt)) return true
+  const minuteMatch = /^(\d+)m$/.exec(normalized)
+  if (minuteMatch) {
+    const minutes = minuteMatch[1]
+    if (new RegExp(`\\b${minutes}\\s*-?\\s*(?:m|min|mins|minute|minutes)\\b`, "i").test(userPrompt)) return true
+  }
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  return new RegExp(`\\b${escaped}\\b`, "i").test(userPrompt)
+}
+
+function userContextMentionsWindow(userPrompt: string, start: string, end: string) {
+  // Absolute windows are only trusted when both dates appear in the latest user
+  // request or completed question answers. Duration prose alone cannot authorize
+  // a silent shrink of a confirmed window.
+  return userPrompt.includes(start) && userPrompt.includes(end)
+}
+
+function toolSymbolFromParams(params: Pick<WorkspacePrepareParams, "symbol" | "symbols">) {
+  return (
+    normalizeSymbol(params.symbol) ??
+    params.symbols?.map(normalizeSymbol).find((value): value is string => Boolean(value))
+  )
+}
+
+function lockedSymbolsFromIdentity(identity: ConfirmedWorkflowIdentity["identity"]) {
+  return (identity.symbols?.value ?? []).map(normalizeSymbol).filter((value): value is string => Boolean(value))
+}
+
+function symbolIdentityConflict(input: { toolSymbol?: string; lockedSymbols: string[]; userPrompt: string }) {
+  if (!input.toolSymbol || input.lockedSymbols.length === 0) return undefined
+  if (input.lockedSymbols.includes(input.toolSymbol)) return undefined
+  if (normalizeSymbol(parseRequestFacts(input.userPrompt).requested_symbol) === input.toolSymbol) return undefined
+  return `symbol ${input.toolSymbol} changes confirmed identity ${input.lockedSymbols.join(",")} without explicit user approval`
+}
+
+function assetClassIdentityConflict(input: { toolAssetClass?: string; lockedAssetClass?: string; userPrompt: string }) {
+  if (!input.toolAssetClass || !input.lockedAssetClass) return undefined
+  if (input.toolAssetClass === input.lockedAssetClass) return undefined
+  if (parseRequestFacts(input.userPrompt).requested_asset_class === input.toolAssetClass) return undefined
+  return `asset class ${input.toolAssetClass} changes confirmed identity ${input.lockedAssetClass} without explicit user approval`
+}
+
+function intervalIdentityConflict(input: { toolInterval?: string; lockedInterval?: string; userPrompt: string }) {
+  if (!input.toolInterval || !input.lockedInterval) return undefined
+  if (input.toolInterval === input.lockedInterval) return undefined
+  if (userContextMentionsInterval(input.userPrompt, input.toolInterval)) return undefined
+  return `interval ${input.toolInterval} changes confirmed identity ${input.lockedInterval} without explicit user approval`
+}
+
+function isOpenEndSafetyClamp(input: {
+  toolWindow: { start: string; end: string }
+  lockedWindow: { start: string; end: string }
+  assetClass?: string
+  interval?: string
+}) {
+  const completedLockedEnd = clampEndDateToCompletedCoverage({
+    endDate: input.lockedWindow.end,
+    assetClass: input.assetClass,
+    interval: input.interval,
+  })
+  return (
+    input.toolWindow.start === input.lockedWindow.start &&
+    input.toolWindow.end === completedLockedEnd &&
+    input.lockedWindow.end > completedLockedEnd
+  )
+}
+
+function windowIdentityConflict(input: {
+  toolWindow?: { start: string; end: string }
+  lockedWindow?: { start: string; end: string }
+  assetClass?: string
+  interval?: string
+  userPrompt: string
+}) {
+  if (!input.toolWindow || !input.lockedWindow) return undefined
+  if (input.toolWindow.start === input.lockedWindow.start && input.toolWindow.end === input.lockedWindow.end) {
+    return undefined
+  }
+  if (
+    isOpenEndSafetyClamp({
+      toolWindow: input.toolWindow,
+      lockedWindow: input.lockedWindow,
+      assetClass: input.assetClass,
+      interval: input.interval,
+    })
+  ) {
+    return undefined
+  }
+  if (userContextMentionsWindow(input.userPrompt, input.toolWindow.start, input.toolWindow.end)) return undefined
+  return `date window ${input.toolWindow.start}→${input.toolWindow.end} changes confirmed identity ${input.lockedWindow.start}→${input.lockedWindow.end} without explicit user approval`
+}
+
+/**
+ * Once WorkflowRun identity is confirmed, the model must not silently shrink the
+ * window or change interval/symbol while chasing strict_qualified data. Only an
+ * explicit user-approved context may amend the locked identity.
+ */
+export function workspacePrepareConfirmedIdentityLock(input: {
+  params: Pick<
+    WorkspacePrepareParams,
+    "symbol" | "symbols" | "assetClass" | "interval" | "startDate" | "endDate" | "duration"
+  >
+  workflow?: ConfirmedWorkflowIdentity
+  userPrompt: string
+}): string | undefined {
+  const workflow = input.workflow
+  if (!workflow || workflow.identityStatus !== "confirmed") return undefined
+
+  const locked = workflow.identity
+  const toolWindow =
+    input.params.startDate && input.params.endDate
+      ? { start: input.params.startDate, end: input.params.endDate }
+      : undefined
+  const conflicts = [
+    symbolIdentityConflict({
+      toolSymbol: toolSymbolFromParams(input.params),
+      lockedSymbols: lockedSymbolsFromIdentity(locked),
+      userPrompt: input.userPrompt,
+    }),
+    assetClassIdentityConflict({
+      toolAssetClass: input.params.assetClass,
+      lockedAssetClass: locked.assetClass?.value,
+      userPrompt: input.userPrompt,
+    }),
+    intervalIdentityConflict({
+      toolInterval: normalizeInterval(input.params.interval ?? "") ?? undefined,
+      lockedInterval: normalizeInterval(locked.interval?.value ?? "") ?? undefined,
+      userPrompt: input.userPrompt,
+    }),
+    windowIdentityConflict({
+      toolWindow,
+      lockedWindow: locked.window?.value,
+      assetClass: locked.assetClass?.value ?? input.params.assetClass,
+      interval: locked.interval?.value ?? input.params.interval,
+      userPrompt: input.userPrompt,
+    }),
+  ].filter((conflict): conflict is string => Boolean(conflict))
+
+  if (conflicts.length === 0) return undefined
+  return [
+    `Confirmed request identity is locked: ${conflicts.join("; ")}.`,
+    "Do not shrink the window, switch interval, or change symbol to chase strict_qualified data.",
+    "Proceed with the confirmed identity; research_only evidence is a valid research path.",
+    "If a change is truly required, ask the user with the question tool and only then call finny_workspace_prepare with the approved identity.",
+  ].join(" ")
+}
+
 async function readRequestContext(requestID: string): Promise<Record<string, unknown> | undefined> {
   const spec = await readRequestSpec({ requestID })
   return spec ? requestSpecProjection(spec) : undefined
@@ -399,6 +599,18 @@ export const WorkspacePrepareTool = Tool.define<
             BuildWorkflowStore.listBySession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database)),
           )
           let workflow = workflows.find((item) => item.status === "active" || item.status === "blocked")
+          const confirmedIdentityLock = workspacePrepareConfirmedIdentityLock({
+            params: effectiveParams,
+            workflow,
+            userPrompt: userText,
+          })
+          if (confirmedIdentityLock) {
+            return {
+              title: "Workspace prepare rejected",
+              output: confirmedIdentityLock,
+              metadata: {},
+            }
+          }
           let workflowProjection: Record<string, unknown> | undefined
           const hasStructuredIdentity = hasStructuredWorkspaceIdentity(effectiveParams)
           if (workflow && hasStructuredIdentity) {

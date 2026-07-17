@@ -354,8 +354,10 @@ export function strictDataQualityNextSteps() {
     "No performance metrics were produced; do not call this strategy backtested, ready, or paper/live eligible.",
     "Valid next steps:",
     "1. Verify the flagged candles first: inspect neighboring raw candles and compare another provider if available.",
-    "2. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
-    "3. Only after explicit user approval, run repair_outliers as a research-only rerun.",
+    "2. Keep the confirmed window/interval. Do not shrink duration or switch bars to chase strict_qualified.",
+    "3. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
+    "4. Only after explicit user approval, run repair_outliers as a research-only rerun on the same confirmed identity.",
+    "5. research_only verified evidence is a valid research path — present research metrics; do not thrash identity.",
   ].join("\n")
 }
 
@@ -651,7 +653,16 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           algorithmName: params.algorithmName,
           dataQualityMode: "repair_outliers",
         }
-        if (params.dataQualityMode === "repair_outliers" && !exactApproval(workflow, "repair_outliers", repairScope)) {
+        // Research-only verified evidence already encodes non-promotable quality
+        // caveats (commonly isolated outliers). Allow the research repair path
+        // without a second approval so the confirmed window can be evaluated.
+        const researchOnlyVerified =
+          evidence.ok && evidence.dataset.identity.qualification === "research_only"
+        if (
+          params.dataQualityMode === "repair_outliers" &&
+          !researchOnlyVerified &&
+          !exactApproval(workflow, "repair_outliers", repairScope)
+        ) {
           const challengeId = await ensureChallenge(
             "repair_outliers",
             repairScope,
@@ -901,11 +912,20 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           consistency: r.v2?.consistency,
           decay: r.v2?.alpha_decay,
         })
+        const researchOnlyArtifact =
+          dataSource.kind === "verified_artifact" &&
+          dataSource.dataset.identity.qualification === "research_only"
         const unified =
-          dataSource.kind === "provider_fetch" && computedUnified.verdict !== "failed"
+          computedUnified.verdict !== "failed" &&
+          (dataSource.kind === "provider_fetch" || researchOnlyArtifact)
             ? {
                 verdict: "research_only" as const,
-                reasons: [...computedUnified.reasons, "provider_fetch_research_only"],
+                reasons: [
+                  ...computedUnified.reasons,
+                  ...(dataSource.kind === "provider_fetch"
+                    ? ["provider_fetch_research_only"]
+                    : ["verified_dataset_research_only"]),
+                ],
               }
             : computedUnified
         await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)

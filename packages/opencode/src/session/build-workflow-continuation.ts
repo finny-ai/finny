@@ -3,7 +3,7 @@ import { SAFE_PARENT_OVERLAP_TOOLS } from "@/task/strategy-context"
 
 export const MIN_FAILED_METRIC_TRIALS = 5
 
-type WorkflowPart = { type: string; tool?: string; state?: { status?: string } }
+type WorkflowPart = { type: string; tool?: string; state?: { status?: string }; text?: string }
 type WorkflowMessage = { parts: WorkflowPart[] }
 
 function isCompletedTool(part: WorkflowPart, tool?: string) {
@@ -41,9 +41,7 @@ export function hasParentOverlapActionAfterContextLaunch(messages: WorkflowMessa
 
 function uniqueMetricTrials(state: BuildWorkflowState) {
   return new Set(
-    state.experimentAttempts
-      .filter((attempt) => attempt.outcome === "metrics")
-      .map((attempt) => attempt.replayKey),
+    state.experimentAttempts.filter((attempt) => attempt.outcome === "metrics").map((attempt) => attempt.replayKey),
   ).size
 }
 
@@ -70,6 +68,10 @@ type ContinuationInput = {
   unverifiedContextRoles?: readonly string[]
   parentOverlapComplete?: boolean
   saveHardBoundary?: boolean
+  /** Latest assistant narrative text. Used to detect user handoffs. */
+  assistantText?: string
+  /** Latest assistant parts. Used to detect question-tool handoffs. */
+  assistantParts?: WorkflowPart[]
 }
 
 function pendingContextReminder(
@@ -107,8 +109,52 @@ function unverifiedEvidenceReminder(workflow: BuildWorkflowState, roles: readonl
   ].join("\n")
 }
 
-function workflowCannotContinue(input: ContinuationInput, workflow: BuildWorkflowState) {
-  return input.saveHardBoundary === true || ["qualified", "terminal_complete", "terminal_failed"].includes(workflow.phase)
+/**
+ * A non-failed completed backtest is presentable research. The harness must
+ * stop auto-iteration so the agent can show the champion to the user instead
+ * of burning tokens on endless save/backtest retries.
+ *
+ * `recommended_for_paper` also becomes phase=qualified, but `candidate` and
+ * provider-fetch `research_only` never do — those still count as a proper
+ * strategy the user should see and decide on.
+ */
+export function hasPresentableResearchResult(workflow: BuildWorkflowState) {
+  const verdict = workflow.backtest?.verdict
+  return verdict === "candidate" || verdict === "research_only" || verdict === "recommended_for_paper"
+}
+
+const USER_YIELD_PHRASE_RE =
+  /\b(?:let me know|would you like|do you want|shall i|should i|your (?:call|choice|preference|decision)|awaiting your|waiting for your|what would you like|how would you like|what should (?:i|we)|want me to|if you(?:'d| would) like|ready for (?:your|paper)|paper[- ]trad(?:e|ing) (?:these|this|the)|begin paper)\b/i
+
+/**
+ * User has primary control. If the assistant is asking the user what to do,
+ * auto-continuation must not skip that handoff and restart iteration.
+ */
+export function isYieldingControlToUser(input: { assistantText?: string; assistantParts?: WorkflowPart[] }) {
+  if (input.assistantParts?.some((part) => part.type === "tool" && part.tool === "question")) {
+    return true
+  }
+  const text = input.assistantText?.trim()
+  if (!text) return false
+  if (/\?\s*$/.test(text)) return true
+  // Question mark near the end of a multi-paragraph handoff.
+  if (/\?[^\n]*\n*$/.test(text) || (text.includes("?") && USER_YIELD_PHRASE_RE.test(text))) return true
+  return USER_YIELD_PHRASE_RE.test(text)
+}
+
+function workflowShouldStopAutoIteration(input: ContinuationInput, workflow: BuildWorkflowState) {
+  if (input.saveHardBoundary === true) return true
+  if (["qualified", "terminal_complete", "terminal_failed"].includes(workflow.phase)) return true
+  if (hasPresentableResearchResult(workflow)) return true
+  if (
+    isYieldingControlToUser({
+      assistantText: input.assistantText,
+      assistantParts: input.assistantParts,
+    })
+  ) {
+    return true
+  }
+  return false
 }
 
 function iterationReminder(workflow: BuildWorkflowState) {
@@ -117,19 +163,18 @@ function iterationReminder(workflow: BuildWorkflowState) {
   return [
     "<system-reminder>",
     `Durable Build workflow ${workflow.workflowId} is still active at phase ${workflow.phase}.`,
-    `Completed metric trials: ${metricTrials}. Trial count does not authorize a terminal failure while this workflow remains active and unqualified.`,
+    `Completed metric trials: ${metricTrials}. Trial count does not authorize a terminal failure while this workflow remains active without a presentable non-failed research result.`,
     `After ${MIN_FAILED_METRIC_TRIALS} failed metric trials, rotate to a fresh strategy concept family and continue save/backtest iteration.`,
-    "concept_exhausted is not an admissible outcome while the workflow remains active and the requested gates are unmet. Do not emit it or paraphrase it as a terminal summary.",
-    "Do not stop, emit any final summary, or ask whether to continue until WorkflowRun is qualified by a deterministic recommended_for_paper verdict plus positive total return, stitched OOS return, and buy-and-hold alpha.",
+    "concept_exhausted is not an admissible outcome while the workflow remains active and every metric trial is still failed. Do not emit it or paraphrase it as a terminal summary.",
+    "Do not stop with a narrative-only summary after a failed or missing metric trial. Keep iterating until you either produce a presentable non-failed result (candidate, research_only, or recommended_for_paper) or yield control by asking the user what to do next.",
+    "User control wins: if you need a user decision, ask clearly and stop. Do not auto-continue past a user-facing question.",
     ...requiredAction,
-    "Only after that robust WorkflowRun qualification, generate the one recommended_for_paper final review packet before stopping; paper approval remains a separate human decision.",
+    "Only after a robust recommended_for_paper WorkflowRun qualification, generate the one recommended_for_paper final review packet before stopping; paper approval remains a separate human decision. A research_only/candidate champion should be presented to the user and stopped without further forced iteration.",
     "</system-reminder>",
   ].join("\n")
 }
 
-type ContextReminderDecision =
-  | { handled: false }
-  | { handled: true; reminder: string | undefined }
+type ContextReminderDecision = { handled: false } | { handled: true; reminder: string | undefined }
 
 function contextReminderDecision(input: ContinuationInput, workflow: BuildWorkflowState): ContextReminderDecision {
   if (input.pendingContextTasks > 0) {
@@ -149,5 +194,5 @@ export function buildWorkflowContinuationReminder(input: ContinuationInput) {
   if (!workflow || workflow.status !== "active") return undefined
   const context = contextReminderDecision(input, workflow)
   if (context.handled) return context.reminder
-  return workflowCannotContinue(input, workflow) ? undefined : iterationReminder(workflow)
+  return workflowShouldStopAutoIteration(input, workflow) ? undefined : iterationReminder(workflow)
 }

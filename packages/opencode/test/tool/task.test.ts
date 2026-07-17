@@ -3452,17 +3452,29 @@ describe("tool.task", () => {
       expect(
         (yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))).map((task) => task.id),
       ).toEqual([result.metadata.sessionId])
+      const deliveryMessageID = MessageID.ascending()
       const deliveredMessages = [
         {
+          info: {
+            id: deliveryMessageID,
+            sessionID: chat.id,
+            role: "user" as const,
+            agent: "finny",
+            model: ref,
+            time: { created: Date.now() },
+          },
           parts: (deliveryInput?.parts ?? [])
             .filter((part) => part.type === "text")
-            .map((part) =>
-              part.type === "text"
-                ? { type: "text", text: part.text, synthetic: part.synthetic }
-                : { type: "text", text: "" },
-            ),
+            .map((part) => ({
+              id: PartID.ascending(),
+              sessionID: chat.id,
+              messageID: deliveryMessageID,
+              type: "text" as const,
+              text: part.type === "text" ? part.text : "",
+              ...(part.type === "text" && part.synthetic !== undefined ? { synthetic: part.synthetic } : {}),
+            })),
         },
-      ]
+      ] as SessionV1.WithParts[]
       expect(yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database, deliveredMessages))).toEqual(
         [],
       )

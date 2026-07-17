@@ -3,6 +3,7 @@ import {
   promptFromParams,
   resolveWorkspacePrepareWindow,
   workspacePrepareClarificationBlock,
+  workspacePrepareConfirmedIdentityLock,
   workspacePrepareIdentityConflict,
   workspacePrepareUserContext,
 } from "../../src/tool/workspace-prepare"
@@ -75,6 +76,46 @@ describe("workspace prepare request context", () => {
     ).toEqual({ startDate: "2024-01-02", endDate: "2025-01-02" })
   })
 
+  test("clamps explicit crypto end dates that land on the incomplete current UTC day", () => {
+    expect(
+      resolveWorkspacePrepareWindow(
+        {
+          duration: "1y",
+          startDate: "2025-07-17",
+          endDate: "2026-07-17",
+          interval: "4h",
+          assetClass: "crypto",
+        },
+        new Date("2026-07-17T16:30:00Z"),
+      ),
+    ).toEqual({ startDate: "2025-07-17", endDate: "2026-07-16" })
+  })
+
+  test("allows safety clamp of a locked incomplete crypto end day without user re-approval", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["BTC.USD"] },
+        assetClass: { value: "crypto" },
+        interval: { value: "4h" },
+        window: { value: { start: "2025-07-17", end: "2026-07-17" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "BTC 4h supertrend",
+        params: {
+          symbol: "BTC.USD",
+          assetClass: "crypto",
+          interval: "4h",
+          startDate: "2025-07-17",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
+  })
+
   test("clamps calendar-month subtraction at month end", () => {
     expect(resolveWorkspacePrepareWindow({ duration: "one month" }, new Date("2026-03-31T12:00:00Z"))).toEqual({
       startDate: "2026-02-28",
@@ -138,6 +179,95 @@ describe("workspace prepare request context", () => {
         { symbol: "VFV", assetClass: "equity", interval: "15m" },
         "Build a VFV 15-minute strategy",
       ),
+    ).toBeUndefined()
+  })
+
+  test("locks confirmed identity against silent window shrink and interval thrash", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["SPY"] },
+        assetClass: { value: "equity" },
+        interval: { value: "15min" },
+        window: { value: { start: "2026-01-16", end: "2026-07-16" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-05-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toContain("date window 2026-05-16→2026-07-16 changes confirmed identity")
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "1h",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toContain("interval 1h changes confirmed identity 15m")
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "SPY 15min",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("allows confirmed identity changes only with explicit user approval", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["SPY"] },
+        assetClass: { value: "equity" },
+        interval: { value: "15min" },
+        window: { value: { start: "2026-01-16", end: "2026-07-16" } },
+      },
+    }
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "Switch to Hourly (1h) for the same SPY request",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "1h",
+          startDate: "2026-01-16",
+          endDate: "2026-07-16",
+        },
+      }),
+    ).toBeUndefined()
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "Use the shorter window 2026-06-01 to 2026-07-15",
+        params: {
+          symbol: "SPY",
+          assetClass: "equity",
+          interval: "15min",
+          startDate: "2026-06-01",
+          endDate: "2026-07-15",
+        },
+      }),
     ).toBeUndefined()
   })
 
