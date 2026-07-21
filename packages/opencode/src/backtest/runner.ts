@@ -10,6 +10,7 @@ import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSessionPythonEnv, SESSION_PREFLIGHT_PACKAGES } from "@/python/session-env"
 import { resolveSymbol } from "@/data/symbols"
+import { regionalMarketForTicker } from "@/data/regional-markets"
 import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
 import { resolveAssetSpec } from "./asset-spec"
@@ -266,7 +267,20 @@ export namespace BacktestRunner {
    * plausible ticker passes — so this only fires on true garbage like
    * empty strings or non-ASCII junk.
    */
-  const SUPPORTED_CANONICAL = ["BTC/USD", "ETH/USD", "SOL/USD", "AAPL", "NVDA", "TSLA", "SPY", "QQQ"]
+  const SUPPORTED_CANONICAL = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "AAPL",
+    "NVDA",
+    "TSLA",
+    "SPY",
+    "QQQ",
+    "RELIANCE.NS",
+    "SHOP.TO",
+    "ASML.AS",
+    "0700.HK",
+  ]
 
   const DURATION_MONTHS: Record<string, number> = {
     "1m": 1,
@@ -2845,10 +2859,14 @@ if __name__ == "__main__":
               if (fetchResult.code !== 0) {
                 const stderr = fetchResult.stderr.toString().trim()
                 const { kind, detail } = classifyFetchError(stderr)
+                const regional = regionalMarketForTicker(symbol)
                 const human =
                   kind === "unknown_symbol"
-                    ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
-                      `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
+                    ? regional
+                      ? `Backtest could not obtain data for the exact regional listing ${symbol} (${regional.venue}). ` +
+                        `Check the matching ${regional.brokerKind} data connection or yfinance coverage; no proxy ticker will be substituted.`
+                      : `Backtest failed (unknown_symbol): ${symbol} is not recognized by the selected data provider. ` +
+                        `The curated examples are only suggestions, not an exhaustive symbol allowlist.`
                     : kind === "empty_window"
                       ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
                       : kind === "network"
@@ -2861,7 +2879,7 @@ if __name__ == "__main__":
                 throw new BacktestDataPreparationError(
                   human,
                   kind,
-                  kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
+                  kind === "unknown_symbol" && !regional ? SUPPORTED_CANONICAL : undefined,
                 )
               }
 
