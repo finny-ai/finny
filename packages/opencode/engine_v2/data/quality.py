@@ -540,7 +540,7 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
         reasons.append(f"{report.outlier_bars} severe outlier bar(s)")
     if asset_class in {"crypto_spot", "crypto_perp"} and report.zero_volume_bars > 0:
         reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")
-    if asset_class in {"equity", "future", "option"} and report.zero_volume_bars > 0:
+    if asset_class in {"equity", "future", "option"} and report.zero_volume_bars > 0 and report.session_type != "provider_observed":
         isolated_tolerance = max(3, int(np.ceil(report.n_bars * 0.01)))
         if report.zero_volume_bars > isolated_tolerance:
             reasons.append(f"{report.zero_volume_bars} zero-volume bar(s)")

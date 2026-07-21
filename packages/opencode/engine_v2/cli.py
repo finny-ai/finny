@@ -124,7 +124,13 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     return d
 
 
-def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, interval: str) -> pd.DataFrame:
+def _apply_regular_hours_filter(
+    df: pd.DataFrame,
+    asset_class: str,
+    cfg: Dict,
+    interval: str,
+    calendar: str = "US_EQUITIES",
+) -> pd.DataFrame:
     exec_cfg = cfg.get("execution", {}) if isinstance(cfg.get("execution"), dict) else {}
     if bool(exec_cfg.get("extended_hours", False)):
         return df
@@ -135,13 +141,20 @@ def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, i
     if df.empty:
         return df
 
-    ts_et = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
-    minutes = ts_et.dt.hour * 60 + ts_et.dt.minute
-    in_regular_session = (
-        (ts_et.dt.weekday < 5)
-        & (minutes >= 9 * 60 + 30)
-        & (minutes < 16 * 60)
-    )
+    session = {
+        "XNSE": ("Asia/Kolkata", 9 * 60 + 15, 15 * 60 + 30),
+        "XBOM": ("Asia/Kolkata", 9 * 60 + 15, 15 * 60 + 30),
+        "XTSE": ("America/Toronto", 9 * 60 + 30, 16 * 60),
+        "XTSX": ("America/Toronto", 9 * 60 + 30, 16 * 60),
+        "XEUR": ("Europe/Amsterdam", 8 * 60, 18 * 60),
+        "XHKG": ("Asia/Hong_Kong", 9 * 60 + 30, 16 * 60),
+        "XSHG": ("Asia/Shanghai", 9 * 60 + 30, 15 * 60),
+        "XSHE": ("Asia/Shanghai", 9 * 60 + 30, 15 * 60),
+    }.get(str(calendar).upper(), ("America/New_York", 9 * 60 + 30, 16 * 60))
+    timezone, open_minutes, close_minutes = session
+    local = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(timezone)
+    minutes = local.dt.hour * 60 + local.dt.minute
+    in_regular_session = (local.dt.weekday < 5) & (minutes >= open_minutes) & (minutes < close_minutes)
     return df.loc[in_regular_session].reset_index(drop=True)
 
 
@@ -872,7 +885,7 @@ def main() -> None:
     if df.empty:
         raise SystemExit("No bars after date filter")
     raw_rows = int(len(df))
-    df = _apply_regular_hours_filter(df, asset_spec.assetClass, cfg, args.interval)
+    df = _apply_regular_hours_filter(df, asset_spec.assetClass, cfg, args.interval, asset_spec.calendar)
     if df.empty:
         raise SystemExit("No bars after regular-hours filter")
     provider = str(asset_spec.dataProvider or cfg.get("data_provider") or "unknown")
