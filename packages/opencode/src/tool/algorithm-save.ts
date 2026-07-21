@@ -10,6 +10,7 @@ import { RetryOrchestrator } from "../algorithm/retry-orchestrator"
 import { Bus } from "../bus"
 import { Process } from "../util/process"
 import { readActiveBrokerKind } from "../live/brokers/active"
+import { BROKER_KINDS } from "../live/brokers/types"
 import { linkAlgorithmToWorkspace } from "../plugin/finny-workspace"
 import {
   missingRequiredNewSaveConfigFields,
@@ -407,7 +408,7 @@ const parameters = z.object({
     .describe("Design decisions to append to the immutable decisions.md history for the new version."),
   riskContract: z.string().optional().describe("JSON risk contract saved as risk.json with the version."),
   targetBrokerage: z
-    .enum(["alpaca", "binance", "ibkr"])
+    .enum(BROKER_KINDS)
     .optional()
     .describe(
       "Target brokerage for live deployment. Use when building a strategy for a brokerage the user hasn't connected yet (e.g. futures on Alpaca → target ibkr). Backtest runs immediately; live deploy requires the target brokerage to be connected later.",
@@ -492,9 +493,7 @@ export const AlgorithmSaveTool = Tool.define(
           if (
             params.saveMode === "version" &&
             params.docsMode === "inherit" &&
-            (documents.mission !== undefined ||
-              documents.prefs !== undefined ||
-              documents.riskContract !== undefined)
+            (documents.mission !== undefined || documents.prefs !== undefined || documents.riskContract !== undefined)
           ) {
             configIssues.push(
               'docsMode "inherit" cannot replace mission, preferences, or riskContract; use docsMode: "replace"',

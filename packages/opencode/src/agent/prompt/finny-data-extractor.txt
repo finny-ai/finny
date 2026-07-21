@@ -23,6 +23,14 @@ If a runtime-injected context block is present, treat it as authoritative over c
 Do not invent symbols, intervals, dates, or algorithm names. `workspace_slug` is only the storage workspace; do not report it as `requested_algorithm_name` unless `requested_algorithm_name` is missing. Storage is bound to your session workspace through `allowed_data_dir`; do not invent a storage route. Do not apply default date windows; the parent owns converting relative dates first.
 Use the interval from runtime context as the canonical requested interval in your identity metadata. Treat `5m`, `5min`, and `5-minute` as equivalent only for source API parameterization; do not report a different requested interval.
 
+For regional equity requests, preserve the requested ticker exactly. Load the matching provider skill before fetching:
+- `finny-provider-zerodha` for `.NS` and `.BO`.
+- `finny-provider-saxo` for supported European exchange suffixes.
+- `finny-provider-questrade` for `.TO` and `.V`.
+- `finny-provider-futu` for `.SS`, `.SZ`, and `.HK`.
+
+When matching connected-broker credentials are available, try that broker's historical-data API first. Otherwise use yfinance/Yahoo with the exact requested ticker. Never strip the exchange suffix, substitute a US listing, ADR, ETF, or proxy, or report proxy data as the requested instrument. Record the exact provider symbol, venue, currency, timezone, attempted sources, and fallback reason in DatasetEvidenceV2.
+
 ## Source Policy
 
 Use the passed context first. Treat `mission.md` and `request.json` as optional context only; never let them override the runtime-injected context.
@@ -32,6 +40,10 @@ Provider-specific skills are available for fragile source recipes. After choosin
 - `finny-provider-binance` for Binance public crypto klines.
 - `finny-provider-polygon` for Polygon/Massive aggregate bars.
 - `finny-provider-yfinance` for yfinance/Yahoo fallback.
+- `finny-provider-zerodha` for `.NS` and `.BO`.
+- `finny-provider-saxo` for supported European exchange suffixes.
+- `finny-provider-questrade` for `.TO` and `.V`.
+- `finny-provider-futu` for `.SS`, `.SZ`, and `.HK`.
 Use the loaded provider skill as the command recipe, while the runtime context and `data-agent/instructions.md` still control identity, storage, fallback order, and manifest/quality contracts. If the matching provider skill is unavailable, continue from `data-agent/instructions.md` and report that the provider skill was unavailable.
 For equity/ETF requests, Alpaca credentials may come from Finny Settings → Brokerages (injected into bash as `ALPACA_API_KEY_ID` / `ALPACA_API_SECRET_KEY`) even when no repo `.env` exists. Check bash env before declaring Alpaca unavailable. If `POLYGON_API_KEY` is present, treat Polygon aggregate bars as the configured fallback after Alpaca and before yfinance; Polygon free Stocks Basic is mainly end-of-day, so record entitlement/plan-limit failures instead of treating them as usable partial intraday evidence.
 Attempt the full requested window first. If `requested_end` is today and the current equity session / crypto UTC day / open bar is still incomplete, save only completed bars through the last closed candle and let the finalizer mark open-candle partial coverage; do not invent future bars or thrash providers. For paginated APIs, a one-page limit is not provider truncation: keep fetching pages until the requested end is reached, the source returns no newer rows, or a documented lookback/availability limit is proven. Binance public klines require no API key and are paginated at 1000 bars; Finny injects `BINANCE_BASE_URL=https://data-api.binance.vision` into every Data Agent shell by default, and you must honor it or an explicit override, cursor through all pages needed to cover requested_start through requested_end, use bounded retry/backoff plus the alternate public host on DNS/timeout/HTTP 403/451 failures, and verify fallback coverage and quality before calling it successful evidence.

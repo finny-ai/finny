@@ -880,6 +880,7 @@ def main() -> None:
     raw_dq = DQ.analyze(
         df, args.interval, asset_spec.assetClass, provider=provider,
         requested_start=args.start_date, requested_end=args.end_date,
+        calendar_id=asset_spec.calendar,
     )
     raw_blocking = [
         reason for reason in DQ.blocking_reasons(raw_dq, asset_spec.assetClass)
@@ -907,6 +908,7 @@ def main() -> None:
                     DQ.analyze(
                         df, args.interval, asset_spec.assetClass, provider=provider,
                         requested_start=args.start_date, requested_end=args.end_date,
+                        calendar_id=asset_spec.calendar,
                     ),
                     repaired_details,
                 )
@@ -940,13 +942,15 @@ def main() -> None:
         raise SystemExit(f"Failed to resample CSV at interval {args.interval!r}: {e}") from e
     if df.empty:
         raise SystemExit("No bars after resampling")
-    window_reasons = DQ.requested_window_reasons(
+    regional_provider_observed = asset_spec.calendar in {"XNSE", "XBOM", "XTSE", "XTSX", "XEUR", "XHKG", "XSHG", "XSHE"}
+    window_reasons = [] if regional_provider_observed else DQ.requested_window_reasons(
         df, args.interval, asset_spec.assetClass, args.start_date, args.end_date,
     )
     if args.data_quality_mode == "strict" and window_reasons:
         truncated_report = DQ.analyze(
             df, args.interval, asset_spec.assetClass, provider=provider,
             requested_start=args.start_date, requested_end=args.end_date,
+            calendar_id=asset_spec.calendar,
         )
         raise SystemExit(_quality_failure(
             "Data quality failed requested window coverage",
@@ -966,6 +970,7 @@ def main() -> None:
     dq = DQ.analyze(
         df, args.interval, asset_spec.assetClass, provider=provider,
         requested_start=args.start_date, requested_end=args.end_date,
+        calendar_id=asset_spec.calendar,
     )
     if repaired_details_total:
         dq = DQ.report_with_repair(dq, repaired_details_total)
@@ -992,6 +997,7 @@ def main() -> None:
                     DQ.analyze(
                         df, args.interval, asset_spec.assetClass, provider=provider,
                         requested_start=args.start_date, requested_end=args.end_date,
+                        calendar_id=asset_spec.calendar,
                     ),
                     repaired_details_total,
                 )

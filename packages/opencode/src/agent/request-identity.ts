@@ -164,7 +164,8 @@ function kindToAssetClass(kind: string): AssetClass {
 }
 
 const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
-const TICKERISH_RE = /^[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?$/
+const TICKERISH_RE =
+  /^(?:[A-Z0-9]{1,16}(?:[\/\-][A-Z0-9]{1,8})?|[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)|(?:NSE|BSE|TSXV?|XETRA|LSE|SSE|SZSE|HKEX):[A-Z0-9.&-]{1,30})$/
 const NON_TRADEABLE_ACRONYMS = new Set([
   "APAC",
   "CPI",
@@ -292,15 +293,19 @@ const EXPLICIT_SYMBOL_RES: Array<{
   capture?: number
 }> = [
   {
-    // Exchange-qualified Canadian tickers must bind to the ticker, not the
-    // exchange code (for example, TSXV:PNG → PNG).
-    re: /\b(?:TSXV|TSX|CSE|NASDAQ|NYSE|AMEX)\s*:\s*([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    // Exchange-qualified regional tickers bind to the full listing identity.
+    re: /\b((?:NSE|BSE|TSXV|TSX|CSE|XETRA|LSE|SSE|SZSE|HKEX|NASDAQ|NYSE|AMEX)\s*:\s*[A-Za-z0-9.&-]{1,30})/gi,
     score: 130,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
   },
   {
-    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]?\s*[`"']?([A-Za-z0-9][A-Za-z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))/gi,
+    score: 125,
+    allowUnknown: true,
+  },
+  {
+    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,16}(?:[\/\-][A-Za-z0-9]{1,8})?)/gi,
     score: 120,
     allowUnknown: true,
   },
@@ -512,7 +517,8 @@ function intervalFromPrompt(prompt: string): string | undefined {
   return candidates[0]?.interval ?? bareIntervalFromPrompt(prompt)
 }
 
-const EXPLICIT_TICKER_RE = /^[A-Z][A-Z0-9.]{0,5}$/
+const EXPLICIT_TICKER_RE =
+  /^(?:[A-Z][A-Z0-9.]{0,5}|[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))$/
 /**
  * Acronyms that are far more likely to be indicators, brokers, or order jargon
  * than traded tickers when they appear in unlabeled prose ("for IBKR, RSI

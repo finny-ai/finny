@@ -1,4 +1,5 @@
-export type BrokerKind = "alpaca" | "binance" | "ibkr"
+export const BROKER_KINDS = ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"] as const
+export type BrokerKind = (typeof BROKER_KINDS)[number]
 export type AssetClass = "equity" | "crypto" | "option" | "future"
 export type BrokerMode = "paper" | "testnet" | "live"
 export type BrokerConnection = "tws" | "gateway"
@@ -49,6 +50,8 @@ export interface BrokerSpec {
   docsUrl: string
   credentialFields: CredentialField[]
   promptFragment: string
+  /** Regional data-only connectors are selectable for research but cannot start execution workers. */
+  executionSupport?: "enabled" | "data_only"
   normalizeSymbol(canonical: string): string
   resolvePair(canonical: string): string
   detectAssetClass(canonical: string): AssetClass | null

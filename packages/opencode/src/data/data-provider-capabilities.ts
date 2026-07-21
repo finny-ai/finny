@@ -1,4 +1,5 @@
 import { normalizeInterval } from "@/agent/request-identity"
+import { regionalMarketForTicker } from "./regional-markets"
 
 export type DataProviderFailureLayer = "provider" | "coverage" | "schema" | "retrieval"
 
@@ -6,7 +7,7 @@ export type DataProviderOutcome =
   | { status: "success"; provider: DataProviderID }
   | { status: "failure"; provider?: DataProviderID; layer: DataProviderFailureLayer; reason: string }
 
-export type DataProviderID = "alpaca" | "polygon" | "yfinance" | "binance"
+export type DataProviderID = "alpaca" | "polygon" | "yfinance" | "binance" | "zerodha" | "saxo" | "questrade" | "futu"
 
 export interface DataProviderCapability {
   id: DataProviderID
@@ -17,12 +18,13 @@ export interface DataProviderCapability {
   pagination: string
   availability: "available"
   evidenceContract: "DatasetEvidenceV2"
-  calendarPolicy: "XNYS" | "24/7"
+  calendarPolicy: "XNYS" | "24/7" | "REGIONAL_PROVIDER_OBSERVED"
   requiredMarketSemantics: readonly string[]
 }
 
 interface ProviderDefinition extends Omit<DataProviderCapability, "availability"> {
   supportsWindow?: (request: DataProviderRequest) => boolean
+  supportsSymbol?: (request: DataProviderRequest) => boolean
 }
 
 export interface DataProviderRequest {
@@ -30,6 +32,7 @@ export interface DataProviderRequest {
   interval?: string
   start?: string
   end?: string
+  symbol?: string
 }
 
 export interface DiscoverDataProviderCapabilitiesInput {
@@ -43,6 +46,54 @@ const BINANCE_INTERVALS = ["1m", "5m", "15m", "30m", "1h", "4h", "1d"] as const
 
 const DEFINITIONS: readonly ProviderDefinition[] = [
   {
+    id: "zerodha",
+    skillID: "finny-provider-zerodha",
+    assetClasses: ["equity"],
+    intervals: ["1m", "5m", "15m", "30m", "1h", "1d"],
+    credentialEnv: ["KITE_API_KEY", "KITE_ACCESS_TOKEN"],
+    pagination: "resolve exact instrument token; split historical requests into bounded windows until covered",
+    evidenceContract: "DatasetEvidenceV2",
+    calendarPolicy: "REGIONAL_PROVIDER_OBSERVED",
+    requiredMarketSemantics: ["exact_listing", "venue", "currency", "provider_observed_calendar"],
+    supportsSymbol: (request) => regionalMarketForTicker(request.symbol ?? "")?.brokerKind === "zerodha",
+  },
+  {
+    id: "saxo",
+    skillID: "finny-provider-saxo",
+    assetClasses: ["equity"],
+    intervals: EQUITY_INTERVALS,
+    credentialEnv: ["SAXO_ACCESS_TOKEN"],
+    pagination: "resolve exact Stock UIC and request chart samples until the immutable window is covered",
+    evidenceContract: "DatasetEvidenceV2",
+    calendarPolicy: "REGIONAL_PROVIDER_OBSERVED",
+    requiredMarketSemantics: ["exact_listing", "exchange", "currency", "data_version"],
+    supportsSymbol: (request) => regionalMarketForTicker(request.symbol ?? "")?.brokerKind === "saxo",
+  },
+  {
+    id: "questrade",
+    skillID: "finny-provider-questrade",
+    assetClasses: ["equity"],
+    intervals: EQUITY_INTERVALS,
+    credentialEnv: ["QUESTRADE_ACCESS_TOKEN", "QUESTRADE_API_SERVER"],
+    pagination: "resolve exact symbol id; split requests below the 2000-candle response cap",
+    evidenceContract: "DatasetEvidenceV2",
+    calendarPolicy: "REGIONAL_PROVIDER_OBSERVED",
+    requiredMarketSemantics: ["exact_listing", "exchange", "currency", "access_token_only"],
+    supportsSymbol: (request) => regionalMarketForTicker(request.symbol ?? "")?.brokerKind === "questrade",
+  },
+  {
+    id: "futu",
+    skillID: "finny-provider-futu",
+    assetClasses: ["equity"],
+    intervals: EQUITY_INTERVALS,
+    credentialEnv: ["FUTU_HOST", "FUTU_PORT"],
+    pagination: "follow page_req_key from OpenD until exhausted or the requested end is covered",
+    evidenceContract: "DatasetEvidenceV2",
+    calendarPolicy: "REGIONAL_PROVIDER_OBSERVED",
+    requiredMarketSemantics: ["exact_listing", "venue", "beijing_time", "historical_quota"],
+    supportsSymbol: (request) => regionalMarketForTicker(request.symbol ?? "")?.brokerKind === "futu",
+  },
+  {
     id: "alpaca",
     skillID: "finny-provider-alpaca",
     assetClasses: ["equity"],
@@ -52,6 +103,7 @@ const DEFINITIONS: readonly ProviderDefinition[] = [
     evidenceContract: "DatasetEvidenceV2",
     calendarPolicy: "XNYS",
     requiredMarketSemantics: ["feed", "venue", "adjustment=all", "corporate_actions"],
+    supportsSymbol: (request) => !regionalMarketForTicker(request.symbol ?? ""),
   },
   {
     id: "polygon",
@@ -63,6 +115,7 @@ const DEFINITIONS: readonly ProviderDefinition[] = [
     evidenceContract: "DatasetEvidenceV2",
     calendarPolicy: "XNYS",
     requiredMarketSemantics: ["feed", "venue", "adjustment", "corporate_actions"],
+    supportsSymbol: (request) => !regionalMarketForTicker(request.symbol ?? ""),
   },
   {
     id: "yfinance",
@@ -125,7 +178,26 @@ export function discoverDataProviderCapabilities(
     .filter((definition) => !interval || definition.intervals.includes(interval))
     .filter((definition) => hasCredentials(definition, env))
     .filter((definition) => definition.supportsWindow?.(input.request) ?? true)
-    .map(({ supportsWindow: _, ...definition }) => ({ ...definition, availability: "available" as const }))
+    .filter((definition) => definition.supportsSymbol?.(input.request) ?? true)
+    .map(({ supportsWindow: _, supportsSymbol: __, ...definition }) => {
+      const regionalFallback = definition.id === "yfinance" && regionalMarketForTicker(input.request.symbol ?? "")
+      return {
+        ...definition,
+        ...(regionalFallback
+          ? {
+              calendarPolicy: "REGIONAL_PROVIDER_OBSERVED" as const,
+              requiredMarketSemantics: [
+                "exact_listing",
+                "venue",
+                "currency",
+                "auto_adjust",
+                "provider_observed_calendar",
+              ],
+            }
+          : {}),
+        availability: "available" as const,
+      }
+    })
 }
 
 /** Stable, compact context consumed by the Data Agent without filesystem probing. */

@@ -1,6 +1,7 @@
 import { z } from "zod"
 import { resolveSymbol } from "../data/symbols"
 import { Mission } from "./mission"
+import { BROKER_KINDS } from "@/live/brokers/types"
 
 // Canonical execution-context parameters extracted from chat. Stored as the
 // JSON string in Algorithm.Info.config. Only the inputs the user supplies —
@@ -12,7 +13,7 @@ export const StrategyParams = z.object({
   interval: z.enum(["1min", "5min", "15min", "30min", "1h", "4h", "1d"]).optional(),
   required_history_bars: z.number().int().nonnegative().optional(),
   equity_usd: z.number().positive().optional(),
-  brokerage: z.enum(["alpaca", "binance", "ibkr"]).optional(),
+  brokerage: z.enum(BROKER_KINDS).optional(),
   execution: z
     .object({
       max_leverage: z.number().positive().optional(),
@@ -102,7 +103,14 @@ export function mergeConfig(prev: StrategyParams, patch: Partial<StrategyParams>
       delete (out as any)[key]
       continue
     }
-    if (key === "params" || key === "backtest" || key === "risk" || key === "risk_contract" || key === "execution" || key === "asset_spec") {
+    if (
+      key === "params" ||
+      key === "backtest" ||
+      key === "risk" ||
+      key === "risk_contract" ||
+      key === "execution" ||
+      key === "asset_spec"
+    ) {
       const prevSub = (prev as any)[key] ?? {}
       const merged = { ...prevSub }
       for (const [k2, v2] of Object.entries(value)) {
@@ -157,7 +165,9 @@ export function normalizeConfigForSave(input: {
     }
     if (EXECUTION_KEYS.has(key)) {
       if (value === null) delete normalized[key]
-      else normalized[key] = key === "symbol" && typeof value === "string" ? (resolveSymbol(value)?.canonical ?? value) : value
+      else
+        normalized[key] =
+          key === "symbol" && typeof value === "string" ? (resolveSymbol(value)?.canonical ?? value) : value
       continue
     }
     if (value !== undefined && value !== null) {
@@ -186,7 +196,8 @@ export function missingRequiredNewSaveConfigFields(config: string | undefined | 
   if (typeof parsed.symbol !== "string" || parsed.symbol.trim() === "") missing.push("symbol")
   if (typeof parsed.asset_class !== "string" || parsed.asset_class.trim() === "") missing.push("asset_class")
   if (typeof parsed.interval !== "string" || parsed.interval.trim() === "") missing.push("interval")
-  if (!Number.isInteger(parsed.required_history_bars) || parsed.required_history_bars < 0) missing.push("required_history_bars")
+  if (!Number.isInteger(parsed.required_history_bars) || parsed.required_history_bars < 0)
+    missing.push("required_history_bars")
   if (!isPlainObject(parsed.params) || Object.keys(parsed.params).length === 0) missing.push("params")
 
   return missing
@@ -196,7 +207,13 @@ export function unsupportedNewSaveConfigReasons(config: string | undefined | nul
   const parsed = parseRawObject(config)
   const reasons: string[] = []
 
-  if (typeof parsed.symbol === "string" && parsed.symbol.split(",").map((s) => s.trim()).filter(Boolean).length > 1) {
+  if (
+    typeof parsed.symbol === "string" &&
+    parsed.symbol
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean).length > 1
+  ) {
     reasons.push(
       "symbol must be one tradable symbol, not a comma-separated portfolio; use finny_portfolio_backtest or save one complete strategy per symbol",
     )

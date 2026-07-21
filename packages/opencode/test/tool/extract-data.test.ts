@@ -226,7 +226,9 @@ describe("data_extractor prompt contract", () => {
     expect(PROMPT_DATA_EXTRACTOR).toContain("usable_for_parent: no")
     expect(PROMPT_DATA_EXTRACTOR).toContain("public yfinance equity/ETF `5min` over `3m`")
     expect(PROMPT_DATA_EXTRACTOR).toContain("try Alpaca first")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Do not return `BLOCKED: requested evidence window unavailable` based on yfinance limits alone")
+    expect(PROMPT_DATA_EXTRACTOR).toContain(
+      "Do not return `BLOCKED: requested evidence window unavailable` based on yfinance limits alone",
+    )
   })
 })
 
@@ -289,6 +291,10 @@ describe("data-agent instructions contract", () => {
     const binance = await Bun.file(path.join(skillRoot, "finny-provider-binance/SKILL.md")).text()
     const polygon = await Bun.file(path.join(skillRoot, "finny-provider-polygon/SKILL.md")).text()
     const yfinance = await Bun.file(path.join(skillRoot, "finny-provider-yfinance/SKILL.md")).text()
+    const zerodha = await Bun.file(path.join(skillRoot, "finny-provider-zerodha/SKILL.md")).text()
+    const saxo = await Bun.file(path.join(skillRoot, "finny-provider-saxo/SKILL.md")).text()
+    const questrade = await Bun.file(path.join(skillRoot, "finny-provider-questrade/SKILL.md")).text()
+    const futu = await Bun.file(path.join(skillRoot, "finny-provider-futu/SKILL.md")).text()
 
     expect(alpaca).toContain("name: finny-provider-alpaca")
     expect(alpaca).toContain("ALPACA_API_KEY_ID")
@@ -313,6 +319,14 @@ describe("data-agent instructions contract", () => {
     expect(yfinance).toContain("Yahoo v8 chart HTTP API")
     expect(yfinance).toContain("provider-limit")
     expect(yfinance).toContain("finny_dataset_evidence_finalize")
+    expect(zerodha).toContain("name: finny-provider-zerodha")
+    expect(zerodha).toContain("RELIANCE.NS")
+    expect(saxo).toContain("name: finny-provider-saxo")
+    expect(saxo).toContain("Preserve the requested ticker")
+    expect(questrade).toContain("name: finny-provider-questrade")
+    expect(questrade).toContain("2,000 candles")
+    expect(futu).toContain("name: finny-provider-futu")
+    expect(futu).toContain("page_req_key")
   })
 
   test("commits an env template without concrete secret values", async () => {

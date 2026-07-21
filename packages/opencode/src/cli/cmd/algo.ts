@@ -23,7 +23,11 @@ function print(value: unknown) {
   console.log(JSON.stringify(value, null, 2))
 }
 
-async function readText(text: string | undefined, file: string | undefined, label: string): Promise<string | undefined> {
+async function readText(
+  text: string | undefined,
+  file: string | undefined,
+  label: string,
+): Promise<string | undefined> {
   if (text && file) throw new Error(`Pass either --${label} or --${label}-file, not both`)
   if (text) return text
   if (file) return await Filesystem.readText(file)
@@ -65,7 +69,11 @@ function summarizeValidation(result: Awaited<ReturnType<typeof Validate.run>>) {
   }
 }
 
-function summarizeBacktest(algo: SavedAlgorithm, params: BacktestArgs, result: Awaited<ReturnType<typeof BacktestRunner.run>>) {
+function summarizeBacktest(
+  algo: SavedAlgorithm,
+  params: BacktestArgs,
+  result: Awaited<ReturnType<typeof BacktestRunner.run>>,
+) {
   if (!result.ok) {
     return {
       ok: false,
@@ -119,9 +127,7 @@ function latestAlgorithms(algorithms: SavedAlgorithm[]) {
 
 async function allAlgorithms(algorithms: SavedAlgorithm[]) {
   const versions = await Promise.all(algorithms.map((algorithm) => Algorithm.listVersions(algorithm.algorithmId)))
-  return versions
-    .flat()
-    .sort((a, b) => (b.time_updated - a.time_updated) || (b.version - a.version)) as SavedAlgorithm[]
+  return versions.flat().sort((a, b) => b.time_updated - a.time_updated || b.version - a.version) as SavedAlgorithm[]
 }
 
 async function readOptionalFile(path: string | undefined) {
@@ -296,7 +302,7 @@ const algoAddOptionSpecs = [
     "target-brokerage",
     {
       type: "string",
-      choices: ["alpaca", "binance", "ibkr"] as const,
+      choices: ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"] as const,
       describe: "optional target brokerage metadata",
     },
   ],

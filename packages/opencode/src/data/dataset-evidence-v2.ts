@@ -284,6 +284,15 @@ function calendarReconciliationIssues(evidence: DatasetEvidenceV2, csvText: stri
   if (!evidence.calendar || !evidence.window || !evidence.timestamps || !text(evidence.interval)) return []
   if (evidence.calendar.version !== DATASET_CALENDAR_VERSION)
     return [`calendar.version must be ${DATASET_CALENDAR_VERSION}`]
+  if (evidence.calendar.id === "REGIONAL_PROVIDER_OBSERVED") {
+    const safeResearchOnly =
+      evidence.calendar.session_type === "provider_observed" &&
+      evidence.qualification?.status === "research_only" &&
+      evidence.qualification.reason_codes.includes("REGIONAL_CALENDAR_PROVIDER_OBSERVED")
+    return safeResearchOnly
+      ? []
+      : ["REGIONAL_PROVIDER_OBSERVED evidence must remain research_only with its explicit reason code"]
+  }
   try {
     return reconciliationCountIssues(evidence, reconciledTimestampCounts(evidence, csvText))
   } catch (error) {

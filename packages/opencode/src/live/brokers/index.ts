@@ -1,32 +1,34 @@
 import type { AssetClass, BrokerAccount, BrokerCredentials, BrokerKind, BrokerSpec, PythonDep } from "./types"
+import { alpacaSpec, generateAlpacaProviderID, listAlpacaAccounts, readAlpacaCredentials } from "./alpaca"
+import { binanceSpec, generateBinanceProviderID, listBinanceAccounts, readBinanceCredentials } from "./binance"
+import { ibkrSpec, generateIbkrProviderID, listIbkrAccounts, readIbkrCredentials } from "./ibkr"
 import {
-  alpacaSpec,
-  generateAlpacaProviderID,
-  listAlpacaAccounts,
-  readAlpacaCredentials,
-} from "./alpaca"
-import {
-  binanceSpec,
-  generateBinanceProviderID,
-  listBinanceAccounts,
-  readBinanceCredentials,
-} from "./binance"
-import {
-  ibkrSpec,
-  generateIbkrProviderID,
-  listIbkrAccounts,
-  readIbkrCredentials,
-} from "./ibkr"
+  REGIONAL_BROKER_SPECS,
+  generateRegionalProviderID,
+  listRegionalAccounts,
+  readRegionalCredentials,
+} from "./regional"
 
-export type { BrokerAccount, BrokerConnection, BrokerCredentials, BrokerKind, BrokerMode, BrokerSpec, PythonDep } from "./types"
+export type {
+  BrokerAccount,
+  BrokerConnection,
+  BrokerCredentials,
+  BrokerKind,
+  BrokerMode,
+  BrokerSpec,
+  PythonDep,
+} from "./types"
+export { BROKER_KINDS } from "./types"
 export { ALPACA_PROVIDER_PREFIX } from "./alpaca"
 export { BINANCE_PROVIDER_PREFIX } from "./binance"
 export { IBKR_PROVIDER_PREFIX } from "./ibkr"
+export { futuSpec, questradeSpec, saxoSpec, zerodhaSpec } from "./regional"
 
 const SPECS: Record<BrokerKind, BrokerSpec> = {
   alpaca: alpacaSpec,
   binance: binanceSpec,
   ibkr: ibkrSpec,
+  ...REGIONAL_BROKER_SPECS,
 }
 
 export namespace BrokerRegistry {
@@ -53,6 +55,9 @@ export namespace BrokerRegistry {
     if (kind === "alpaca") return generateAlpacaProviderID()
     if (kind === "binance") return generateBinanceProviderID()
     if (kind === "ibkr") return generateIbkrProviderID()
+    if (kind === "zerodha" || kind === "saxo" || kind === "questrade" || kind === "futu") {
+      return generateRegionalProviderID(kind)
+    }
     throw new Error(`generateProviderID not implemented for ${kind}`)
   }
 
@@ -61,6 +66,10 @@ export namespace BrokerRegistry {
     if (!kind || kind === "alpaca") all.push(...(await listAlpacaAccounts()))
     if (!kind || kind === "binance") all.push(...(await listBinanceAccounts()))
     if (!kind || kind === "ibkr") all.push(...(await listIbkrAccounts()))
+    if (!kind || kind === "zerodha") all.push(...(await listRegionalAccounts("zerodha")))
+    if (!kind || kind === "saxo") all.push(...(await listRegionalAccounts("saxo")))
+    if (!kind || kind === "questrade") all.push(...(await listRegionalAccounts("questrade")))
+    if (!kind || kind === "futu") all.push(...(await listRegionalAccounts("futu")))
     return all
   }
 
@@ -70,6 +79,9 @@ export namespace BrokerRegistry {
     if (kind === "alpaca") return readAlpacaCredentials(providerID)
     if (kind === "binance") return readBinanceCredentials(providerID)
     if (kind === "ibkr") return readIbkrCredentials(providerID)
+    if (kind === "zerodha" || kind === "saxo" || kind === "questrade" || kind === "futu") {
+      return readRegionalCredentials(kind, providerID)
+    }
     return null
   }
 

@@ -5,11 +5,11 @@ import { LocalAlgorithmStore, type AlgorithmDocsMode } from "../storage/local/al
 import { DeviceProfile } from "../device"
 import { Log } from "../util/log"
 import { emit } from "../analytics/emit"
-import type { BrokerKind } from "@/live/brokers"
+import { BROKER_KINDS, type BrokerKind } from "@/live/brokers/types"
 import { normalizeConfigForSave } from "./strategy-params"
 
 const log = Log.create({ service: "algorithm" })
-const BrokerKindSchema = z.enum(["alpaca", "binance", "ibkr"])
+const BrokerKindSchema = z.enum(BROKER_KINDS)
 
 export namespace Algorithm {
   export const Info = z.object({
@@ -125,9 +125,7 @@ export namespace Algorithm {
       time_created = existing.time_created
       status = existing.status ?? "draft"
       if (!input.docsMode) {
-        throw new DocsModeRequiredError(
-          `Version saves for "${input.name}" require docsMode: "inherit" or "replace".`,
-        )
+        throw new DocsModeRequiredError(`Version saves for "${input.name}" require docsMode: "inherit" or "replace".`)
       }
       if (
         input.docsMode === "inherit" &&
@@ -162,7 +160,8 @@ export namespace Algorithm {
       riskContract: input.riskContract,
       docsMode: input.saveMode === "new" ? "replace" : input.docsMode,
       brokerKind: input.brokerKind ?? (input.saveMode === "version" ? (existing as any)?.brokerKind : undefined),
-      targetBrokerage: input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
+      targetBrokerage:
+        input.targetBrokerage ?? (input.saveMode === "version" ? (existing as any)?.targetBrokerage : undefined),
       time_created,
       time_updated: now,
     })) as Info

@@ -8,6 +8,10 @@ const TARGET_BROKER_LABEL_TO_KIND: Record<string, BrokerKind> = {
   alpaca: "alpaca",
   binance: "binance",
   ibkr: "ibkr",
+  zerodha: "zerodha",
+  saxo: "saxo",
+  questrade: "questrade",
+  futu: "futu",
 }
 
 export type PolicyErrorCode =
@@ -29,7 +33,10 @@ export function isOptionSymbol(symbol: string): boolean {
 }
 
 export function optionUnderlying(symbol: string): string | null {
-  const match = String(symbol || "").trim().toUpperCase().match(OPTION_RE)
+  const match = String(symbol || "")
+    .trim()
+    .toUpperCase()
+    .match(OPTION_RE)
   return match ? match[1] : null
 }
 
@@ -84,7 +91,10 @@ export function validateSymbolForBroker(symbol: string, brokerKind: BrokerKind):
   }
 }
 
-export function validateOptionProxyMutation(previousSymbol: string | undefined, nextSymbol: string | undefined): PolicyValidation {
+export function validateOptionProxyMutation(
+  previousSymbol: string | undefined,
+  nextSymbol: string | undefined,
+): PolicyValidation {
   if (previousSymbol && isOptionSymbol(previousSymbol) && nextSymbol && !isOptionSymbol(nextSymbol)) {
     return {
       ok: false,
@@ -98,7 +108,10 @@ export function validateOptionProxyMutation(previousSymbol: string | undefined, 
   return { ok: true, assetClass: nextSymbol ? detectSymbolAssetClass(nextSymbol) : null }
 }
 
-export function validateAssetClassConsistency(symbol: string | undefined, assetClass: string | undefined): PolicyValidation {
+export function validateAssetClassConsistency(
+  symbol: string | undefined,
+  assetClass: string | undefined,
+): PolicyValidation {
   if (!symbol || !assetClass) return { ok: true, assetClass: symbol ? detectSymbolAssetClass(symbol) : null }
   const detected = detectSymbolAssetClass(symbol)
   if (assetClass === "option" && detected !== "option") {

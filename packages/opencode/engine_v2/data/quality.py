@@ -401,6 +401,16 @@ def _expected_timestamp_set(
 ) -> tuple[pd.DatetimeIndex, str, str, str]:
     from .calendars import CALENDAR_VERSION, ExpectedTimestampRequest, default_calendar_policy, expected_timestamps
 
+    # Regional listings are deliberately provider-observed for now. Their
+    # exchange holiday and half-day schedules are not yet implemented in the
+    # strict calendar registry, so using XNYS here would fabricate missing or
+    # extra bars. This mode validates schema, ordering, OHLC, duplicates and
+    # outliers while remaining non-promotable via AssetSpec.productionEligible.
+    regional_calendars = {"XNSE", "XBOM", "XTSE", "XTSX", "XEUR", "XHKG", "XSHG", "XSHE"}
+    if calendar_id and calendar_id.upper() in regional_calendars:
+        observed = pd.DatetimeIndex(ts).drop_duplicates().sort_values()
+        return observed, calendar_id.upper(), "provider-observed-v1", "provider_observed"
+
     policy = default_calendar_policy(asset_class, session_type)
     start = requested_start or ts.iloc[0].date().isoformat()
     end = requested_end or ts.iloc[-1].date().isoformat()

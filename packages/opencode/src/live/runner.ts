@@ -703,6 +703,11 @@ if __name__ == "__main__":
     }
 
     const spec = BrokerRegistry.getSpec(brokerKind)
+    if (spec.executionSupport === "data_only") {
+      throw new StartRejectedError(
+        `${spec.displayName} is available for exact-ticker research, data extraction, and backtesting, but its order-execution adapter has not been audited. Regional execution remains disabled.`,
+      )
+    }
 
     // Fast pre-check: credentials must be present before we promise a run.
     const creds = await BrokerRegistry.readCredentials(params.accountProviderID)

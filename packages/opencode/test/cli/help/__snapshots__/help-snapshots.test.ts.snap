@@ -912,7 +912,7 @@ Options:
       --docs-mode           required for version saves: inherit or replace versioned documents
                                                             [string] [choices: "inherit", "replace"]
       --target-brokerage    optional target brokerage metadata
-                                                     [string] [choices: "alpaca", "binance", "ibkr"]
+             [string] [choices: "alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"]
       --validate            validate immediately after saving             [boolean] [default: false]
       --backtest            run a backtest immediately after saving       [boolean] [default: false]
       --duration            backtest duration when --backtest is used       [string] [default: "3m"]

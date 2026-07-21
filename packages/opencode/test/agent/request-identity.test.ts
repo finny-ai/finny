@@ -102,9 +102,9 @@ describe("parseRequestFacts", () => {
     expect(parseRequestFacts("Review AI SEMI leadership without choosing a symbol").requested_symbol).toBeUndefined()
   })
 
-  test("uses the ticker rather than the exchange code in exchange-qualified symbols", () => {
+  test("preserves the exact listing in exchange-qualified regional symbols", () => {
     const facts = parseRequestFacts("Build a daily swing strategy for Kraken Robotics (TSXV:PNG).")
-    expect(facts.requested_symbol).toBe("PNG")
+    expect(facts.requested_symbol).toBe("PNG.V")
     expect(facts.requested_asset_class).toBe("equity")
   })
 

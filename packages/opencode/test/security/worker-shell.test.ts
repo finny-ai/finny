@@ -28,6 +28,10 @@ describe("worker shell environment policy", () => {
     expect(listWorkerDataCredentialKeys()).toContain("ALPACA_API_KEY_ID")
     expect(listWorkerDataCredentialKeys()).toContain("ALPACA_DATA_FEED")
     expect(listWorkerDataCredentialKeys()).toContain("BINANCE_BASE_URL")
+    expect(listWorkerDataCredentialKeys()).toContain("KITE_ACCESS_TOKEN")
+    expect(listWorkerDataCredentialKeys()).toContain("SAXO_ACCESS_TOKEN")
+    expect(listWorkerDataCredentialKeys()).toContain("QUESTRADE_ACCESS_TOKEN")
+    expect(listWorkerDataCredentialKeys()).toContain("FUTU_HOST")
     // Trading secrets and LLM keys must never appear in the data registry.
     expect(listWorkerDataCredentialKeys()).not.toContain("BINANCE_API_KEY")
     expect(listWorkerDataCredentialKeys()).not.toContain("OPENAI_API_KEY")
@@ -69,17 +73,35 @@ describe("worker shell environment policy", () => {
       POLYGON_API_KEY: "polygon-secret",
       BINANCE_API_KEY: "binance-secret",
       BINANCE_BASE_URL: "https://data-api.binance.vision",
+      KITE_API_KEY: "kite-id",
+      KITE_ACCESS_TOKEN: "kite-secret",
     }
-    const equity = workerShellEnv({ agent: "data_extractor", env, request: { requested_asset_class: "equity" } })
+    const equity = workerShellEnv({
+      agent: "data_extractor",
+      env,
+      request: { requested_asset_class: "equity", requested_symbol: "RELIANCE.NS" },
+    })
     expect(equity).toMatchObject({
       ALPACA_API_KEY_ID: "alpaca-id",
       ALPACA_API_SECRET_KEY: "alpaca-secret",
       ALPACA_DATA_FEED: "iex",
       POLYGON_API_KEY: "polygon-secret",
       BINANCE_BASE_URL: "https://data-api.binance.vision",
+      KITE_API_KEY: "kite-id",
+      KITE_ACCESS_TOKEN: "kite-secret",
     })
     expect(equity.BINANCE_API_KEY).toBeUndefined()
+    expect(equity.KITE_API_KEY).toBe("kite-id")
+    expect(equity.KITE_ACCESS_TOKEN).toBe("kite-secret")
     expect(dataCredentialKeysForAsset("equity").has("ALPACA_DATA_FEED")).toBe(true)
+
+    const canada = workerShellEnv({
+      agent: "data_extractor",
+      env,
+      request: { requested_asset_class: "equity", requested_symbol: "SHOP.TO" },
+    })
+    expect(canada.KITE_API_KEY).toBeUndefined()
+    expect(canada.KITE_ACCESS_TOKEN).toBeUndefined()
 
     const crypto = workerShellEnv({ agent: "data_extractor", env, request: { requested_asset_class: "crypto" } })
     expect(crypto.BINANCE_BASE_URL).toBe("https://data-api.binance.vision")
@@ -88,6 +110,7 @@ describe("worker shell environment policy", () => {
     expect(crypto.ALPACA_DATA_FEED).toBeUndefined()
     expect(crypto.POLYGON_API_KEY).toBeUndefined()
     expect(crypto.BINANCE_API_KEY).toBeUndefined()
+    expect(crypto.KITE_ACCESS_TOKEN).toBeUndefined()
   })
 
   test("unknown asset class does not unlock equity credentials", () => {
@@ -120,7 +143,7 @@ describe("worker shell environment policy", () => {
       "node -e 'console.log(JSON.stringify(process.env))'",
       "ruby -e 'puts ENV.to_h'",
       "python -c 'import subprocess; print(subprocess.check_output([\"env\"]))'",
-      "node -e 'require(\"child_process\").execSync(\"printenv\")'",
+      'node -e \'require("child_process").execSync("printenv")\'',
     ]
     for (const command of attacks) {
       expect(() => assertNoWorkerEnvironmentEnumeration({ agent: "data_extractor", command })).toThrow(

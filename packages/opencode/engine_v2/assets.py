@@ -12,6 +12,29 @@ AssetClass = str
 _OPTION_RE = re.compile(r"^[A-Z]{1,6}/\d{8}/\d+(?:\.\d+)?[CP]$", re.IGNORECASE)
 CRYPTO_BASES = {"BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"}
 
+REGIONAL_EQUITY_SPECS = {
+    ".NS": {"venue": "NSE", "currency": "INR", "calendar": "XNSE", "tickSize": 0.05, "lotSize": 1.0, "dataProvider": "zerodha"},
+    ".BO": {"venue": "BSE", "currency": "INR", "calendar": "XBOM", "tickSize": 0.05, "lotSize": 1.0, "dataProvider": "zerodha"},
+    ".TO": {"venue": "TSX", "currency": "CAD", "calendar": "XTSE", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "questrade"},
+    ".V": {"venue": "TSXV", "currency": "CAD", "calendar": "XTSX", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "questrade"},
+    ".AS": {"venue": "AEX", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".BR": {"venue": "EBR", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".DE": {"venue": "XETRA", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".L": {"venue": "LSE", "currency": "GBP", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".MC": {"venue": "BME", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".MI": {"venue": "BIT", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".PA": {"venue": "EPA", "currency": "EUR", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".SW": {"venue": "SIX", "currency": "CHF", "calendar": "XEUR", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "saxo"},
+    ".HK": {"venue": "HKEX", "currency": "HKD", "calendar": "XHKG", "tickSize": 0.01, "lotSize": 1.0, "dataProvider": "futu"},
+    ".SS": {"venue": "SSE", "currency": "CNY", "calendar": "XSHG", "tickSize": 0.01, "lotSize": 100.0, "dataProvider": "futu"},
+    ".SZ": {"venue": "SZSE", "currency": "CNY", "calendar": "XSHE", "tickSize": 0.01, "lotSize": 100.0, "dataProvider": "futu"},
+}
+
+
+def regional_equity_spec(symbol: str) -> Optional[Dict[str, Any]]:
+    upper = str(symbol).strip().upper()
+    return next((spec for suffix, spec in REGIONAL_EQUITY_SPECS.items() if upper.endswith(suffix)), None)
+
 # Roots accepted as futures in backtest. yfinance serves these as e.g. "ES=F";
 # IBKR live uses "ES/202612" or "ES/CONT". Canonical in config is the bare root.
 FUTURES_SPECS: Dict[str, Dict[str, Any]] = {
@@ -121,6 +144,8 @@ def normalize_asset_class(value: Any, symbol: str) -> AssetClass:
     if raw in {"crypto_spot", "crypto_perp", "equity", "future", "fx", "option"}:
         return raw
     sym = str(symbol).upper()
+    if regional_equity_spec(sym) is not None:
+        return "equity"
     if _OPTION_RE.match(sym):
         return "option"
     if is_futures_root(sym):
@@ -219,5 +244,10 @@ def _defaults(asset_class: AssetClass, symbol: str, exec_cfg: Dict[str, Any]) ->
                 "dataProvider": "synthetic_options",
                 "productionEligible": False,
                 "blockingReason": "Options remain experimental and are not production-eligible in engine_v2."}
+    regional = regional_equity_spec(symbol)
+    if asset_class == "equity" and regional is not None:
+        return {**common, **regional, "assetClass": "equity", "multiplier": 1.0,
+                "productionEligible": False,
+                "blockingReason": "Regional equities are research-only until exchange-grade calendar coverage and broker execution are audited."}
     return {**common, "assetClass": "equity", "venue": "equity", "calendar": "US_EQUITIES",
             "tickSize": 0.01, "lotSize": 1.0, "multiplier": 1.0, "productionEligible": True}

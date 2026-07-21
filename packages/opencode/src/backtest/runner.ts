@@ -1977,6 +1977,19 @@ if __name__ == "__main__":
         return 6.5 * 60
       case "US_FUTURES":
         return 23 * 60
+      case "XNSE":
+      case "XBOM":
+        return 6.25 * 60
+      case "XTSE":
+      case "XTSX":
+        return 6.5 * 60
+      case "XEUR":
+        return 8.5 * 60
+      case "XHKG":
+        return 5.5 * 60
+      case "XSHG":
+      case "XSHE":
+        return 4 * 60
       default:
         return null
     }

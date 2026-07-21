@@ -30,6 +30,52 @@ const priceBasis = {
 }
 
 describe("DatasetEvidenceV2 builder", () => {
+  test("keeps regional exact-ticker evidence research-usable without pretending it is XNYS-qualified", () => {
+    const regionalRequest = {
+      ...request,
+      request_id: "request-shop-tsx",
+      requested_algorithm_name: "shop-tsx-daily",
+      requested_symbol: "SHOP.TO",
+      requested_asset_class: "equity" as const,
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-15",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-13T00:00:00Z,100,105,99,104,1000",
+      "2026-07-14T00:00:00Z,104,108,103,107,1200",
+      "2026-07-15T00:00:00Z,107,110,106,109,900",
+    ].join("\n")
+    const csvBytes = Buffer.from(csvText)
+    const built = buildDatasetEvidenceV2({
+      csvBytes,
+      csvText,
+      request: regionalRequest,
+      workspaceSlug: "shop-tsx-daily.1.1.00.00",
+      outputPath: "stock/SHOP.TO_1d_2026-07-13_2026-07-15.csv",
+      provider: { id: "questrade", feed: "markets-candles", venue: "TSX", providerSymbol: "SHOP" },
+      priceBasis,
+      now: new Date("2026-07-16T12:00:00Z"),
+    })
+
+    expect(built.manifest.instrument.canonical_symbol).toBe("SHOP.TO")
+    expect(built.manifest.calendar).toMatchObject({
+      id: "REGIONAL_PROVIDER_OBSERVED",
+      timezone: "America/Toronto",
+      session_type: "provider_observed",
+    })
+    expect(built.manifest.qualification).toEqual({
+      status: "research_only",
+      reason_codes: ["REGIONAL_CALENDAR_PROVIDER_OBSERVED"],
+    })
+    expect(built.manifest.coverage).toBe("provider_observed")
+    expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(built.manifest.strict_backtest_eligible).toBe("no")
+    expect(
+      validateDatasetEvidenceV2({ manifest: built.manifest, csvBytes, csvText, csvFacts: built.csvFacts }),
+    ).toEqual([])
+  })
+
   test("builds a validator-clean manifest and classifies today's open daily candle", () => {
     const csvText = [
       "timestamp,open,high,low,close,volume",
@@ -139,10 +185,7 @@ describe("DatasetEvidenceV2 builder", () => {
   })
 
   test("rejects malformed rows instead of blessing a broken manifest", () => {
-    const csvText = [
-      "timestamp,open,high,low,close,volume",
-      "2026-07-13T00:00:00Z,100,99,101,104,1000",
-    ].join("\n")
+    const csvText = ["timestamp,open,high,low,close,volume", "2026-07-13T00:00:00Z,100,99,101,104,1000"].join("\n")
     expect(() =>
       buildDatasetEvidenceV2({
         csvBytes: Buffer.from(csvText),
