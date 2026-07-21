@@ -72,6 +72,10 @@ export function normalizeSymbol(input?: string): string | undefined {
   // symbol, e.g. "BTC (BTCUSDT spot)". The identity comparison should use the
   // tradeable token, not the explanatory suffix.
   s = s.replace(/\s+\([^)]*\)\s*$/, "")
+  // Regional exchange suffixes are part of the exact listing identity.
+  if (/^[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)$/.test(s)) {
+    return s.replace(/\s+/g, "")
+  }
   // Strip common quote-currency suffixes and pair separators.
   s = s.replace(/[\s_]+/g, "")
   s = s.replace(/[./\-]?(USDT|USDC|USD|PERP)$/i, "")
@@ -292,6 +296,12 @@ const EXPLICIT_SYMBOL_RES: Array<{
   rejectAmbiguousUnknown?: boolean
   capture?: number
 }> = [
+  {
+    // Bare regional listings such as RELIANCE.NS must bind as one ticker.
+    re: /\b([A-Za-z0-9][A-Za-z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))\b/gi,
+    score: 140,
+    allowUnknown: true,
+  },
   {
     // Exchange-qualified regional tickers bind to the full listing identity.
     re: /\b((?:NSE|BSE|TSXV|TSX|CSE|XETRA|LSE|SSE|SZSE|HKEX|NASDAQ|NYSE|AMEX)\s*:\s*[A-Za-z0-9.&-]{1,30})/gi,

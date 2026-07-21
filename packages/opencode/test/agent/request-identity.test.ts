@@ -65,6 +65,14 @@ describe("request identity proposals", () => {
 })
 
 describe("parseRequestFacts", () => {
+  test("preserves a bare regional listing with its exchange suffix", () => {
+    expect(parseRequestFacts("RELIANCE.NS 1hr")).toMatchObject({
+      requested_symbol: "RELIANCE.NS",
+      requested_interval: "1h",
+      requested_asset_class: "equity",
+    })
+  })
+
   test("parses terse ticker and compact minute requests", () => {
     expect(parseRequestFacts("VFV 15min")).toMatchObject({
       requested_symbol: "VFV",
