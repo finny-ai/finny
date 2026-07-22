@@ -41,6 +41,58 @@ const request = {
 }
 
 describe("finny_dataset_evidence_finalize", () => {
+  test("uses the requested regional exchange calendar for RELIANCE.NS", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-dsv2-regional-finalizer-"))
+    roots.push(root)
+    const dataRoot = path.join(root, "data")
+    await fs.mkdir(path.join(dataRoot, "stock"), { recursive: true })
+    const csvPath = "stock/RELIANCE.NS_1h_2026-07-13_2026-07-15.csv"
+    await fs.writeFile(
+      path.join(dataRoot, csvPath),
+      [
+        "timestamp,open,high,low,close,volume",
+        "2026-07-13T03:45:00Z,100,105,99,104,1000",
+        "2026-07-14T03:45:00Z,104,108,103,107,1200",
+        "2026-07-15T03:45:00Z,107,110,106,109,900",
+      ].join("\n"),
+    )
+    const result = await finalizeDatasetEvidenceFile({
+      dataRoot,
+      csvPath,
+      request: {
+        ...request,
+        request_id: "request-reliance-hourly",
+        requested_algorithm_name: "reliance-hourly",
+        requested_symbol: "RELIANCE.NS",
+        requested_asset_class: "equity",
+        requested_interval: "1h",
+      },
+      workspaceSlug: "reliance-hourly.1.1.00.00",
+      provider: { id: "yahoo", feed: "chart", venue: "NSE", providerSymbol: "RELIANCE.NS" },
+      priceBasis: {
+        basis: "adjusted" as const,
+        split_treatment: "provider_adjusted",
+        dividend_treatment: "provider_adjusted",
+        corporate_action_status: "provider_adjusted",
+        events: [],
+      },
+      now: new Date("2026-07-16T00:00:00Z"),
+    })
+
+    expect(result.manifest.calendar).toMatchObject({
+      id: "REGIONAL_PROVIDER_OBSERVED",
+      timezone: "Asia/Kolkata",
+      session_type: "provider_observed",
+    })
+    expect(result.manifest.instrument.canonical_symbol).toBe("RELIANCE.NS")
+    expect(result.manifest.qualification).toEqual({
+      status: "research_only",
+      reason_codes: ["REGIONAL_CALENDAR_PROVIDER_OBSERVED"],
+    })
+    expect(result.manifest.usable_for_parent).toBe("yes")
+    expect(result.manifest.strict_backtest_eligible).toBe("no")
+  })
+
   test("atomically creates the canonical sibling manifest and digest", async () => {
     const { dataRoot, csvPath } = await fixture()
     const result = await finalizeDatasetEvidenceFile({
