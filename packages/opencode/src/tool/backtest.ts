@@ -40,7 +40,7 @@ import {
   failActiveWorkflowBacktest,
   failWorkflowBacktest,
   pendingEvidenceRequirements,
-  recordVerifiedMarketData,
+  recordVerifiedMarketDataSet,
   recordWorkflowAttempt,
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
@@ -94,6 +94,19 @@ export function experimentInputForBacktest(input: {
       .digest("hex")
       .slice(0, 24)}`,
   }
+}
+
+export function backtestDataSourceSummary(input: {
+  kind: BacktestRunner.BacktestDataSource["kind"]
+  qualification?: string
+}): string {
+  if (input.kind === "provider_fetch") {
+    return "Data source: provider fetch (research-only; evidence is optional, qualification/promotion disabled)"
+  }
+  if (input.qualification === "strict_qualified") {
+    return "Data source: verified data_extractor artifact (strict qualification eligible)"
+  }
+  return `Data source: verified data_extractor artifact (${input.qualification ?? "unqualified"}; research-only, qualification/promotion disabled)`
 }
 
 export function resolveBoundBacktestDates(input: {
@@ -690,7 +703,7 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
 
         if (evidence.ok) {
           const evidencedWorkflow = await runWorkflow(
-            recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }),
+            recordVerifiedMarketDataSet({ sessionId: ctx.sessionID, datasets: evidence.datasets }),
           )
           if (evidencedWorkflow) workflow = evidencedWorkflow
         }
@@ -985,9 +998,10 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           `Duration: ${params.duration}` +
             (effectiveStartDate && effectiveEndDate ? ` (${effectiveStartDate} → ${effectiveEndDate})` : "") +
             ` | Interval: ${params.interval} | Capital: $${params.capital}`,
-          evidence.ok
-            ? `Data source: verified data_extractor artifact (strict qualification eligible)`
-            : `Data source: provider fetch (research-only; evidence is optional, qualification/promotion disabled)`,
+          backtestDataSourceSummary({
+            kind: dataSource.kind,
+            qualification: evidence.ok ? evidence.dataset.identity.qualification : undefined,
+          }),
           !evidence.ok && pendingEvidence.length > 0
             ? `Optional evidence caveat: ${pendingEvidence.join(" | ")}`
             : null,

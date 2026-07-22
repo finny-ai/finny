@@ -19,11 +19,10 @@ import {
 } from "../algorithm/strategy-params"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import { Database } from "@opencode-ai/core/database/database"
-import { StrategyContext } from "@/task/strategy-context"
 import {
   activeWorkflowForSession,
   ensureWorkflowCandidate,
-  recordVerifiedMarketData,
+  recordVerifiedMarketDataSet,
   recordWorkflowAttempt,
 } from "@/algorithm/build-workflow/lifecycle"
 
@@ -168,6 +167,21 @@ export function bindMissionRiskContract(config: string | undefined, mission: str
   return JSON.stringify({ ...parsed, risk_contract: riskContract })
 }
 
+export function effectiveSaveConfig(input: {
+  incoming?: string
+  previous?: string
+  mission?: string
+}): string | undefined {
+  return bindMissionRiskContract(
+    normalizeConfigForSave({
+      incoming: input.incoming,
+      previous: input.previous,
+      preserveExecution: input.previous !== undefined,
+    }),
+    input.mission,
+  )
+}
+
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`
   if (value && typeof value === "object") {
@@ -240,16 +254,19 @@ export function _resetSavePreflightGuardForTests(): void {
 }
 
 export function validationWarningsBlock(warnings: Validate.Diagnostic[]) {
-  const blockers = warnings.filter((warning) => Validate.diagnosticDisposition(warning) === "blocking")
-  if (blockers.length === 0) return undefined
+  if (warnings.length === 0) return undefined
   return {
     title: "Failed to save strategy",
-    output: RetryOrchestrator.formatSaveFailure(blockers),
+    output: [
+      "Failed to save strategy: validator warnings must be cleared before save/backtest.",
+      RetryOrchestrator.formatWarningRejection(warnings),
+      "Fix: correct every warning, then call finny_algorithm_save again with the corrected strategy.",
+    ].join("\n\n"),
     metadata: {
       blocked: true,
       retry: true,
-      diagnosticCount: blockers.length,
-      diagnosticCodes: blockers.map((w) => w.code),
+      diagnosticCount: warnings.length,
+      diagnosticCodes: warnings.map((warning) => warning.code),
     },
   }
 }
@@ -445,30 +462,23 @@ export const AlgorithmSaveTool = Tool.define(
       parameters,
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {
-          const pendingContext = yield* Effect.promise(() =>
-            StrategyContext.pendingTasks(ctx.sessionID, database, ctx.messages),
-          )
-          if (pendingContext.length > 0) {
-            return {
-              title: "Save waiting for strategy context",
-              output: StrategyContext.blockedOutput("Strategy save", pendingContext),
-              metadata: {
-                blocked: true,
-                retry: false,
-                pendingContext: pendingContext.map((task) => `${task.subagentType}:${task.id}`),
-              },
-            }
-          }
           // Resolve and validate all document/config-only save inputs before
           // registering a durable candidate fingerprint. These checks do not
           // inspect strategy code and a caller must be able to correct only
           // docsMode/docsInput and retry the identical code/config. Recording
           // the attempt first poisoned that unsaved fingerprint as terminal.
           const documents = resolveSaveDocuments(params)
-          const normalizedConfig = bindMissionRiskContract(
-            normalizeConfigForSave({ incoming: params.config }),
-            documents.mission,
-          )
+          const previousAlgorithm =
+            params.saveMode === "version" ? yield* Effect.promise(() => Algorithm.get(params.name)) : undefined
+          // Validate the exact merged config Algorithm.save will persist. A
+          // version patch can omit inherited risk_contract fields; validating
+          // only the incoming patch let save pass and backtest reject the same
+          // version moments later.
+          const normalizedConfig = effectiveSaveConfig({
+            incoming: params.config,
+            previous: previousAlgorithm?.config,
+            mission: documents.mission,
+          })
           const missionRiskContract = Mission.riskContract(documents.mission)
           const normalizedRiskContract = missionRiskContract
             ? `${JSON.stringify(missionRiskContract, null, 2)}\n`
@@ -608,7 +618,9 @@ export const AlgorithmSaveTool = Tool.define(
 
               const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
               let workflow = evidence.ok
-                ? await runWorkflow(recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }))
+                ? await runWorkflow(
+                    recordVerifiedMarketDataSet({ sessionId: ctx.sessionID, datasets: evidence.datasets }),
+                  )
                 : await runWorkflow(activeWorkflowForSession(ctx.sessionID))
 
               // Environment hard-stop #1: Python isn't installed at all. Probe

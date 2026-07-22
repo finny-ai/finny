@@ -10,8 +10,17 @@ describe("finny workspace context helpers", () => {
       "Extract market data for AAPL 5min for a 3-month backtest window.",
       new Date("2026-06-16T15:00:00Z"),
     )
-    expect(window.start).toBe("2026-03-18")
-    expect(window.end).toBe("2026-06-16")
+    expect(window.start).toBe("2026-03-15")
+    expect(window.end).toBe("2026-06-15")
+  })
+
+  test("uses the same completed-session calendar window that workspace preparation uses", () => {
+    expect(
+      inferBacktestWindow(
+        "Build a META equity strategy every 1hr for 6 months or longer.",
+        new Date("2026-07-22T07:33:00Z"),
+      ),
+    ).toEqual({ start: "2026-01-21", end: "2026-07-21" })
   })
 
   test("prefers explicit ISO dates over relative duration", () => {
@@ -28,7 +37,7 @@ describe("finny workspace context helpers", () => {
       "Build an SPY 15m strategy using a 2y backtest window.",
       new Date("2026-07-10T15:00:00Z"),
     )
-    expect(window).toEqual({ start: "2024-07-10", end: "2026-07-10" })
+    expect(window).toEqual({ start: "2024-07-09", end: "2026-07-09" })
   })
 
   test("accepts a hyphenated two-year window", () => {

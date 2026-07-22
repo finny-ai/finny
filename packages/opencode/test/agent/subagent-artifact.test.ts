@@ -99,6 +99,22 @@ describe("renderSubagentArtifactPointer", () => {
     expect(await renderSubagentArtifactPointer("sec_agent", slug)).toBe("")
   })
 
+  test("points at sentiment artifacts for workflow evidence admission", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-subagent-sentiment-"))
+    process.env.XDG_DATA_HOME = root
+    const slug = "meta-1h-sentiment"
+    const sentimentDir = path.join(root, "finny", "algos", slug, "data", "sentiment")
+    await fs.mkdir(sentimentDir, { recursive: true })
+    await fs.writeFile(
+      path.join(sentimentDir, "META_2026-01-21_2026-07-21_sentiment.manifest.json"),
+      JSON.stringify({ usable_for_parent: "yes" }),
+    )
+
+    const pointer = await renderSubagentArtifactPointer("sentiment_agent", slug)
+    expect(pointer).toContain('<subagent-artifact agent="sentiment_agent">')
+    expect(pointer).toContain("data/sentiment/META_2026-01-21_2026-07-21_sentiment.manifest.json")
+  })
+
   test("returns empty string for an untracked subagent type", async () => {
     expect(await renderSubagentArtifactPointer("data_extractor", "any-slug")).toBe("")
   })

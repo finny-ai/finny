@@ -766,6 +766,7 @@ with open("_data_provider.txt", "w") as f:
     prepareBacktestData,
     attachDataSourceProvenance,
     hasProductRiskContract,
+    markNonPromotableStrictRun,
     ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
   } as {
     parseResults: typeof parseResults
@@ -774,6 +775,7 @@ with open("_data_provider.txt", "w") as f:
     prepareBacktestData: typeof prepareBacktestData
     attachDataSourceProvenance: typeof attachDataSourceProvenance
     hasProductRiskContract: typeof hasProductRiskContract
+    markNonPromotableStrictRun: typeof markNonPromotableStrictRun
     ENGINE_VERSION: string
   }
 
@@ -2380,6 +2382,37 @@ if __name__ == "__main__":
     )
   }
 
+  /**
+   * A strict-engine execution still needs a traceable ID when its dataset or
+   * risk contract makes it non-promotable. The ID records the completed
+   * research run; runKind and eligibilityStatus prevent it from being treated
+   * as an immutable product run or paper-trading evidence.
+   */
+  function markNonPromotableStrictRun(input: {
+    results: Results
+    runId: string
+    dataSource: BacktestDataSource
+    verifiedQualification?: string
+    dataQualityMode: "strict" | "repair_outliers"
+    hasProductRiskContract: boolean
+  }): void {
+    input.results.runId = input.runId
+    input.results.runKind = "legacy"
+    input.results.eligibilityStatus = "backtested"
+    if (!input.results.v2) return
+    input.results.v2.run_metadata = {
+      ...(input.results.v2.run_metadata ?? {}),
+      product_eligibility_blockers: [
+        ...(input.dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
+        ...(input.dataSource.kind === "verified_artifact" && input.verifiedQualification !== "strict_qualified"
+          ? [`verified_dataset_${input.verifiedQualification ?? "unqualified"}`]
+          : []),
+        ...(!input.hasProductRiskContract ? ["schema_v4_risk_contract_required"] : []),
+        ...(input.dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
+      ],
+    }
+  }
+
   async function persistStrictRunArtifacts(input: {
     tmpDir: string
     runId: string
@@ -3043,19 +3076,14 @@ if __name__ == "__main__":
           // for research, but they do not produce an immutable product run and
           // can never be promoted. Legacy v3 algorithms without a schema-v4
           // risk contract are also fail-closed for promotion.
-          results.runKind = "legacy"
-          results.eligibilityStatus = "backtested"
-          results.v2.run_metadata = {
-            ...(results.v2.run_metadata ?? {}),
-            product_eligibility_blockers: [
-              ...(dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
-              ...(dataSource.kind === "verified_artifact" && verifiedQualification !== "strict_qualified"
-                ? [`verified_dataset_${verifiedQualification ?? "unqualified"}`]
-                : []),
-              ...(!hasProductRiskContract(config) ? ["schema_v4_risk_contract_required"] : []),
-              ...(dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
-            ],
-          }
+          markNonPromotableStrictRun({
+            results,
+            runId,
+            dataSource,
+            verifiedQualification,
+            dataQualityMode,
+            hasProductRiskContract: hasProductRiskContract(config),
+          })
         }
         // Strict publication assigns results.artifactDir. Persist the history
         // manifest only afterwards so sourceArtifacts points at immutable

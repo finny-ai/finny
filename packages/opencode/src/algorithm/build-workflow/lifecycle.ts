@@ -11,7 +11,14 @@ import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
 import { experimentRunContext, sha256Text, type ExperimentRunContext } from "./experiment"
 import { backtestIdentityHash } from "./state"
 import { BuildWorkflowStore } from "./store"
-import type { BacktestHashes, BuildWorkflowState, RequestIdentity, WorkflowEvent, WorkflowEventSource } from "./types"
+import type {
+  BacktestHashes,
+  BuildWorkflowState,
+  EvidenceKind,
+  RequestIdentity,
+  WorkflowEvent,
+  WorkflowEventSource,
+} from "./types"
 
 function eventID(prefix: string) {
   return `${prefix}_${crypto.randomUUID()}`
@@ -314,6 +321,20 @@ export const recordVerifiedMarketData = Effect.fn("BuildWorkflowLifecycle.record
   return workflow
 })
 
+/** Record every single-symbol dataset emitted for a request-bound universe. */
+export const recordVerifiedMarketDataSet = Effect.fn("BuildWorkflowLifecycle.recordVerifiedMarketDataSet")(function* (
+  input: {
+    sessionId: string
+    datasets: readonly VerifiedDatasetRef[]
+  },
+) {
+  let workflow: BuildWorkflowState | undefined
+  for (const dataset of input.datasets) {
+    workflow = yield* recordVerifiedMarketData({ sessionId: input.sessionId, dataset })
+  }
+  return workflow
+})
+
 /** Bind a provenance-validated news result to every matching news requirement. */
 export const recordVerifiedNewsEvidence = Effect.fn("BuildWorkflowLifecycle.recordVerifiedNewsEvidence")(function* (input: {
   sessionId: string
@@ -344,6 +365,52 @@ export const recordVerifiedNewsEvidence = Effect.fn("BuildWorkflowLifecycle.reco
           id: `${requirement.id}:${artifactId}`,
           requirementId: requirement.id,
           kind: "news",
+          status: "verified",
+          artifactId,
+          sourceSessionId: input.sourceSessionId,
+          verifiedAt: Date.now(),
+          issues: input.issues ?? [],
+        },
+      },
+      workflow.revision,
+    )
+  }
+  return workflow
+})
+
+/** Bind a completed, request-scoped specialist result to its SEC or sentiment requirement. */
+export const recordVerifiedSpecialistEvidence = Effect.fn(
+  "BuildWorkflowLifecycle.recordVerifiedSpecialistEvidence",
+)(function* (input: {
+  sessionId: string
+  sourceSessionId: string
+  kind: Extract<EvidenceKind, "sec" | "sentiment">
+  artifactText: string
+  issues?: string[]
+}) {
+  let workflow = yield* activeWorkflowForSession(input.sessionId)
+  if (!workflow) return undefined
+  const artifactId = sha256Text(input.artifactText)
+  for (const requirement of workflow.evidenceRequirements.filter((item) => item.kind === input.kind)) {
+    const already = workflow.evidence.some(
+      (item) =>
+        item.requirementId === requirement.id &&
+        item.status === "verified" &&
+        item.artifactId === artifactId &&
+        item.sourceSessionId === input.sourceSessionId,
+    )
+    if (already) continue
+    workflow = yield* appendRequired(
+      workflow.workflowId,
+      {
+        id: eventID("evt_evidence"),
+        type: "evidence.recorded",
+        occurredAt: Date.now(),
+        source: { actor: "subagent" },
+        evidence: {
+          id: `${requirement.id}:${artifactId}`,
+          requirementId: requirement.id,
+          kind: input.kind,
           status: "verified",
           artifactId,
           sourceSessionId: input.sourceSessionId,

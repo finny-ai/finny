@@ -80,4 +80,76 @@ print(json.dumps({"gap_only": gap_only.outlier_bars, "continuous_spike": continu
     expect(result.gap_only).toBe(0)
     expect(result.continuous_spike).toBeGreaterThan(0)
   })
+
+  test("NYSE hourly bars retain their exchange-open anchor and include the closing bucket", async () => {
+    const source = await fs.readFile(path.join(root, "engine_v2/cli.py"), "utf8")
+    const calendars = await fs.readFile(path.join(root, "engine_v2/data/calendars.py"), "utf8")
+
+    expect(source).toContain("positive_deltas.min() >= target_step")
+    expect(source).toContain("breaking exact calendar reconciliation")
+    expect(calendars).toContain('pd.date_range(start, end, freq=step, inclusive="left")')
+
+    const workspacePython = process.env.FINNY_TEST_PYTHON
+    const python = workspacePython
+      ? await Process.run([workspacePython, "-c", "import pandas"], { nothrow: true })
+      : await Process.run(["python3", "-c", "import pandas"], { nothrow: true })
+    if (python.code !== 0) return
+
+    const script = `
+import json
+import pandas as pd
+from engine_v2.cli import _resample
+from engine_v2.data.calendars import ExpectedTimestampRequest, expected_timestamps
+from engine_v2.data.quality import analyze, blocking_reasons
+
+timestamps = pd.to_datetime([
+    "2026-07-20T13:30:00Z", "2026-07-20T14:30:00Z", "2026-07-20T15:30:00Z",
+    "2026-07-20T16:30:00Z", "2026-07-20T17:30:00Z", "2026-07-20T18:30:00Z",
+    "2026-07-20T19:30:00Z",
+], utc=True)
+df = pd.DataFrame({
+    "timestamp": timestamps,
+    "open": range(7), "high": range(7), "low": range(7), "close": range(7), "volume": [1] * 7,
+})
+resampled = _resample(df, "1h")
+expected = expected_timestamps(ExpectedTimestampRequest(
+    "2026-07-20", "2026-07-20", "1h", "equity", "XNYS", "regular",
+))
+legacy_named = expected_timestamps(ExpectedTimestampRequest(
+    "2026-07-20", "2026-07-20", "1h", "equity", "US_EQUITIES", "regular",
+))
+four_days = expected_timestamps(ExpectedTimestampRequest(
+    "2026-07-20", "2026-07-23", "1h", "equity", "US_EQUITIES", "regular",
+))
+partial = pd.DataFrame({
+    "timestamp": four_days.delete(-1),
+    "open": [100] * (len(four_days) - 1), "high": [100] * (len(four_days) - 1),
+    "low": [100] * (len(four_days) - 1), "close": [100] * (len(four_days) - 1),
+    "volume": [1] * (len(four_days) - 1),
+})
+partial_report = analyze(
+    partial, "1h", "equity", requested_start="2026-07-20", requested_end="2026-07-23",
+    calendar_id="US_EQUITIES",
+)
+print(json.dumps({
+    "resampled": [value.isoformat() for value in resampled["timestamp"]],
+    "expected": [value.isoformat() for value in expected],
+    "legacy_named": [value.isoformat() for value in legacy_named],
+    "partial_coverage": partial_report.coverage_pct,
+    "partial_missing": partial_report.missing_timestamp_count,
+    "partial_blocking": blocking_reasons(partial_report, "equity"),
+}))
+`
+    const out = await Process.run([workspacePython || "python3", "-c", script], {
+      env: { PYTHONPATH: root },
+    })
+    const result = JSON.parse(out.stdout.toString())
+    expect(result.resampled).toEqual(result.expected)
+    expect(result.legacy_named).toEqual(result.expected)
+    expect(result.expected).toHaveLength(7)
+    expect(result.expected.at(-1)).toContain("19:30:00")
+    expect(result.partial_coverage).toBeGreaterThan(0.95)
+    expect(result.partial_missing).toBe(1)
+    expect(result.partial_blocking).toEqual([])
+  })
 })

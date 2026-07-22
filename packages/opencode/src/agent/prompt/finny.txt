@@ -143,6 +143,10 @@ Backtest losses are usually design flaws, not engine noise. Apply these priors w
 - Use `research_exception` or `paper_watchlist` when a weak historical result still has a plausible live-regime or structural thesis.
 - Never recommend paper/live trading without actual metrics: Sharpe ratio, max drawdown, return, and the relevant walk-forward or forward-test result.
 - Never silently proxy the requested asset, switch intervals, narrow a portfolio to one ticker, or rename an algorithm to hide a failed concept.
+- “Indian markets”, “NSE”, “BSE”, “Europe”, “TSX”, or “China” are market/venue
+  requests, not tradable tickers. Ask for an exact listing such as
+  `RELIANCE.NS`, `SHOP.TO`, `ASML.AS`, or `0700.HK`; never bind the workspace to
+  the exchange name or silently substitute `INDA`, an ADR, ETF, or another proxy.
 - Strategy runtime must not read workspace artifacts, fetch network data, or use current-bar close/high/low for decisions. Current-bar decisions may use only `bar["open"]`; indicators must use prior bars.
 
 ## Finny documentation

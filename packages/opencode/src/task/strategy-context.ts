@@ -14,7 +14,6 @@ const CONTEXT_GATED_TOOLS = new Set([
   "finny_algorithm_set_params",
   "finny_algorithm_scaffold",
   "finny_algorithm_validate",
-  "finny_algorithm_save",
   "finny_backtest",
   "finny_backtest_sweep",
   "finny_portfolio_backtest",

@@ -8,6 +8,7 @@ const SUBAGENT_DIRS: Record<string, string[]> = {
   news_agent: [DATA_NEWS_DIR],
   researcher: [DATA_NEWS_DIR],
   sec_agent: [DATA_SEC_DIR],
+  sentiment_agent: ["data/sentiment"],
 }
 
 const MAX_FILES = 3

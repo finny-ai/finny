@@ -140,7 +140,7 @@ export const QualifyCandidateTool = Tool.define<typeof parameters, Qualification
             field: plan.datasetEvidence.qualification === "strict_qualified" ? "holdoutOpenEvents" : "datasetQualification",
             message: plan.datasetEvidence.qualification === "strict_qualified"
               ? "the legal plan is compiled and the sealed holdout awaits structured user approval"
-              : "the legal plan is compiled, but the active evidence lacks the authoritative strict_qualified attestation from #176",
+              : "the legal plan is compiled, but the active evidence lacks an authoritative runtime-issued strict_qualified attestation",
             next: plan.datasetEvidence.qualification === "strict_qualified"
               ? `retry qualify_candidate with experimentPlanId=${plan.planId} to request exact holdout approval`
               : "obtain strict_qualified DatasetEvidence for this exact request and compile a new plan",

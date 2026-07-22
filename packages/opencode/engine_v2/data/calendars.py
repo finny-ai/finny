@@ -48,6 +48,13 @@ _ASSET_POLICIES = {
     "fx": ("FX_24_5", "continuous", "America/New_York", "not_applicable"),
 }
 
+_CALENDAR_ALIASES = {
+    # AssetSpec historically uses these product-facing names while strict
+    # evidence uses exchange MICs. They describe the same regular session.
+    "US_EQUITIES": "XNYS",
+    "US_OPTIONS": "XNYS",
+}
+
 
 def default_calendar_policy(asset_class: str, session_type: str | None = None) -> CalendarPolicy:
     asset = asset_class.strip().lower()
@@ -105,7 +112,10 @@ def _days(start: date, end: date):
 def _session_range(start: pd.Timestamp, end: pd.Timestamp, step: pd.Timedelta) -> list[pd.Timestamp]:
     if end <= start:
         return []
-    return list(pd.date_range(start, end - step, freq=step, inclusive="both"))
+    # Bar timestamps identify interval starts. Keep every start strictly before
+    # the session close, including a final partial-width bucket such as the
+    # 15:30-16:00 ET bar in a regular NYSE 1h session.
+    return list(pd.date_range(start, end, freq=step, inclusive="left"))
 
 
 def _nyse_expected(start: date, end: date, step: pd.Timedelta, session_type: str) -> list[pd.Timestamp]:
@@ -165,7 +175,8 @@ def expected_timestamps(request: ExpectedTimestampRequest) -> pd.DatetimeIndex:
     from .quality import expected_step  # avoid a module import cycle
 
     policy = default_calendar_policy(request.asset_class, request.session_type)
-    if request.calendar_id and request.calendar_id != policy.calendar_id:
+    requested_calendar = _CALENDAR_ALIASES.get(request.calendar_id or "", request.calendar_id)
+    if requested_calendar and requested_calendar != policy.calendar_id:
         raise ValueError(
             f"calendar {request.calendar_id!r} does not match strict policy {policy.calendar_id!r} "
             f"for {request.asset_class}"

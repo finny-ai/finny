@@ -99,7 +99,7 @@ describe("active evidence qualification adapter", () => {
     expect(input.datasetEvidence.orderedBars[0].sessionId).toBe("2025-03-10")
   })
 
-  test("accepts only an exact #176 qualification attestation", async () => {
+  test("accepts only an exact runtime-issued qualification attestation", async () => {
     const timestamps = Array.from({ length: 20 }, (_, index) => new Date(Date.parse("2025-01-02T14:30:00Z") + index * 300_000).toISOString())
     const evidence = await dataset(timestamps, { symbol: "SPY", interval: "5min", assetClass: "equity" })
     evidence.qualificationAttestation = {

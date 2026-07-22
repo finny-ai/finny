@@ -79,6 +79,79 @@ export interface PaperExecutionContractV1 {
   submissionEnabled: false
 }
 
+export interface PaperActivationReceiptV1 {
+  schema: "finny.paper_activation_receipt"
+  version: 1
+  /** Integration-layer run identity. The strict Finny run is bound separately below. */
+  runId: string
+  strictRunId: string
+  strategyHash: string
+  riskPolicyHash: string
+  accountScopeHash: string
+  approvedByDiscordUserId: string
+  shadowProofHash: string
+  activatedAt: string
+  receiptHash: string
+  signature: string
+}
+
+export interface PaperExecutionContractV2 {
+  schema: "finny.paper_execution_contract"
+  version: 2
+  binding: ExecutionBindingV1
+  policy: ExecutionPolicyV1
+  ledgerPath: string
+  submissionMode: "shadow" | "paper"
+  activationReceipt?: PaperActivationReceiptV1
+}
+
+export type PaperExecutionContract = PaperExecutionContractV1 | PaperExecutionContractV2
+
+function canonical(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value)
+  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
+  const object = value as Record<string, unknown>
+  return `{${Object.keys(object)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`)
+    .join(",")}}`
+}
+
+export function verifyPaperActivationReceipt(input: {
+  receipt: PaperActivationReceiptV1 | undefined
+  binding: ExecutionBindingV1
+  secret: string | undefined
+}): string[] {
+  const { receipt, binding, secret } = input
+  if (!receipt) return ["paper activation receipt is missing"]
+  if (receipt.schema !== "finny.paper_activation_receipt" || receipt.version !== 1) {
+    return ["paper activation receipt schema is invalid"]
+  }
+  const { receiptHash, signature, ...body } = receipt
+  const expectedHash = crypto.createHash("sha256").update(canonical(body)).digest("hex")
+  const expectedSignature = secret
+    ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex")
+    : undefined
+  const errors: string[] = []
+  if (!secret) errors.push("FINNY_PAPER_ACTIVATION_KEY is not configured")
+  if (receiptHash !== expectedHash) errors.push("paper activation receipt hash mismatch")
+  if (
+    !expectedSignature ||
+    signature.length !== expectedSignature.length ||
+    !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
+  ) {
+    errors.push("paper activation receipt signature mismatch")
+  }
+  if (receipt.strictRunId !== binding.runId) errors.push("paper activation strict run mismatch")
+  if (receipt.strategyHash !== binding.strategyHash) errors.push("paper activation strategy mismatch")
+  if (receipt.riskPolicyHash !== binding.riskPolicyHash) errors.push("paper activation risk policy mismatch")
+  if (receipt.accountScopeHash !== binding.accountScopeHash) errors.push("paper activation account mismatch")
+  if (!receipt.approvedByDiscordUserId.trim()) errors.push("paper activation approver is missing")
+  if (!/^[a-f0-9]{64}$/.test(receipt.shadowProofHash)) errors.push("paper activation shadow proof is invalid")
+  if (!Number.isFinite(Date.parse(receipt.activatedAt))) errors.push("paper activation timestamp is invalid")
+  return errors
+}
+
 export function accountScopeHash(input: { brokerKind: BrokerKind; accountProviderID: string }): string {
   return crypto.createHash("sha256").update(`${input.brokerKind}\0${input.accountProviderID}`).digest("hex")
 }
@@ -109,11 +182,11 @@ from datetime import datetime, timezone
 
 
 DECISION_CODES = {
-    "accepted_shadow", "bar_not_final", "bar_out_of_order", "bar_stale",
+    "accepted_shadow", "accepted_paper", "bar_not_final", "bar_out_of_order", "bar_stale",
     "binding_mismatch", "broker_capability", "duplicate_intent", "drawdown_halt",
     "account_currency_mismatch", "gross_exposure_limit", "net_exposure_limit", "symbol_exposure_limit",
     "invalid_intent", "max_positions", "policy_incomplete", "protective_stop_required",
-    "risk_size_exceeded", "stale_account", "submission_disabled", "unresolved_divergence",
+    "risk_size_exceeded", "stale_account", "submission_disabled", "broker_rejected", "unresolved_divergence",
 }
 
 
@@ -182,14 +255,15 @@ class IntentRecord:
         self.decision = decision
 
     def to_dict(self):
+        paper = self.decision.get("reason_code") == "accepted_paper"
         return {
-            "order_id": self.intent["intent_id"],
+            "order_id": self.decision.get("broker_order_id") or self.intent["intent_id"],
             "intent_id": self.intent["intent_id"],
             "symbol": self.intent["symbol"],
             "side": self.intent["side"],
             "qty": self.intent.get("requested_qty") or 0,
             "price": 0,
-            "status": "shadow" if self.decision["accepted"] else "rejected: " + self.decision["reason_code"],
+            "status": "submitted" if paper else ("shadow" if self.decision["accepted"] else "rejected: " + self.decision["reason_code"]),
             "ts": self.decision["decided_at"],
             "reason": self.intent.get("reason"),
             "features": None,
@@ -218,9 +292,10 @@ class ExecutionRiskGateway:
             event.get("intent_id") for event in self.ledger.events
             if event.get("event_type") == "intent" and event.get("intent_id")
         } - self.known_outcomes
+        self.submission_mode = contract.get("submissionMode", "shadow")
+        self.pending_intents = sorted(item for item in pending if isinstance(item, str))
         # Shadow mode has no broker side effect between intent and decision.
-        # Make crash recovery explicit and deterministic before accepting work.
-        if not self.ledger.torn and not contract.get("submissionEnabled", False):
+        if not self.ledger.torn and self.submission_mode == "shadow":
             for intent_id in sorted(pending):
                 self.ledger.append({
                     "event_type": "decision", "intent_id": intent_id, "accepted": False,
@@ -300,6 +375,21 @@ class ExecutionRiskGateway:
         self.high_water_equity = max(self.historical_high_water_equity or current["equity"], current["equity"])
         self._append_emit({"event_type": "reconciliation", "status": "matched", "positions": current["positions"]})
         self._append_emit({"event_type": "broker_snapshot", **current})
+        if self.submission_mode == "paper":
+            for intent_id in self.pending_intents:
+                try:
+                    order = self.broker.get_order_by_client_id(intent_id)
+                except Exception as exc:
+                    self.halted = True
+                    self._append_emit({"event_type": "reconciliation", "status": "halted", "reason_code": "unresolved_divergence", "intent_id": intent_id, "detail": str(exc)})
+                    return False
+                if order is None:
+                    self.halted = True
+                    self._append_emit({"event_type": "reconciliation", "status": "halted", "reason_code": "unresolved_divergence", "intent_id": intent_id})
+                    return False
+                self._append_emit({"event_type": "order_ack", "intent_id": intent_id, "broker_order_id": str(order.id), "status": str(order.status), "recovered": True})
+                self._append_emit({"event_type": "decision", "intent_id": intent_id, "accepted": True, "reason_code": "accepted_paper", "broker_order_id": str(order.id), "recovered": True})
+                self.known_outcomes.add(intent_id)
         return True
 
     def begin_bar(self, bar):
@@ -321,7 +411,13 @@ class ExecutionRiskGateway:
         self.current_bar = dict(bar)
         self.reservations = {}
         self.last_watermark = bar["bar_end"]
-        self._append_emit({"event_type": "bar_advanced", "watermark": self.last_watermark, "session_id": bar["session_id"]})
+        self._append_emit({
+            "event_type": "bar_advanced",
+            "watermark": self.last_watermark,
+            "bar_start": bar["bar_start"],
+            "bar_end": bar["bar_end"],
+            "session_id": bar["session_id"],
+        })
         return True
 
     @staticmethod
@@ -392,7 +488,10 @@ class ExecutionRiskGateway:
             "side": intent["side"], "qty": intent["requested_qty"], "notional": intent["requested_notional"],
             **decision,
         })
-        return IntentRecord(intent, decision)
+        record = IntentRecord(intent, decision)
+        if decision.get("reason_code") == "accepted_paper":
+            self.emit({"type": "order", **record.to_dict()})
+        return record
 
     def _reject(self, reason):
         return {"accepted": False, "reason_code": reason, "decided_at": _utc_now().isoformat()}
@@ -471,11 +570,35 @@ class ExecutionRiskGateway:
             return self._reject("gross_exposure_limit")
         if net_pct > limits["maxNetExposurePct"]:
             return self._reject("net_exposure_limit")
-        if not self.contract.get("submissionEnabled", False):
+        if self.submission_mode == "shadow":
             signed_qty = float(qty) if intent["side"] == "buy" else -float(qty)
             self.reservations[intent["symbol"]] = float(self.reservations.get(intent["symbol"], 0)) + signed_qty
             return {"accepted": True, "reason_code": "accepted_shadow", "decided_at": _utc_now().isoformat(), "max_qty": max_qty}
-        return self._reject("submission_disabled")
+        if self.submission_mode != "paper" or self.binding.get("brokerMode") != "paper" or self.binding.get("brokerKind") != "alpaca":
+            return self._reject("submission_disabled")
+        self._append_emit({"event_type": "submission_started", "intent_id": intent["intent_id"]})
+        kwargs = {"reason": intent.get("reason"), "features": {"intent_id": intent["intent_id"]}, "client_order_id": intent["intent_id"]}
+        try:
+            order = self.broker.buy(intent["symbol"], qty=qty, reason=kwargs["reason"], features=kwargs["features"], client_order_id=kwargs["client_order_id"]) if intent["side"] == "buy" else self.broker.sell(intent["symbol"], qty=qty, reason=kwargs["reason"], features=kwargs["features"], client_order_id=kwargs["client_order_id"])
+        except Exception as exc:
+            # The request may have reached Alpaca even if its acknowledgement
+            # did not reach us. Leave the intent pending in the durable ledger,
+            # halt this process, and require lookup by client_order_id after a
+            # restart before another decision can be made.
+            self.halted = True
+            self._append_emit({
+                "event_type": "reconciliation", "status": "halted",
+                "reason_code": "ambiguous_order_ack", "intent_id": intent["intent_id"],
+                "detail": str(exc),
+            })
+            raise
+        if str(order.status).lower().startswith("rejected"):
+            self._append_emit({"event_type": "order_rejected", "intent_id": intent["intent_id"], "status": str(order.status)})
+            return self._reject("broker_rejected")
+        self._append_emit({"event_type": "order_ack", "intent_id": intent["intent_id"], "broker_order_id": str(order.order_id), "status": str(order.status)})
+        signed_qty = float(qty) if intent["side"] == "buy" else -float(qty)
+        self.reservations[intent["symbol"]] = float(self.reservations.get(intent["symbol"], 0)) + signed_qty
+        return {"accepted": True, "reason_code": "accepted_paper", "decided_at": _utc_now().isoformat(), "max_qty": max_qty, "broker_order_id": str(order.order_id)}
 
     def safe_stop(self):
         try:
@@ -491,8 +614,22 @@ class ExecutionRiskGateway:
             self.halted = True
             self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "policy_incomplete", "positions": open_positions})
             return False
-        if flatten and open_positions:
-            # This release is shadow-only. It must not bypass the disabled submission gate to flatten.
+        if self.submission_mode == "paper":
+            try:
+                self.broker.cancel_all_orders()
+                if flatten and open_positions:
+                    self.broker.close_all_positions()
+                snapshot = self._snapshot()
+                open_positions = self._position_quantities(snapshot["positions"])
+            except Exception as exc:
+                self.halted = True
+                self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "unresolved_divergence", "detail": str(exc), "positions": open_positions})
+                return False
+            if flatten and open_positions:
+                self.halted = True
+                self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "unresolved_divergence", "positions": open_positions})
+                return False
+        elif flatten and open_positions:
             self.halted = True
             self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "submission_disabled", "positions": open_positions})
             return False

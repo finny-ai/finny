@@ -32,11 +32,26 @@ const LogEntry = Schema.Struct({
 
 const BarUpdate = Schema.Struct({
   timestamp: Schema.String,
+  bar_start: Schema.optional(Schema.String),
+  bar_end: Schema.optional(Schema.String),
+  is_final: Schema.optional(Schema.Boolean),
+  session_id: Schema.optional(Schema.String),
+  source_timestamp: Schema.optional(Schema.String),
   open: Schema.Number,
   high: Schema.Number,
   low: Schema.Number,
   close: Schema.Number,
   volume: Schema.Number,
+})
+
+const ShadowProof = Schema.Struct({
+  finalizedDecisionBars: Schema.Number,
+  firstBarStart: Schema.optional(Schema.String),
+  firstBarEnd: Schema.optional(Schema.String),
+  lastBarEnd: Schema.optional(Schema.String),
+  sessionIds: Schema.Array(Schema.String),
+  reconciliationDivergences: Schema.Number,
+  fatalErrors: Schema.Number,
 })
 
 export const Run = Schema.Struct({
@@ -50,6 +65,7 @@ export const Run = Schema.Struct({
   accountProviderID: Schema.String,
   accountLabel: Schema.optional(Schema.String),
   mode: Schema.optional(BrokerMode),
+  executionMode: Schema.optional(Schema.Literals(["shadow", "paper"])),
   directory: Schema.optional(Schema.String),
   status: RunStatus,
   startedAt: Schema.Number,
@@ -61,6 +77,7 @@ export const Run = Schema.Struct({
   positions: Schema.Record(Schema.String, Schema.Number),
   orders: Schema.Array(OrderEvent),
   logs: Schema.Array(LogEntry),
+  shadowProof: ShadowProof,
 }).annotate({ identifier: "LiveRun" })
 
 // Mirror of Algorithm.Info (zod) — see packages/opencode/src/algorithm/index.ts.
@@ -89,6 +106,22 @@ export const StartPayload = Schema.Struct({
   interval: Schema.String,
   accountProviderID: Schema.String,
   brokerKind: Schema.optional(BrokerKind),
+  activationReceipt: Schema.optional(
+    Schema.Struct({
+      schema: Schema.Literal("finny.paper_activation_receipt"),
+      version: Schema.Literal(1),
+      runId: Schema.String,
+      strictRunId: Schema.String,
+      strategyHash: Schema.String,
+      riskPolicyHash: Schema.String,
+      accountScopeHash: Schema.String,
+      approvedByDiscordUserId: Schema.String,
+      shadowProofHash: Schema.String,
+      activatedAt: Schema.String,
+      receiptHash: Schema.String,
+      signature: Schema.String,
+    }),
+  ),
 }).annotate({ identifier: "LiveStartPayload" })
 
 export const LiveApi = HttpApi.make("live")

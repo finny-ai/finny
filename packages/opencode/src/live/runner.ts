@@ -24,7 +24,9 @@ import {
   accountScopeHash,
   executionLedgerPath,
   type ExecutionPolicyV1,
-  type PaperExecutionContractV1,
+  type PaperActivationReceiptV1,
+  type PaperExecutionContractV2,
+  verifyPaperActivationReceipt,
 } from "./execution-risk-gateway"
 
 const log = Log.create({ service: "live" })
@@ -104,7 +106,7 @@ export namespace LiveRunner {
     accountProviderID: string
     accountLabel?: string
     mode?: BrokerMode
-    executionMode?: "shadow"
+    executionMode?: "shadow" | "paper"
     /** Project directory this run belongs to (for multi-project isolation in the daemon). */
     directory?: string
     status: RunStatus
@@ -117,6 +119,15 @@ export namespace LiveRunner {
     positions: Record<string, number>
     orders: OrderEvent[]
     logs: LogEntry[]
+    shadowProof: {
+      finalizedDecisionBars: number
+      firstBarStart?: string
+      firstBarEnd?: string
+      lastBarEnd?: string
+      sessionIds: string[]
+      reconciliationDivergences: number
+      fatalErrors: number
+    }
   }
 
   export interface StartParams {
@@ -128,6 +139,8 @@ export namespace LiveRunner {
     brokerKind?: BrokerKind
     /** Server-derived proof from the authoritative workflow database; never accepted from the HTTP payload. */
     controllerApproval?: ControllerPaperApproval
+    /** Signed by the integration control plane after a clean shadow session. */
+    activationReceipt?: PaperActivationReceiptV1
     /** Project directory the run is scoped to. Set by the HTTP handler. */
     directory?: string
   }
@@ -530,17 +543,26 @@ def main():
     interval = config.get("interval", "1min")
     run_id = config.get("run_id", "unknown")
 
-    poll_map = {
-        "1min": 30, "5min": 60, "15min": 90, "30min": 120,
-        "1h": 180, "4h": 600, "1d": 900,
+    interval_seconds = {
+        "1min": 60, "5min": 300, "15min": 900, "30min": 1800,
+        "1h": 3600, "4h": 14400, "1d": 86400,
     }
-    poll_seconds = poll_map.get(interval, 60)
+    # Poll no faster than the bar interval. Ten one-minute workers stay well
+    # inside the shared 160 RPM Basic budget once account/clock calls are added.
+    poll_seconds = max(30, min(900, interval_seconds.get(interval, 60)))
 
     try:
         broker, broker_label = make_broker(broker_kind, run_id)
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
+
+    if broker_kind == "alpaca":
+        try:
+            broker.preflight(symbol, interval)
+        except Exception as e:
+            emit({"type": "error", "message": f"Alpaca Basic paper preflight failed: {e}"})
+            sys.exit(7)
 
     execution_contract = config.get("execution_contract")
     if not isinstance(execution_contract, dict):
@@ -552,19 +574,16 @@ def main():
         sys.exit(6)
     strategy_broker = IntentBroker(broker, gateway)
 
-    try:
-        cash_start = broker.cash()
-        eq_start = broker.equity()
-    except Exception as e:
-        emit({"type": "error", "message": f"Account fetch failed: {e}"})
-        sys.exit(3)
+    cash_start = gateway.account["cash"]
+    eq_start = gateway.account["equity"]
 
+    execution_mode = execution_contract.get("submissionMode", "shadow")
     emit({"type": "init", "run_id": run_id, "symbol": symbol, "interval": interval,
-          "broker_kind": broker_kind, "execution_mode": "shadow", "cash": cash_start, "equity": eq_start})
+          "broker_kind": broker_kind, "execution_mode": execution_mode, "cash": cash_start, "equity": eq_start})
     emit({"type": "log", "level": "info",
           "message": "Connected to {}. Cash: {:,.2f} Equity: {:,.2f}".format(broker_label, cash_start, eq_start)})
-    emit({"type": "log", "level": "warn",
-          "message": "ExecutionRiskGateway shadow mode: broker submission is disabled"})
+    emit({"type": "log", "level": "warn" if execution_mode == "shadow" else "info",
+          "message": "ExecutionRiskGateway shadow mode: broker submission is disabled" if execution_mode == "shadow" else "ExecutionRiskGateway Alpaca Paper submission is enabled by a signed activation receipt"})
 
     strategy_path = Path(__file__).parent / "strategy.py"
     try:
@@ -598,11 +617,11 @@ def main():
                 _sleep(poll_seconds, stopped)
                 continue
 
-            if not gateway.begin_bar(bar):
+            if bar["bar_end"] == last_ts:
                 _sleep(poll_seconds, stopped)
                 continue
 
-            if bar["bar_end"] == last_ts:
+            if not gateway.begin_bar(bar):
                 _sleep(poll_seconds, stopped)
                 continue
             last_ts = bar["bar_end"]
@@ -635,13 +654,9 @@ def main():
                 emit({"type": "error", "message": f"Strategy error: {e}",
                       "trace": traceback.format_exc()})
 
-            try:
-                cash = broker.cash()
-                eq = broker.equity()
-                pos = broker.position(symbol)
-                emit({"type": "equity", "cash": cash, "equity": eq, "positions": {symbol: pos}})
-            except Exception as e:
-                emit({"type": "log", "level": "warn", "message": f"Account refresh failed: {e}"})
+            account = gateway.account or {}
+            positions = {key: value.get("qty", 0) for key, value in account.get("positions", {}).items()}
+            emit({"type": "equity", "cash": account.get("cash"), "equity": account.get("equity"), "positions": positions})
 
             prev_bar = bar
             _sleep(poll_seconds, stopped)
@@ -649,6 +664,10 @@ def main():
         except Exception as e:
             emit({"type": "error", "message": f"Loop error: {e}",
                   "trace": traceback.format_exc()})
+            text = str(e).lower()
+            if any(token in text for token in ("401", "403", "unauthorized", "forbidden", "entitlement", "corrupt", "divergence")):
+                stopped["value"] = True
+                break
             _sleep(poll_seconds, stopped)
 
     if not gateway.safe_stop():
@@ -726,6 +745,15 @@ if __name__ == "__main__":
     const account = accounts.find((a) => a.providerID === params.accountProviderID)
     const accountLabel = account?.label
     const accountMode = account?.mode ?? creds.mode ?? spec.mode
+    if (accountMode === "live") {
+      throw new StartRejectedError("Live-money trading is not shipped in the Finny Hedge Fund v1 contract.")
+    }
+    if (
+      brokerKind === "alpaca" &&
+      (accountMode !== "paper" || creds.endpoint.replace(/\/+$/, "") !== "https://paper-api.alpaca.markets")
+    ) {
+      throw new StartRejectedError("Alpaca v1 requires the canonical paper endpoint, Basic plan, and IEX feed.")
+    }
 
     // Promotion is bound to one explicit immutable run and its matching
     // approval sidecar. Historical/legacy runs stay readable, but cannot pass
@@ -738,11 +766,10 @@ if __name__ == "__main__":
       controllerApproval: params.controllerApproval,
     })
     const eligibility = promotion.status
-    const isLiveMoney = accountMode === "live"
     if (!promotion.ok || !canStartForMode(eligibility, accountMode)) {
-      const need = isLiveMoney ? "a separate live_eligible record" : "a matching paper approval record"
+      const need = "a matching paper approval record"
       throw new StartRejectedError(
-        `${isLiveMoney ? "Live" : "Paper"} trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
+        `Paper trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
       )
     }
 
@@ -765,24 +792,39 @@ if __name__ == "__main__":
         : {}),
     }
     const scopeHash = accountScopeHash({ brokerKind, accountProviderID: params.accountProviderID })
-    const executionContract: PaperExecutionContractV1 = {
+    const binding = {
+      runId: params.runId,
+      runIdentityHash: promotion.run.identityHash,
+      algorithmId: params.algorithm.algorithmId,
+      algorithmVersion: params.algorithm.version,
+      strategyHash: promotion.run.identity.strategyHash,
+      riskPolicyHash: promotion.run.identity.riskContractHash,
+      executionPolicyHash: sha256Text(stableStringify(executionPolicy)),
+      effectiveConfigHash: promotion.run.identity.effectiveConfigHash,
+      symbol,
+      interval: params.interval,
+      brokerKind,
+      brokerMode: accountMode,
+      accountScopeHash: scopeHash,
+    }
+    const submissionMode = params.activationReceipt ? "paper" : "shadow"
+    if (submissionMode === "paper") {
+      if (brokerKind !== "alpaca" || accountMode !== "paper") {
+        throw new StartRejectedError("v1 paper submission supports Alpaca Paper only.")
+      }
+      const activationErrors = verifyPaperActivationReceipt({
+        receipt: params.activationReceipt,
+        binding,
+        secret: process.env.FINNY_PAPER_ACTIVATION_KEY,
+      })
+      if (activationErrors.length) {
+        throw new StartRejectedError(`Paper activation rejected: ${activationErrors.join("; ")}`)
+      }
+    }
+    const executionContract: PaperExecutionContractV2 = {
       schema: "finny.paper_execution_contract",
-      version: 1,
-      binding: {
-        runId: params.runId,
-        runIdentityHash: promotion.run.identityHash,
-        algorithmId: params.algorithm.algorithmId,
-        algorithmVersion: params.algorithm.version,
-        strategyHash: promotion.run.identity.strategyHash,
-        riskPolicyHash: promotion.run.identity.riskContractHash,
-        executionPolicyHash: sha256Text(stableStringify(executionPolicy)),
-        effectiveConfigHash: promotion.run.identity.effectiveConfigHash,
-        symbol,
-        interval: params.interval,
-        brokerKind,
-        brokerMode: accountMode,
-        accountScopeHash: scopeHash,
-      },
+      version: 2,
+      binding,
       policy: executionPolicy,
       ledgerPath: executionLedgerPath({
         algorithmId: params.algorithm.algorithmId,
@@ -790,7 +832,8 @@ if __name__ == "__main__":
         accountScopeHash: scopeHash,
         symbol,
       }),
-      submissionEnabled: false,
+      submissionMode,
+      ...(params.activationReceipt ? { activationReceipt: params.activationReceipt } : {}),
     }
 
     // Create an initial "starting" run state IMMEDIATELY so the caller can open
@@ -807,13 +850,19 @@ if __name__ == "__main__":
       accountProviderID: params.accountProviderID,
       accountLabel,
       mode: accountMode,
-      executionMode: "shadow",
+      executionMode: submissionMode,
       directory: params.directory,
       status: "starting",
       startedAt: Date.now(),
       positions: {},
       orders: [],
       logs: [],
+      shadowProof: {
+        finalizedDecisionBars: 0,
+        sessionIds: [],
+        reconciliationDivergences: 0,
+        fatalErrors: 0,
+      },
       proc: null as unknown as Process.Child, // attached later
       tmpDir: "",
       ledgerSeq: 0,
@@ -1008,7 +1057,8 @@ if __name__ == "__main__":
         state.status = "running"
         if (typeof msg.cash === "number") state.cash = msg.cash
         if (typeof msg.equity === "number") state.equity = msg.equity
-        pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval} · shadow execution`)
+        state.executionMode = msg.execution_mode === "paper" ? "paper" : "shadow"
+        pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval} · ${state.executionMode} execution`)
         emit({
           eventType: "live.started",
           algorithmId: state.algorithmId,
@@ -1092,7 +1142,20 @@ if __name__ == "__main__":
       case "execution_event": {
         const reason = typeof msg.reason_code === "string" ? msg.reason_code : undefined
         const status = typeof msg.status === "string" ? msg.status : undefined
-        if (reason && (reason !== "accepted_shadow" || status === "halted")) {
+        if (msg.event_type === "bar_advanced" && typeof msg.watermark === "string") {
+          state.shadowProof.finalizedDecisionBars += 1
+          if (typeof msg.bar_start === "string") state.shadowProof.firstBarStart ??= msg.bar_start
+          state.shadowProof.firstBarEnd ??= msg.watermark
+          state.shadowProof.lastBarEnd = msg.watermark
+          if (typeof msg.session_id === "string" && !state.shadowProof.sessionIds.includes(msg.session_id)) {
+            state.shadowProof.sessionIds.push(msg.session_id)
+          }
+        }
+        if (reason === "unresolved_divergence") state.shadowProof.reconciliationDivergences += 1
+        if (status === "halted" || ["stale_account", "unresolved_divergence"].includes(reason ?? "")) {
+          state.shadowProof.fatalErrors += 1
+        }
+        if (reason && (reason !== "accepted_shadow" && reason !== "accepted_paper" || status === "halted")) {
           const level: LogEntry["level"] = status === "halted" ? "error" : "warn"
           pushLog(state, level, `Execution gateway: ${reason}`)
           emitLedger(state, {

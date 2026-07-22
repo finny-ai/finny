@@ -55,6 +55,14 @@ describe("request identity proposals", () => {
     }
   })
 
+  test("does not bind exchange names as instruments", () => {
+    for (const prompt of ["Build a strategy for Indian markets", "Trade NSE", "Analyze the TSX"]) {
+      const proposal = parseRequestIdentityProposal(prompt)
+      expect(proposal.facts.requested_symbol).toBeUndefined()
+      expect(proposal.facts.requested_symbols).toBeUndefined()
+    }
+  })
+
   test("confirms an exact explicit SPY token", () => {
     expect(parseRequestIdentityProposal("Build and backtest SPY equity on 1d bars.")).toMatchObject({
       status: "confirmed",
@@ -65,6 +73,21 @@ describe("request identity proposals", () => {
 })
 
 describe("parseRequestFacts", () => {
+  test("preserves the exact TD and META headless acceptance identities", () => {
+    const suffix =
+      "strategy, use social sentiment, news, sec and data subagents, gather all the context and choose the best option, i wanna trade it every 1hr for 1 year, I will give 1k usd, in us markets"
+    expect(parseRequestFacts(`Build me a TD ${suffix}`)).toMatchObject({
+      requested_symbol: "TD",
+      requested_asset_class: "equity",
+      requested_interval: "1h",
+    })
+    expect(parseRequestFacts(`Build me a META ${suffix}`)).toMatchObject({
+      requested_symbol: "META",
+      requested_asset_class: "equity",
+      requested_interval: "1h",
+    })
+  })
+
   test("preserves a bare regional listing with its exchange suffix", () => {
     expect(parseRequestFacts("RELIANCE.NS 1hr")).toMatchObject({
       requested_symbol: "RELIANCE.NS",
@@ -77,6 +100,14 @@ describe("parseRequestFacts", () => {
     expect(parseRequestFacts("VFV 15min")).toMatchObject({
       requested_symbol: "VFV",
       requested_interval: "15m",
+      requested_asset_class: "equity",
+    })
+  })
+
+  test("preserves an exact Indian listing ticker", () => {
+    expect(parseRequestFacts("Build an RSI momentum strategy for RELIANCE.NS 1h")).toMatchObject({
+      requested_symbol: "RELIANCE.NS",
+      requested_interval: "1h",
       requested_asset_class: "equity",
     })
   })
@@ -203,6 +234,14 @@ describe("parseRequestFacts", () => {
     expect(parseRequestFacts("Build SPY for the last 6 months").requested_interval).toBeUndefined()
     expect(parseRequestFacts("lookback period = 20 days for SPY").requested_interval).toBeUndefined()
     expect(parseRequestFacts("SPY with lookback of 20 days on 15m bars").requested_interval).toBe("15m")
+  })
+
+  test("does not parse the end of extend as a ten-day interval", () => {
+    const facts = parseRequestFacts(
+      "Gather strict historical evidence for exactly SPY, equity/ETF, 1d. Do not extend dates. Include data quality.",
+    )
+    expect(facts.requested_symbol).toBe("SPY")
+    expect(facts.requested_interval).toBe("1d")
   })
 
   test("preserves crypto pair recognition inside compact slugs", () => {

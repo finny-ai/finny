@@ -60,8 +60,11 @@ export namespace RetryOrchestrator {
     currentAttempt: number
   }): Outcome {
     const { result, currentAttempt } = input
-    const blockingDiagnostics = Validate.blockingDiagnostics(result)
-    const advisoryDiagnostics = Validate.advisoryDiagnostics(result)
+    // A generated strategy is not save-ready while the validator reports any
+    // diagnostic. Count warnings against the same bounded retry budget as
+    // errors so a repeated warning cannot create an unbounded save loop.
+    const blockingDiagnostics = [...Validate.blockingDiagnostics(result), ...Validate.advisoryDiagnostics(result)]
+    const advisoryDiagnostics: Validate.Diagnostic[] = []
     if (blockingDiagnostics.length === 0) {
       return { kind: "passed", attempts: currentAttempt, warnings: advisoryDiagnostics }
     }

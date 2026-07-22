@@ -41,6 +41,7 @@ import {
   requireVerifiedDataExtractorEvidenceForSession,
   validateDataExtractorTaskText,
   validateExistingDataExtractorEvidence,
+  validateExistingDataExtractorEvidenceSet,
 } from "@/data/data-extractor-evidence"
 import { validateNewsAgentTaskText } from "@/data/news-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
@@ -51,7 +52,8 @@ import { StrategyContext } from "@/task/strategy-context"
 import {
   activeWorkflowForSession,
   recordVerifiedNewsEvidence,
-  recordVerifiedMarketData,
+  recordVerifiedMarketDataSet,
+  recordVerifiedSpecialistEvidence,
   recordWorkflowAttempt,
 } from "@/algorithm/build-workflow/lifecycle"
 import type { BuildWorkflowState } from "@/algorithm/build-workflow/types"
@@ -70,6 +72,25 @@ export function finalTaskText(parts: ReadonlyArray<{ type: string; text?: string
   return text.length > 0 ? text : EMPTY_SUBAGENT_RESULT_MARKER
 }
 
+/**
+ * SEC and sentiment workers may finish their durable artifacts and then emit
+ * an empty final chat part. A request-scoped artifact pointer is stronger
+ * completion evidence than that empty prose, so admit the artifact while
+ * retaining the fail-closed marker when no pointer exists.
+ */
+export function finalSpecialistTaskText(input: {
+  subagentType: "sec_agent" | "sentiment_agent"
+  text: string
+  pointer: string
+}) {
+  if (!input.pointer) return input.text
+  const text =
+    input.text === EMPTY_SUBAGENT_RESULT_MARKER
+      ? `${input.subagentType} completed with durable request-scoped artifacts.`
+      : input.text
+  return `${text}\n\n${input.pointer}`
+}
+
 export { validateDataExtractorTaskText }
 
 export interface TaskPromptOps {
@@ -79,6 +100,7 @@ export interface TaskPromptOps {
 }
 
 const permission = "task"
+const DATA_AGENT_COOKBOOK_PATH = path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")
 const TASK_START_DESCRIPTION = [
   DESCRIPTION,
   "Launch exactly one optional subagent asynchronously and return immediately.",
@@ -141,13 +163,13 @@ function dataRequestProvider(prompt: string) {
 }
 
 const DATA_REQUEST_FIELD =
-  /^\s*-\s*(?:symbol|start_date|end_date|end_date_inclusive|provider|workspace|asset_class|interval)\s*:/i
+  /^\s*-\s*(?:workspace_slug|request_id|request_version|request_content_hash|requested_algorithm_name|requested_symbol|symbols_or_universe|requested_start|requested_end|requested_interval|requested_asset_class|symbol|start_date|end_date|end_date_inclusive|provider|workspace|allowed_data_dir|mission_path|cookbook_path|asset_class|interval)\s*:/i
 
 function withoutDataRequestBlock(prompt: string) {
   const output: string[] = []
   let inside = false
   for (const line of prompt.split("\n")) {
-    if (/^\s*Data request:\s*$/i.test(line)) {
+    if (/^\s*Data request(?: context)?:\s*$/i.test(line)) {
       inside = true
       continue
     }
@@ -547,15 +569,32 @@ export function withFinnySubagentContext(
   if (params.subagent_type === "data_extractor") {
     const intent = withoutDataRequestBlock(prompt)
     return [
-      "Data request:",
+      "<finny-subagent-context>",
+      "Authoritative runtime context. It overrides conflicting task wording.",
+      "Data request context:",
+      field("workspace_slug", workspace),
+      ...requestLineageFields(context),
+      field("requested_algorithm_name", algorithmName),
+      field("requested_symbol", symbolsOrUniverse),
+      field("symbols_or_universe", symbolsOrUniverse),
+      field("requested_interval", interval),
+      field("requested_asset_class", assetClass),
+      field("requested_start", dataWindow.start),
+      field("requested_end", dataWindow.end),
       field("symbol", symbolsOrUniverse),
       field("start_date", dataWindow.start),
       field("end_date", dataWindow.end),
       "- end_date_inclusive: true",
       field("provider", dataRequestProvider(prompt) ?? explicitlyRequestedDataProvider(prompt) ?? "auto"),
       field("workspace", dataDir),
+      field("allowed_data_dir", dataDir),
+      field("mission_path", path.join(workspacePath, "mission.md")),
+      field("cookbook_path", DATA_AGENT_COOKBOOK_PATH),
       field("asset_class", assetClass),
       field("interval", interval),
+      "",
+      "Use only allowed_data_dir for generated data and use cookbook_path for provider recipes.",
+      "</finny-subagent-context>",
       ...(intent ? ["", "Task intent:", intent] : []),
     ].join("\n")
   }
@@ -566,8 +605,8 @@ export function withFinnySubagentContext(
     return [
       "<finny-subagent-context>",
       "Authoritative SEC artifact context:",
-      field("company_or_ticker", secContext.requested_company_or_ticker ?? symbolsOrUniverse),
-      field("resolved_symbol", secContext.resolved_symbol ?? symbolsOrUniverse),
+      field("company_or_ticker", symbolsOrUniverse ?? secContext.requested_company_or_ticker),
+      field("resolved_symbol", symbolsOrUniverse ?? secContext.resolved_symbol),
       field("resolved_cik", secContext.resolved_cik),
       field("person", secContext.requested_person),
       field("institution", secContext.requested_institution),
@@ -1018,7 +1057,14 @@ const taskExecutor = Effect.gen(function* () {
       return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
     }
     const preflightBlock = yield* Effect.promise(async () => {
-      const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+      const boundParentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+      // Once a Build workflow exists, its persisted workspace is canonical.
+      // Do not let a child research prompt or a stale session binding move the
+      // parent into another symbol's workspace.
+      const parentWorkspace = activeWorkflow?.workspaceSlug ?? boundParentWorkspace
+      if (parentWorkspace && parentWorkspace !== boundParentWorkspace) {
+        await bindSessionWorkspace(ctx.sessionID, parentWorkspace)
+      }
       if (guardedDataExtraction && parentWorkspace) {
         const promptFacts = parseRequestFacts(params.prompt)
         const parentFacts = await readRuntimeRequestFacts(ctx.sessionID)
@@ -1167,7 +1213,8 @@ const taskExecutor = Effect.gen(function* () {
     // Subagents inherit the parent session's algo workspace binding so data
     // extraction and research notes land in the same per-request workspace.
     const workspaceState = yield* Effect.promise(async () => {
-      const parentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+      const boundParentWorkspace = await getSessionWorkspace(ctx.sessionID).catch(() => null)
+      const parentWorkspace = activeWorkflow?.workspaceSlug ?? boundParentWorkspace
       const childWorkspace = await getSessionWorkspace(nextSession.id).catch(() => null)
       const promptFacts = parseRequestFacts(params.prompt)
       const explicitExistingAlgorithm = explicitExistingAlgorithmName(params.prompt, promptFacts)
@@ -1206,7 +1253,7 @@ const taskExecutor = Effect.gen(function* () {
         return { slug: parentWorkspace, blocked: singleTargetConflict }
       }
       let workspace =
-        parentWorkspace && inParentUniverse
+        parentWorkspace && (inParentUniverse || auxiliaryContextForParent)
           ? parentWorkspace
           : workspaceMatchesPromptFacts(parentWorkspace, promptFacts)
             ? parentWorkspace
@@ -1404,7 +1451,7 @@ const taskExecutor = Effect.gen(function* () {
         })
         if (mismatch) return mismatch
         const existing = yield* Effect.promise(() =>
-          validateExistingDataExtractorEvidence({
+          validateExistingDataExtractorEvidenceSet({
             workspaceSlug: workspace,
             context: validationContext,
             requestedProvider: explicitlyRequestedDataProvider(params.prompt),
@@ -1506,7 +1553,11 @@ const taskExecutor = Effect.gen(function* () {
       }
       if (params.subagent_type === "sec_agent" && workspace) {
         const pointer = yield* Effect.promise(() => renderSubagentArtifactPointer("sec_agent", workspace))
-        return pointer ? `${text}\n\n${pointer}` : text
+        return finalSpecialistTaskText({ subagentType: "sec_agent", text, pointer })
+      }
+      if (params.subagent_type === "sentiment_agent" && workspace) {
+        const pointer = yield* Effect.promise(() => renderSubagentArtifactPointer("sentiment_agent", workspace))
+        return finalSpecialistTaskText({ subagentType: "sentiment_agent", text, pointer })
       }
       if (params.subagent_type !== "data_extractor") return text
       const validated = yield* Effect.promise(() =>
@@ -1540,7 +1591,7 @@ const taskExecutor = Effect.gen(function* () {
         if (params.subagent_type === "data_extractor" && status === TaskState.Status.completed) {
           const evidence = yield* Effect.promise(() => requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID))
           if (evidence.ok) {
-            yield* recordVerifiedMarketData({ sessionId: ctx.sessionID, dataset: evidence.dataset }).pipe(
+            yield* recordVerifiedMarketDataSet({ sessionId: ctx.sessionID, datasets: evidence.datasets }).pipe(
               Effect.provideService(Database.Service, database),
               Effect.asVoid,
             )
@@ -1556,6 +1607,25 @@ const taskExecutor = Effect.gen(function* () {
             sourceSessionId: nextSession.id,
             artifactText: verifiedNewsEvidence.text,
             issues: verifiedNewsEvidence.issues,
+          }).pipe(Effect.provideService(Database.Service, database), Effect.asVoid)
+        }
+        const specialistKind =
+          params.subagent_type === "sec_agent"
+            ? ("sec" as const)
+            : params.subagent_type === "sentiment_agent"
+              ? ("sentiment" as const)
+              : undefined
+        if (
+          specialistKind &&
+          status === TaskState.Status.completed &&
+          workspace === activeWorkflow?.workspaceSlug &&
+          text.includes(`<subagent-artifact agent="${params.subagent_type}">`)
+        ) {
+          yield* recordVerifiedSpecialistEvidence({
+            sessionId: ctx.sessionID,
+            sourceSessionId: nextSession.id,
+            kind: specialistKind,
+            artifactText: text,
           }).pipe(Effect.provideService(Database.Service, database), Effect.asVoid)
         }
         if (workflowProjection) {

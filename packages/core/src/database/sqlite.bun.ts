@@ -39,6 +39,18 @@ interface Config {
   readonly transformQueryNames?: (str: string) => string
 }
 
+let nextDatabaseTransactionServiceId = 1_000_000
+const transactionServices = new Map<string, ReturnType<typeof Client.TransactionConnection>>()
+
+function transactionServiceFor(filename: string) {
+  if (filename === ":memory:") return Client.TransactionConnection(nextDatabaseTransactionServiceId++)
+  const existing = transactionServices.get(filename)
+  if (existing) return existing
+  const created = Client.TransactionConnection(nextDatabaseTransactionServiceId++)
+  transactionServices.set(filename, created)
+  return created
+}
+
 interface SqliteConnection extends Connection {
   readonly export: Effect.Effect<Uint8Array, SqlError>
   readonly loadExtension: (path: string) => Effect.Effect<void, SqlError>
@@ -134,6 +146,7 @@ const make = (options: Config) =>
         acquirer,
         compiler,
         transactionAcquirer,
+        transactionService: transactionServiceFor(options.filename),
         spanAttributes: [
           ...(options.spanAttributes ? Object.entries(options.spanAttributes) : []),
           [ATTR_DB_SYSTEM_NAME, "sqlite"],

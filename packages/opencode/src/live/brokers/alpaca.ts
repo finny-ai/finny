@@ -143,6 +143,9 @@ export const alpacaSpec: BrokerSpec = {
       ALPACA_API_SECRET_KEY: creds.secret,
       ALPACA_ENDPOINT: endpoint,
       ALPACA_MODE: mode,
+      ALPACA_DATA_FEED: "iex",
+      FINNY_ALPACA_PLAN: "basic",
+      FINNY_ALPACA_RPM_BUDGET: "160",
     }
   },
   endpointForMode: alpacaEndpointForMode,

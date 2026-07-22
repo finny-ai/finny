@@ -98,6 +98,12 @@ describe("LiveRunner multi-market deployment key", () => {
     positions: {},
     orders: [],
     logs: [],
+    shadowProof: {
+      finalizedDecisionBars: 0,
+      sessionIds: [],
+      reconciliationDivergences: 0,
+      fatalErrors: 0,
+    },
   }
 
   test("rejects only the exact active deployment", () => {

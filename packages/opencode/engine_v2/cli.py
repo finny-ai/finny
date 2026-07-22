@@ -118,6 +118,15 @@ def _quality_failure(
 
 def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     rule, _ = interval_to_rule_and_bars_per_year(interval)
+    target_step = DQ.expected_step(interval)
+    timestamps = pd.DatetimeIndex(pd.to_datetime(df["timestamp"], utc=True)).drop_duplicates().sort_values()
+    positive_deltas = timestamps.to_series().diff().dropna()
+    # Providers commonly return exchange-open-anchored aggregate bars (for
+    # example XNYS 1h bars at 09:30, 10:30, ... ET). Re-resampling an already
+    # aggregated series uses midnight as pandas' default origin and silently
+    # shifts those bars onto :00, breaking exact calendar reconciliation.
+    if positive_deltas.empty or positive_deltas.min() >= target_step:
+        return df.sort_values("timestamp").reset_index(drop=True)
     d = df.set_index("timestamp").resample(rule, label="left", closed="left").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
     }).dropna().reset_index()
