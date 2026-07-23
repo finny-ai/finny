@@ -530,10 +530,8 @@ def blocking_reasons(report: QualityReport, asset_class: str, missing_threshold:
         reasons.append(f"{report.ohlc_violations} invalid OHLC bar(s)")
     if report.coverage_pct < missing_threshold:
         reasons.append(f"coverage {report.coverage_pct:.1%} below {missing_threshold:.0%} threshold")
-    # Missing timestamps remain explicit in QualityReport, but the configured
-    # coverage threshold decides whether they are fatal. Treating any single
-    # gap as fatal made missing_threshold dead code and caused high-coverage
-    # provider datasets to retry forever.
+    if report.missing_timestamp_count > 0:
+        reasons.append(f"{report.missing_timestamp_count} expected timestamp(s) missing")
     if report.extra_timestamp_count > 0:
         reasons.append(f"{report.extra_timestamp_count} timestamp(s) outside expected calendar/session")
     if report.incomplete_final_bar_count > 0:

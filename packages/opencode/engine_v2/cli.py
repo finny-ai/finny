@@ -125,7 +125,11 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     # example XNYS 1h bars at 09:30, 10:30, ... ET). Re-resampling an already
     # aggregated series uses midnight as pandas' default origin and silently
     # shifts those bars onto :00, breaking exact calendar reconciliation.
-    if positive_deltas.empty or positive_deltas.min() >= target_step:
+    # Daily bars are normalized to midnight by the strict calendar, so they
+    # must still pass through pandas resampling even when the provider stamps
+    # them at the exchange session open. Exchange-open anchoring is only safe
+    # to preserve for intraday aggregate bars.
+    if target_step < pd.Timedelta(days=1) and (positive_deltas.empty or positive_deltas.min() >= target_step):
         return df.sort_values("timestamp").reset_index(drop=True)
     d = df.set_index("timestamp").resample(rule, label="left", closed="left").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
