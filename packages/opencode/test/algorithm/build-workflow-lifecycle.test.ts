@@ -12,6 +12,8 @@ import {
   finishWorkflowRun,
   recordVerifiedNewsEvidence,
   recordVerifiedMarketData,
+  recordVerifiedMarketDataSet,
+  recordVerifiedSpecialistEvidence,
   recordWorkflowAttempt,
   resumeWorkflowRun,
   startWorkflowBacktest,
@@ -91,6 +93,82 @@ it.live("records provenance-validated news evidence with its artifact hash and c
       artifactId: hash(artifactText),
       sourceSessionId: childSessionId,
     })
+  }),
+)
+
+it.live("records completed SEC and sentiment artifacts against their workflow requirements", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_specialists_${suffix}`,
+      sessionId: `ses_specialists_${suffix}`,
+      workspaceSlug: `meta-specialists-${suffix}`,
+      intent: "build",
+      marketDataRequired: false,
+      filingDependent: true,
+      sentimentRequired: true,
+      identity: {
+        symbols: { value: ["META"], source: { kind: "user_message", messageId: `msg_${suffix}` } },
+      },
+    })
+
+    const sec = yield* recordVerifiedSpecialistEvidence({
+      sessionId: workflow.sessionId,
+      sourceSessionId: `ses_sec_${suffix}`,
+      kind: "sec",
+      artifactText: '<subagent-artifact agent="sec_agent">sec_manifest.json</subagent-artifact>',
+    })
+    const sentiment = yield* recordVerifiedSpecialistEvidence({
+      sessionId: workflow.sessionId,
+      sourceSessionId: `ses_sentiment_${suffix}`,
+      kind: "sentiment",
+      artifactText: '<subagent-artifact agent="sentiment_agent">META_sentiment.manifest.json</subagent-artifact>',
+    })
+
+    expect(sec?.evidence.find((record) => record.kind === "sec")).toMatchObject({
+      requirementId: "sec:request",
+      status: "verified",
+      sourceSessionId: `ses_sec_${suffix}`,
+    })
+    expect(sentiment?.evidence.find((record) => record.kind === "sentiment")).toMatchObject({
+      requirementId: "sentiment:request",
+      status: "verified",
+      sourceSessionId: `ses_sentiment_${suffix}`,
+    })
+  }),
+)
+
+it.live("records every verified dataset for a multi-symbol request", () =>
+  Effect.gen(function* () {
+    const suffix = crypto.randomUUID()
+    const workflow = yield* BuildWorkflowStore.insert({
+      workflowId: `wf_multi_data_${suffix}`,
+      sessionId: `ses_multi_data_${suffix}`,
+      workspaceSlug: `eth-sol-xrp-${suffix}`,
+      intent: "build",
+      identity: {
+        symbols: {
+          value: ["ETH", "SOL", "XRP"],
+          source: { kind: "user_message", messageId: `msg_${suffix}` },
+        },
+      },
+    })
+    const datasets = ["ETH", "SOL", "XRP"].map(
+      (symbol) =>
+        ({
+          manifestSha256: hash(`manifest-${symbol}`),
+          identity: { actualSymbol: symbol, runId: `run-${symbol}` },
+        }) as unknown as VerifiedDatasetRef,
+    )
+
+    const evidenced = yield* recordVerifiedMarketDataSet({ sessionId: workflow.sessionId, datasets })
+
+    expect(evidenced?.phase).toBe("evidence_ready")
+    expect(evidenced?.evidence.map((record) => record.requirementId).sort()).toEqual([
+      "market_data:ETH",
+      "market_data:SOL",
+      "market_data:XRP",
+    ])
   }),
 )
 

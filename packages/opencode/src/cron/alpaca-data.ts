@@ -98,7 +98,7 @@ export namespace AlpacaData {
       entry = data.snapshots?.[cryptoPair]
     } else {
       const sym = symbol.toUpperCase()
-      const url = `${DATA_BASE}/v2/stocks/snapshots?symbols=${encodeURIComponent(sym)}`
+      const url = `${DATA_BASE}/v2/stocks/snapshots?symbols=${encodeURIComponent(sym)}&feed=iex`
       type Resp = Record<string, SnapshotEntry>
       const data = await get<Resp>(url, creds)
       entry = data[sym]

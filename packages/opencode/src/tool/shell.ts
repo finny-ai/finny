@@ -25,12 +25,9 @@ import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import { Python } from "@/python/env"
 import { workspaceEnvDir } from "@/python/session-env"
 import { resolveAlpacaMarketDataEnv } from "@/data/alpaca-market-data-env"
+import { resolveRegionalMarketDataEnv } from "@/data/regional-market-data-env"
 import { resolveBinanceBaseUrl } from "@/data/binance-market-data-env"
-import {
-  assertNoWorkerEnvironmentEnumeration,
-  redactSensitiveOutput,
-  workerShellEnv,
-} from "@/security/worker-shell"
+import { assertNoWorkerEnvironmentEnumeration, redactSensitiveOutput, workerShellEnv } from "@/security/worker-shell"
 import { assertNoRuntimeRequestSpecPath, readRequestSpecForSession } from "@/agent/request-spec"
 
 export { Parameters } from "./shell/prompt"
@@ -295,7 +292,11 @@ function hasEnterpriseIntradaySource(env: NodeJS.ProcessEnv) {
       env.POLYGON_API_KEY ||
       env.MARKET_DATA_API_KEY ||
       env.BLOOMBERG_API_KEY ||
-      env.ORACLE_MARKET_DATA_URL,
+      env.ORACLE_MARKET_DATA_URL ||
+      (env.KITE_API_KEY && env.KITE_ACCESS_TOKEN) ||
+      env.SAXO_ACCESS_TOKEN ||
+      env.QUESTRADE_ACCESS_TOKEN ||
+      (env.FUTU_HOST && env.FUTU_PORT),
   )
 }
 
@@ -1032,10 +1033,6 @@ export const ShellTool = Tool.define(
         }
         const baseEnv = { ...fileEnv, ...process.env }
         runtimeEnv.BINANCE_BASE_URL = resolveBinanceBaseUrl(baseEnv)
-        if (!baseEnv.ALPACA_API_KEY_ID || !baseEnv.ALPACA_API_SECRET_KEY) {
-          const brokerEnv = yield* Effect.promise(() => resolveAlpacaMarketDataEnv(baseEnv))
-          if (brokerEnv) Object.assign(runtimeEnv, brokerEnv)
-        }
         if (dataRoot) {
           const requestText = yield* fs
             .readFileString(path.join(dataRoot.workspacePath, "request.json"))
@@ -1045,6 +1042,22 @@ export const ShellTool = Tool.define(
           } catch {
             request = undefined
           }
+        }
+        if (!baseEnv.ALPACA_API_KEY_ID || !baseEnv.ALPACA_API_SECRET_KEY) {
+          const brokerEnv = yield* Effect.promise(() => resolveAlpacaMarketDataEnv(baseEnv))
+          if (brokerEnv) Object.assign(runtimeEnv, brokerEnv)
+        }
+        const requestedSymbol =
+          typeof request?.requested_symbol === "string"
+            ? request.requested_symbol
+            : Array.isArray(request?.requested_symbols) && typeof request.requested_symbols[0] === "string"
+              ? request.requested_symbols[0]
+              : undefined
+        const regionalEnv = yield* Effect.promise(() =>
+          resolveRegionalMarketDataEnv({ symbol: requestedSymbol, existing: { ...baseEnv, ...runtimeEnv } }),
+        )
+        if (regionalEnv) Object.assign(runtimeEnv, regionalEnv)
+        if (dataRoot) {
           runtimeEnv.FINNY_STRATEGY_WORKSPACE_NAME = dataRoot.workspace
           runtimeEnv.FINNY_STRATEGY_WORKSPACE_PATH = dataRoot.workspacePath
           runtimeEnv.ALLOWED_DATA_DIR = dataRoot.dataRoot

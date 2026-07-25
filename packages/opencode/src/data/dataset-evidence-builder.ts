@@ -1,7 +1,11 @@
 import crypto from "node:crypto"
 import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import { normalizeInterval, normalizeSymbol } from "@/agent/request-identity"
-import { DATASET_CALENDAR_VERSION, expectedEvidenceTimestamps } from "./dataset-evidence-calendar"
+import {
+  canonicalEvidenceTimestamp,
+  DATASET_CALENDAR_VERSION,
+  expectedEvidenceTimestamps,
+} from "./dataset-evidence-calendar"
 import {
   DATASET_EVIDENCE_SCHEMA,
   DATASET_EVIDENCE_VERSION,
@@ -10,6 +14,7 @@ import {
   type DatasetEvidenceV2,
   type EvidenceCsvFacts,
 } from "./dataset-evidence-v2"
+import { regionalMarketForTicker } from "./regional-markets"
 
 const REQUIRED_COLUMNS = ["timestamp", "open", "high", "low", "close", "volume"] as const
 
@@ -147,13 +152,9 @@ function columnIndexes(headerLine: string): ColumnIndexes {
 function parseBar(line: string, indexes: ColumnIndexes): ParsedBar {
   const cells = line.split(",")
   const timestamp = epochMillis(cells[indexes.timestamp]?.trim() ?? "")
-  const [open, high, low, close, volume] = [
-    indexes.open,
-    indexes.high,
-    indexes.low,
-    indexes.close,
-    indexes.volume,
-  ].map((position) => Number(cells[position]))
+  const [open, high, low, close, volume] = [indexes.open, indexes.high, indexes.low, indexes.close, indexes.volume].map(
+    (position) => Number(cells[position]),
+  )
   invariant(
     [timestamp, open, high, low, close, volume].every(Number.isFinite),
     "CSV has an invalid timestamp or numeric OHLCV row",
@@ -189,7 +190,7 @@ function parseCsv(csvText: string): { bars: ParsedBar[]; facts: EvidenceCsvFacts
   }
 }
 
-function calendar(assetClass: string): DatasetEvidenceV2["calendar"] {
+function calendar(assetClass: string, symbol?: string): DatasetEvidenceV2["calendar"] {
   if (assetClass === "crypto") {
     return {
       id: "24/7",
@@ -197,6 +198,16 @@ function calendar(assetClass: string): DatasetEvidenceV2["calendar"] {
       timezone: "UTC",
       session_type: "continuous",
       half_day_policy: "none",
+    }
+  }
+  const regional = symbol ? regionalMarketForTicker(symbol) : null
+  if (regional) {
+    return {
+      id: "REGIONAL_PROVIDER_OBSERVED",
+      version: DATASET_CALENDAR_VERSION,
+      timezone: regional.timezone,
+      session_type: "provider_observed",
+      half_day_policy: "provider_reported",
     }
   }
   return {
@@ -322,7 +333,18 @@ function reconcileTimestamps(
   binding: RequestBinding,
   bars: ParsedBar[],
 ): TimestampReconciliation {
-  const evidenceCalendar = calendar(binding.assetClass)
+  const evidenceCalendar = calendar(binding.assetClass, binding.symbol)
+  if (evidenceCalendar.id === "REGIONAL_PROVIDER_OBSERVED") {
+    const actual = [...new Set(bars.map((bar) => bar.timestamp))].sort((a, b) => a - b)
+    return {
+      expected: actual,
+      actualSet: new Set(actual),
+      missing: [],
+      extra: [],
+      step: intervalMilliseconds(binding.interval),
+      openFinalCandle: false,
+    }
+  }
   const expected = expectedEvidenceTimestamps({
     calendarId: evidenceCalendar.id,
     sessionType: evidenceCalendar.session_type,
@@ -330,7 +352,13 @@ function reconcileTimestamps(
     requestedStartInclusive: binding.requestedStart,
     requestedEndInclusive: binding.requestedEnd,
   })
-  const actual = bars.map((bar) => bar.timestamp)
+  const actual = bars.map((bar) =>
+    canonicalEvidenceTimestamp({
+      calendarId: evidenceCalendar.id,
+      interval: binding.interval,
+      timestamp: bar.timestamp,
+    }),
+  )
   const expectedSet = new Set(expected)
   const actualSet = new Set(actual)
   const missing = expected.filter((timestamp) => !actualSet.has(timestamp))
@@ -366,6 +394,7 @@ function coverageDescription(input: {
   hardBlocked: boolean
   missingCount: number
   extraCount: number
+  regionalProviderObserved: boolean
 }): Pick<Qualification, "coverage" | "coverageNote"> {
   if (input.openFinalCandle) {
     return {
@@ -379,6 +408,18 @@ function coverageDescription(input: {
       coverageNote: `partial: missing=${input.missingCount}, extra=${input.extraCount}`,
     }
   }
+  if (input.missingCount > 0) {
+    return {
+      coverage: "partial",
+      coverageNote: `research-usable partial coverage: missing=${input.missingCount}, extra=${input.extraCount}`,
+    }
+  }
+  if (input.regionalProviderObserved) {
+    return {
+      coverage: "provider_observed",
+      coverageNote: "provider-observed regional sessions; usable for research but not strict calendar qualification",
+    }
+  }
   return { coverage: "full", coverageNote: "full requested calendar coverage" }
 }
 
@@ -389,7 +430,11 @@ function qualifyEvidence(
 ): Qualification {
   const outliers = outlierCount(bars)
   const zeroVolume = bars.filter((bar) => bar.volume === 0).length
+  const regionalProviderObserved = Boolean(
+    regionalMarketForTicker(selectedSymbol({ request: input.request, requested: input.canonicalSymbol })),
+  )
   const reasons: Array<[boolean, string]> = [
+    [regionalProviderObserved, "REGIONAL_CALENDAR_PROVIDER_OBSERVED"],
     [reconciliation.openFinalCandle, "INCOMPLETE_FINAL_BAR"],
     [!reconciliation.openFinalCandle && reconciliation.missing.length > 0, "MISSING_EXPECTED_TIMESTAMP"],
     [reconciliation.extra.length > 0, "EXTRA_TIMESTAMP"],
@@ -399,8 +444,11 @@ function qualifyEvidence(
     [input.priceBasis.corporate_action_status === "unresolved", "UNRESOLVED_CORPORATE_ACTIONS"],
   ]
   const reasonCodes = reasons.filter(([applies]) => applies).map(([, code]) => code)
+  const expectedCount = reconciliation.expected.length
+  const observedExpectedCount = expectedCount - reconciliation.missing.length
+  const coverageRatio = expectedCount > 0 ? observedExpectedCount / expectedCount : 0
   const hardBlocked =
-    (reconciliation.missing.length > 0 && !reconciliation.openFinalCandle) || reconciliation.extra.length > 0
+    (coverageRatio < 0.95 && !reconciliation.openFinalCandle) || reconciliation.extra.length > 0
   return {
     outliers,
     zeroVolume,
@@ -412,6 +460,7 @@ function qualifyEvidence(
       hardBlocked,
       missingCount: reconciliation.missing.length,
       extraCount: reconciliation.extra.length,
+      regionalProviderObserved,
     }),
     usableForParent: hardBlocked ? "no" : "yes",
   }
@@ -455,7 +504,7 @@ function canonicalManifestFields(input: ManifestAssemblyInput) {
       provider_symbol: source.provider.providerSymbol,
     },
     interval: binding.interval,
-    calendar: calendar(binding.assetClass),
+    calendar: calendar(binding.assetClass, binding.symbol),
     window: {
       requested_start_inclusive: binding.requestedStart,
       requested_end_inclusive: binding.requestedEnd,

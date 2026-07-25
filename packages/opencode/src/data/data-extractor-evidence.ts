@@ -131,6 +131,12 @@ export interface ExistingDataExtractorEvidenceResult {
   dataset?: VerifiedDatasetRef
 }
 
+export interface ExistingDataExtractorEvidenceSetResult {
+  found: boolean
+  result?: ValidateDataExtractorResult
+  datasets?: readonly VerifiedDatasetRef[]
+}
+
 export interface VerifiedDatasetIdentity {
   readonly schemaVersion?: number
   readonly source?: string
@@ -155,6 +161,31 @@ export interface VerifiedDatasetIdentity {
 
 const VERIFIED_DATASET_REF = Symbol("finny.verified-dataset-ref")
 
+export interface DatasetQualificationAttestationV1 {
+  readonly schema: "finny.dataset_qualification_attestation"
+  readonly version: 1
+  readonly datasetEvidenceId: string
+  readonly datasetHash: string
+  readonly manifestHash: string
+  readonly qualification: "strict_qualified"
+}
+
+export function buildDatasetQualificationAttestation(input: {
+  qualification: DatasetQualification
+  datasetHash: string
+  manifestHash: string
+}): DatasetQualificationAttestationV1 | undefined {
+  if (input.qualification !== "strict_qualified") return undefined
+  return Object.freeze({
+    schema: "finny.dataset_qualification_attestation",
+    version: 1,
+    datasetEvidenceId: `dataset-${input.manifestHash.slice(0, 24)}`,
+    datasetHash: input.datasetHash,
+    manifestHash: input.manifestHash,
+    qualification: "strict_qualified",
+  })
+}
+
 /**
  * Immutable-by-hash reference to the exact data_extractor artifacts that
  * satisfied the active session's evidence gate.
@@ -170,6 +201,7 @@ export interface VerifiedDatasetRef {
   readonly csvPath: string
   readonly csvSha256: string
   readonly identity: VerifiedDatasetIdentity
+  readonly qualificationAttestation?: DatasetQualificationAttestationV1
 }
 
 export function isVerifiedDatasetRef(value: unknown): value is VerifiedDatasetRef {
@@ -181,6 +213,7 @@ export type RequireVerifiedEvidenceResult =
       ok: true
       workspaceSlug: string
       dataset: VerifiedDatasetRef
+      datasets: readonly VerifiedDatasetRef[]
     })
   | (ValidateDataExtractorResult & {
       ok: false
@@ -311,6 +344,8 @@ async function readVerifiedDatasetSnapshot(input: {
 
 function buildVerifiedDatasetRef(snapshot: VerifiedDatasetSnapshot): VerifiedDatasetRef {
   const manifest = snapshot.manifest
+  const manifestSha256 = crypto.createHash("sha256").update(snapshot.manifestBytes).digest("hex")
+  const csvSha256 = crypto.createHash("sha256").update(snapshot.csvBytes).digest("hex")
   const identity: VerifiedDatasetIdentity = Object.freeze({
     schemaVersion: manifest.schema_version,
     source: manifest.source,
@@ -335,13 +370,19 @@ function buildVerifiedDatasetRef(snapshot: VerifiedDatasetSnapshot): VerifiedDat
     qualification: evidenceQualification(manifest),
     repaired: Boolean(manifest.repair_lineage),
   })
+  const qualificationAttestation = buildDatasetQualificationAttestation({
+    qualification: identity.qualification,
+    datasetHash: csvSha256,
+    manifestHash: manifestSha256,
+  })
   return Object.freeze({
     [VERIFIED_DATASET_REF]: true as const,
     manifestPath: snapshot.manifestPath,
-    manifestSha256: crypto.createHash("sha256").update(snapshot.manifestBytes).digest("hex"),
+    manifestSha256,
     csvPath: snapshot.csvPath,
-    csvSha256: crypto.createHash("sha256").update(snapshot.csvBytes).digest("hex"),
+    csvSha256,
     identity,
+    ...(qualificationAttestation ? { qualificationAttestation } : {}),
   })
 }
 
@@ -1466,6 +1507,72 @@ export async function validateExistingDataExtractorEvidence(input: {
   }
 }
 
+/**
+ * Resolve every request-bound market-data artifact for a multi-symbol build.
+ *
+ * Each DatasetEvidenceV2 manifest is intentionally single-symbol, even when
+ * the RequestSpec names a universe. Validate each member against the same
+ * immutable request lineage and fail closed unless the complete universe is
+ * present. The singular helper remains the primitive so all identity, hash,
+ * and CSV checks stay identical for single- and multi-symbol workflows.
+ */
+export async function validateExistingDataExtractorEvidenceSet(input: {
+  workspaceSlug: string | null
+  context?: WorkspaceRequestContext
+  dataRoot?: string
+  requestedProvider?: string
+}): Promise<ExistingDataExtractorEvidenceSetResult> {
+  const symbols = input.context?.requested_symbols
+    ?.map((symbol) => normalizeSymbol(symbol))
+    .filter((symbol): symbol is string => Boolean(symbol))
+
+  if (!symbols?.length) {
+    const existing = await validateExistingDataExtractorEvidence(input)
+    return {
+      found: existing.found,
+      result: existing.result,
+      datasets: existing.dataset ? [existing.dataset] : undefined,
+    }
+  }
+
+  const datasets: VerifiedDatasetRef[] = []
+  const texts: string[] = []
+  const missing: string[] = []
+  let found = false
+  for (const symbol of [...new Set(symbols)]) {
+    const existing = await validateExistingDataExtractorEvidence({
+      ...input,
+      context: {
+        ...input.context!,
+        requested_symbol: symbol,
+        requested_symbols: undefined,
+      },
+    })
+    found ||= existing.found
+    if (!existing.found) {
+      missing.push(symbol)
+      continue
+    }
+    if (!existing.result?.ok || !existing.dataset) {
+      return { found: true, result: existing.result }
+    }
+    datasets.push(existing.dataset)
+    texts.push(existing.result.text)
+  }
+
+  if (missing.length > 0) {
+    return {
+      found,
+      result: blocked([`missing identity-matching manifests for request symbols: ${missing.join(", ")}`]),
+    }
+  }
+  return {
+    found: true,
+    result: { ok: true, text: texts.join("\n\n"), issues: [] },
+    datasets,
+  }
+}
+
 function normalizeProviderID(value: string | undefined): string {
   return (value ?? "")
     .trim()
@@ -1499,14 +1606,15 @@ export async function requireVerifiedDataExtractorEvidenceForSession(
   const roots: Array<string | undefined> = [undefined, ...(await linkedAlgorithmDataRoots(workspaceSlug))]
   let blockedText: string | undefined
   for (const dataRoot of roots) {
-    const existing = await validateExistingDataExtractorEvidence({ workspaceSlug, context, dataRoot })
-    if (existing.found && existing.result?.ok && existing.dataset) {
+    const existing = await validateExistingDataExtractorEvidenceSet({ workspaceSlug, context, dataRoot })
+    if (existing.found && existing.result?.ok && existing.datasets?.length) {
       return {
         ok: true,
         text: existing.result.text,
         issues: existing.result.issues,
         workspaceSlug,
-        dataset: existing.dataset,
+        dataset: existing.datasets[0]!,
+        datasets: existing.datasets,
       }
     }
     if (existing.found && existing.result) blockedText ??= existing.result.text

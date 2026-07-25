@@ -40,30 +40,56 @@ describe("AssetSpec registry", () => {
   test("crypto perps require funding and maintenance margin for production eligibility", () => {
     const unsafe = resolveAssetSpec({ symbol: "BTC-USD", asset_class: "crypto_perp" }, "BTC-USD")
     expect(unsafe.productionEligible).toBe(false)
-    const eligible = resolveAssetSpec({
-      symbol: "BTC-USD",
-      asset_class: "crypto_perp",
-      execution: { funding_rate_bps: 1, maintenance_margin_pct: 0.05 },
-    }, "BTC-USD")
+    const eligible = resolveAssetSpec(
+      {
+        symbol: "BTC-USD",
+        asset_class: "crypto_perp",
+        execution: { funding_rate_bps: 1, maintenance_margin_pct: 0.05 },
+      },
+      "BTC-USD",
+    )
     expect(eligible.productionEligible).toBe(true)
   })
 
   test("rejects inconsistent symbol and asset class unless custom spec is complete", () => {
     expect(() => resolveAssetSpec({ symbol: "BTC-USD", asset_class: "equity" }, "BTC-USD")).toThrow("inconsistent")
-    const spec = resolveAssetSpec({
-      symbol: "BTC-USD",
-      asset_class: "equity",
-      asset_spec: {
-        tickSize: 0.01,
-        lotSize: 1,
-        multiplier: 1,
-        calendar: "US_EQUITIES",
-        currency: "USD",
-        feeModel: "custom",
-        marginModel: "custom",
-        dataProvider: "custom",
+    const spec = resolveAssetSpec(
+      {
+        symbol: "BTC-USD",
+        asset_class: "equity",
+        asset_spec: {
+          tickSize: 0.01,
+          lotSize: 1,
+          multiplier: 1,
+          calendar: "US_EQUITIES",
+          currency: "USD",
+          feeModel: "custom",
+          marginModel: "custom",
+          dataProvider: "custom",
+        },
       },
-    }, "BTC-USD")
+      "BTC-USD",
+    )
     expect(spec.assetClass).toBe("equity")
+  })
+
+  test("infers regional equity metadata without treating hyphenated tickers as crypto", () => {
+    const india = resolveAssetSpec({ symbol: "BAJAJ-AUTO.NS" }, "BAJAJ-AUTO.NS")
+    expect(india).toMatchObject({
+      assetClass: "equity",
+      venue: "NSE",
+      currency: "INR",
+      calendar: "XNSE",
+      dataProvider: "zerodha",
+      productionEligible: false,
+    })
+
+    expect(resolveAssetSpec({ symbol: "SHOP.TO" }, "SHOP.TO")).toMatchObject({ currency: "CAD", calendar: "XTSE" })
+    expect(resolveAssetSpec({ symbol: "ASML.AS" }, "ASML.AS")).toMatchObject({ currency: "EUR", calendar: "XEUR" })
+    expect(resolveAssetSpec({ symbol: "600519.SS" }, "600519.SS")).toMatchObject({
+      currency: "CNY",
+      calendar: "XSHG",
+      lotSize: 100,
+    })
   })
 })

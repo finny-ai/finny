@@ -284,3 +284,20 @@ export function expectedEvidenceTimestamps(request: EvidenceCalendarRequest): nu
   const context = calendarContext(request)
   return boundToRequestedWindow({ generated: generateCalendar(context), request })
 }
+
+/**
+ * Map provider bar timestamps onto the timestamp convention used by the
+ * evidence calendar. Daily XNYS feeds commonly label a bar at local midnight
+ * (04:00Z or 05:00Z depending on DST), while Finny represents the same trading
+ * session as 00:00Z on its calendar date. They are the same session, not a
+ * missing bar plus an extra bar.
+ */
+export function canonicalEvidenceTimestamp(input: {
+  calendarId: string
+  interval: string
+  timestamp: number
+}): number {
+  const step = intervalMilliseconds({ interval: input.interval })
+  if (input.calendarId !== "XNYS" || step === undefined || step < DAY) return input.timestamp
+  return dayEpoch({ day: newYorkDay({ epoch: input.timestamp }) })
+}

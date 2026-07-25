@@ -4,6 +4,7 @@ import {
   isPythonAvailable,
   looksLikePythonMissing,
   validationWarningsBlock,
+  effectiveSaveConfig,
 } from "../../src/tool/algorithm-save"
 
 describe("looksLikePythonMissing", () => {
@@ -75,7 +76,7 @@ describe("isPythonAvailable", () => {
 })
 
 describe("validationWarningsBlock", () => {
-  test("does not silently promote advisory warnings to save blockers", () => {
+  test("blocks advisory warnings until the generated strategy clears them", () => {
     const block = validationWarningsBlock([
       {
         code: "DIVISION_NO_ZERO_CHECK",
@@ -84,7 +85,12 @@ describe("validationWarningsBlock", () => {
       } as any,
     ])
 
-    expect(block).toBeUndefined()
+    expect(block?.title).toBe("Failed to save strategy")
+    expect(block?.output).toContain("warnings must be cleared before save/backtest")
+    expect(block?.output).toContain("DIVISION_NO_ZERO_CHECK")
+    expect(block?.output).toContain("Fix: correct every warning")
+    expect(block?.metadata.blocked).toBe(true)
+    expect(block?.metadata.diagnosticCodes).toEqual(["DIVISION_NO_ZERO_CHECK"])
   })
 
   test("blocks diagnostics classified as errors", () => {
@@ -105,5 +111,33 @@ describe("validationWarningsBlock", () => {
 
   test("allows saves with no validator warnings", () => {
     expect(validationWarningsBlock([])).toBeUndefined()
+  })
+})
+
+describe("effectiveSaveConfig", () => {
+  test("validates version patches with the inherited risk contract that will be persisted", () => {
+    const config = effectiveSaveConfig({
+      previous: JSON.stringify({
+        symbol: "META",
+        asset_class: "equity",
+        interval: "1h",
+        required_history_bars: 30,
+        risk_contract: { protective_stop: { mode: "strategy_next_open" } },
+        params: { ema_period: 20 },
+      }),
+      incoming: JSON.stringify({
+        symbol: "META",
+        asset_class: "equity",
+        interval: "1h",
+        required_history_bars: 110,
+        params: { sma_filter_period: 100 },
+      }),
+    })
+
+    expect(JSON.parse(config!)).toMatchObject({
+      required_history_bars: 110,
+      risk_contract: { protective_stop: { mode: "strategy_next_open" } },
+      params: { sma_filter_period: 100 },
+    })
   })
 })

@@ -10,7 +10,10 @@ afterEach(() => _resetSavePreflightGuardForTests())
 
 test("document/config preflight precedes durable save-attempt registration", () => {
   const source = fs.readFileSync(new URL("../../src/tool/algorithm-save.ts", import.meta.url), "utf8")
-  const execute = source.slice(source.indexOf("const pendingContext"), source.indexOf("const outcomeExit"))
+  const execute = source.slice(
+    source.indexOf("const documents = resolveSaveDocuments"),
+    source.indexOf("const outcomeExit"),
+  )
   const contractGate = execute.indexOf("const contractBlock = contractRejectionBlock")
   const durableRegistration = execute.indexOf("const durableStart")
   expect(contractGate).toBeGreaterThanOrEqual(0)

@@ -112,6 +112,7 @@ describe("workspace prepare request context", () => {
           startDate: "2025-07-17",
           endDate: "2026-07-16",
         },
+        now: new Date("2026-07-17T16:30:00Z"),
       }),
     ).toBeUndefined()
   })
@@ -267,6 +268,33 @@ describe("workspace prepare request context", () => {
           startDate: "2026-06-01",
           endDate: "2026-07-15",
         },
+      }),
+    ).toBeUndefined()
+  })
+
+  test("repairs a legacy fixed-day window when the original relative request resolves deterministically", () => {
+    const workflow = {
+      identityStatus: "confirmed",
+      identity: {
+        symbols: { value: ["META"] },
+        assetClass: { value: "equity" },
+        interval: { value: "1h" },
+        window: { value: { start: "2026-01-23", end: "2026-07-22" } },
+      },
+    }
+
+    expect(
+      workspacePrepareConfirmedIdentityLock({
+        workflow,
+        userPrompt: "Build a META equity strategy every 1hr for 6 months or longer.",
+        params: {
+          symbol: "META",
+          assetClass: "equity",
+          interval: "1h",
+          startDate: "2026-01-21",
+          endDate: "2026-07-21",
+        },
+        now: new Date("2026-07-22T07:33:00Z"),
       }),
     ).toBeUndefined()
   })

@@ -1,3 +1,5 @@
+import { isRegionalEquityTicker, normalizeRegionalTicker } from "./regional-markets"
+
 /**
  * Symbol registry. Two roles:
  *
@@ -128,11 +130,44 @@ const QUOTE_CURRENCIES = ["USD", "USDT", "USDC", "BUSD", "DAI"]
 // not as stock. Without this, `PEPE` / `SHIB` etc. would match the
 // stock-ticker shape (1-5 caps) and get misrouted to yfinance equities.
 const KNOWN_CRYPTO_BASES = new Set<string>([
-  "PEPE", "SHIB", "BONK", "WIF", "FLOKI", "TRUMP", "TURBO",
-  "INJ", "TIA", "TON", "JUP", "SEI", "STRK", "TAO", "RNDR",
-  "FET", "AGIX", "OCEAN", "GRT", "FIL", "ICP", "APT", "LDO",
-  "MKR", "COMP", "SNX", "CRV", "BAL", "1INCH", "GMX", "DYDX",
-  "RUNE", "OSMO", "JTO", "PYTH", "MEME", "ORDI", "SATS",
+  "PEPE",
+  "SHIB",
+  "BONK",
+  "WIF",
+  "FLOKI",
+  "TRUMP",
+  "TURBO",
+  "INJ",
+  "TIA",
+  "TON",
+  "JUP",
+  "SEI",
+  "STRK",
+  "TAO",
+  "RNDR",
+  "FET",
+  "AGIX",
+  "OCEAN",
+  "GRT",
+  "FIL",
+  "ICP",
+  "APT",
+  "LDO",
+  "MKR",
+  "COMP",
+  "SNX",
+  "CRV",
+  "BAL",
+  "1INCH",
+  "GMX",
+  "DYDX",
+  "RUNE",
+  "OSMO",
+  "JTO",
+  "PYTH",
+  "MEME",
+  "ORDI",
+  "SATS",
 ])
 
 // Permissive shape check. A "ticker-ish" string is 1-5 chars of uppercase
@@ -163,7 +198,13 @@ function looksLikeCryptoBase(s: string): boolean {
 export function resolveSymbol(input: string): SupportedSymbol | null {
   const raw = (input ?? "").trim()
   if (!raw) return null
-  const upper = raw.toUpperCase().replace(/\s+/g, "")
+  const upper = normalizeRegionalTicker(raw)
+
+  // Regional listed equities must be recognized before pair parsing. A dot is
+  // an exchange suffix here (`SHOP.TO`), not a crypto separator (`BTC.USD`).
+  if (isRegionalEquityTicker(upper)) {
+    return { name: upper, kind: "stock", yfinance: upper, canonical: upper, unknown: true }
+  }
 
   // (1) curated registry lookup — accepts name/yfinance/canonical forms
   // plus a few normalized pair shapes.
@@ -179,7 +220,8 @@ export function resolveSymbol(input: string): SupportedSymbol | null {
   const sep = upper.match(new RegExp(`^([A-Z0-9]{2,6})[-/.](${QUOTE_CURRENCIES.join("|")})$`))
   if (sep) return { name: sep[1], kind: "crypto", yfinance: `${sep[1]}-USD`, canonical: `${sep[1]}/USD`, unknown: true }
   const glued = upper.match(new RegExp(`^([A-Z0-9]{2,6})(${QUOTE_CURRENCIES.join("|")})$`))
-  if (glued) return { name: glued[1], kind: "crypto", yfinance: `${glued[1]}-USD`, canonical: `${glued[1]}/USD`, unknown: true }
+  if (glued)
+    return { name: glued[1], kind: "crypto", yfinance: `${glued[1]}-USD`, canonical: `${glued[1]}/USD`, unknown: true }
 
   // (3) Known crypto base (PEPE, SHIB, etc.) — checked BEFORE the stock
   // ticker fallback because the regexes overlap (4-letter caps match both).
@@ -208,16 +250,25 @@ export function resolveSymbol(input: string): SupportedSymbol | null {
  * so the model knows it isn't restricted to this list.
  */
 export function renderSupportedMarkets(): string {
-  const crypto = listByKind("crypto").map((s) => s.name).join(", ")
-  const stock = listByKind("stock").map((s) => s.name).join(", ")
-  const etf = listByKind("etf").map((s) => s.name).join(", ")
-  const futures = listByKind("future").map((s) => s.name).join(", ")
+  const crypto = listByKind("crypto")
+    .map((s) => s.name)
+    .join(", ")
+  const stock = listByKind("stock")
+    .map((s) => s.name)
+    .join(", ")
+  const etf = listByKind("etf")
+    .map((s) => s.name)
+    .join(", ")
+  const futures = listByKind("future")
+    .map((s) => s.name)
+    .join(", ")
   return [
     `- Crypto (24/7): ${crypto}`,
     `- Stocks (US market hours): ${stock}`,
     `- ETFs (US market hours): ${etf}`,
+    `- Regional equities (preserve suffix): India .NS/.BO; Canada .TO/.V; Europe .AS/.BR/.DE/.L/.MC/.MI/.PA/.SW; China/Hong Kong .SS/.SZ/.HK.`,
     `- Futures (continuous yfinance contracts): ${futures}`,
-    `- And: any other yfinance-compatible ticker (most US-listed equities, ETFs, futures roots, and major crypto pairs work). Try the symbol; the data layer will tell you if there's no data.`,
+    `- And: any other yfinance-compatible ticker. Preserve every regional exchange suffix; the data layer will tell you if the exact listing has no data.`,
   ].join("\n")
 }
 

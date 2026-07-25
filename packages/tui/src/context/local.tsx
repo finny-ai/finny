@@ -13,11 +13,15 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 
-type BrokerKind = "alpaca" | "binance" | "ibkr"
+type BrokerKind = "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
 const BROKER_DISPLAY: Record<BrokerKind, string> = {
   alpaca: "Alpaca",
   binance: "Binance",
   ibkr: "Interactive Brokers",
+  zerodha: "Zerodha",
+  saxo: "Saxo",
+  questrade: "Questrade",
+  futu: "Futu OpenD",
 }
 
 export type LocalTheme = {
@@ -97,7 +101,11 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
           return agents()
         },
         current() {
-          return agents().find((x) => x.name === agentStore.current) ?? agents().find((x) => x.name === "chat") ?? agents().at(0)
+          return (
+            agents().find((x) => x.name === agentStore.current) ??
+            agents().find((x) => x.name === "chat") ??
+            agents().at(0)
+          )
         },
         set(name: string) {
           if (!agents().some((x) => x.name === name))

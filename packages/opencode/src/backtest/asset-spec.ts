@@ -1,3 +1,5 @@
+import { regionalMarketForTicker } from "../data/regional-markets"
+
 export type AssetClass = "crypto_spot" | "crypto_perp" | "equity" | "future" | "fx" | "option"
 export type LegacyAssetClass = "crypto" | "equity"
 
@@ -27,31 +29,130 @@ export interface AssetSpec {
 const CRYPTO_BASES = new Set(["BTC", "ETH", "SOL", "XRP", "ADA", "DOGE", "LTC", "BCH", "DOT", "AVAX", "LINK", "UNI"])
 const OPTION_RE = /^[A-Z]{1,6}\/\d{8}\/\d+(?:\.\d+)?[CP]$/i
 const FUTURES_SPECS = {
-  ES: { venue: "CME", tickSize: 0.25, multiplier: 50, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
-  NQ: { venue: "CME", tickSize: 0.25, multiplier: 20, currency: "USD", initialMarginPct: 0.06, maintenanceMarginPct: 0.05, commissionPerContract: 2.25 },
-  RTY: { venue: "CME", tickSize: 0.1, multiplier: 50, currency: "USD", initialMarginPct: 0.07, maintenanceMarginPct: 0.06, commissionPerContract: 2.25 },
-  YM: { venue: "CBOT", tickSize: 1, multiplier: 5, currency: "USD", initialMarginPct: 0.05, maintenanceMarginPct: 0.04, commissionPerContract: 2.25 },
-  CL: { venue: "NYMEX", tickSize: 0.01, multiplier: 1000, currency: "USD", initialMarginPct: 0.1, maintenanceMarginPct: 0.08, commissionPerContract: 2.75 },
-  GC: { venue: "COMEX", tickSize: 0.1, multiplier: 100, currency: "USD", initialMarginPct: 0.08, maintenanceMarginPct: 0.06, commissionPerContract: 2.6 },
-  SI: { venue: "COMEX", tickSize: 0.005, multiplier: 5000, currency: "USD", initialMarginPct: 0.12, maintenanceMarginPct: 0.1, commissionPerContract: 2.9 },
-  HG: { venue: "COMEX", tickSize: 0.0005, multiplier: 25000, currency: "USD", initialMarginPct: 0.09, maintenanceMarginPct: 0.07, commissionPerContract: 2.75 },
-  ZN: { venue: "CBOT", tickSize: 0.015625, multiplier: 1000, currency: "USD", initialMarginPct: 0.03, maintenanceMarginPct: 0.025, commissionPerContract: 2.1 },
-  ZB: { venue: "CBOT", tickSize: 0.03125, multiplier: 1000, currency: "USD", initialMarginPct: 0.04, maintenanceMarginPct: 0.03, commissionPerContract: 2.1 },
-  "6E": { venue: "CME", tickSize: 0.00005, multiplier: 125000, currency: "USD", initialMarginPct: 0.04, maintenanceMarginPct: 0.03, commissionPerContract: 2.4 },
+  ES: {
+    venue: "CME",
+    tickSize: 0.25,
+    multiplier: 50,
+    currency: "USD",
+    initialMarginPct: 0.05,
+    maintenanceMarginPct: 0.04,
+    commissionPerContract: 2.25,
+  },
+  NQ: {
+    venue: "CME",
+    tickSize: 0.25,
+    multiplier: 20,
+    currency: "USD",
+    initialMarginPct: 0.06,
+    maintenanceMarginPct: 0.05,
+    commissionPerContract: 2.25,
+  },
+  RTY: {
+    venue: "CME",
+    tickSize: 0.1,
+    multiplier: 50,
+    currency: "USD",
+    initialMarginPct: 0.07,
+    maintenanceMarginPct: 0.06,
+    commissionPerContract: 2.25,
+  },
+  YM: {
+    venue: "CBOT",
+    tickSize: 1,
+    multiplier: 5,
+    currency: "USD",
+    initialMarginPct: 0.05,
+    maintenanceMarginPct: 0.04,
+    commissionPerContract: 2.25,
+  },
+  CL: {
+    venue: "NYMEX",
+    tickSize: 0.01,
+    multiplier: 1000,
+    currency: "USD",
+    initialMarginPct: 0.1,
+    maintenanceMarginPct: 0.08,
+    commissionPerContract: 2.75,
+  },
+  GC: {
+    venue: "COMEX",
+    tickSize: 0.1,
+    multiplier: 100,
+    currency: "USD",
+    initialMarginPct: 0.08,
+    maintenanceMarginPct: 0.06,
+    commissionPerContract: 2.6,
+  },
+  SI: {
+    venue: "COMEX",
+    tickSize: 0.005,
+    multiplier: 5000,
+    currency: "USD",
+    initialMarginPct: 0.12,
+    maintenanceMarginPct: 0.1,
+    commissionPerContract: 2.9,
+  },
+  HG: {
+    venue: "COMEX",
+    tickSize: 0.0005,
+    multiplier: 25000,
+    currency: "USD",
+    initialMarginPct: 0.09,
+    maintenanceMarginPct: 0.07,
+    commissionPerContract: 2.75,
+  },
+  ZN: {
+    venue: "CBOT",
+    tickSize: 0.015625,
+    multiplier: 1000,
+    currency: "USD",
+    initialMarginPct: 0.03,
+    maintenanceMarginPct: 0.025,
+    commissionPerContract: 2.1,
+  },
+  ZB: {
+    venue: "CBOT",
+    tickSize: 0.03125,
+    multiplier: 1000,
+    currency: "USD",
+    initialMarginPct: 0.04,
+    maintenanceMarginPct: 0.03,
+    commissionPerContract: 2.1,
+  },
+  "6E": {
+    venue: "CME",
+    tickSize: 0.00005,
+    multiplier: 125000,
+    currency: "USD",
+    initialMarginPct: 0.04,
+    maintenanceMarginPct: 0.03,
+    commissionPerContract: 2.4,
+  },
 } as const
 
 function futuresRoot(symbol: string): keyof typeof FUTURES_SPECS | undefined {
-  const root = symbol.toUpperCase().replace(/=F$/, "").replace(/\/CONT$/, "")
-  return root in FUTURES_SPECS ? root as keyof typeof FUTURES_SPECS : undefined
+  const root = symbol
+    .toUpperCase()
+    .replace(/=F$/, "")
+    .replace(/\/CONT$/, "")
+  return root in FUTURES_SPECS ? (root as keyof typeof FUTURES_SPECS) : undefined
 }
 
 export function normalizeAssetClass(value: unknown, symbol?: string): AssetClass {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : ""
   if (raw === "crypto") return "crypto_spot"
-  if (raw === "equity" || raw === "crypto_spot" || raw === "crypto_perp" || raw === "future" || raw === "fx" || raw === "option") {
+  if (
+    raw === "equity" ||
+    raw === "crypto_spot" ||
+    raw === "crypto_perp" ||
+    raw === "future" ||
+    raw === "fx" ||
+    raw === "option"
+  ) {
     return raw
   }
   const sym = String(symbol ?? "").toUpperCase()
+  if (regionalMarketForTicker(sym)) return "equity"
   if (OPTION_RE.test(sym)) return "option"
   if (futuresRoot(sym)) return "future"
   if (/^[A-Z]{6}$/.test(sym) && !CRYPTO_BASES.has(sym.slice(0, 3))) return "fx"
@@ -88,7 +189,12 @@ export function resolveAssetSpec(config: any, symbolFallback: string): AssetSpec
   const compatibleOverride = new Set([assetClass, inferredAssetClass])
   const compatibleCryptoMode =
     compatibleOverride.size <= 2 && compatibleOverride.has("crypto_spot") && compatibleOverride.has("crypto_perp")
-  if (typeof rawAssetClass === "string" && assetClass !== inferredAssetClass && !compatibleCryptoMode && !hasCompleteCustomSpec) {
+  if (
+    typeof rawAssetClass === "string" &&
+    assetClass !== inferredAssetClass &&
+    !compatibleCryptoMode &&
+    !hasCompleteCustomSpec
+  ) {
     throw new Error(
       `asset_class ${assetClass} is inconsistent with symbol "${symbol}" ` +
         `(inferred ${inferredAssetClass}). Supply a complete custom asset_spec to override inference.`,
@@ -145,8 +251,12 @@ function defaultsFor(assetClass: AssetClass, symbol: string, execution: Record<s
       tickSize: 0.01,
       lotSize: 0.001,
       multiplier: 1,
-      productionEligible: Number(execution.funding_rate_bps ?? 0) !== 0 && Number(execution.maintenance_margin_pct ?? 0) > 0,
-      blockingReason: Number(execution.funding_rate_bps ?? 0) === 0 ? "Perp production eligibility requires funding enabled." : undefined,
+      productionEligible:
+        Number(execution.funding_rate_bps ?? 0) !== 0 && Number(execution.maintenance_margin_pct ?? 0) > 0,
+      blockingReason:
+        Number(execution.funding_rate_bps ?? 0) === 0
+          ? "Perp production eligibility requires funding enabled."
+          : undefined,
     }
   }
   if (assetClass === "future") {
@@ -188,7 +298,25 @@ function defaultsFor(assetClass: AssetClass, symbol: string, execution: Record<s
       lotSize: 1,
       multiplier: 100,
       productionEligible: false,
-      blockingReason: "Options require pricing, Greeks, exercise/assignment, IV surface, and liquidity models before production eligibility.",
+      blockingReason:
+        "Options require pricing, Greeks, exercise/assignment, IV surface, and liquidity models before production eligibility.",
+    }
+  }
+  const regional = regionalMarketForTicker(symbol)
+  if (assetClass === "equity" && regional) {
+    return {
+      ...common,
+      assetClass,
+      venue: regional.venue,
+      currency: regional.currency,
+      calendar: regional.calendar,
+      tickSize: regional.tickSize,
+      lotSize: regional.lotSize,
+      multiplier: 1,
+      dataProvider: regional.brokerKind,
+      productionEligible: false,
+      blockingReason:
+        "Regional equities are research-only until exchange-grade calendar coverage and broker execution are audited.",
     }
   }
   return {
@@ -206,7 +334,8 @@ function defaultsFor(assetClass: AssetClass, symbol: string, execution: Record<s
 function validateAssetSpec(spec: AssetSpec): void {
   if (!Number.isFinite(spec.tickSize) || spec.tickSize <= 0) throw new Error("AssetSpec.tickSize must be positive.")
   if (!Number.isFinite(spec.lotSize) || spec.lotSize <= 0) throw new Error("AssetSpec.lotSize must be positive.")
-  if (!Number.isFinite(spec.multiplier) || spec.multiplier <= 0) throw new Error("AssetSpec.multiplier must be positive.")
+  if (!Number.isFinite(spec.multiplier) || spec.multiplier <= 0)
+    throw new Error("AssetSpec.multiplier must be positive.")
   if (!spec.currency || !spec.calendar || !spec.feeModel || !spec.marginModel || !spec.dataProvider) {
     throw new Error("AssetSpec is missing required metadata.")
   }

@@ -9,7 +9,7 @@ const warning = {
 } as Validate.Diagnostic
 
 describe("RetryOrchestrator warning handling", () => {
-  test("keeps validator warnings advisory instead of promoting them to save blockers", () => {
+  test("counts validator warnings as bounded save blockers", () => {
     const outcome = RetryOrchestrator.outcomeFromValidationResult({
       currentAttempt: 1,
       result: {
@@ -19,13 +19,14 @@ describe("RetryOrchestrator warning handling", () => {
       },
     })
 
-    expect(outcome.kind).toBe("passed")
-    if (outcome.kind === "passed") {
-      expect(outcome.warnings.map((d) => d.code)).toEqual(["DIVISION_NO_ZERO_CHECK"])
+    expect(outcome.kind).toBe("retry")
+    if (outcome.kind === "retry") {
+      expect(outcome.diagnostics.map((d) => d.code)).toEqual(["DIVISION_NO_ZERO_CHECK"])
+      expect(outcome.attempt).toBe(1)
     }
   })
 
-  test("warning-only validation does not exhaust the retry budget", () => {
+  test("warning-only validation exhausts the retry budget instead of looping", () => {
     const outcome = RetryOrchestrator.outcomeFromValidationResult({
       currentAttempt: RetryOrchestrator.MAX_ATTEMPTS,
       result: {
@@ -35,7 +36,10 @@ describe("RetryOrchestrator warning handling", () => {
       },
     })
 
-    expect(outcome.kind).toBe("passed")
+    expect(outcome.kind).toBe("exhausted")
+    if (outcome.kind === "exhausted") {
+      expect(outcome.diagnostics.map((d) => d.code)).toEqual(["DIVISION_NO_ZERO_CHECK"])
+    }
   })
 
   test("exhausted message redirects the agent to a materially different design", () => {

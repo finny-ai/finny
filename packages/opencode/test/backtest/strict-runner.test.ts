@@ -188,6 +188,30 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     ).toBe(true)
   })
 
+  test("keeps a traceable run ID on non-promotable strict research results", () => {
+    const results = { v2: { run_metadata: { existing: "value" } } } as unknown as BacktestRunner.Results
+
+    BacktestRunner._internalForTests.markNonPromotableStrictRun({
+      results,
+      runId: "run_research_only",
+      dataSource: { kind: "provider_fetch" },
+      dataQualityMode: "strict",
+      hasProductRiskContract: true,
+    })
+
+    expect(results).toMatchObject({
+      runId: "run_research_only",
+      runKind: "legacy",
+      eligibilityStatus: "backtested",
+      v2: {
+        run_metadata: {
+          existing: "value",
+          product_eligibility_blockers: ["provider_fetch_research_only"],
+        },
+      },
+    })
+  })
+
   test("rejects invalid strategy before any market data subprocess work", async () => {
     const r = await BacktestRunner.run({
       algorithm: algo({

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import { buildDatasetEvidenceV2 } from "../../src/data/dataset-evidence-builder"
 import { validateDatasetEvidenceV2 } from "../../src/data/dataset-evidence-v2"
+import { buildDatasetQualificationAttestation } from "../../src/data/data-extractor-evidence"
 
 const request = {
   request_id: "request-btc-daily",
@@ -30,6 +31,29 @@ const priceBasis = {
 }
 
 describe("DatasetEvidenceV2 builder", () => {
+  test("issues a hash-bound attestation only for runtime strict-qualified evidence", () => {
+    const strict = buildDatasetQualificationAttestation({
+      qualification: "strict_qualified",
+      datasetHash: "a".repeat(64),
+      manifestHash: "b".repeat(64),
+    })
+    expect(strict).toEqual({
+      schema: "finny.dataset_qualification_attestation",
+      version: 1,
+      datasetEvidenceId: `dataset-${"b".repeat(24)}`,
+      datasetHash: "a".repeat(64),
+      manifestHash: "b".repeat(64),
+      qualification: "strict_qualified",
+    })
+    expect(
+      buildDatasetQualificationAttestation({
+        qualification: "research_only",
+        datasetHash: "a".repeat(64),
+        manifestHash: "b".repeat(64),
+      }),
+    ).toBeUndefined()
+  })
+
   test("builds a validator-clean manifest and classifies today's open daily candle", () => {
     const csvText = [
       "timestamp,open,high,low,close,volume",
@@ -101,6 +125,39 @@ describe("DatasetEvidenceV2 builder", () => {
     ).toEqual([])
   })
 
+  test("keeps completed datasets above the 95% coverage threshold research-usable", () => {
+    const dates = Array.from({ length: 20 }, (_, index) => `2026-06-${String(index + 1).padStart(2, "0")}`)
+    const partialRequest = {
+      ...request,
+      request_id: "request-btc-high-coverage",
+      requested_start: dates[0],
+      requested_end: dates.at(-1)!,
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      ...dates.slice(0, -1).map((day, index) => `${day}T00:00:00Z,${100 + index},${101 + index},${99 + index},${100 + index},1000`),
+    ].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: partialRequest,
+      workspaceSlug: "btc-daily-momentum.1.1.00.00",
+      outputPath: "crypto/BTC_1d_2026-06-01_2026-06-20.csv",
+      provider,
+      priceBasis,
+      now: new Date("2026-06-21T12:00:00Z"),
+    })
+
+    expect(built.manifest.timestamps).toMatchObject({ expected_count: 20, missing_count: 1 })
+    expect(built.manifest.qualification).toEqual({
+      status: "research_only",
+      reason_codes: ["MISSING_EXPECTED_TIMESTAMP"],
+    })
+    expect(built.manifest.coverage).toBe("partial")
+    expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(built.manifest.strict_backtest_eligible).toBe("no")
+  })
+
   test("keeps an entitlement-delayed current equity session research-usable", () => {
     const equityRequest = {
       ...request,
@@ -136,6 +193,53 @@ describe("DatasetEvidenceV2 builder", () => {
     })
     expect(built.manifest.coverage).toBe("partial_current_open_candle")
     expect(built.manifest.usable_for_parent).toBe("yes")
+  })
+
+  test("treats Alpaca daily local-midnight timestamps as their XNYS sessions", () => {
+    const equityRequest = {
+      ...request,
+      request_id: "request-spy-daily",
+      requested_algorithm_name: "spy-daily",
+      requested_symbol: "SPY",
+      requested_asset_class: "equity" as const,
+      requested_interval: "1d",
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-15",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-13T04:00:00Z,100,105,99,104,1000",
+      "2026-07-14T04:00:00Z,104,108,103,107,1200",
+      "2026-07-15T04:00:00Z,107,110,106,109,900",
+    ].join("\n")
+    const csvBytes = Buffer.from(csvText)
+    const built = buildDatasetEvidenceV2({
+      csvBytes,
+      csvText,
+      request: equityRequest,
+      workspaceSlug: "spy-daily.1.1.00.00",
+      outputPath: "stock/SPY_1d_2026-07-13_2026-07-15.csv",
+      provider: { id: "alpaca", feed: "iex", venue: "NYSEARCA", providerSymbol: "SPY" },
+      priceBasis,
+      now: new Date("2026-07-16T12:00:00Z"),
+    })
+
+    expect(built.manifest.timestamps).toMatchObject({
+      expected_count: 3,
+      actual_count: 3,
+      missing_count: 0,
+      extra_count: 0,
+    })
+    expect(built.manifest.qualification).toEqual({ status: "strict_qualified", reason_codes: [] })
+    expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(
+      validateDatasetEvidenceV2({
+        manifest: built.manifest,
+        csvBytes,
+        csvText,
+        csvFacts: built.csvFacts,
+      }),
+    ).toEqual([])
   })
 
   test("rejects malformed rows instead of blessing a broken manifest", () => {

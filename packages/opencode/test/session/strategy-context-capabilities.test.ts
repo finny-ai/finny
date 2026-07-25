@@ -151,7 +151,6 @@ describe("required strategy-context roles", () => {
       pendingTasks: [],
     }
     for (const tool of [
-      "finny_algorithm_save",
       "finny_backtest",
       "finny_review_packet",
       "finny_get_history",
@@ -162,9 +161,24 @@ describe("required strategy-context roles", () => {
     ]) {
       expect(contextPhaseExecutionBlock(tool, gate)?.metadata.blocked).toBe(true)
     }
-    for (const tool of ["read", "write", "edit", "todowrite", "task_batch_run"]) {
+    for (const tool of ["read", "write", "edit", "todowrite", "task_batch_run", "finny_algorithm_save"]) {
       expect(contextPhaseExecutionBlock(tool, gate)).toBeUndefined()
     }
+  })
+
+  test("save remains available before kickoff and while context tasks are pending", () => {
+    expect(
+      contextPhaseExecutionBlock("finny_algorithm_save", {
+        unlaunchedRequiredRoles: ["data_extractor", "sec_agent", "sentiment_agent"],
+        pendingTasks: [],
+      }),
+    ).toBeUndefined()
+    expect(
+      contextPhaseExecutionBlock("finny_algorithm_save", {
+        unlaunchedRequiredRoles: [],
+        pendingTasks: [{ id: "task_sec", subagentType: "sec_agent" }],
+      }),
+    ).toBeUndefined()
   })
 
   test("direct evidence tools stay visible but are blocked until context is verified", () => {

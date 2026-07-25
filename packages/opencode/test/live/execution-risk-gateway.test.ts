@@ -2,7 +2,13 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { EXECUTION_RISK_GATEWAY_PY, accountScopeHash, executionLedgerPath } from "../../src/live/execution-risk-gateway"
+import {
+  EXECUTION_RISK_GATEWAY_PY,
+  accountScopeHash,
+  executionLedgerPath,
+  verifyPaperActivationReceipt,
+} from "../../src/live/execution-risk-gateway"
+import crypto from "node:crypto"
 import { FINNY_BROKER_PY } from "../../src/backtest/broker-py"
 import { LiveRunner } from "../../src/live/runner"
 import { sha256Text, stableStringify } from "../../src/backtest/run-integrity-core"
@@ -21,6 +27,50 @@ afterAll(async () => {
 })
 
 describe("paper execution risk gateway", () => {
+  test("requires an HMAC-signed activation receipt bound to the exact strict run", () => {
+    const binding = {
+      runId: "strict-run",
+      runIdentityHash: "a".repeat(64),
+      algorithmId: "algo",
+      algorithmVersion: 1,
+      strategyHash: "b".repeat(64),
+      riskPolicyHash: "c".repeat(64),
+      executionPolicyHash: "d".repeat(64),
+      effectiveConfigHash: "e".repeat(64),
+      symbol: "AAPL",
+      interval: "1min",
+      brokerKind: "alpaca" as const,
+      brokerMode: "paper" as const,
+      accountScopeHash: "f".repeat(64),
+    }
+    const secret = "activation-secret"
+    const body = {
+      schema: "finny.paper_activation_receipt" as const,
+      version: 1 as const,
+      runId: "fund-run",
+      strictRunId: binding.runId,
+      strategyHash: binding.strategyHash,
+      riskPolicyHash: binding.riskPolicyHash,
+      accountScopeHash: binding.accountScopeHash,
+      approvedByDiscordUserId: "discord-admin",
+      shadowProofHash: "1".repeat(64),
+      activatedAt: "2026-07-19T12:00:00.000Z",
+    }
+    const receiptHash = sha256Text(stableStringify(body))
+    const receipt = {
+      ...body,
+      receiptHash,
+      signature: crypto.createHmac("sha256", secret).update(receiptHash).digest("hex"),
+    }
+    expect(verifyPaperActivationReceipt({ receipt, binding, secret })).toEqual([])
+    expect(verifyPaperActivationReceipt({ receipt: { ...receipt, strategyHash: "0".repeat(64) }, binding, secret })).toContain(
+      "paper activation receipt hash mismatch",
+    )
+    expect(verifyPaperActivationReceipt({ receipt, binding, secret: "wrong" })).toContain(
+      "paper activation receipt signature mismatch",
+    )
+  })
+
   test("maps privacy-safe gateway decisions into native execution telemetry", () => {
     const [event] = LiveRunner.nativeEventsForMessageForTests(
       {

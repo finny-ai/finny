@@ -18,6 +18,7 @@ import {
   completedIntradayWindow,
   evidenceDelegationBlock,
   EMPTY_SUBAGENT_RESULT_MARKER,
+  finalSpecialistTaskText,
   finalTaskText,
   shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
@@ -337,6 +338,25 @@ describe("finalTaskText", () => {
   test("marker routes into existing BLOCKED handling", () => {
     expect(EMPTY_SUBAGENT_RESULT_MARKER.startsWith("BLOCKED:")).toBe(true)
   })
+
+  test("durable specialist artifacts recover an empty final chat part", () => {
+    const pointer = '<subagent-artifact agent="sec_agent">\n- file: data/sec/TD/sec_manifest.json\n</subagent-artifact>'
+    const text = finalSpecialistTaskText({
+      subagentType: "sec_agent",
+      text: EMPTY_SUBAGENT_RESULT_MARKER,
+      pointer,
+    })
+    expect(text).toContain("completed with durable request-scoped artifacts")
+    expect(text).toContain(pointer)
+    expect(text).not.toStartWith("BLOCKED:")
+    expect(
+      finalSpecialistTaskText({
+        subagentType: "sec_agent",
+        text: EMPTY_SUBAGENT_RESULT_MARKER,
+        pointer: "",
+      }),
+    ).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
+  })
 })
 
 describe("completedIntradayWindow", () => {
@@ -538,7 +558,7 @@ describe("tool.task", () => {
     }),
   )
 
-  it.live("normalizes the parent-authored Data request without verbose runtime duplication", () =>
+  it.live("injects complete authoritative runtime context for data_extractor", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
         const prev = process.env.XDG_DATA_HOME
@@ -585,19 +605,34 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text.match(/Data request:/g)).toHaveLength(1)
+          expect(text.match(/Data request context:/g)).toHaveLength(1)
+          expect(text).toContain("<finny-subagent-context>")
+          expect(text).toContain(`- workspace_slug: ${slug}`)
+          expect(text).toMatch(/- request_id: ses_[A-Za-z0-9]+/)
+          expect(text).toContain("- request_version: 1")
+          expect(text).toMatch(/- request_content_hash: sha256:[a-f0-9]{64}/)
+          expect(text).toContain("- requested_algorithm_name: spy-5m-strategy")
+          expect(text).toContain("- requested_symbol: SPY")
+          expect(text).toContain("- requested_interval: 5m")
+          expect(text).toContain("- requested_asset_class: equity")
+          expect(text).toContain("- requested_start: 2026-03-10")
+          expect(text).toContain("- requested_end: 2026-06-10")
           expect(text).toContain("- symbol: SPY")
           expect(text).toContain("- start_date: 2026-03-10")
           expect(text).toContain("- end_date: 2026-06-10")
           expect(text).toContain("- end_date_inclusive: true")
           expect(text).toContain("- provider: auto")
           expect(text).toContain(`- workspace: ${dataDir}`)
+          expect(text).toContain(`- allowed_data_dir: ${dataDir}`)
+          expect(text).toContain(`- mission_path: ${path.join(algoDir(slug), "mission.md")}`)
+          expect(text).toContain(
+            `- cookbook_path: ${path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")}`,
+          )
           expect(text).toContain("- asset_class: equity")
           expect(text).toContain("- interval: 5m")
           expect(text).toContain("Task intent:\nAcquire SPY OHLCV for an intraday strategy study.")
-          expect(text).not.toContain("<finny-subagent-context>")
           expect(text).not.toContain("provider_capabilities")
-          expect(text).not.toContain("request_content_hash")
+          expect(text).not.toContain("MISSING")
 
           const missionRaw = yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "mission.md"), "utf8"))
           const mission = parseMission(missionRaw)
@@ -1269,6 +1304,71 @@ describe("tool.task", () => {
     ),
   )
 
+  it.live("repairs a foreign session workspace from the canonical WorkflowRun binding", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const canonical = "meta-1h-strategy.1.1.00.00"
+          const foreign = "ai-1h-algo.1.1.00.01"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, canonical))
+
+          const workspaceTool = yield* WorkspacePrepareTool
+          const workspaceDef = yield* workspaceTool.init()
+          const params = {
+            algorithmName: "meta-hourly-strategy",
+            symbol: "META",
+            assetClass: "equity" as const,
+            interval: "1h",
+            duration: "1y",
+            strategyIntent: "delegated",
+            requestSummary:
+              "1h META strategy using price data, news, SEC filings, and social sentiment over 1 year with $1,000 USD capital",
+          }
+          const context = {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          }
+
+          const first = yield* workspaceDef.execute(params, context)
+          expect(first.metadata.workspaceSlug).toBe(canonical)
+          expect((yield* BuildWorkflowStore.listBySession(chat.id))[0]?.workspaceSlug).toBe(canonical)
+
+          yield* Effect.promise(async () => {
+            await bindSessionWorkspace(chat.id, foreign)
+            await syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug: foreign,
+              prompt: "symbol AI; interval 1h; asset class equity; algorithm ai-1h-algo",
+              facts: {
+                requested_symbol: "AI",
+                requested_interval: "1h",
+                requested_asset_class: "equity",
+                requested_algorithm_name: "ai-1h-algo",
+              },
+            })
+          })
+          expect(yield* Effect.promise(() => getSessionWorkspace(chat.id))).toBe(foreign)
+
+          const repaired = yield* workspaceDef.execute(params, context)
+          expect(repaired.metadata.workspaceSlug).toBe(canonical)
+          expect(repaired.output).toContain(`workspace_slug: ${canonical}`)
+          expect(yield* Effect.promise(() => getSessionWorkspace(chat.id))).toBe(canonical)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
   it.live("caps intraday data_extractor context at the last completed UTC date", () =>
     provideTmpdirInstance((dir) =>
       Effect.gen(function* () {
@@ -1633,7 +1733,7 @@ describe("tool.task", () => {
           expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("Task intent:")
           expect(text).toContain("Name it spy-5m-product-demo-20260614-v2")
-          expect(text).not.toContain("- requested_algorithm_name:")
+          expect(text).toContain("- requested_algorithm_name: spy-5m-product-demo-20260614-v2")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1688,7 +1788,7 @@ describe("tool.task", () => {
           expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("Task intent:")
           expect(text).toContain("spy-1h-momentum-breakout")
-          expect(text).not.toContain("- requested_algorithm_name:")
+          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
           const persisted = yield* Effect.promise(() =>
             fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
           )
@@ -2432,6 +2532,59 @@ describe("tool.task", () => {
           expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data", "sec")}`)
           expect(text).toContain(`- allowed_sec_dir: ${path.join(algoDir(slug), "data", "sec")}`)
           expect(text).toContain("follow the SEC Agent evidence contract")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("keeps SEC form names such as 10-K in the authoritative TD workspace", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "td-1h-strategy.1.1.00.00"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt: "symbol TD; interval 1h; asset class equity; date window 2025-07-21 to 2026-07-21",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let seen: SessionPrompt.PromptInput | undefined
+          const result = yield* def.execute(
+            {
+              description: "Gather SEC EDGAR filings for TD",
+              subagent_type: "sec_agent",
+              prompt:
+                "Fetch SEC EDGAR filings (10-K, 10-Q, 8-K, Form 4) for TD (Toronto-Dominion Bank). Return filings analysis.",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(result.output).not.toContain("context mismatch")
+          expect(yield* Effect.promise(() => getSessionWorkspace(chat.id))).toBe(slug)
+          const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(text).toContain("- resolved_symbol: TD")
+          expect(text).toContain(path.join(algoDir(slug), "data/sec"))
+          expect(text).not.toContain("/k-algo.")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

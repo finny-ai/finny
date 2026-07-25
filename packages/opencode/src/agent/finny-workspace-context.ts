@@ -8,7 +8,8 @@ import {
   serializeMission,
   type MissionFrontmatter,
 } from "@finny-ai/core/algo"
-import { assetClassForSymbol, parseRequestFacts, type RequestFacts } from "./request-identity"
+import { lastCompletedXnysSessionDate } from "@/data/dataset-evidence-calendar"
+import { assetClassForSymbol, normalizeInterval, parseRequestFacts, type RequestFacts } from "./request-identity"
 import { requestJsonProjection } from "@/algorithm/build-workflow/state"
 import type { BuildWorkflowState, RequestJsonProjection } from "@/algorithm/build-workflow/types"
 import {
@@ -90,18 +91,32 @@ function isoUtcDate(date: Date) {
   return date.toISOString().slice(0, 10)
 }
 
+function lastCompletedUtcDay(now: Date) {
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1))
+  return isoUtcDate(end)
+}
+
+function subtractCalendarMonths(value: Date, months: number) {
+  const day = value.getUTCDate()
+  const shifted = new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth() - months, 1))
+  const lastDay = new Date(Date.UTC(shifted.getUTCFullYear(), shifted.getUTCMonth() + 1, 0)).getUTCDate()
+  shifted.setUTCDate(Math.min(day, lastDay))
+  return shifted
+}
+
 /** Derive a backtest window from relative duration phrases when explicit dates are absent. */
 export function inferBacktestWindow(prompt: string, now = new Date()): DateWindow {
   const explicit = extractDateWindow(prompt)
   if (explicit.start && explicit.end) return explicit
 
   const lower = prompt.toLowerCase()
+  let calendarMonths: number | undefined
   let days: number | undefined
   let calendarYears: number | undefined
-  if (/\b(?:three|3)\s*[- ]?\s*months?\b/.test(lower) || /\b3m\s+backtest\b/.test(lower)) days = 90
-  else if (/\b(?:six|6)\s*[- ]?\s*months?\b/.test(lower)) days = 180
-  else if (/\b(?:one|1)\s*[- ]?\s*months?\b/.test(lower)) days = 30
-  else if (/\b(?:twelve|12)\s*[- ]?\s*months?\b|\b1\s*[- ]?\s*y(?:ear|r)\b/.test(lower)) days = 365
+  if (/\b(?:three|3)\s*[- ]?\s*months?\b/.test(lower) || /\b3m\s+backtest\b/.test(lower)) calendarMonths = 3
+  else if (/\b(?:six|6)\s*[- ]?\s*months?\b/.test(lower)) calendarMonths = 6
+  else if (/\b(?:one|1)\s*[- ]?\s*months?\b/.test(lower)) calendarMonths = 1
+  else if (/\b(?:twelve|12)\s*[- ]?\s*months?\b|\b1\s*[- ]?\s*y(?:ear|r)\b/.test(lower)) calendarYears = 1
   else {
     const match = /\b(\d{2,3})\s*[- ]?\s*days?\b/.exec(lower)
     if (match) days = Number(match[1])
@@ -110,8 +125,8 @@ export function inferBacktestWindow(prompt: string, now = new Date()): DateWindo
   // `finny_workspace_prepare` receives an approved relative duration such as
   // `2y`.  Preserve that approval as concrete request dates before the Data
   // Agent starts; otherwise its required context is missing on the first run.
-  // Keep the older, deliberately fixed-day shortcuts above unchanged.
-  if (!days) {
+  // Calendar month/year phrases share workspace preparation's date semantics.
+  if (!days && !calendarMonths && !calendarYears) {
     const yearMatch = /\b(\d+)\s*[- ]?\s*(?:y|yr|yrs|year|years)\b/.exec(lower)
     const wordYears: Array<[RegExp, number]> = [
       [/\btwo\s+years?\b/, 2],
@@ -121,11 +136,21 @@ export function inferBacktestWindow(prompt: string, now = new Date()): DateWindo
     ]
     calendarYears = yearMatch ? Number(yearMatch[1]) : wordYears.find(([pattern]) => pattern.test(lower))?.[1]
   }
-  if (!days && !calendarYears) return explicit
+  if (!days && !calendarMonths && !calendarYears) return explicit
 
-  const end = isoUtcDate(now)
-  const startDate = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+  const facts = parseRequestFacts(prompt)
+  const symbol = facts.requested_symbol ?? facts.requested_symbols?.[0]
+  const assetClass = facts.requested_asset_class ?? assetClassForSymbol(symbol)
+  const interval = normalizeInterval(facts.requested_interval ?? "")
+  const end =
+    assetClass === "equity"
+      ? lastCompletedXnysSessionDate({ now })
+      : assetClass === "crypto" || interval === "1d"
+        ? lastCompletedUtcDay(now)
+        : isoUtcDate(now)
+  const startDate = new Date(`${end}T00:00:00Z`)
   if (calendarYears) startDate.setUTCFullYear(startDate.getUTCFullYear() - calendarYears)
+  else if (calendarMonths) return { start: isoUtcDate(subtractCalendarMonths(startDate, calendarMonths)), end }
   else startDate.setUTCDate(startDate.getUTCDate() - days!)
   return { start: isoUtcDate(startDate), end, ...explicit }
 }

@@ -26,7 +26,7 @@ telemetry secrets are **never** allowlisted for workers.
 
 | Asset class (`requested_asset_class`) | Credential keys |
 |--------------------------------------|-----------------|
-| equity / stock / etf (aliases) | `ALPACA_API_KEY_ID`, `ALPACA_API_SECRET_KEY`, `ALPACA_DATA_FEED`, `POLYGON_API_KEY`, `MARKET_DATA_API_KEY`, `BLOOMBERG_API_KEY`, `ORACLE_MARKET_DATA_URL`, plus public `BINANCE_BASE_URL` |
+| equity / stock / etf (aliases) | US data keys plus exact-listing regional keys: `KITE_*`, `SAXO_*`, `QUESTRADE_*`, and `FUTU_*`; only the connected brokerage matching the requested ticker is injected. Public `BINANCE_BASE_URL` remains available. |
 | crypto (aliases) | `BINANCE_BASE_URL` only (public market data) |
 | missing / unknown | Runtime + `BINANCE_BASE_URL` (keyless fallback) |
 

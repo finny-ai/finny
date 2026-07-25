@@ -14,6 +14,8 @@
  *
  * Do not broaden the allowlist "just in case" — unknown keys stay denied.
  */
+import { regionalMarketForTicker } from "@/data/regional-markets"
+
 export const WORKER_SHELL_POLICY_VERSION = 1 as const
 
 /** Runtime-only keys every Finny worker may need (no provider secrets). */
@@ -67,6 +69,20 @@ export const DATA_PROVIDER_CREDENTIALS = [
   { key: "MARKET_DATA_API_KEY", assets: ["equity"] as const },
   { key: "BLOOMBERG_API_KEY", assets: ["equity"] as const },
   { key: "ORACLE_MARKET_DATA_URL", assets: ["equity"] as const },
+  // Exact-listing regional equity data, injected only for the matching ticker.
+  { key: "KITE_API_KEY", assets: ["equity"] as const },
+  { key: "KITE_ACCESS_TOKEN", assets: ["equity"] as const },
+  { key: "KITE_ENDPOINT", assets: ["equity"] as const },
+  { key: "SAXO_ACCOUNT_KEY", assets: ["equity"] as const },
+  { key: "SAXO_ACCESS_TOKEN", assets: ["equity"] as const },
+  { key: "SAXO_ENDPOINT", assets: ["equity"] as const },
+  { key: "QUESTRADE_ACCOUNT_ID", assets: ["equity"] as const },
+  { key: "QUESTRADE_ACCESS_TOKEN", assets: ["equity"] as const },
+  { key: "QUESTRADE_API_SERVER", assets: ["equity"] as const },
+  { key: "FUTU_ACCOUNT_ID", assets: ["equity"] as const },
+  { key: "FUTU_UNLOCK_PASSWORD", assets: ["equity"] as const },
+  { key: "FUTU_HOST", assets: ["equity"] as const },
+  { key: "FUTU_PORT", assets: ["equity"] as const },
   // Public Binance market-data endpoint (keyless). Always safe to inject for
   // Data Agent; legacy requests without asset class still need it.
   { key: "BINANCE_BASE_URL", assets: ["equity", "crypto"] as const },
@@ -87,9 +103,18 @@ const WORKER_AGENTS = new Set([
 const SENSITIVE_ENV_RE = /(?:^|_)(?:API|AUTH|BROKER|CREDENTIAL|KEY|PASS|PASSWORD|SECRET|TOKEN)(?:_|$)/i
 
 const COMMON_RUNTIME_ENV = new Set(WORKER_RUNTIME_ENV.map((key) => key.toUpperCase()))
+const REGIONAL_CREDENTIAL_PREFIX: Record<string, string> = {
+  zerodha: "KITE_",
+  saxo: "SAXO_",
+  questrade: "QUESTRADE_",
+  futu: "FUTU_",
+}
+const ALL_REGIONAL_CREDENTIAL_PREFIXES = new Set(Object.values(REGIONAL_CREDENTIAL_PREFIX))
 
 function normalizeAssetClass(value: unknown): "equity" | "crypto" | undefined {
-  const asset = String(value ?? "").toLowerCase().trim()
+  const asset = String(value ?? "")
+    .toLowerCase()
+    .trim()
   if (EQUITY_ALIASES.has(asset)) return "equity"
   if (CRYPTO_ALIASES.has(asset)) return "crypto"
   return undefined
@@ -125,7 +150,18 @@ export function isWorkerAgent(input: { agent: string }) {
 
 function dataExtractorEnv(request?: Record<string, unknown>) {
   const allowed = new Set(COMMON_RUNTIME_ENV)
+  const requestedSymbol =
+    typeof request?.requested_symbol === "string"
+      ? request.requested_symbol
+      : Array.isArray(request?.requested_symbols) && typeof request.requested_symbols[0] === "string"
+        ? request.requested_symbols[0]
+        : undefined
+  const regionalPrefix = requestedSymbol
+    ? REGIONAL_CREDENTIAL_PREFIX[regionalMarketForTicker(requestedSymbol)?.brokerKind ?? ""]
+    : undefined
   for (const key of dataCredentialKeysForAsset(request?.requested_asset_class)) {
+    const keyRegionalPrefix = [...ALL_REGIONAL_CREDENTIAL_PREFIXES].find((prefix) => key.startsWith(prefix))
+    if (keyRegionalPrefix && keyRegionalPrefix !== regionalPrefix) continue
     allowed.add(key)
   }
   return allowed
@@ -148,11 +184,7 @@ function pickEnvironment(env: NodeJS.ProcessEnv, allowed: ReadonlySet<string>) {
  * Non-workers receive the full merged env (primary agents, user shells).
  * Workers receive only the allowlisted keys for that agent/request.
  */
-export function workerShellEnv(input: {
-  agent: string
-  env: NodeJS.ProcessEnv
-  request?: Record<string, unknown>
-}) {
+export function workerShellEnv(input: { agent: string; env: NodeJS.ProcessEnv; request?: Record<string, unknown> }) {
   if (!isWorkerAgent(input)) return { ...input.env }
   return pickEnvironment(input.env, workerEnvKeys(input))
 }

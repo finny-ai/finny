@@ -69,6 +69,14 @@ async function expectStoredAccount(
 }
 
 describe("IBKR broker spec", () => {
+  test("keeps regional research separate from IBKR live eligibility", () => {
+    const prompt = ibkrSpec.promptFragment
+    expect(prompt).toContain("Brokerage eligibility limits live deployment only")
+    expect(prompt).toContain("China and Hong Kong `.SS`/`.SZ`/`.HK`")
+    expect(prompt).toContain("Never replace a regional listing with a US ADR, US ETF")
+    expect(prompt).toContain('`"0700.HK"`')
+  })
+
   test("declares Gateway paper as the add-account default", () => {
     expect(ibkrSpec.defaultEndpoint).toBe("127.0.0.1:4002")
     expect(ibkrSpec.endpointForMode?.("paper")).toBe("127.0.0.1:4002")

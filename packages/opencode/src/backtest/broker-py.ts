@@ -24,10 +24,55 @@ cash; sells close the full position.
 from __future__ import annotations
 import json
 import math
+import os
+import random
 import sys
+import time
 import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any, Tuple
+
+
+def _alpaca_budget_wait():
+    """Cross-process fixed-window budget for Alpaca Basic workers."""
+    try:
+        import fcntl
+    except ImportError:
+        return
+    limit = min(160, max(1, int(os.environ.get("FINNY_ALPACA_RPM_BUDGET", "160"))))
+    default_budget_root = os.environ.get("FINNY_HOME", "/tmp/finny")
+    budget_file = os.environ.get(
+        "FINNY_ALPACA_BUDGET_FILE",
+        os.path.join(default_budget_root, "alpaca-basic-rate.json"),
+    )
+    os.makedirs(os.path.dirname(os.path.abspath(budget_file)), mode=0o700, exist_ok=True)
+    while True:
+        now = time.time()
+        flags = os.O_RDWR | os.O_CREAT
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(budget_file, flags, 0o600)
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "r+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            handle.seek(0)
+            try:
+                timestamps = [float(item) for item in json.load(handle)]
+            except Exception:
+                timestamps = []
+            timestamps = [item for item in timestamps if now - item < 60.0]
+            if len(timestamps) < limit:
+                timestamps.append(now)
+                handle.seek(0)
+                handle.truncate()
+                json.dump(timestamps, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                return
+            wait_for = max(0.05, 60.0 - (now - timestamps[0]))
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        time.sleep(wait_for)
 
 
 def emit(obj: Dict[str, Any]) -> None:
@@ -574,6 +619,30 @@ class AlpacaBroker(Broker):
         self._stock_data = StockHistoricalDataClient(api_key=key_id, secret_key=secret)
         self._crypto_data = CryptoHistoricalDataClient()
         self._last_price: Dict[str, float] = {}
+        self._paper = bool(paper)
+        self._clock_cache = None
+        self._clock_cache_at = 0.0
+
+    def _call(self, operation, *, attempts=5):
+        last = None
+        for attempt in range(attempts):
+            _alpaca_budget_wait()
+            try:
+                return operation()
+            except Exception as exc:
+                last = exc
+                text = str(exc).lower()
+                if "401" in text or "403" in text or "unauthorized" in text or "forbidden" in text:
+                    raise
+                if attempt + 1 >= attempts:
+                    raise
+                retry_after = getattr(getattr(exc, "response", None), "headers", {}).get("Retry-After")
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = min(30.0, 0.5 * (2 ** attempt))
+                time.sleep(delay + random.random() * max(0.05, delay * 0.2))
+        raise last or RuntimeError("Alpaca request failed")
 
     @staticmethod
     def is_crypto(symbol: str) -> bool:
@@ -605,7 +674,12 @@ class AlpacaBroker(Broker):
         if AlpacaBroker.is_crypto(symbol):
             return True
         try:
-            clock = self._trading.get_clock()
+            now = time.time()
+            if self._clock_cache is not None and now - self._clock_cache_at < 60.0:
+                return bool(self._clock_cache.is_open)
+            clock = self._call(lambda: self._trading.get_clock())
+            self._clock_cache = clock
+            self._clock_cache_at = now
             return bool(clock.is_open)
         except Exception:
             # Execution safety is more important than liveness: an unknown
@@ -616,6 +690,7 @@ class AlpacaBroker(Broker):
         try:
             from alpaca.data.requests import StockBarsRequest, CryptoBarsRequest
             from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            from alpaca.data.enums import DataFeed
         except ImportError as e:
             log_err(f"alpaca-py missing for fetch_bar: {e}")
             return None
@@ -648,11 +723,14 @@ class AlpacaBroker(Broker):
         try:
             if is_crypto:
                 req = CryptoBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
-                resp = self._crypto_data.get_crypto_bars(req)
+                resp = self._call(lambda: self._crypto_data.get_crypto_bars(req))
             else:
-                req = StockBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start)
-                resp = self._stock_data.get_stock_bars(req)
+                req = StockBarsRequest(symbol_or_symbols=norm, timeframe=tf, start=start, feed=DataFeed.IEX)
+                resp = self._call(lambda: self._stock_data.get_stock_bars(req))
         except Exception as e:
+            text = str(e).lower()
+            if "401" in text or "403" in text or "unauthorized" in text or "forbidden" in text or "entitlement" in text:
+                raise
             log_err(f"Fetch bar error: {e}")
             return None
 
@@ -675,20 +753,20 @@ class AlpacaBroker(Broker):
     def set_price(self, symbol: str, price: float) -> None:
         self._last_price[symbol] = float(price)
 
-    def buy(self, symbol, qty=None, notional=None, reason=None, features=None):
-        return self._submit(symbol, "buy", qty, notional, reason=reason, features=features)
+    def buy(self, symbol, qty=None, notional=None, reason=None, features=None, client_order_id=None):
+        return self._submit(symbol, "buy", qty, notional, reason=reason, features=features, client_order_id=client_order_id)
 
-    def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
+    def sell(self, symbol, qty=None, notional=None, reason=None, features=None, client_order_id=None):
         # Default sell = close full position.
         if qty is None and notional is None:
             try:
-                pos = self._trading.get_open_position(self.normalize_symbol(symbol))
+                pos = self._call(lambda: self._trading.get_open_position(self.normalize_symbol(symbol)))
                 qty = float(pos.qty)
             except Exception:
                 return self._reject(symbol, "sell", "no open position", reason=reason, features=features)
-        return self._submit(symbol, "sell", qty, notional, reason=reason, features=features)
+        return self._submit(symbol, "sell", qty, notional, reason=reason, features=features, client_order_id=client_order_id)
 
-    def _submit(self, symbol, side, qty, notional, reason=None, features=None):
+    def _submit(self, symbol, side, qty, notional, reason=None, features=None, client_order_id=None):
         try:
             from alpaca.trading.requests import MarketOrderRequest
             from alpaca.trading.enums import OrderSide, TimeInForce
@@ -701,6 +779,8 @@ class AlpacaBroker(Broker):
             "side": OrderSide.BUY if side == "buy" else OrderSide.SELL,
             "time_in_force": TimeInForce.GTC if is_crypto else TimeInForce.DAY,
         }
+        if client_order_id:
+            req_kwargs["client_order_id"] = str(client_order_id)
         if qty is not None:
             req_kwargs["qty"] = qty
         elif notional is not None:
@@ -709,7 +789,7 @@ class AlpacaBroker(Broker):
             return self._reject(symbol, side, "must specify qty or notional", reason=reason, features=features)
 
         try:
-            order = self._trading.submit_order(MarketOrderRequest(**req_kwargs))
+            order = self._call(lambda: self._trading.submit_order(MarketOrderRequest(**req_kwargs)))
             filled_price = float(order.filled_avg_price or 0) or self._last_price.get(symbol, 0)
             return OrderRecord(
                 order_id=str(order.id),
@@ -727,27 +807,62 @@ class AlpacaBroker(Broker):
 
     def position(self, symbol):
         try:
-            pos = self._trading.get_open_position(self.normalize_symbol(symbol))
+            pos = self._call(lambda: self._trading.get_open_position(self.normalize_symbol(symbol)))
             return float(pos.qty)
         except Exception:
             return 0
 
     def cash(self):
-        acct = self._trading.get_account()
+        acct = self._call(lambda: self._trading.get_account())
         return float(acct.cash)
 
     def equity(self):
-        acct = self._trading.get_account()
+        acct = self._call(lambda: self._trading.get_account())
         return float(acct.portfolio_value)
 
     def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
-        acct = self._trading.get_account()
+        acct = self._call(lambda: self._trading.get_account())
         positions = {
             self.normalize_symbol(str(item.symbol)): {"qty": float(item.qty), "mark": float(item.current_price)}
-            for item in self._trading.get_all_positions()
+            for item in self._call(lambda: self._trading.get_all_positions())
             if float(item.qty) != 0.0
         }
         return {"cash": float(acct.cash), "equity": float(acct.portfolio_value), "positions": positions}
+
+    def preflight(self, symbol: str, interval: str) -> Dict[str, Any]:
+        if not self._paper:
+            raise RuntimeError("Alpaca live accounts are rejected by the paper execution contract")
+        endpoint = os.environ.get("ALPACA_ENDPOINT", "")
+        if endpoint.rstrip("/") != "https://paper-api.alpaca.markets":
+            raise RuntimeError("Alpaca endpoint must be the canonical paper endpoint")
+        account = self._call(lambda: self._trading.get_account())
+        buying_power = float(account.buying_power)
+        if not math.isfinite(buying_power) or buying_power <= 0:
+            raise RuntimeError("Alpaca paper account has invalid buying power")
+        norm = self.normalize_symbol(symbol)
+        asset_symbol = norm.replace("/", "")
+        asset = self._call(lambda: self._trading.get_asset(asset_symbol))
+        if not str(asset.status).lower().endswith("active") or not bool(asset.tradable):
+            raise RuntimeError(f"Alpaca asset {asset_symbol} is not active and tradable")
+        bar = self.fetch_bar(symbol, interval)
+        if bar is None or bar.get("is_final") is not True:
+            raise RuntimeError("Alpaca preflight could not obtain a finalized IEX/crypto bar")
+        return {"account_id": str(account.id), "buying_power": buying_power, "bar": bar}
+
+    def get_order_by_client_id(self, client_order_id: str):
+        try:
+            return self._call(lambda: self._trading.get_order_by_client_id(str(client_order_id)), attempts=3)
+        except Exception as exc:
+            text = str(exc).lower()
+            if "404" in text or "not found" in text:
+                return None
+            raise
+
+    def cancel_all_orders(self):
+        return self._call(lambda: self._trading.cancel_orders())
+
+    def close_all_positions(self):
+        return self._call(lambda: self._trading.close_all_positions(cancel_orders=True))
 
     def price(self, symbol):
         return self._last_price.get(symbol)

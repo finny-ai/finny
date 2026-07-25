@@ -52,6 +52,14 @@ def _calendar_session_minutes(calendar: str) -> float | None:
         "US_EQUITIES_EXTENDED": 16.0 * 60.0,
         "US_OPTIONS": 6.5 * 60.0,
         "US_FUTURES": 23.0 * 60.0,
+        "XNSE": 6.25 * 60.0,
+        "XBOM": 6.25 * 60.0,
+        "XTSE": 6.5 * 60.0,
+        "XTSX": 6.5 * 60.0,
+        "XEUR": 8.5 * 60.0,
+        "XHKG": 5.5 * 60.0,
+        "XSHG": 4.0 * 60.0,
+        "XSHE": 4.0 * 60.0,
     }.get(calendar.upper())
 
 

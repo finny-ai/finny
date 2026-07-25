@@ -10,6 +10,7 @@ import { FINNY_BROKER_PY } from "./broker-py"
 import { ensurePythonEnv } from "@/python/env"
 import { resolveSessionPythonEnv, SESSION_PREFLIGHT_PACKAGES } from "@/python/session-env"
 import { resolveSymbol } from "@/data/symbols"
+import { regionalMarketForTicker } from "@/data/regional-markets"
 import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
 import { resolveAssetSpec } from "./asset-spec"
@@ -266,7 +267,20 @@ export namespace BacktestRunner {
    * plausible ticker passes — so this only fires on true garbage like
    * empty strings or non-ASCII junk.
    */
-  const SUPPORTED_CANONICAL = ["BTC/USD", "ETH/USD", "SOL/USD", "AAPL", "NVDA", "TSLA", "SPY", "QQQ"]
+  const SUPPORTED_CANONICAL = [
+    "BTC/USD",
+    "ETH/USD",
+    "SOL/USD",
+    "AAPL",
+    "NVDA",
+    "TSLA",
+    "SPY",
+    "QQQ",
+    "RELIANCE.NS",
+    "SHOP.TO",
+    "ASML.AS",
+    "0700.HK",
+  ]
 
   const DURATION_MONTHS: Record<string, number> = {
     "1m": 1,
@@ -752,6 +766,7 @@ with open("_data_provider.txt", "w") as f:
     prepareBacktestData,
     attachDataSourceProvenance,
     hasProductRiskContract,
+    markNonPromotableStrictRun,
     ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
   } as {
     parseResults: typeof parseResults
@@ -760,6 +775,7 @@ with open("_data_provider.txt", "w") as f:
     prepareBacktestData: typeof prepareBacktestData
     attachDataSourceProvenance: typeof attachDataSourceProvenance
     hasProductRiskContract: typeof hasProductRiskContract
+    markNonPromotableStrictRun: typeof markNonPromotableStrictRun
     ENGINE_VERSION: string
   }
 
@@ -1977,6 +1993,19 @@ if __name__ == "__main__":
         return 6.5 * 60
       case "US_FUTURES":
         return 23 * 60
+      case "XNSE":
+      case "XBOM":
+        return 6.25 * 60
+      case "XTSE":
+      case "XTSX":
+        return 6.5 * 60
+      case "XEUR":
+        return 8.5 * 60
+      case "XHKG":
+        return 5.5 * 60
+      case "XSHG":
+      case "XSHE":
+        return 4 * 60
       default:
         return null
     }
@@ -2351,6 +2380,37 @@ if __name__ == "__main__":
         Number.isSafeInteger(risk.max_positions) &&
         risk.max_positions > 0,
     )
+  }
+
+  /**
+   * A strict-engine execution still needs a traceable ID when its dataset or
+   * risk contract makes it non-promotable. The ID records the completed
+   * research run; runKind and eligibilityStatus prevent it from being treated
+   * as an immutable product run or paper-trading evidence.
+   */
+  function markNonPromotableStrictRun(input: {
+    results: Results
+    runId: string
+    dataSource: BacktestDataSource
+    verifiedQualification?: string
+    dataQualityMode: "strict" | "repair_outliers"
+    hasProductRiskContract: boolean
+  }): void {
+    input.results.runId = input.runId
+    input.results.runKind = "legacy"
+    input.results.eligibilityStatus = "backtested"
+    if (!input.results.v2) return
+    input.results.v2.run_metadata = {
+      ...(input.results.v2.run_metadata ?? {}),
+      product_eligibility_blockers: [
+        ...(input.dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
+        ...(input.dataSource.kind === "verified_artifact" && input.verifiedQualification !== "strict_qualified"
+          ? [`verified_dataset_${input.verifiedQualification ?? "unqualified"}`]
+          : []),
+        ...(!input.hasProductRiskContract ? ["schema_v4_risk_contract_required"] : []),
+        ...(input.dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
+      ],
+    }
   }
 
   async function persistStrictRunArtifacts(input: {
@@ -2832,10 +2892,14 @@ if __name__ == "__main__":
               if (fetchResult.code !== 0) {
                 const stderr = fetchResult.stderr.toString().trim()
                 const { kind, detail } = classifyFetchError(stderr)
+                const regional = regionalMarketForTicker(symbol)
                 const human =
                   kind === "unknown_symbol"
-                    ? `Backtest failed (unknown_symbol): ${symbol} is not a recognized symbol. ` +
-                      `Try one of: ${SUPPORTED_CANONICAL.join(", ")}.`
+                    ? regional
+                      ? `Backtest could not obtain data for the exact regional listing ${symbol} (${regional.venue}). ` +
+                        `Check the matching ${regional.brokerKind} data connection or yfinance coverage; no proxy ticker will be substituted.`
+                      : `Backtest failed (unknown_symbol): ${symbol} is not recognized by the selected data provider. ` +
+                        `The curated examples are only suggestions, not an exhaustive symbol allowlist.`
                     : kind === "empty_window"
                       ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
                       : kind === "network"
@@ -2848,7 +2912,7 @@ if __name__ == "__main__":
                 throw new BacktestDataPreparationError(
                   human,
                   kind,
-                  kind === "unknown_symbol" ? SUPPORTED_CANONICAL : undefined,
+                  kind === "unknown_symbol" && !regional ? SUPPORTED_CANONICAL : undefined,
                 )
               }
 
@@ -3012,19 +3076,14 @@ if __name__ == "__main__":
           // for research, but they do not produce an immutable product run and
           // can never be promoted. Legacy v3 algorithms without a schema-v4
           // risk contract are also fail-closed for promotion.
-          results.runKind = "legacy"
-          results.eligibilityStatus = "backtested"
-          results.v2.run_metadata = {
-            ...(results.v2.run_metadata ?? {}),
-            product_eligibility_blockers: [
-              ...(dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
-              ...(dataSource.kind === "verified_artifact" && verifiedQualification !== "strict_qualified"
-                ? [`verified_dataset_${verifiedQualification ?? "unqualified"}`]
-                : []),
-              ...(!hasProductRiskContract(config) ? ["schema_v4_risk_contract_required"] : []),
-              ...(dataQualityMode !== "strict" ? ["repair_mode_permanently_non_promotable"] : []),
-            ],
-          }
+          markNonPromotableStrictRun({
+            results,
+            runId,
+            dataSource,
+            verifiedQualification,
+            dataQualityMode,
+            hasProductRiskContract: hasProductRiskContract(config),
+          })
         }
         // Strict publication assigns results.artifactDir. Persist the history
         // manifest only afterwards so sourceArtifacts points at immutable

@@ -2,9 +2,13 @@ import path from "node:path"
 import z from "zod"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
-import { algoDir } from "@finny-ai/core/algo"
+import { algoDir, bindSessionWorkspace } from "@finny-ai/core/algo"
 import { bootstrapWorkspace } from "../plugin/finny-workspace"
-import { syncWorkspaceRequestContext, writeWorkflowRequestProjection } from "../agent/finny-workspace-context"
+import {
+  inferBacktestWindow,
+  syncWorkspaceRequestContext,
+  writeWorkflowRequestProjection,
+} from "../agent/finny-workspace-context"
 import {
   ResearchBriefContentSchema,
   inspectResearchBrief,
@@ -443,11 +447,13 @@ function isOpenEndSafetyClamp(input: {
   lockedWindow: { start: string; end: string }
   assetClass?: string
   interval?: string
+  now?: Date
 }) {
   const completedLockedEnd = clampEndDateToCompletedCoverage({
     endDate: input.lockedWindow.end,
     assetClass: input.assetClass,
     interval: input.interval,
+    now: input.now,
   })
   return (
     input.toolWindow.start === input.lockedWindow.start &&
@@ -462,6 +468,7 @@ function windowIdentityConflict(input: {
   assetClass?: string
   interval?: string
   userPrompt: string
+  now?: Date
 }) {
   if (!input.toolWindow || !input.lockedWindow) return undefined
   if (input.toolWindow.start === input.lockedWindow.start && input.toolWindow.end === input.lockedWindow.end) {
@@ -473,7 +480,15 @@ function windowIdentityConflict(input: {
       lockedWindow: input.lockedWindow,
       assetClass: input.assetClass,
       interval: input.interval,
+      now: input.now,
     })
+  ) {
+    return undefined
+  }
+  const approvedRelativeWindow = inferBacktestWindow(input.userPrompt, input.now)
+  if (
+    approvedRelativeWindow.start === input.toolWindow.start &&
+    approvedRelativeWindow.end === input.toolWindow.end
   ) {
     return undefined
   }
@@ -493,6 +508,7 @@ export function workspacePrepareConfirmedIdentityLock(input: {
   >
   workflow?: ConfirmedWorkflowIdentity
   userPrompt: string
+  now?: Date
 }): string | undefined {
   const workflow = input.workflow
   if (!workflow || workflow.identityStatus !== "confirmed") return undefined
@@ -524,6 +540,7 @@ export function workspacePrepareConfirmedIdentityLock(input: {
       assetClass: locked.assetClass?.value ?? input.params.assetClass,
       interval: locked.interval?.value ?? input.params.interval,
       userPrompt: input.userPrompt,
+      now: input.now,
     }),
   ].filter((conflict): conflict is string => Boolean(conflict))
 
@@ -646,9 +663,19 @@ export const WorkspacePrepareTool = Tool.define<
                 },
               }).pipe(Effect.provideService(Database.Service, database)),
             )
-            if (transitioned) workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
+            if (transitioned) {
+              workflow = transitioned
+              workflowProjection = { ...(await writeWorkflowRequestProjection(transitioned)) }
+            }
           }
 
+          // WorkflowRun owns the workspace as well as the request identity. A
+          // child prompt can mention a real auxiliary ticker (for example AI
+          // while researching META), so the session's heuristic prompt binding
+          // is not authoritative after the workflow starts. Repair it before
+          // bootstrap so an opaque or foreign slug cannot trap every retry in
+          // the wrong data directory.
+          if (workflow) await bindSessionWorkspace(ctx.sessionID, workflow.workspaceSlug)
           const prepared = await bootstrapWorkspace(ctx.sessionID, prompt, structuredRequestFacts(effectiveParams))
           if (!prepared) {
             return {

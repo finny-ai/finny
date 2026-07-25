@@ -72,6 +72,11 @@ export function normalizeSymbol(input?: string): string | undefined {
   // symbol, e.g. "BTC (BTCUSDT spot)". The identity comparison should use the
   // tradeable token, not the explanatory suffix.
   s = s.replace(/\s+\([^)]*\)\s*$/, "")
+  // Exchange-qualified regional listings are complete identities. Preserve
+  // the suffix; stripping punctuation here turns RELIANCE.NS into NS.
+  if (/^[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)$/.test(s)) {
+    return s.replace(/\s+/g, "")
+  }
   // Strip common quote-currency suffixes and pair separators.
   s = s.replace(/[\s_]+/g, "")
   s = s.replace(/[./\-]?(USDT|USDC|USD|PERP)$/i, "")
@@ -164,7 +169,9 @@ function kindToAssetClass(kind: string): AssetClass {
 }
 
 const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
-const TICKERISH_RE = /^[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?$/
+const REGIONAL_TICKER_RE = /^[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)$/
+const TICKERISH_RE =
+  /^(?:[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?|[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))$/
 const NON_TRADEABLE_ACRONYMS = new Set([
   "APAC",
   "CPI",
@@ -179,6 +186,17 @@ const NON_TRADEABLE_ACRONYMS = new Set([
   "UK",
   "US",
   "USA",
+  // Exchange/market names are not tradable instruments. A regional-market
+  // request without an exact listing must remain unresolved and ask for one
+  // (for example, RELIANCE.NS), rather than binding to "NSE" or "TSX".
+  "NSE",
+  "BSE",
+  "TSX",
+  "TSXV",
+  "LSE",
+  "SSE",
+  "SZSE",
+  "HKEX",
 ])
 
 /**
@@ -211,6 +229,9 @@ function recognizeExplicitSymbol(
 
   const strict = recognizeToken(cleaned)
   if (strict) return strict
+
+  const regional = cleaned.toUpperCase()
+  if (REGIONAL_TICKER_RE.test(regional)) return { sym: regional, asset: "equity" }
 
   if (!opts.allowUnknown) return undefined
   if (opts.requireUppercaseForUnknown && cleaned !== cleaned.toUpperCase()) return undefined
@@ -256,7 +277,10 @@ function normalizedRequestedSymbols(facts: RequestFacts): string[] {
 
 const INTERVAL_COUNT = String.raw`(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|fifteen|twenty(?:[-\s]?five)?|thirty|forty(?:[-\s]?five)?|sixty)`
 const INTERVAL_UNIT = String.raw`(?:minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w)`
-const INTERVAL_RE = new RegExp(String.raw`(${INTERVAL_COUNT})\s*-?\s*(${INTERVAL_UNIT})\b`, "gi")
+// The leading boundary is essential for spoken counts: without it, ordinary
+// words such as "extend" contain the substring "ten" + "d" and are silently
+// misread as a 10-day bar interval.
+const INTERVAL_RE = new RegExp(String.raw`\b(${INTERVAL_COUNT})\s*-?\s*(${INTERVAL_UNIT})\b`, "gi")
 const INTERVAL_TOKEN = String.raw`${INTERVAL_COUNT}\s*-?\s*${INTERVAL_UNIT}`
 // Labels that mark the *request bar* rather than an indicator window.
 const EXPLICIT_INTERVAL_BEFORE_RE =
@@ -292,9 +316,14 @@ const EXPLICIT_SYMBOL_RES: Array<{
   capture?: number
 }> = [
   {
+    re: /\b([A-Za-z0-9][A-Za-z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))\b/gi,
+    score: 140,
+    allowUnknown: true,
+  },
+  {
     // Exchange-qualified Canadian tickers must bind to the ticker, not the
     // exchange code (for example, TSXV:PNG → PNG).
-    re: /\b(?:TSXV|TSX|CSE|NASDAQ|NYSE|AMEX)\s*:\s*([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    re: /\b(?:NSE|BSE|TSXV|TSX|CSE|XETRA|LSE|SSE|SZSE|HKEX|NASDAQ|NYSE|AMEX)\s*:\s*([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,8})?)/gi,
     score: 130,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
@@ -362,6 +391,12 @@ function isRejectedComparisonContext(prompt: string, index: number): boolean {
 }
 
 function explicitSymbolFromPrompt(prompt: string): { sym: string; asset: AssetClass } | undefined {
+  const regionalAlias = /\b(NSE|BSE|TSXV|TSX|CSE|XETRA|LSE|SSE|SZSE|HKEX)\s*:\s*([A-Za-z0-9][A-Za-z0-9.&-]{0,29})/i.exec(prompt)
+  if (regionalAlias) {
+    const suffix: Record<string, string> = { NSE: "NS", BSE: "BO", TSXV: "V", TSX: "TO", CSE: "TO", XETRA: "DE", LSE: "L", SSE: "SS", SZSE: "SZ", HKEX: "HK" }
+    const sym = `${regionalAlias[2].toUpperCase()}.${suffix[regionalAlias[1].toUpperCase()]}`
+    return { sym, asset: "equity" }
+  }
   const candidates: Array<{ index: number; score: number; symbol: { sym: string; asset: AssetClass } }> = []
   for (const pattern of EXPLICIT_SYMBOL_RES) {
     pattern.re.lastIndex = 0

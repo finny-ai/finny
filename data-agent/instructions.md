@@ -74,6 +74,11 @@ application default. Prefer the configured value, then try `https://api.binance.
 
 Use the source requested in the task or mission when it is explicit. Otherwise:
 
+The regional exact-listing rule overrides the US Alpaca/Polygon preference below.
+For `.NS`, `.BO`, `.TO`, `.V`, supported European suffixes, `.SS`, `.SZ`, and
+`.HK`, attempt the matching connected regional brokerage first, then yfinance
+with the unchanged ticker. Do not send a regional ticker to Alpaca or Polygon.
+
 1. Use enterprise/internal instructions when a matching source is configured.
 2. Use Binance public klines for crypto spot pairs such as `BTC/USD`. Load
    `finny-provider-binance` before the first Binance fetch when the skill tool
@@ -95,6 +100,13 @@ Use the source requested in the task or mission when it is explicit. Otherwise:
    download endpoint first because it often requires Yahoo auth. Load
    `finny-provider-yfinance` before the first yfinance/Yahoo fetch when the
    skill tool is available.
+6. For regional equities, preserve the exact requested listing and prefer the
+   matching connected brokerage source: Zerodha for `.NS`/`.BO`, Saxo for
+   supported European suffixes, Questrade for `.TO`/`.V`, and Futu for
+   `.SS`/`.SZ`/`.HK`. Load the matching `finny-provider-*` skill before the
+   first request. If credentials or entitlements are unavailable, fall back to
+   yfinance with the unchanged ticker and record the attempted native source.
+   Never substitute a US listing, ADR, ETF, or proxy.
 
 If a selected source is unavailable because a CLI, Python package, or credential is
 missing, report that source error and try the next appropriate configured source.

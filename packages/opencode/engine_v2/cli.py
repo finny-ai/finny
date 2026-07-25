@@ -118,13 +118,32 @@ def _quality_failure(
 
 def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     rule, _ = interval_to_rule_and_bars_per_year(interval)
+    target_step = DQ.expected_step(interval)
+    timestamps = pd.DatetimeIndex(pd.to_datetime(df["timestamp"], utc=True)).drop_duplicates().sort_values()
+    positive_deltas = timestamps.to_series().diff().dropna()
+    # Providers commonly return exchange-open-anchored aggregate bars (for
+    # example XNYS 1h bars at 09:30, 10:30, ... ET). Re-resampling an already
+    # aggregated series uses midnight as pandas' default origin and silently
+    # shifts those bars onto :00, breaking exact calendar reconciliation.
+    # Daily bars are normalized to midnight by the strict calendar, so they
+    # must still pass through pandas resampling even when the provider stamps
+    # them at the exchange session open. Exchange-open anchoring is only safe
+    # to preserve for intraday aggregate bars.
+    if target_step < pd.Timedelta(days=1) and (positive_deltas.empty or positive_deltas.min() >= target_step):
+        return df.sort_values("timestamp").reset_index(drop=True)
     d = df.set_index("timestamp").resample(rule, label="left", closed="left").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
     }).dropna().reset_index()
     return d
 
 
-def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, interval: str) -> pd.DataFrame:
+def _apply_regular_hours_filter(
+    df: pd.DataFrame,
+    asset_class: str,
+    cfg: Dict,
+    interval: str,
+    calendar: str = "US_EQUITIES",
+) -> pd.DataFrame:
     exec_cfg = cfg.get("execution", {}) if isinstance(cfg.get("execution"), dict) else {}
     if bool(exec_cfg.get("extended_hours", False)):
         return df
@@ -135,13 +154,20 @@ def _apply_regular_hours_filter(df: pd.DataFrame, asset_class: str, cfg: Dict, i
     if df.empty:
         return df
 
-    ts_et = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert("America/New_York")
-    minutes = ts_et.dt.hour * 60 + ts_et.dt.minute
-    in_regular_session = (
-        (ts_et.dt.weekday < 5)
-        & (minutes >= 9 * 60 + 30)
-        & (minutes < 16 * 60)
-    )
+    session = {
+        "XNSE": ("Asia/Kolkata", 9 * 60 + 15, 15 * 60 + 30),
+        "XBOM": ("Asia/Kolkata", 9 * 60 + 15, 15 * 60 + 30),
+        "XTSE": ("America/Toronto", 9 * 60 + 30, 16 * 60),
+        "XTSX": ("America/Toronto", 9 * 60 + 30, 16 * 60),
+        "XEUR": ("Europe/Amsterdam", 8 * 60, 18 * 60),
+        "XHKG": ("Asia/Hong_Kong", 9 * 60 + 30, 16 * 60),
+        "XSHG": ("Asia/Shanghai", 9 * 60 + 30, 15 * 60),
+        "XSHE": ("Asia/Shanghai", 9 * 60 + 30, 15 * 60),
+    }.get(str(calendar).upper(), ("America/New_York", 9 * 60 + 30, 16 * 60))
+    timezone, open_minutes, close_minutes = session
+    local = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(timezone)
+    minutes = local.dt.hour * 60 + local.dt.minute
+    in_regular_session = (local.dt.weekday < 5) & (minutes >= open_minutes) & (minutes < close_minutes)
     return df.loc[in_regular_session].reset_index(drop=True)
 
 
@@ -872,7 +898,7 @@ def main() -> None:
     if df.empty:
         raise SystemExit("No bars after date filter")
     raw_rows = int(len(df))
-    df = _apply_regular_hours_filter(df, asset_spec.assetClass, cfg, args.interval)
+    df = _apply_regular_hours_filter(df, asset_spec.assetClass, cfg, args.interval, asset_spec.calendar)
     if df.empty:
         raise SystemExit("No bars after regular-hours filter")
     provider = str(asset_spec.dataProvider or cfg.get("data_provider") or "unknown")
@@ -880,6 +906,7 @@ def main() -> None:
     raw_dq = DQ.analyze(
         df, args.interval, asset_spec.assetClass, provider=provider,
         requested_start=args.start_date, requested_end=args.end_date,
+        calendar_id=asset_spec.calendar,
     )
     raw_blocking = [
         reason for reason in DQ.blocking_reasons(raw_dq, asset_spec.assetClass)
@@ -907,6 +934,7 @@ def main() -> None:
                     DQ.analyze(
                         df, args.interval, asset_spec.assetClass, provider=provider,
                         requested_start=args.start_date, requested_end=args.end_date,
+                        calendar_id=asset_spec.calendar,
                     ),
                     repaired_details,
                 )
@@ -940,13 +968,15 @@ def main() -> None:
         raise SystemExit(f"Failed to resample CSV at interval {args.interval!r}: {e}") from e
     if df.empty:
         raise SystemExit("No bars after resampling")
-    window_reasons = DQ.requested_window_reasons(
+    regional_provider_observed = asset_spec.calendar in {"XNSE", "XBOM", "XTSE", "XTSX", "XEUR", "XHKG", "XSHG", "XSHE"}
+    window_reasons = [] if regional_provider_observed else DQ.requested_window_reasons(
         df, args.interval, asset_spec.assetClass, args.start_date, args.end_date,
     )
     if args.data_quality_mode == "strict" and window_reasons:
         truncated_report = DQ.analyze(
             df, args.interval, asset_spec.assetClass, provider=provider,
             requested_start=args.start_date, requested_end=args.end_date,
+            calendar_id=asset_spec.calendar,
         )
         raise SystemExit(_quality_failure(
             "Data quality failed requested window coverage",
@@ -966,6 +996,7 @@ def main() -> None:
     dq = DQ.analyze(
         df, args.interval, asset_spec.assetClass, provider=provider,
         requested_start=args.start_date, requested_end=args.end_date,
+        calendar_id=asset_spec.calendar,
     )
     if repaired_details_total:
         dq = DQ.report_with_repair(dq, repaired_details_total)
@@ -992,6 +1023,7 @@ def main() -> None:
                     DQ.analyze(
                         df, args.interval, asset_spec.assetClass, provider=provider,
                         requested_start=args.start_date, requested_end=args.end_date,
+                        calendar_id=asset_spec.calendar,
                     ),
                     repaired_details_total,
                 )

@@ -56,4 +56,26 @@ describe("Data Agent provider capabilities", () => {
 
     expect(capabilities.map((capability) => capability.id)).toEqual(["polygon", "yfinance"])
   })
+
+  test("advertises only the native provider matching the exact regional ticker", () => {
+    const skills = new Set([
+      "finny-provider-zerodha",
+      "finny-provider-saxo",
+      "finny-provider-questrade",
+      "finny-provider-futu",
+      "finny-provider-yfinance",
+    ])
+    const capabilities = discoverDataProviderCapabilities({
+      request: { symbol: "SHOP.TO", assetClass: "equity", interval: "1d" },
+      availableSkillIDs: skills,
+      credentialEnv: {
+        QUESTRADE_ACCESS_TOKEN: "configured",
+        QUESTRADE_API_SERVER: "https://api01.iq.questrade.com/",
+        KITE_API_KEY: "configured",
+        KITE_ACCESS_TOKEN: "configured",
+      },
+    })
+    expect(capabilities.map((capability) => capability.id)).toEqual(["questrade", "yfinance"])
+    expect(capabilities[0]?.calendarPolicy).toBe("REGIONAL_PROVIDER_OBSERVED")
+  })
 })

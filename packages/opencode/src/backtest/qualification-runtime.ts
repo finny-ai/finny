@@ -1,22 +1,12 @@
 import fs from "node:fs/promises"
 import type { Algorithm } from "../algorithm"
 import type { RequestSpec } from "../agent/request-spec"
-import type { VerifiedDatasetRef } from "../data/data-extractor-evidence"
+import type { DatasetQualificationAttestationV1, VerifiedDatasetRef } from "../data/data-extractor-evidence"
 import { resolveAssetSpec } from "./asset-spec"
 import { planHash, type AuthoritativeBarV1, type CompileExperimentPlanInput } from "./experiment-plan"
 import { qualificationHash, type QualificationPolicyV1 } from "./qualification-policy"
 
 const ADAPTER_VERSION = "observed-csv-bars-v1"
-
-/** Compatibility seam for #176; absent or mismatched attestations remain research-only. */
-export interface DatasetQualificationAttestationV1 {
-  schema: "finny.dataset_qualification_attestation"
-  version: 1
-  datasetEvidenceId: string
-  datasetHash: string
-  manifestHash: string
-  qualification: "strict_qualified"
-}
 
 type AttestedDataset = VerifiedDatasetRef & { qualificationAttestation?: DatasetQualificationAttestationV1 }
 type CalendarContext = { calendar: string; timezone: string }
@@ -125,7 +115,8 @@ function qualificationBinding(dataset: VerifiedDatasetRef) {
 /**
  * Runtime-owned adapter from immutable request/evidence bytes to a plan input.
  * The observed CSV timestamps are authoritative; the model supplies no dates.
- * Until #176 supplies an attested qualification, this seam is research-only.
+ * Only runtime-validated strict evidence carries an attestation; absent or
+ * mismatched attestations remain research-only.
  */
 export async function compileInputFromActiveEvidence(input: {
   request: RequestSpec

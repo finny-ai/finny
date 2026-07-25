@@ -4,7 +4,7 @@ import { fileURLToPath } from "url"
 import path from "path"
 import { SqliteClient } from "@effect/sql-sqlite-bun"
 import { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
-import { Effect, Layer } from "effect"
+import { Context, Effect, Layer } from "effect"
 import { eq, inArray, sql } from "drizzle-orm"
 import { DatabaseMigration } from "@opencode-ai/core/database/migration"
 import { migrations } from "@opencode-ai/core/database/migration.gen"
@@ -41,6 +41,28 @@ describe("DatabaseMigration", () => {
       Effect.all(
         layers.map((layer) => Effect.scoped(Layer.build(layer))),
         { concurrency: "unbounded" },
+      ),
+    )
+  })
+
+  test("joins one transaction across database layers for the same file", async () => {
+    await using tmp = await tmpdir()
+    const filename = path.join(tmp.path, "shared-transaction.sqlite")
+
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const firstContext = yield* Layer.build(Database.layerFromPath(filename).pipe(Layer.fresh))
+          const secondContext = yield* Layer.build(Database.layerFromPath(filename).pipe(Layer.fresh))
+          const first = Context.get(firstContext, Database.Service)
+          const second = Context.get(secondContext, Database.Service)
+          yield* first.db.run(sql`CREATE TABLE shared_transaction_test (value text NOT NULL)`)
+          yield* first.db.transaction(
+            () => second.db.run(sql`INSERT INTO shared_transaction_test (value) VALUES ('joined')`),
+            { behavior: "immediate" },
+          )
+          expect(yield* first.db.get(sql`SELECT value FROM shared_transaction_test`)).toEqual({ value: "joined" })
+        }),
       ),
     )
   })

@@ -250,6 +250,76 @@ describe("validateDataExtractorTaskText", () => {
     }
   })
 
+  test("session build gate resolves every manifest in a multi-symbol request", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-multi-symbol-"))
+    const slug = "eth-sol-xrp-15m-vsh"
+    const sessionID = "ses_multi_symbol_evidence"
+    process.env.XDG_DATA_HOME = root
+    const dataDir = path.join(root, "finny", "algos", slug, "data", "crypto")
+    await fs.mkdir(dataDir, { recursive: true })
+    const requestSpec = await commitRequestSpec({
+      requestID: sessionID,
+      identity: {
+        requested_symbols: ["ETH", "SOL", "XRP"],
+        requested_interval: "1d",
+        requested_asset_class: "crypto",
+        requested_algorithm_name: slug,
+        requested_start: "2026-07-01",
+        requested_end: "2026-07-02",
+      },
+      actor: "user",
+    })
+
+    for (const symbol of ["ETH", "SOL", "XRP"]) {
+      const csvRel = `crypto/${symbol}_1d_2026-07-01_2026-07-02.csv`
+      await fs.writeFile(
+        path.join(root, "finny", "algos", slug, "data", csvRel),
+        [
+          "timestamp,open,high,low,close,volume",
+          "2026-07-01T00:00:00Z,100,101,99,100.5,1000",
+          "2026-07-02T00:00:00Z,100.5,102,100,101,1200",
+        ].join("\n"),
+      )
+      await fs.writeFile(
+        path.join(root, "finny", "algos", slug, "data", csvRel.replace(/\.csv$/, ".manifest.json")),
+        JSON.stringify({
+          schema_version: 1,
+          source: "binance",
+          requested_symbol: symbol,
+          actual_symbol: symbol,
+          requested_interval: "1d",
+          actual_interval: "1d",
+          requested_asset_class: "crypto",
+          actual_asset_class: "crypto",
+          requested_algorithm_name: slug,
+          requested_start: "2026-07-01",
+          requested_end: "2026-07-02",
+          actual_start: "2026-07-01T00:00:00Z",
+          actual_end: "2026-07-02T00:00:00Z",
+          output_path: csvRel,
+          rows: 2,
+          run_id: `run-${symbol.toLowerCase()}`,
+          request_id: requestSpec.request_id,
+          request_version: requestSpec.request_version,
+          request_content_hash: requestSpec.content_hash,
+          coverage: "complete",
+          usable_for_parent: "yes",
+        }),
+      )
+    }
+
+    await bindSessionWorkspace(sessionID, slug)
+    try {
+      const result = await requireVerifiedDataExtractorEvidenceForSession(sessionID)
+      expect(result.ok).toBe(true)
+      if (!result.ok) throw new Error(result.text)
+      expect(result.datasets.map((dataset) => dataset.identity.actualSymbol)).toEqual(["ETH", "SOL", "XRP"])
+      expect(result.dataset).toBe(result.datasets[0])
+    } finally {
+      await clearSessionWorkspace(sessionID)
+    }
+  })
+
   test("session build gate accepts manifest whose requested_end was clamped to the last completed session", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-evidence-clamped-end-"))
     const slug = "qqq-15m-strategy"

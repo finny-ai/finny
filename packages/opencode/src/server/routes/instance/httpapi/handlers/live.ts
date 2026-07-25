@@ -108,6 +108,7 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
             brokerKind: ctx.payload.brokerKind,
             directory: dir,
             controllerApproval: authority,
+            activationReceipt: ctx.payload.activationReceipt,
           })
         },
         catch: (error) => {

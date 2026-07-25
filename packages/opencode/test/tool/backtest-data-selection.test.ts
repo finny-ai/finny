@@ -4,6 +4,7 @@ import { qualificationInputForResearch } from "../../src/backtest/qualification-
 import {
   authoritativeBacktestInputIssue,
   backtestAttemptFingerprint,
+  backtestDataSourceSummary,
   experimentInputForBacktest,
   resolveBoundBacktestDates,
 } from "../../src/tool/backtest"
@@ -50,6 +51,15 @@ describe("backtest data selection", () => {
         qualification: qualificationInputForResearch(),
       }),
     ).toContain("research-only")
+  })
+
+  test("does not label research-only verified evidence as qualification eligible", () => {
+    expect(backtestDataSourceSummary({ kind: "verified_artifact", qualification: "research_only" })).toContain(
+      "research-only, qualification/promotion disabled",
+    )
+    expect(backtestDataSourceSummary({ kind: "verified_artifact", qualification: "strict_qualified" })).toContain(
+      "strict qualification eligible",
+    )
   })
 
   test("uses the prepared workflow window when the backtest call only supplies duration", () => {
