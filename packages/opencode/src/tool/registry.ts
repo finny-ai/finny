@@ -30,6 +30,7 @@ import { BacktestHistoryTool } from "./backtest-history"
 import { PaperApproveTool } from "./paper-approve"
 import { ReviewPacketTool } from "./review-packet"
 import { WorkflowRequestApprovalTool } from "./workflow-request-approval"
+import { WorkflowInvalidateCandidateTool } from "./workflow-invalidate-candidate"
 import { BacktestSweepTool } from "./backtest-sweep"
 import { MonitorSnapshotTool } from "./monitor-snapshot"
 import { ScheduleSubagentTool } from "./schedule-subagent"
@@ -160,6 +161,7 @@ export const layer = Layer.effect(
     const paperApprove = yield* PaperApproveTool
     const reviewPacket = yield* ReviewPacketTool
     const workflowRequestApproval = yield* WorkflowRequestApprovalTool
+    const workflowInvalidateCandidate = yield* WorkflowInvalidateCandidateTool
     const backtestSweep = yield* BacktestSweepTool
     const monitorSnapshot = yield* MonitorSnapshotTool
     const scheduleSubagent = yield* ScheduleSubagentTool
@@ -305,6 +307,7 @@ export const layer = Layer.effect(
           paperApprove: Tool.init(paperApprove),
           reviewPacket: Tool.init(reviewPacket),
           workflowRequestApproval: Tool.init(workflowRequestApproval),
+          workflowInvalidateCandidate: Tool.init(workflowInvalidateCandidate),
           backtestSweep: Tool.init(backtestSweep),
           monitorSnapshot: Tool.init(monitorSnapshot),
           scheduleSubagent: Tool.init(scheduleSubagent),
@@ -354,6 +357,7 @@ export const layer = Layer.effect(
             tool.paperApprove,
             tool.reviewPacket,
             tool.workflowRequestApproval,
+            tool.workflowInvalidateCandidate,
             tool.backtestSweep,
             tool.monitorSnapshot,
             tool.scheduleSubagent,
