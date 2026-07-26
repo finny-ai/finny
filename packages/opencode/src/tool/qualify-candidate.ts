@@ -220,8 +220,20 @@ export const QualifyCandidateTool = Tool.define<
                     : "obtain strict_qualified DatasetEvidence for this exact request and compile a new plan",
               })
             }
-            const plan = await loadExperimentPlanV1(params.experimentPlanId)
-            const policy = await loadExperimentPlanPolicyV1(plan.planId)
+            const loaded = await loadExperimentPlanV1(params.experimentPlanId)
+              .then(async (plan) => ({ plan, policy: await loadExperimentPlanPolicyV1(plan.planId) }))
+              .catch((error) => ({ error: error instanceof Error ? error.message : String(error) }) as const)
+            if ("error" in loaded) {
+              return blocked({
+                workflowRunId: candidateWorkflow.workflow.workflowId,
+                planId: params.experimentPlanId,
+                code: "experiment_plan_unavailable",
+                field: "experimentPlanId",
+                message: loaded.error,
+                next: "omit experimentPlanId to compile a new immutable plan for this exact candidate",
+              })
+            }
+            const { plan, policy } = loaded
             const executionIdentity = {
               codeHash: qualificationHash(candidate.code),
               configHash: qualificationHash(candidate.config ?? ""),

@@ -196,8 +196,10 @@ function capturedValue(text: string, field: string): string | undefined {
     ...text.matchAll(new RegExp(`(?:^|\\n)${escaped}:\\s*([^\\n]+)`, "g")),
   ]
   return matches
-    .map((match) => match[1]?.trim())
-    .filter((value): value is string => Boolean(value))
+    .map((match) => ({ index: match.index, value: match[1]?.trim() }))
+    .filter((match): match is { index: number; value: string } => Boolean(match.value))
+    .sort((left, right) => left.index - right.index)
+    .map((match) => match.value)
     .at(-1)
 }
 
@@ -422,10 +424,7 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
       },
     }
   }
-  if (
-    !calls.includes("finny_algorithm_save") ||
-    (mode === "positive_qualification" && !capturedValue(text, "algorithmId"))
-  ) {
+  if (!calls.includes("finny_algorithm_save")) {
     const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
     return {
@@ -450,6 +449,9 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
             : "8/24 SMA windows fit the 24-bar warmup; whole-share sizing is capped by risk and cash.",
       },
     }
+  }
+  if (mode === "positive_qualification" && !capturedValue(text, "algorithmId")) {
+    return { type: "text", text: "BLOCKED: saved candidate ID was not returned." }
   }
   if (!calls.includes("finny_backtest")) {
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
@@ -479,7 +481,8 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
       if (!experimentPlanId) return { type: "text", text: "BLOCKED: qualification plan ID was not returned." }
       return { type: "tool", name: "qualify_candidate", arguments: { candidateId, experimentPlanId } }
     }
-    const qualificationSucceeded = /"ok"\s*:\s*true/.test(text)
+    const latestQualification = text.slice(text.lastIndexOf("qualify_candidate"))
+    const qualificationSucceeded = /"ok"\s*:\s*true/.test(latestQualification)
     if (!qualificationSucceeded) {
       return {
         type: "text",

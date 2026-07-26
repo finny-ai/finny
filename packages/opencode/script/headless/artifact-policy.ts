@@ -73,6 +73,7 @@ const STRICT_RUN_FILES = new Set([
 ])
 
 const LEGACY_DOCUMENTS = new Set(["manifest.json", "mission.md", "request.json", "review.md", "review.html"])
+const REVIEW_DOCUMENTS = new Set(["manifest.json", "review.html"])
 const EVIDENCE_EXTENSIONS = new Set([".csv", ".json", ".jsonl", ".md", ".txt", ".log", ".html"])
 
 type PathParts = {
@@ -124,7 +125,7 @@ function decideLegacyAlgoPath(input: { parts: string[] }): ArtifactCaptureDecisi
   if (
     input.parts.length === 5 &&
     input.parts[2] === "reviews" &&
-    ["manifest.json", "review.html"].includes(input.parts[4]!)
+    REVIEW_DOCUMENTS.has(input.parts[4]!)
   ) {
     return { include: true, category: "algorithm_document" }
   }

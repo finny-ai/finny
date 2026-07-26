@@ -297,12 +297,28 @@ export async function executeQualificationPlanV1(input: OperationInput): Promise
       finalResults = outcome.result.results
     }
   }
+  if (!finalResults) {
+    return {
+      ok: false,
+      blocker: await recordCurrentBlocker(
+        input,
+        "confirmatory",
+        blocker(
+          "invalid_policy",
+          "phaseResults",
+          "no qualification phase produced executable results",
+          "re-run the immutable qualification plan",
+        ),
+      ),
+      completedPhases,
+    }
+  }
   const qualification: QualificationInputV1 = {
     policy: input.policy,
     context: contextFor({ plan: input.plan, phase: "confirmatory", trial: phases.length, holdoutOpenEvents: input.holdoutOpenEvents }),
   }
-  const decision = qualifyCandidateV1({ candidateId: input.candidateId, results: finalResults!, qualification })
-  if (decision.ok) return { ok: true, decision, completedPhases, finalResults: finalResults! }
+  const decision = qualifyCandidateV1({ candidateId: input.candidateId, results: finalResults, qualification })
+  if (decision.ok) return { ok: true, decision, completedPhases, finalResults }
   return {
     ok: false,
     blocker: await recordCurrentBlocker(input, "confirmatory", decision.blocker),

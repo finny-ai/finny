@@ -389,13 +389,13 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         metadata.blockerCode === "sealed_holdout_required"
       ) {
         completedStages.add("experiment_planned")
-      } else if (failed(part)) {
+      } else if (completed(part) || failed(part)) {
         failedStages.add("qualified")
       }
     }
     if (part.tool === "finny_review_packet") {
       if (completed(part) && metadata.created === true) completedStages.add("review_packet_ready")
-      else if (failed(part)) failedStages.add("review_packet_ready")
+      else if (completed(part) || failed(part)) failedStages.add("review_packet_ready")
     }
 
     if (failed(part) || metadata.recovered === true) {

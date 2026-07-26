@@ -258,6 +258,7 @@ function sessionAlignedWindows(input: {
   const exploratoryBars = flatten(exploratoryStart, exploratory)
   const validationBars = flatten(validationStart, validation)
   const confirmatoryBars = flatten(confirmatoryStart, confirmatory)
+  if (Math.min(exploratoryBars.length, validationBars.length, confirmatoryBars.length) < 2) return undefined
   return {
     warmupBars: warmedBars,
     windows: {
@@ -304,6 +305,8 @@ export function compileExperimentPlanV1(input: CompileExperimentPlanInput): Expe
     validationFraction: split.validation,
     confirmatoryFraction: split.confirmatory,
   })
+  // Whole-session alignment can increase the declared warmup; the aligned value
+  // is authoritative for both the candidate and plan warmup fields.
   const plannedWarmupBars = aligned?.warmupBars ?? input.warmupBars
   const { orderedBars: _, ...evidenceBinding } = input.datasetEvidence
   const draft = {

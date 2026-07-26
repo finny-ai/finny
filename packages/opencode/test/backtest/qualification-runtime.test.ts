@@ -138,6 +138,14 @@ describe("active evidence qualification adapter", () => {
     evidence.identity.source = "finny-harness-fixture"
     evidence.identity.qualification = "strict_qualified"
     evidence.identity.evidenceId = "fixture-strict-evidence"
+    evidence.qualificationAttestation = {
+      schema: "finny.dataset_qualification_attestation",
+      version: 1,
+      datasetEvidenceId: "fixture-strict-evidence",
+      datasetHash: evidence.csvSha256,
+      manifestHash: evidence.manifestSha256,
+      qualification: "strict_qualified",
+    }
     const env = {
       FINNY_HARNESS_MODE: "1",
       FINNY_HARNESS_FIXTURE_MARKET_DATA: "1",
@@ -155,7 +163,14 @@ describe("active evidence qualification adapter", () => {
     for (const variant of tampered) {
       expect(qualificationBinding(evidence, variant as NodeJS.ProcessEnv).qualification).toBe("research_only")
     }
+    evidence.identity.qualification = "research_only"
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
+    evidence.identity.qualification = "strict_qualified"
+    evidence.identity.evidenceId = ""
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
+    evidence.identity.evidenceId = "fixture-strict-evidence"
     evidence.identity.source = "provider"
+    evidence.qualificationAttestation = undefined
     expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
   })
 })

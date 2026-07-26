@@ -104,16 +104,15 @@ export function qualificationBinding(dataset: VerifiedDatasetRef, env: NodeJS.Pr
     datasetEvidenceId: `dataset-${dataset.manifestSha256.slice(0, 24)}`,
     qualification: "research_only" as const,
   }
-  const hermeticFixture = [
-    env.FINNY_HARNESS_MODE === "1",
-    env.FINNY_HARNESS_FIXTURE_MARKET_DATA === "1",
-    env.FINNY_HARNESS_MARKET_DATA_SHA256 === dataset.csvSha256,
-    dataset.identity.source === "finny-harness-fixture",
-    dataset.identity.qualification === "strict_qualified",
-    Boolean(dataset.identity.evidenceId),
-  ].every(Boolean)
-  if (hermeticFixture) {
-    return { datasetEvidenceId: dataset.identity.evidenceId!, qualification: "strict_qualified" as const }
+  if (dataset.identity.source === "finny-harness-fixture") {
+    const hermeticFixture = [
+      env.FINNY_HARNESS_MODE === "1",
+      env.FINNY_HARNESS_FIXTURE_MARKET_DATA === "1",
+      env.FINNY_HARNESS_MARKET_DATA_SHA256 === dataset.csvSha256,
+      dataset.identity.qualification === "strict_qualified",
+      Boolean(dataset.identity.evidenceId),
+    ].every(Boolean)
+    if (!hermeticFixture) return research
   }
   if (!attestation) return research
   const exact = [

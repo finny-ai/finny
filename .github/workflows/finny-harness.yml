@@ -70,9 +70,11 @@ jobs:
         run: >-
           bun --cwd packages/opencode test
           test/cli/run/harness-approval.test.ts
+          test/backtest/experiment-plan.test.ts
           test/backtest/qualification-operation.test.ts
           test/backtest/qualification-runtime.test.ts
           test/backtest/final-review-packet.test.ts
+          test/harness/headless-fixtures.test.ts
       - name: Execute real isolated scripted-model fixture matrix
         env:
           FINNY_HARNESS_E2E: "1"

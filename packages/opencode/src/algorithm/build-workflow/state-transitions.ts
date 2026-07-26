@@ -224,7 +224,14 @@ function bindExperimentPlan(
   if (event.plan.requestVersion !== state.requestVersion || event.plan.candidateId !== state.candidate.algorithmId) {
     return rejected(state, "experiment_plan_identity_mismatch", "Experiment plan does not match the active request and candidate.")
   }
-  return { ...state, phase: "experiment_planned" as const, experimentPlan: event.plan }
+  return {
+    ...state,
+    status: replacingBlockedExploratory ? ("active" as const) : state.status,
+    blocker: replacingBlockedExploratory ? undefined : state.blocker,
+    terminal: replacingBlockedExploratory ? undefined : state.terminal,
+    phase: "experiment_planned" as const,
+    experimentPlan: event.plan,
+  }
 }
 
 const BACKTEST_START_STAGES: WorkflowStage[] = ["candidate_ready", "backtested", "reviewable", "paper_approved"]
