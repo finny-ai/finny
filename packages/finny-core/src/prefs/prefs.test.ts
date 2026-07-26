@@ -229,6 +229,7 @@ describe("Finny Home", () => {
       algos: path.join("/tmp/finny", "algos"),
       sessionWorkspaces: path.join("/tmp/finny", "session-workspaces"),
       pythonEnv: path.join("/tmp/finny", "python-env"),
+      pythonEnvs: path.join("/tmp/finny", "python-envs"),
       algorithms: path.join("/tmp/finny", "algorithms"),
     })
   })

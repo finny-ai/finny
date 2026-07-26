@@ -88,5 +88,26 @@ export async function clearSessionWorkspace(sessionID: string, opts: SessionWork
   }
 }
 
+/** List valid persisted bindings. Reclaim tooling treats every binding as active. */
+export async function listSessionWorkspaces(
+  opts: SessionWorkspaceOptions = {},
+): Promise<Array<{ sessionID: string; slug: string }>> {
+  const dir = bindingsDir(opts.env, opts.platform)
+  let entries: import("node:fs").Dirent[]
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch (err: any) {
+    if (err?.code === "ENOENT") return []
+    throw err
+  }
+  const result: Array<{ sessionID: string; slug: string }> = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !SESSION_ID_RE.test(entry.name)) continue
+    const slug = await getSessionWorkspace(entry.name, opts)
+    if (slug) result.push({ sessionID: entry.name, slug })
+  }
+  return result
+}
+
 /** Exposed for tests. */
 export const _sessionWorkspaceBindingsDir = bindingsDir
