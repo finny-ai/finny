@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test"
+import { exploratoryQualityGates } from "../../src/backtest/experiment-spec"
 import {
   DEFAULT_QUALIFICATION_POLICY_V1,
+  EXPLORATORY_QUALIFICATION_POLICY_V1,
+  confirmatoryPolicyErrors,
   makeHoldoutOpenEventV1,
+  qualificationInputForResearch,
   qualificationInputErrors,
   type QualificationContextV1,
 } from "../../src/backtest/qualification-policy"
@@ -29,6 +33,36 @@ const context: QualificationContextV1 = {
 }
 
 describe("QualificationPolicyV1", () => {
+  test("uses a phase-scoped research preset without weakening the confirmatory default", () => {
+    const research = qualificationInputForResearch()
+    expect(research.policy).toEqual(EXPLORATORY_QUALIFICATION_POLICY_V1)
+    expect(qualificationInputErrors(research)).toEqual([])
+    expect(research.policy).toMatchObject({
+      requiredPhase: "exploratory",
+      requireSealedHoldout: false,
+      minTrades: 3,
+      requireCostSensitivity: true,
+    })
+    expect(DEFAULT_QUALIFICATION_POLICY_V1).toMatchObject({
+      requiredPhase: "confirmatory",
+      requireSealedHoldout: true,
+      minTrades: 30,
+      minDeflatedSharpe: 0.95,
+      minProbabilisticSharpe: 0.95,
+    })
+    expect(DEFAULT_QUALIFICATION_POLICY_V1.policyId).toBe("qualification-v1-eb9270fd54d8d823")
+    expect(exploratoryQualityGates()).toEqual({
+      minDeflatedSharpe: 0,
+      minProbabilisticSharpe: 0,
+      minOosCoverage: 0,
+      minTrades: 3,
+      requireCostSensitivity: true,
+    })
+    expect(confirmatoryPolicyErrors(research.policy)).toContain(
+      "qualification plan policy must require the confirmatory phase",
+    )
+  })
+
   test("accepts the exact policy and promotable context", () => {
     expect(qualificationInputErrors({ policy: DEFAULT_QUALIFICATION_POLICY_V1, context })).toEqual([])
   })

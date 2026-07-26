@@ -115,6 +115,12 @@ const passingPhaseMetrics = {
   benchmarkReturn: 0.02,
   alpha: 0.03,
   finalEquity: 10500,
+  sensitivityOutcomes: [{ name: "cost/slippage stress", status: "pass" }],
+  v2: {
+    run_metadata: {},
+    data_quality: { repair_applied: false },
+    walk_forward: { stitched_oos_return: 0.03 },
+  },
 } as any
 
 describe("executeQualificationPlanV1", () => {

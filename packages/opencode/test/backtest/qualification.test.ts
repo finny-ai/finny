@@ -22,8 +22,8 @@ describe("qualifyCandidateV1", () => {
     })
     expect(result.ok).toBe(false)
     if (result.ok) return
-    expect(result.blocker.code).toBe("wrong_phase")
-    expect(result.blocker.field).toBe("phase")
-    expect(result.blocker.nextAllowedTransition).toBe("run the compiled confirmatory window")
+    expect(result.blocker.code).toBe("invalid_policy")
+    expect(result.blocker.field).toBe("qualificationPolicy")
+    expect(result.blocker.nextAllowedTransition).toBe("supply the exact immutable QualificationPolicyV1")
   })
 })
