@@ -9,7 +9,7 @@ import {
   type SuiteContract,
   type Trajectory,
 } from "../../src/finnybench/trajectory-grader"
-import { baselineDifferences, coverageErrors } from "../../script/finnybench-trajectory"
+import { baselineDifferences, coverageErrors, harnessRevisionErrors } from "../../script/finnybench-trajectory"
 
 const suitePath = join(import.meta.dir, "../../finnybench/trajectory-suite.json")
 const suiteValue: unknown = JSON.parse(await readFile(suitePath, "utf8"))
@@ -257,6 +257,14 @@ describe("FinnyBench trajectory suite", () => {
     expect(baselineDifferences(accepted, [current])).toEqual([])
     expect(baselineDifferences(accepted, [{ ...current, budget_pass: false, pass: false }])).toEqual([
       `${current.scenario_id}:${current.provider}:${current.model}: score changed and requires baseline review`,
+    ])
+  })
+
+  test("rejects stale provider captures that do not exercise the workflow commit", () => {
+    const trajectory = passingTrajectory(suite.scenarios[0])
+    expect(harnessRevisionErrors([trajectory], trajectory.pins.harness_revision)).toEqual([])
+    expect(harnessRevisionErrors([trajectory], "f".repeat(40))).toEqual([
+      `${trajectory.scenario_id}:${trajectory.pins.provider}:${trajectory.run_id}: harness revision ${trajectory.pins.harness_revision} does not match ${"f".repeat(40)}`,
     ])
   })
 })
