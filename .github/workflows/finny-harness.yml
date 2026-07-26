@@ -201,12 +201,50 @@ jobs:
           --python python/.venv/bin/python
           --binary dist/finny-linux-x64/bin/opencode
 
+  live-harness-preflight:
+    name: Live signal configuration preflight
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    outputs:
+      ready: ${{ steps.preflight.outputs.ready }}
+      model_provider: ${{ steps.preflight.outputs.model_provider }}
+    env:
+      FINNY_LIVE_HARNESS_ENABLED: ${{ vars.FINNY_LIVE_HARNESS_ENABLED }}
+      FINNY_HARNESS_MODEL: ${{ vars.FINNY_HARNESS_MODEL }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ALPACA_API_KEY_ID: ${{ secrets.ALPACA_API_KEY_ID || secrets.ALPACA_API_KEY }}
+      ALPACA_API_SECRET_KEY: ${{ secrets.ALPACA_API_SECRET_KEY || secrets.ALPACA_SECRET_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Frozen Bun install
+        run: bun install --frozen-lockfile
+      - name: Validate live signal configuration and ceilings
+        id: preflight
+        run: >-
+          bun packages/opencode/script/live-harness-signal.ts preflight
+          --scenario packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json
+          --output .artifacts/live-preflight/preflight.json
+      - name: Upload sanitized preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finny-live-preflight-${{ github.run_id }}
+          path: .artifacts/live-preflight
+          if-no-files-found: error
+          retention-days: 30
+
   live-harness:
     name: Live model and provider signal
-    if: >-
-      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      vars.FINNY_LIVE_HARNESS_ENABLED == '1' &&
-      vars.FINNY_HARNESS_MODEL != ''
+    needs: live-harness-preflight
+    if: needs.live-harness-preflight.outputs.ready == 'true'
+    # This is a scheduled research/health signal, never deterministic merge
+    # evidence. Surface failures without turning this job into a PR gate.
+    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 30
     services:
@@ -242,6 +280,8 @@ jobs:
           done
           exit 1
       - name: Run live contract
+        id: live-contract
+        continue-on-error: true
         run: >-
           bun --cwd packages/opencode run harness:headless --
           --ref ${{ github.sha }}
@@ -250,10 +290,24 @@ jobs:
           --model "${FINNY_HARNESS_MODEL}"
           --collector http://127.0.0.1:6006
           --output ../../.artifacts/headless
+      - name: Classify and summarize live signal
+        id: signal
+        if: always()
+        run: >-
+          bun packages/opencode/script/live-harness-signal.ts summarize
+          --bundle .artifacts/headless
+          --scenario packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json
+          --output .artifacts/live-signal.json
       - name: Upload evidence bundle
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: finny-live-headless-${{ github.run_id }}
-          path: .artifacts/headless
+          name: finny-live-headless-${{ github.run_number }}-${{ github.run_attempt }}-${{ github.run_id }}
+          path: .artifacts
           if-no-files-found: error
+          retention-days: 30
+      - name: Surface unhealthy signal
+        if: always() && steps.signal.outputs.classification != 'success'
+        run: |
+          echo "Live signal classification: ${{ steps.signal.outputs.classification }}"
+          exit 1
