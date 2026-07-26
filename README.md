@@ -6,7 +6,6 @@
                                     ██║     ██║██║ ╚████║██║ ╚████║   ██║
                                     ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝  ╚═══╝   ╚═╝
 
-                                      Claude Code for Financial Markets
 ```
 <a href="https://www.npmjs.com/package/finny"><img alt="npm" src="https://img.shields.io/npm/v/finny?style=flat-square&label=npm" /></a>
 
