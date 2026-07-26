@@ -144,7 +144,10 @@ export function artifactCaptureDecision(relative: string): ArtifactCaptureDecisi
   }
 
   if (parts[0] === "algos") {
-    return parts.length === 3 && LEGACY_DOCUMENTS.has(parts[2]!)
+    const legacyDocument = parts.length === 3 && LEGACY_DOCUMENTS.has(parts[2]!)
+    const finalReviewPacket =
+      parts.length === 5 && parts[2] === "reviews" && ["manifest.json", "review.html"].includes(parts[4]!)
+    return legacyDocument || finalReviewPacket
       ? { include: true, category: "algorithm_document" }
       : { include: false, reason: "legacy_bulk" }
   }
@@ -452,10 +455,34 @@ export function bindObservedStrictRuns(input: {
 }): HarnessIntegrityIssue[] {
   const issues: HarnessIntegrityIssue[] = []
   const add = (message: string) => issues.push({ kind: "artifact_integrity", message })
-  if (input.backtests.length !== input.runs.length) {
-    add(
-      `observed ${input.backtests.length} completed backtest(s), but found ${input.runs.length} verifier-valid strict run artifact(s)`,
+  const publicRunIds = new Set(input.backtests.flatMap((backtest) => (backtest.runId ? [backtest.runId] : [])))
+  for (const run of input.runs.filter((candidate) => !publicRunIds.has(candidate.run.runId))) {
+    const identity = run.run.identity as StrictRunV1["identity"] & {
+      experimentPlanId?: string
+      datasetQualification?: string
+    }
+    const qualification = (run.strategyResult.qualification ?? {}) as Record<string, unknown>
+    const context = (qualification.context ?? {}) as Record<string, unknown>
+    const phase = String(context.phase ?? "")
+    const planId = String(context.planId ?? "")
+    const isQualificationPhase =
+      /^plan-[a-f0-9]{24}$/i.test(String(identity.experimentPlanId ?? "")) &&
+      identity.experimentPlanId === planId &&
+      ["exploratory", "validation", "confirmatory"].includes(phase) &&
+      identity.datasetQualification === "strict_qualified"
+    if (!isQualificationPhase) {
+      add(`strict run ${run.run.runId} is neither an observed backtest nor a legal qualification phase`)
+      continue
+    }
+    const candidate = input.savedCandidates.find(
+      (saved) => saved.algorithmId === identity.algorithmId && saved.version === identity.algorithmVersion,
     )
+    if (!candidate) add(`qualification run ${run.run.runId} does not bind the saved candidate version`)
+    const start = canonicalDate(identity.dateWindow.start)
+    const end = canonicalDate(identity.dateWindow.end)
+    if (start < canonicalDate(input.scenario.startDate) || end > canonicalDate(input.scenario.endDate) || start > end) {
+      add(`qualification run ${run.run.runId} falls outside the scenario window`)
+    }
   }
 
   for (const backtest of input.backtests) {

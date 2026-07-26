@@ -214,7 +214,11 @@ function bindExperimentPlan(
   state: BuildWorkflowState,
   event: Extract<WorkflowEvent, { type: "experiment.plan_bound" }>,
 ) {
-  if (state.phase !== "candidate_validated" || !state.candidate) {
+  const replacingBlockedExploratory =
+    state.phase === "strict_blocked" &&
+    state.experimentPlan?.kind === "exploratory" &&
+    event.plan.kind === "qualification"
+  if ((state.phase !== "candidate_validated" && !replacingBlockedExploratory) || !state.candidate) {
     return rejected(state, "experiment_plan_candidate_required", "An experiment plan requires a validated candidate.")
   }
   if (event.plan.requestVersion !== state.requestVersion || event.plan.candidateId !== state.candidate.algorithmId) {

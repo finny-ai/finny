@@ -537,6 +537,7 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
         allowedRoot: isolation.finnyHome,
         fixtureRoot: path.join(isolation.root, "fixture-market"),
         harnessMode: true,
+        profile: options.fixtureMode === "positive_qualification" ? "positive_qualification" : "negative",
       })
       scriptedModel = await startScriptedModelServer({
         port: isolation.ports.scriptedModel,
@@ -549,6 +550,9 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
       isolation.env.FINNY_HARNESS_MARKET_DATA_SHA256 = fixtureMarketData.csvSha256
       isolation.env.FINNY_HARNESS_FIXTURE_MARKET_DATA = "1"
       isolation.env.FINNY_HARNESS_SCRIPTED_MODEL = "1"
+      if (options.fixtureMode === "positive_qualification" && scenario.approvals?.sealedHoldout === true) {
+        isolation.env.FINNY_HARNESS_APPROVE_SEALED_HOLDOUT = "1"
+      }
       effectiveModel = scriptedModel.model
     }
 

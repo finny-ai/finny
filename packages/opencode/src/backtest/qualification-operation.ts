@@ -36,7 +36,12 @@ type PhaseRunOutcomeV1 =
   | { result: BacktestRunner.RunResult; blocker?: never }
 
 export type QualificationOperationResultV1 =
-  | { ok: true; decision: QualifyCandidateResultV1; completedPhases: PlanExecutionPhase[] }
+  | {
+      ok: true
+      decision: QualifyCandidateResultV1
+      completedPhases: PlanExecutionPhase[]
+      finalResults: BacktestRunner.Results
+    }
   | { ok: false; blocker: QualificationBlockerV1; completedPhases: PlanExecutionPhase[] }
 
 function blocker(
@@ -77,12 +82,13 @@ function contextFor(input: {
   }
 }
 
-function invalidPlanBlocker(input: OperationInput) {
+function invalidPlanBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
   const planError = verifyExperimentPlanV1(input.plan)[0]
   if (planError) return blocker("invalid_policy", "experimentPlanId", planError, "compile and persist a valid ExperimentPlanV1")
+  return undefined
 }
 
-function invalidPolicyBlocker(input: OperationInput) {
+function invalidPolicyBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
   const policyError = verifyQualificationPolicyV1(input.policy)[0]
   if (policyError) return blocker("invalid_policy", "qualificationPolicy", policyError, "supply the exact immutable policy")
   const matches = [
@@ -92,9 +98,10 @@ function invalidPolicyBlocker(input: OperationInput) {
   if (!matches) {
     return blocker("invalid_policy", "qualificationPolicy", "policy does not match the compiled plan", "load the immutable policy bound to this plan")
   }
+  return undefined
 }
 
-function invalidCandidateBlocker(input: OperationInput) {
+function invalidCandidateBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
   if (!candidateMatchesExperimentPlanV1({ plan: input.plan, candidateId: input.candidateId, ...input.executionIdentity })) {
     return blocker(
       "invalid_policy",
@@ -103,9 +110,10 @@ function invalidCandidateBlocker(input: OperationInput) {
       "compile a new plan for this exact candidate version",
     )
   }
+  return undefined
 }
 
-function invalidDatasetBlocker(input: OperationInput) {
+function invalidDatasetBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
   if (input.plan.datasetEvidence.qualification !== "strict_qualified") {
     return blocker(
       "dataset_not_strict_qualified",
@@ -114,6 +122,7 @@ function invalidDatasetBlocker(input: OperationInput) {
       "obtain authoritative strict_qualified DatasetEvidence for this exact plan",
     )
   }
+  return undefined
 }
 
 function planBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
@@ -293,7 +302,7 @@ export async function executeQualificationPlanV1(input: OperationInput): Promise
     context: contextFor({ plan: input.plan, phase: "confirmatory", trial: phases.length, holdoutOpenEvents: input.holdoutOpenEvents }),
   }
   const decision = qualifyCandidateV1({ candidateId: input.candidateId, results: finalResults!, qualification })
-  if (decision.ok) return { ok: true, decision, completedPhases }
+  if (decision.ok) return { ok: true, decision, completedPhases, finalResults: finalResults! }
   return {
     ok: false,
     blocker: await recordCurrentBlocker(input, "confirmatory", decision.blocker),

@@ -121,6 +121,13 @@ function decideLegacyAlgoPath(input: { parts: string[] }): ArtifactCaptureDecisi
   if (input.parts.length === 3 && LEGACY_DOCUMENTS.has(input.parts[2]!)) {
     return { include: true, category: "algorithm_document" }
   }
+  if (
+    input.parts.length === 5 &&
+    input.parts[2] === "reviews" &&
+    ["manifest.json", "review.html"].includes(input.parts[4]!)
+  ) {
+    return { include: true, category: "algorithm_document" }
+  }
   return { include: false, reason: "legacy_bulk" }
 }
 

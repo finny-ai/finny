@@ -102,7 +102,7 @@ describe("ExperimentPlanV1 compiler", () => {
     expect(plan.barScheduleHash).toBe(planHash(bars))
   })
 
-  test("counts a 200-bar intraday warmup as bars across full and half-day sessions", () => {
+  test("rounds an intraday warmup to full sessions so every strict phase stays session-aligned", () => {
     const bars = [
       ...intradaySession({ id: "full-1", open: "2025-11-26T14:30:00.000Z", bars: 78 }),
       ...intradaySession({ id: "half-day", open: "2025-11-28T14:30:00.000Z", bars: 42 }),
@@ -110,12 +110,19 @@ describe("ExperimentPlanV1 compiler", () => {
       ...intradaySession({ id: "full-3", open: "2025-12-02T14:30:00.000Z", bars: 78 }),
       ...intradaySession({ id: "full-4", open: "2025-12-03T14:30:00.000Z", bars: 78 }),
       ...intradaySession({ id: "full-5", open: "2025-12-04T14:30:00.000Z", bars: 78 }),
+      ...intradaySession({ id: "full-6", open: "2025-12-05T14:30:00.000Z", bars: 78 }),
+      ...intradaySession({ id: "full-7", open: "2025-12-08T14:30:00.000Z", bars: 78 }),
     ]
     const plan = compileExperimentPlanV1(input(bars, { warmupBars: 200 }))
-    expect(plan.windows.warmup.bars).toBe(200)
+    expect(plan.windows.warmup.bars).toBe(276)
     expect(plan.windows.warmup.sessions).toBe(4)
-    expect(plan.windows.warmup.end).toBe(bars[199].timestamp)
-    expect(plan.windows.exploratory.start).toBe(bars[200].timestamp)
+    expect(plan.windows.warmup.end).toBe(bars[275].timestamp)
+    expect(plan.windows.exploratory.start).toBe(bars[276].timestamp)
+    for (const phase of ["warmup", "exploratory", "validation", "confirmatory"] as const) {
+      const planned = plan.windows[phase]
+      expect(planned.start).toBe(bars.find((item) => item.sessionId === planned.firstSessionId)!.timestamp)
+      expect(planned.end).toBe(bars.findLast((item) => item.sessionId === planned.lastSessionId)!.timestamp)
+    }
   })
 
   test("preserves authoritative DST-shifted equity timestamps", () => {

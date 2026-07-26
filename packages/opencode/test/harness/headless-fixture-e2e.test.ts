@@ -8,12 +8,16 @@ import type { FixtureScriptMode } from "../../script/headless/types"
 
 const enabled = process.env.FINNY_HARNESS_E2E === "1"
 const root = path.resolve(import.meta.dir, "../../../..")
-const scenario = path.join(root, "packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json")
+const negativeScenario = path.join(root, "packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json")
+const positiveScenario = path.join(
+  root,
+  "packages/opencode/harness/scenarios/spy-5m-sma-positive-qualification.v1.json",
+)
 const collectorEndpoint = process.env.FINNY_HARNESS_COLLECTOR_ENDPOINT?.trim()
 const configuredOutputRoot = process.env.FINNY_HARNESS_E2E_OUTPUT?.trim()
 const requestedGroup = process.env.FINNY_HARNESS_E2E_GROUP?.trim() || "all"
-if (enabled && !["all", "negative", "failures"].includes(requestedGroup)) {
-  throw new Error("FINNY_HARNESS_E2E_GROUP must be all, negative, or failures")
+if (enabled && !["all", "negative", "positive", "failures"].includes(requestedGroup)) {
+  throw new Error("FINNY_HARNESS_E2E_GROUP must be all, negative, positive, or failures")
 }
 const outputs: string[] = []
 
@@ -36,7 +40,7 @@ async function run(mode: FixtureScriptMode, source: "test_current_checkout" | "d
   outputs.push(output)
   return await runHeadlessHarnessPromise({
     ref: "HEAD",
-    scenarioPath: scenario,
+    scenarioPath: mode === "positive_qualification" ? positiveScenario : negativeScenario,
     model: "harness/scripted",
     agent: "finny",
     outputDir: output,
@@ -46,7 +50,7 @@ async function run(mode: FixtureScriptMode, source: "test_current_checkout" | "d
     collectorEndpoint,
     // Per-run wall clock. Failures run two modes; negative runs two isolates.
     // Keep under the job budget (20m) but above a cold Python env + backtest.
-    timeoutMs: 300_000,
+    timeoutMs: mode === "positive_qualification" ? 900_000 : 300_000,
   })
 }
 
@@ -72,9 +76,59 @@ async function completionEvent(bundle: string) {
     .find((event) => event.type === "harness_completion")
 }
 
+async function rawEvents(bundle: string): Promise<Record<string, any>[]> {
+  const raw = await fs.readFile(path.join(bundle, "raw", "events.jsonl"), "utf8")
+  return raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, any>)
+}
+
+async function artifactSources(bundle: string): Promise<string[]> {
+  const index = JSON.parse(await fs.readFile(path.join(bundle, "artifact-index.json"), "utf8")) as {
+    files?: Array<{ source?: string }>
+  }
+  return (index.files ?? []).flatMap((item) => (item.source ? [item.source] : []))
+}
+
 // @codescene(disable-all) This test intentionally covers the full isolated CLI contract.
 describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
-  test.skipIf(requestedGroup === "failures")(
+  test.skipIf(!["all", "positive"].includes(requestedGroup))(
+    "synthetic positive fixture reaches qualification and one final review packet without granting execution permission",
+    async () => {
+      const result = await run("positive_qualification")
+      expect(result.exitCode).toBe(0)
+      expect(result.manifest.status).toBe("completed")
+      expect(result.manifest.requestAdherence.violations).toEqual([])
+      expect(result.manifest.stages).toMatchObject({
+        request_bound: "completed",
+        evidence_ready: "completed",
+        candidate_saved: "completed",
+        validated: "completed",
+        backtested: "completed",
+        experiment_planned: "completed",
+        holdout_approved: "completed",
+        qualified: "completed",
+        review_packet_ready: "completed",
+      })
+      const text = await bundleText(result.bundlePath)
+      expect(text).toContain("strict_qualified")
+      expect(text).toContain("recommended_for_paper")
+      expect(text).toContain("Paper approval remains explicit and separate")
+      expect(text).toContain("synthetic")
+      const tools = (await rawEvents(result.bundlePath))
+        .filter((event) => event.type === "tool_use")
+        .map((event) => event.part?.tool)
+      expect(tools).not.toContain("finny_paper_approve")
+      expect(tools).not.toContain("finny_live_approve")
+      const reviewArtifacts = (await artifactSources(result.bundlePath)).filter((item) => item.includes("/reviews/"))
+      expect(reviewArtifacts.filter((item) => item.endsWith("/review.html"))).toHaveLength(1)
+      expect(reviewArtifacts.filter((item) => item.endsWith("/manifest.json"))).toHaveLength(1)
+    },
+    960_000,
+  )
+
+  test.skipIf(["failures", "positive"].includes(requestedGroup))(
     "parallel negative runs exit zero, isolate state, match semantic hashes, and contain no secrets",
     async () => {
       const prior = process.env.OPENAI_API_KEY
@@ -166,7 +220,7 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
     360_000,
   )
 
-  test.skipIf(requestedGroup === "negative")(
+  test.skipIf(["negative", "positive"].includes(requestedGroup))(
     "mid-stream and strategy-drift failures keep exact semantic exits and valid traces",
     async () => {
       const prior = process.env.OPENAI_API_KEY
