@@ -13,6 +13,7 @@ import { TaskBatchRunTool, TaskRunTool, TaskStartTool, TaskTool } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { ListTasksTool } from "./list-tasks"
 import { StopTaskTool } from "./stop-task"
+import { StrategyContextWaitTool } from "./strategy-context-wait"
 import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
@@ -130,6 +131,7 @@ export const layer = Layer.effect(
     const taskBatchRun = yield* TaskBatchRunTool
     const listTasks = yield* ListTasksTool
     const stopTask = yield* StopTaskTool
+    const strategyContextWait = yield* StrategyContextWaitTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -281,6 +283,7 @@ export const layer = Layer.effect(
           taskBatchRun: Tool.init(taskBatchRun),
           listTasks: Tool.init(listTasks),
           stopTask: Tool.init(stopTask),
+          strategyContextWait: Tool.init(strategyContextWait),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -333,6 +336,7 @@ export const layer = Layer.effect(
             tool.taskBatchRun,
             tool.listTasks,
             tool.stopTask,
+            tool.strategyContextWait,
             tool.fetch,
             tool.todo,
             tool.search,

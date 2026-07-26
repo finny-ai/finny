@@ -35,6 +35,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
 import { StrategyContext } from "@/task/strategy-context"
 import { AlgorithmScaffoldTool } from "@/tool/algorithm-scaffold"
+import { StrategyContextWaitTool } from "@/tool/strategy-context-wait"
 import { assertFinnyWorkspacePathPolicy, isStrategySynthesisPath } from "@/tool/finny-workspace-guard"
 import { BuildWorkflow } from "@/task/build-workflow"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
@@ -3754,6 +3755,193 @@ describe("tool.task", () => {
         "write",
         database,
       )
+    }),
+  )
+
+  background.instance("waits for the full context set before releasing synthesis", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      yield* Effect.promise(() => bindSessionWorkspace(chat.id, "issue-40-wait-test"))
+      const first = yield* sessions.create({ parentID: chat.id, title: "SPY data context" })
+      const second = yield* sessions.create({ parentID: chat.id, title: "SPY news context" })
+      const firstDone = yield* Deferred.make<void>()
+      const secondDone = yield* Deferred.make<void>()
+
+      for (const task of [
+        { id: first.id, subagentType: "data_extractor", description: "SPY data context" },
+        { id: second.id, subagentType: "news_agent", description: "SPY news context" },
+      ]) {
+        yield* Effect.promise(() =>
+          TaskState.upsert(
+            {
+              ...task,
+              parentSessionID: chat.id,
+              mode: "background",
+              status: TaskState.Status.running,
+              startedAt: Date.now(),
+            },
+            database,
+          ),
+        )
+      }
+      yield* jobs.start({
+        id: first.id,
+        type: "task",
+        run: Deferred.await(firstDone).pipe(Effect.as("data context complete")),
+      })
+      yield* jobs.start({
+        id: second.id,
+        type: "task",
+        run: Deferred.await(secondDone).pipe(Effect.as("news context complete")),
+      })
+
+      const captured = yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))
+      const waitStarted = yield* Deferred.make<void>()
+      let askedPatterns: readonly string[] = []
+      const waitTool = yield* StrategyContextWaitTool
+      const waitDef = yield* waitTool.init()
+      const waitFiber = yield* waitDef
+        .execute(
+          {},
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "finny",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (request) =>
+              Effect.sync(() => {
+                askedPatterns = request.patterns
+              }).pipe(Effect.andThen(Deferred.succeed(waitStarted, undefined))),
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(waitStarted)
+      yield* Deferred.succeed(firstDone, undefined)
+      expect((yield* jobs.wait({ id: first.id, timeout: 1_000 })).info?.status).toBe("completed")
+
+      // One completed sibling is not enough to release synthesis. The wait
+      // barrier terminalizes the captured set only after every job settles.
+      expect((yield* Effect.promise(() => TaskState.get(first.id, database)))?.status).toBe(TaskState.Status.running)
+      expect((yield* Effect.promise(() => TaskState.get(second.id, database)))?.status).toBe(TaskState.Status.running)
+      const workspace = yield* Effect.promise(() => getSessionWorkspace(chat.id))
+      if (!workspace) throw new Error("workspace was not bound")
+      const edgeAnalysis = path.join(algoDir(workspace), "edge_analysis.md")
+      const blockedWrite = yield* Effect.exit(
+        assertFinnyWorkspacePathPolicy(
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "finny",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+          edgeAnalysis,
+          "write",
+          database,
+        ),
+      )
+      expect(Exit.isFailure(blockedWrite)).toBe(true)
+
+      yield* Deferred.succeed(secondDone, undefined)
+      const waited = yield* Fiber.join(waitFiber)
+      expect(waited.metadata).toMatchObject({ captured: 2, completed: 2, pendingContext: [] })
+      expect(new Set(askedPatterns)).toEqual(new Set(["data_extractor", "news_agent"]))
+      const orderedIDs = captured.map((task) => task.id)
+      const firstCaptured = orderedIDs[0]
+      const secondCaptured = orderedIDs[1]
+      if (!firstCaptured || !secondCaptured) throw new Error("expected two captured context tasks")
+      expect(waited.output.indexOf(firstCaptured)).toBeLessThan(waited.output.indexOf(secondCaptured))
+      expect(yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))).toEqual([])
+      yield* assertFinnyWorkspacePathPolicy(
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+        edgeAnalysis,
+        "write",
+        database,
+      )
+    }),
+  )
+
+  background.instance("consuming context through the wait tool suppresses duplicate automatic delivery", () =>
+    Effect.gen(function* () {
+      const status = yield* SessionStatus.Service
+      const database = yield* Database.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      yield* status.set(chat.id, { type: "busy" })
+      let parentDeliveries = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            parentDeliveries += 1
+            return Effect.succeed(reply(input, "unexpected duplicate delivery"))
+          }
+          return Effect.succeed(reply(input, "context complete"))
+        },
+      }
+
+      const startTool = yield* TaskStartTool
+      const startDef = yield* startTool.init()
+      const started = yield* startDef.execute(
+        {
+          description: "research SPY context",
+          prompt: "Research SPY market context.",
+          subagent_type: "news_agent",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waitTool = yield* StrategyContextWaitTool
+      const waitDef = yield* waitTool.init()
+      const waited = yield* waitDef.execute(
+        {},
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      expect(waited.metadata.pendingContext).toEqual([])
+      expect(waited.output).toContain(`<context_task id="${started.metadata.sessionId}"`)
+      expect((yield* Effect.promise(() => TaskState.get(started.metadata.sessionId, database)))?.status).toBe(
+        TaskState.Status.completed,
+      )
+
+      yield* status.set(chat.id, { type: "idle" })
+      yield* Effect.sleep("250 millis")
+      expect(parentDeliveries).toBe(0)
     }),
   )
 
