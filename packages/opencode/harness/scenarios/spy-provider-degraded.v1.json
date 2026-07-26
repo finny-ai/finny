@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "spy-provider-degraded.v1",
+  "prompt": "Retain useful deterministic SPY evidence with provider degradation as research-only and fail closed at promotion.",
+  "asOfDate": "2026-07-09",
+  "limits": { "wallTimeMs": 30000, "modelTurns": 8, "toolCalls": 10, "subagents": 1 },
+  "request": {
+    "symbols": ["SPY"],
+    "assetClass": "equity",
+    "interval": "5m",
+    "strategyFamilies": ["sma-crossover"],
+    "startDate": "2026-07-01",
+    "endDate": "2026-07-08",
+    "instruments": [
+      {
+        "symbol": "SPY",
+        "exchangeQualifiedTicker": "SPY",
+        "venue": "XNYS",
+        "timezone": "America/New_York",
+        "calendar": "XNYS"
+      }
+    ]
+  },
+  "artifactPolicy": { "maxAlgorithms": 1, "maxVersionsPerAlgorithm": 1, "maxBacktests": 1 },
+  "requiredStages": ["request_bound", "evidence_ready"],
+  "requiredFinalFields": ["eligibility", "blockers"],
+  "allowedRecoveries": ["provider_degradation"],
+  "observabilityRequired": false,
+  "expectedTerminalClassification": "research_only",
+  "promotionLegallyPossible": false,
+  "evidencePolicy": {
+    "oneVerifiedIdentityPerSymbol": true,
+    "researchOnlyAllowed": true,
+    "strictQualificationDisqualifiers": [
+      "incomplete_coverage",
+      "unresolved_corporate_action",
+      "unknown_price_basis",
+      "provider_degradation"
+    ]
+  },
+  "matrix": { "partition": "degradation", "fixture": "spy-provider-degraded.v1.evidence.json" }
+}

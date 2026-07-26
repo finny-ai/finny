@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "spy-provider-degraded.v1",
+  "actualTerminalClassification": "research_only",
+  "telemetryGrade": "critical",
+  "instruments": [
+    {
+      "symbol": "SPY",
+      "exchangeQualifiedTicker": "SPY",
+      "venue": "XNYS",
+      "timezone": "America/New_York",
+      "calendar": "XNYS",
+      "evidenceId": "fixture-spy-degraded-v1",
+      "coverage": "incomplete",
+      "providerStatus": "degraded",
+      "corporateActionStatus": "unresolved",
+      "priceBasis": "unknown",
+      "qualification": "research_only",
+      "usableForResearch": true
+    }
+  ]
+}

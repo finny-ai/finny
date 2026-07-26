@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "btc-usd-24x7.v1",
+  "prompt": "Verify deterministic BTC/USD hourly evidence on its 24/7 calendar without applying equity sessions.",
+  "asOfDate": "2026-07-09",
+  "limits": { "wallTimeMs": 30000, "modelTurns": 8, "toolCalls": 10, "subagents": 1 },
+  "request": {
+    "symbols": ["BTC/USD"],
+    "assetClass": "crypto",
+    "interval": "1h",
+    "strategyFamilies": ["sma-crossover"],
+    "startDate": "2026-07-01",
+    "endDate": "2026-07-07",
+    "instruments": [
+      {
+        "symbol": "BTC/USD",
+        "exchangeQualifiedTicker": "BTC/USD@COINBASE",
+        "venue": "COINBASE",
+        "timezone": "UTC",
+        "calendar": "24/7"
+      }
+    ]
+  },
+  "artifactPolicy": { "maxAlgorithms": 1, "maxVersionsPerAlgorithm": 1, "maxBacktests": 1 },
+  "requiredStages": ["request_bound", "evidence_ready"],
+  "requiredFinalFields": ["eligibility", "blockers"],
+  "allowedRecoveries": [],
+  "observabilityRequired": false,
+  "expectedTerminalClassification": "research_only",
+  "promotionLegallyPossible": true,
+  "evidencePolicy": {
+    "oneVerifiedIdentityPerSymbol": true,
+    "researchOnlyAllowed": true,
+    "strictQualificationDisqualifiers": [
+      "incomplete_coverage",
+      "unresolved_corporate_action",
+      "unknown_price_basis",
+      "provider_degradation"
+    ]
+  },
+  "matrix": { "partition": "identity", "fixture": "btc-usd-24x7.v1.evidence.json" }
+}

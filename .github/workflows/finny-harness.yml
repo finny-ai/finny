@@ -85,6 +85,39 @@ jobs:
           path: .artifacts/headless-${{ matrix.group }}
           if-no-files-found: error
 
+  scenario-matrix:
+    name: Deterministic scenario matrix (${{ matrix.partition }})
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [workflow, identity, degradation]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+      - name: Frozen Bun install
+        run: bun install --frozen-lockfile
+      - name: Validate matrix contracts
+        run: >-
+          bun --cwd packages/opencode test
+          test/harness/headless-scenario-matrix.test.ts
+      - name: Build bounded per-scenario evidence and index
+        run: >-
+          bun run --cwd packages/opencode harness:matrix --
+          --partition ${{ matrix.partition }}
+          --output ../../.artifacts/headless-matrix-${{ matrix.partition }}
+      - name: Upload matrix evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finny-headless-matrix-${{ matrix.partition }}-${{ github.run_id }}
+          path: .artifacts/headless-matrix-${{ matrix.partition }}
+          if-no-files-found: error
+
   engine-v2:
     name: engine_v2 Python ${{ matrix.python }}
     if: github.event_name != 'schedule'

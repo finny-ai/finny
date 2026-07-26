@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "strict-positive-qualification.v1",
+  "prompt": "Execute the deterministic synthetic strict qualification workflow and stop after the one hash-bound final review packet.",
+  "asOfDate": "2026-07-09",
+  "limits": { "wallTimeMs": 300000, "modelTurns": 50, "toolCalls": 60, "subagents": 2 },
+  "request": {
+    "symbols": ["SPY"],
+    "assetClass": "equity",
+    "interval": "5m",
+    "strategyFamilies": ["sma-crossover"],
+    "startDate": "2026-01-09",
+    "endDate": "2026-07-08",
+    "instruments": [
+      {
+        "symbol": "SPY",
+        "exchangeQualifiedTicker": "SPY",
+        "venue": "XNYS",
+        "timezone": "America/New_York",
+        "calendar": "XNYS"
+      }
+    ]
+  },
+  "artifactPolicy": { "maxAlgorithms": 1, "maxVersionsPerAlgorithm": 1, "maxBacktests": 3 },
+  "requiredStages": [
+    "request_bound",
+    "evidence_ready",
+    "candidate_saved",
+    "validated",
+    "experiment_planned",
+    "holdout_approved",
+    "qualified",
+    "review_packet_ready"
+  ],
+  "requiredFinalFields": ["eligibility", "blockers", "next step"],
+  "allowedRecoveries": [],
+  "observabilityRequired": true,
+  "expectedTerminalClassification": "dependency_blocked",
+  "promotionLegallyPossible": true,
+  "evidencePolicy": {
+    "oneVerifiedIdentityPerSymbol": true,
+    "researchOnlyAllowed": false,
+    "strictQualificationDisqualifiers": [
+      "incomplete_coverage",
+      "unresolved_corporate_action",
+      "unknown_price_basis",
+      "provider_degradation"
+    ]
+  },
+  "matrix": {
+    "partition": "workflow",
+    "dependency": {
+      "issue": 44,
+      "reason": "Issue #44 must add the deterministic promotion stages and final review-packet E2E; #44 itself depends on #34 semantic hash integrity."
+    }
+  }
+}

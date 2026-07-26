@@ -7,8 +7,30 @@ export const HarnessStageName = z.enum([
   "validated",
   "backtested",
   "reviewable",
+  "experiment_planned",
+  "holdout_approved",
+  "qualified",
+  "review_packet_ready",
 ])
 export type HarnessStageName = z.infer<typeof HarnessStageName>
+
+export const ScenarioTerminalClassification = z.enum([
+  "backtested_not_qualified",
+  "recommended_for_paper",
+  "research_only",
+  "contract_failed",
+  "dependency_blocked",
+])
+export type ScenarioTerminalClassification = z.infer<typeof ScenarioTerminalClassification>
+
+export const ScenarioInstrumentIdentity = z.object({
+  symbol: z.string().min(1),
+  exchangeQualifiedTicker: z.string().min(1),
+  venue: z.string().min(1),
+  timezone: z.string().min(1),
+  calendar: z.string().min(1),
+})
+export type ScenarioInstrumentIdentity = z.infer<typeof ScenarioInstrumentIdentity>
 
 export const HeadlessScenarioV1 = z.object({
   schemaVersion: z.literal("1.0.0"),
@@ -28,6 +50,7 @@ export const HeadlessScenarioV1 = z.object({
     strategyFamilies: z.array(z.string().min(1)).min(1),
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    instruments: z.array(ScenarioInstrumentIdentity).min(1).optional(),
   }),
   artifactPolicy: z.object({
     maxAlgorithms: z.number().int().positive(),
@@ -38,6 +61,29 @@ export const HeadlessScenarioV1 = z.object({
   requiredFinalFields: z.array(z.string()),
   allowedRecoveries: z.array(z.string()),
   observabilityRequired: z.boolean(),
+  expectedTerminalClassification: ScenarioTerminalClassification.optional(),
+  promotionLegallyPossible: z.boolean().optional(),
+  evidencePolicy: z
+    .object({
+      oneVerifiedIdentityPerSymbol: z.literal(true),
+      researchOnlyAllowed: z.boolean(),
+      strictQualificationDisqualifiers: z.array(
+        z.enum(["incomplete_coverage", "unresolved_corporate_action", "unknown_price_basis", "provider_degradation"]),
+      ),
+    })
+    .optional(),
+  matrix: z
+    .object({
+      partition: z.enum(["workflow", "identity", "degradation"]),
+      fixture: z.string().min(1).optional(),
+      dependency: z
+        .object({
+          issue: z.number().int().positive(),
+          reason: z.string().min(1),
+        })
+        .optional(),
+    })
+    .optional(),
 })
 export type HeadlessScenarioV1 = z.infer<typeof HeadlessScenarioV1>
 

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "spy-5m-sma-crossover.v1",
+  "actualTerminalClassification": "backtested_not_qualified",
+  "telemetryGrade": "valid",
+  "instruments": [
+    {
+      "symbol": "SPY",
+      "exchangeQualifiedTicker": "SPY",
+      "venue": "XNYS",
+      "timezone": "America/New_York",
+      "calendar": "XNYS",
+      "evidenceId": "fixture-spy-xnys-v1",
+      "coverage": "complete",
+      "providerStatus": "healthy",
+      "corporateActionStatus": "resolved",
+      "priceBasis": "adjusted",
+      "qualification": "strict_qualified",
+      "usableForResearch": true
+    }
+  ]
+}

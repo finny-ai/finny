@@ -15,22 +15,40 @@
     "interval": "5m",
     "strategyFamilies": ["sma-crossover"],
     "startDate": "2026-01-09",
-    "endDate": "2026-07-08"
+    "endDate": "2026-07-08",
+    "instruments": [
+      {
+        "symbol": "SPY",
+        "exchangeQualifiedTicker": "SPY",
+        "venue": "XNYS",
+        "timezone": "America/New_York",
+        "calendar": "XNYS"
+      }
+    ]
   },
   "artifactPolicy": {
     "maxAlgorithms": 1,
     "maxVersionsPerAlgorithm": 1,
     "maxBacktests": 1
   },
-  "requiredStages": [
-    "request_bound",
-    "evidence_ready",
-    "candidate_saved",
-    "validated",
-    "backtested",
-    "reviewable"
-  ],
+  "requiredStages": ["request_bound", "evidence_ready", "candidate_saved", "validated", "backtested", "reviewable"],
   "requiredFinalFields": ["return", "sharpe", "max drawdown", "eligibility", "next step"],
   "allowedRecoveries": [],
-  "observabilityRequired": true
+  "observabilityRequired": true,
+  "expectedTerminalClassification": "backtested_not_qualified",
+  "promotionLegallyPossible": false,
+  "evidencePolicy": {
+    "oneVerifiedIdentityPerSymbol": true,
+    "researchOnlyAllowed": true,
+    "strictQualificationDisqualifiers": [
+      "incomplete_coverage",
+      "unresolved_corporate_action",
+      "unknown_price_basis",
+      "provider_degradation"
+    ]
+  },
+  "matrix": {
+    "partition": "workflow",
+    "fixture": "spy-5m-sma-crossover.v1.evidence.json"
+  }
 }

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "btc-usd-24x7.v1",
+  "actualTerminalClassification": "research_only",
+  "telemetryGrade": "not_run",
+  "instruments": [
+    {
+      "symbol": "BTC/USD",
+      "exchangeQualifiedTicker": "BTC/USD@COINBASE",
+      "venue": "COINBASE",
+      "timezone": "UTC",
+      "calendar": "24/7",
+      "evidenceId": "fixture-btc-usd-coinbase-v1",
+      "coverage": "complete",
+      "providerStatus": "healthy",
+      "corporateActionStatus": "resolved",
+      "priceBasis": "unadjusted",
+      "qualification": "strict_qualified",
+      "usableForResearch": true
+    }
+  ]
+}

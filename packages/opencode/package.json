@@ -14,6 +14,7 @@
     "profile:test": "bun run script/profile-test-files.ts",
     "audit:finny": "bun run script/finny-audit.ts",
     "harness:headless": "bun run script/headless-harness.ts",
+    "harness:matrix": "bun run script/headless-matrix.ts",
     "finnybench:trajectory:validate": "bun run script/finnybench-trajectory.ts --validate-suite",
     "finnybench:trajectory:smoke": "bun test --timeout 30000 test/finnybench/trajectory-grader.test.ts && bun run finnybench:trajectory:validate",
     "build": "bun run script/build.ts",

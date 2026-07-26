@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "spy-qqq-complete-evidence.v1",
+  "actualTerminalClassification": "research_only",
+  "telemetryGrade": "not_run",
+  "instruments": [
+    {
+      "symbol": "SPY",
+      "exchangeQualifiedTicker": "SPY",
+      "venue": "XNYS",
+      "timezone": "America/New_York",
+      "calendar": "XNYS",
+      "evidenceId": "fixture-spy-xnys-v1",
+      "coverage": "complete",
+      "providerStatus": "healthy",
+      "corporateActionStatus": "resolved",
+      "priceBasis": "adjusted",
+      "qualification": "strict_qualified",
+      "usableForResearch": true
+    },
+    {
+      "symbol": "QQQ",
+      "exchangeQualifiedTicker": "QQQ",
+      "venue": "XNAS",
+      "timezone": "America/New_York",
+      "calendar": "XNAS",
+      "evidenceId": "fixture-qqq-xnas-v1",
+      "coverage": "complete",
+      "providerStatus": "healthy",
+      "corporateActionStatus": "resolved",
+      "priceBasis": "adjusted",
+      "qualification": "strict_qualified",
+      "usableForResearch": true
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "shop-tsx-exact-listing.v1",
+  "actualTerminalClassification": "research_only",
+  "telemetryGrade": "not_run",
+  "instruments": [
+    {
+      "symbol": "SHOP.TO",
+      "exchangeQualifiedTicker": "SHOP@XTSE",
+      "venue": "XTSE",
+      "timezone": "America/Toronto",
+      "calendar": "XTSE",
+      "evidenceId": "fixture-shop-xtse-v1",
+      "coverage": "complete",
+      "providerStatus": "healthy",
+      "corporateActionStatus": "resolved",
+      "priceBasis": "adjusted",
+      "qualification": "strict_qualified",
+      "usableForResearch": true
+    }
+  ]
+}

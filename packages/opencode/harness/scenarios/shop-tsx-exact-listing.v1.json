@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "shop-tsx-exact-listing.v1",
+  "prompt": "Verify deterministic SHOP on the Toronto listing, preserving XTSE venue, timezone, and calendar identity.",
+  "asOfDate": "2026-07-09",
+  "limits": { "wallTimeMs": 30000, "modelTurns": 8, "toolCalls": 10, "subagents": 1 },
+  "request": {
+    "symbols": ["SHOP.TO"],
+    "assetClass": "equity",
+    "interval": "1d",
+    "strategyFamilies": ["sma-crossover"],
+    "startDate": "2026-01-05",
+    "endDate": "2026-07-08",
+    "instruments": [
+      {
+        "symbol": "SHOP.TO",
+        "exchangeQualifiedTicker": "SHOP@XTSE",
+        "venue": "XTSE",
+        "timezone": "America/Toronto",
+        "calendar": "XTSE"
+      }
+    ]
+  },
+  "artifactPolicy": { "maxAlgorithms": 1, "maxVersionsPerAlgorithm": 1, "maxBacktests": 1 },
+  "requiredStages": ["request_bound", "evidence_ready"],
+  "requiredFinalFields": ["eligibility", "blockers"],
+  "allowedRecoveries": [],
+  "observabilityRequired": false,
+  "expectedTerminalClassification": "research_only",
+  "promotionLegallyPossible": true,
+  "evidencePolicy": {
+    "oneVerifiedIdentityPerSymbol": true,
+    "researchOnlyAllowed": true,
+    "strictQualificationDisqualifiers": [
+      "incomplete_coverage",
+      "unresolved_corporate_action",
+      "unknown_price_basis",
+      "provider_degradation"
+    ]
+  },
+  "matrix": { "partition": "identity", "fixture": "shop-tsx-exact-listing.v1.evidence.json" }
+}
