@@ -10,8 +10,6 @@ const VOLATILE_KEYS = new Set([
   "run_id",
   "identityHash",
   "identity_hash",
-  "manifestHash",
-  "manifest_hash",
   "artifactPath",
   "artifact_path",
   "workflowId",
@@ -31,6 +29,9 @@ const VOLATILE_KEYS = new Set([
   "messageID",
   "messageId",
   "request_id",
+  "requestHash",
+  "request_hash",
+  "contentHash",
   "request_content_hash",
   "content_hash",
   "parentSessionId",
@@ -49,8 +50,24 @@ const VOLATILE_KEYS = new Set([
   "snapshot",
 ])
 
+const INTEGRITY_HASH_KEYS = new Set([
+  "scenarioSha256",
+  "bunLockSha256",
+  "evaluatorSourceSha256",
+  "evaluatorEntrypointSha256",
+  "manifestHash",
+  "manifest_hash",
+  "rawDataHash",
+  "strategyHash",
+])
+
 function isIntegrityHashKey(key: string | undefined): boolean {
-  return key !== undefined && /(?:sha256|hash)$/i.test(key)
+  return key !== undefined && INTEGRITY_HASH_KEYS.has(key)
+}
+
+function isVolatileKey(key: string, path: string[]): boolean {
+  if (VOLATILE_KEYS.has(key)) return true
+  return (key === "manifestHash" || key === "manifest_hash") && path.at(-1) === "identity"
 }
 
 function stable(value: unknown): string {
@@ -86,13 +103,13 @@ function scrubVolatileTokens(value: string, volatile: string[], key?: string): s
   return normalized
 }
 
-function normalizeSemanticValue(value: unknown, volatile: string[], key?: string): unknown {
-  if (Array.isArray(value)) return value.map((item) => normalizeSemanticValue(item, volatile, key))
+function normalizeSemanticValue(value: unknown, volatile: string[], key?: string, path: string[] = []): unknown {
+  if (Array.isArray(value)) return value.map((item) => normalizeSemanticValue(item, volatile, key, path))
   if (value && typeof value === "object") {
     return Object.fromEntries(
       Object.entries(value)
-        .filter(([key]) => !VOLATILE_KEYS.has(key))
-        .map(([childKey, child]) => [childKey, normalizeSemanticValue(child, volatile, childKey)]),
+        .filter(([childKey]) => !isVolatileKey(childKey, path))
+        .map(([childKey, child]) => [childKey, normalizeSemanticValue(child, volatile, childKey, [...path, childKey])]),
     )
   }
   if (typeof value !== "string") return value

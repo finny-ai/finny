@@ -152,6 +152,7 @@ describe("headless semantic verdict", () => {
       bunLockSha256: "b".repeat(64),
       evaluatorSourceSha256: "c".repeat(64),
       evaluatorEntrypointSha256: "d".repeat(64),
+      manifestHash: "3".repeat(64),
     }
     const value = (runtime: {
       sessionID: string
@@ -165,6 +166,7 @@ describe("headless semantic verdict", () => {
         sessionID: runtime.sessionID,
         timestamp: runtime.timestamp,
         artifactPath: `${runtime.root}/bundle`,
+        requestHash: runtime.requestHash,
         configHash: runtime.configHash,
         transcript: `root=${runtime.root} request_content_hash: sha256:${runtime.requestHash}`,
       },
@@ -192,6 +194,7 @@ describe("headless semantic verdict", () => {
       "bunLockSha256",
       "evaluatorSourceSha256",
       "evaluatorEntrypointSha256",
+      "manifestHash",
     ] as const) {
       const changed = value(leftRuntime)
       changed.source = { ...source, [key]: "9".repeat(64) }
