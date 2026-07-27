@@ -61,8 +61,27 @@ const INTEGRITY_HASH_KEYS = new Set([
   "strategyHash",
 ])
 
-function isIntegrityHashKey(key: string | undefined): boolean {
-  return key !== undefined && INTEGRITY_HASH_KEYS.has(key)
+const STRICT_RUN_IDENTITY_HASH_KEYS = new Set([
+  "strategyHash",
+  "savedConfigHash",
+  "effectiveConfigHash",
+  "riskContractHash",
+  "rawDataHash",
+  "processedDataHash",
+  "engineTreeHash",
+  "assetProfileHash",
+  "executionProfileHash",
+  "experimentPlanHash",
+  "qualificationPolicyHash",
+])
+
+const STRICT_RUN_DOCUMENT_HASH_KEYS = new Set(["mission", "preferences", "decisions", "reasoning"])
+
+function isIntegrityHashKey(key: string | undefined, path: string[]): boolean {
+  if (key === undefined) return false
+  if (INTEGRITY_HASH_KEYS.has(key)) return true
+  if (path.at(-2) === "identity" && STRICT_RUN_IDENTITY_HASH_KEYS.has(key)) return true
+  return path.at(-3) === "identity" && path.at(-2) === "documentHashes" && STRICT_RUN_DOCUMENT_HASH_KEYS.has(key)
 }
 
 function isVolatileKey(key: string, path: string[]): boolean {
@@ -81,7 +100,7 @@ function stable(value: unknown): string {
   return JSON.stringify(value)
 }
 
-function scrubVolatileTokens(value: string, volatile: string[], key?: string): string {
+function scrubVolatileTokens(value: string, volatile: string[], key: string | undefined, path: string[]): string {
   let normalized = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, "<timestamp>")
   for (const token of volatile.filter(Boolean).sort((a, b) => b.length - a.length)) {
     normalized = normalized.replaceAll(token, "<volatile>")
@@ -94,7 +113,7 @@ function scrubVolatileTokens(value: string, volatile: string[], key?: string): s
     /((?:request_)?content_hash\s*[:=]\s*)(?:sha256:)?[a-f0-9]{64}/gi,
     "$1<request-content-hash>",
   )
-  if (!isIntegrityHashKey(key)) {
+  if (!isIntegrityHashKey(key, path)) {
     normalized = normalized.replace(/\b(?:sha256:)?[a-f0-9]{64}\b/gi, "<content-hash>")
   }
   normalized = normalized.replace(/[a-z0-9-]+\.\d+\.\d+\.\d+\.\d+\.[a-f0-9]{8}/gi, "<workspace>")
@@ -113,7 +132,7 @@ function normalizeSemanticValue(value: unknown, volatile: string[], key?: string
     )
   }
   if (typeof value !== "string") return value
-  return scrubVolatileTokens(value, volatile, key)
+  return scrubVolatileTokens(value, volatile, key, path)
 }
 
 export function semanticHash(value: unknown, volatile: string[] = []): string {

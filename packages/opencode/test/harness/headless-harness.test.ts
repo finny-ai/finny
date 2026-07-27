@@ -202,6 +202,61 @@ describe("headless semantic verdict", () => {
     }
   })
 
+  test("semantic strategy-result hashes retain the complete strict-run identity", () => {
+    const hash = (character: string) => character.repeat(64)
+    const identity = {
+      strategyHash: hash("1"),
+      savedConfigHash: hash("2"),
+      effectiveConfigHash: hash("3"),
+      documentHashes: {
+        mission: hash("4"),
+        preferences: hash("5"),
+        decisions: hash("6"),
+        reasoning: hash("7"),
+      },
+      riskContractHash: hash("8"),
+      rawDataHash: hash("9"),
+      processedDataHash: hash("a"),
+      manifestHash: hash("b"),
+      engineTreeHash: hash("c"),
+      assetProfileHash: hash("d"),
+      executionProfileHash: hash("e"),
+      experimentPlanHash: hash("f"),
+      qualificationPolicyHash: hash("0"),
+    }
+    const baseline = semanticHash({ identity })
+
+    for (const key of [
+      "strategyHash",
+      "savedConfigHash",
+      "effectiveConfigHash",
+      "riskContractHash",
+      "rawDataHash",
+      "processedDataHash",
+      "engineTreeHash",
+      "assetProfileHash",
+      "executionProfileHash",
+      "experimentPlanHash",
+      "qualificationPolicyHash",
+    ] as const) {
+      expect(semanticHash({ identity: { ...identity, [key]: hash(key === "strategyHash" ? "a" : "1") } })).not.toBe(
+        baseline,
+      )
+    }
+    for (const key of ["mission", "preferences", "decisions", "reasoning"] as const) {
+      expect(
+        semanticHash({
+          identity: {
+            ...identity,
+            documentHashes: { ...identity.documentHashes, [key]: hash(key === "mission" ? "a" : "1") },
+          },
+        }),
+      ).not.toBe(baseline)
+    }
+
+    expect(semanticHash({ identity: { ...identity, manifestHash: hash("a") } })).toBe(baseline)
+  })
+
   test("semantic hashes ignore generated strict-run manifest bindings", () => {
     const result = (algorithmId: string, manifestHash: string) => [
       {
