@@ -39,6 +39,18 @@ const Result = Schema.Struct({
   outputPath: Schema.String,
 })
 
+export class FundQualificationImportApiError extends Schema.ErrorClass<FundQualificationImportApiError>(
+  "FundQualificationImportError",
+)(
+  {
+    name: Schema.Literal("FundQualificationImportError"),
+    data: Schema.Struct({
+      message: Schema.String,
+    }),
+  },
+  { httpApiStatus: 400 },
+) {}
+
 export const FundQualificationApi = HttpApi.make("fundQualification")
   .add(
     HttpApiGroup.make("fundQualification")
@@ -47,6 +59,7 @@ export const FundQualificationApi = HttpApi.make("fundQualification")
           query: WorkspaceRoutingQuery,
           payload: Payload,
           success: described(Result, "Imported authoritative qualification dataset"),
+          error: FundQualificationImportApiError,
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "fund.qualification.dataset.import",

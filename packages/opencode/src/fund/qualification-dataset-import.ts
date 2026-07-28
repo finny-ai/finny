@@ -10,12 +10,21 @@ import {
 } from "@/agent/request-spec"
 import { normalizeInterval, normalizeSymbol } from "@/agent/request-identity"
 import { finalizeDatasetEvidenceFile } from "@/data/dataset-evidence-finalizer"
+import { Flock } from "@/util/flock"
 
 const SHA256_RE = /^[0-9a-f]{64}$/
 const SESSION_ID_RE = /^[A-Za-z0-9._-]+$/
 const ALGORITHM_NAME_RE = /^[a-z0-9][a-z0-9-]{2,63}$/
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/
 const MAX_CSV_BYTES = 64 * 1024 * 1024
+
+export class QualificationDatasetImportError extends Error {
+  override readonly name = "QualificationDatasetImportError"
+}
+
+function invalid(message: string): never {
+  throw new QualificationDatasetImportError(message)
+}
 
 export interface QualificationDatasetImportV1 {
   sessionId: string
@@ -72,38 +81,38 @@ function requestContext(spec: RequestSpec): WorkspaceRequestContext {
 
 function decodeBase64(value: string): Buffer {
   if (!value || value.length > Math.ceil((MAX_CSV_BYTES * 4) / 3) + 8) {
-    throw new Error("qualification dataset exceeds the encoded size limit")
+    invalid("qualification dataset exceeds the encoded size limit")
   }
   if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) {
-    throw new Error("qualification dataset is not canonical base64")
+    invalid("qualification dataset is not canonical base64")
   }
   const decoded = Buffer.from(value, "base64")
   if (decoded.length === 0 || decoded.length > MAX_CSV_BYTES) {
-    throw new Error("qualification dataset exceeds the decoded size limit")
+    invalid("qualification dataset exceeds the decoded size limit")
   }
   if (decoded.toString("base64") !== value) {
-    throw new Error("qualification dataset is not canonical base64")
+    invalid("qualification dataset is not canonical base64")
   }
   return decoded
 }
 
 function validate(input: QualificationDatasetImportV1) {
-  if (!SESSION_ID_RE.test(input.sessionId)) throw new Error("invalid session identity")
-  if (!ALGORITHM_NAME_RE.test(input.algorithmName)) throw new Error("invalid algorithm identity")
-  if (!SHA256_RE.test(input.csvSha256)) throw new Error("invalid qualification dataset hash")
+  if (!SESSION_ID_RE.test(input.sessionId)) invalid("invalid session identity")
+  if (!ALGORITHM_NAME_RE.test(input.algorithmName)) invalid("invalid algorithm identity")
+  if (!SHA256_RE.test(input.csvSha256)) invalid("invalid qualification dataset hash")
   const symbol = normalizeSymbol(input.symbol)
-  if (!symbol) throw new Error("invalid qualification dataset symbol")
+  if (!symbol) invalid("invalid qualification dataset symbol")
   const interval = normalizeInterval(input.interval)
-  if (!interval) throw new Error("invalid qualification dataset interval")
+  if (!interval) invalid("invalid qualification dataset interval")
   if (!DATE_RE.test(input.requestedStart) || !DATE_RE.test(input.requestedEnd)) {
-    throw new Error("qualification dataset window must use date-only UTC values")
+    invalid("qualification dataset window must use date-only UTC values")
   }
   if (input.requestedStart > input.requestedEnd) {
-    throw new Error("qualification dataset window is empty")
+    invalid("qualification dataset window is empty")
   }
   const expectedProvider = input.assetClass === "equity" ? "alpaca" : "binance"
   if (input.providerId !== expectedProvider) {
-    throw new Error("qualification dataset provider does not match asset class")
+    invalid("qualification dataset provider does not match asset class")
   }
   if (
     !input.providerFeed.trim() ||
@@ -112,7 +121,7 @@ function validate(input: QualificationDatasetImportV1) {
     !input.splitTreatment.trim() ||
     !input.dividendTreatment.trim()
   ) {
-    throw new Error("qualification dataset provenance is incomplete")
+    invalid("qualification dataset provenance is incomplete")
   }
   return { symbol, interval }
 }
@@ -122,7 +131,7 @@ async function atomicDatasetWrite(file: string, csv: Buffer, expectedHash: strin
   try {
     const existing = await fs.readFile(file)
     if (sha256(existing) !== expectedHash) {
-      throw new Error("existing qualification dataset hash conflicts")
+      invalid("existing qualification dataset hash conflicts")
     }
     return
   } catch (error: any) {
@@ -139,15 +148,17 @@ export async function importQualificationDatasetV1(
   const identity = validate(input)
   const csv = decodeBase64(input.csvBase64)
   if (sha256(csv) !== input.csvSha256) {
-    throw new Error("qualification dataset content hash mismatch")
+    invalid("qualification dataset content hash mismatch")
   }
 
   const ensured = await ensureAlgoWorkspace(input.algorithmName)
-  const existingWorkspace = await getSessionWorkspace(input.sessionId)
-  if (existingWorkspace && existingWorkspace !== ensured.slug) {
-    throw new Error("qualification session is already bound to another workspace")
-  }
-  await bindSessionWorkspace(input.sessionId, ensured.slug)
+  await Flock.withLock(`fund-qualification-session:${input.sessionId}`, async () => {
+    const existingWorkspace = await getSessionWorkspace(input.sessionId)
+    if (existingWorkspace && existingWorkspace !== ensured.slug) {
+      invalid("qualification session is already bound to another workspace")
+    }
+    if (!existingWorkspace) await bindSessionWorkspace(input.sessionId, ensured.slug)
+  })
   const spec = await commitRequestSpec({
     requestID: input.sessionId,
     identity: {

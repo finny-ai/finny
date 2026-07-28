@@ -80,6 +80,7 @@ export async function finalizeDatasetEvidenceFile(
   const candidate = path.resolve(dataRoot, input.csvPath)
   const csvPath = await fs.realpath(candidate)
   if (!inside(dataRoot, csvPath)) throw new Error("csvPath escapes the active data directory")
+  if (!csvPath.toLowerCase().endsWith(".csv")) throw new Error("csvPath must resolve to a .csv file")
   const outputPath = path.relative(dataRoot, csvPath).replaceAll(path.sep, "/")
   const csvBytes = await fs.readFile(csvPath)
   const csvText = csvBytes.toString("utf8")
@@ -100,4 +101,3 @@ export async function finalizeDatasetEvidenceFile(
     digest: digest({ manifest: built.manifest, workspaceSlug: input.workspaceSlug, manifestOutputPath }),
   }
 }
-

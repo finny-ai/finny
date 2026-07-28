@@ -19,6 +19,28 @@ function sha256(value: string) {
   return createHash("sha256").update(value).digest("hex")
 }
 
+function payload(input: { sessionId: string; algorithmName: string; csv: string }) {
+  return {
+    sessionId: input.sessionId,
+    algorithmName: input.algorithmName,
+    symbol: "BTC",
+    assetClass: "crypto" as const,
+    interval: "1d",
+    requestedStart: "2026-07-13",
+    requestedEnd: "2026-07-15",
+    csvBase64: Buffer.from(input.csv).toString("base64"),
+    csvSha256: sha256(input.csv),
+    providerId: "binance" as const,
+    providerFeed: "production-usdm-klines",
+    providerVenue: "BINANCE",
+    providerSymbol: "BTCUSDT",
+    priceBasis: "raw" as const,
+    splitTreatment: "not_applicable",
+    dividendTreatment: "not_applicable",
+    corporateActionStatus: "not_applicable" as const,
+  }
+}
+
 describe("fund qualification dataset import", () => {
   test("binds exact request identity and produces strict runtime evidence", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-fund-dataset-import-"))
@@ -86,5 +108,38 @@ describe("fund qualification dataset import", () => {
     ).rejects.toThrow("content hash mismatch")
     await expect(fs.readdir(path.join(root, "algos"))).rejects.toThrow()
   })
-})
 
+  test("serializes competing workspace bindings for one session", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-fund-dataset-race-"))
+    roots.push(root)
+    process.env.FINNY_HOME = root
+    const csv = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-13T00:00:00Z,100,105,99,104,1000",
+      "2026-07-14T00:00:00Z,104,108,103,107,1200",
+      "2026-07-15T00:00:00Z,107,110,106,109,900",
+    ].join("\n")
+    const settled = await Promise.allSettled([
+      importQualificationDatasetV1(
+        payload({
+          sessionId: "ses-fund-qualification-race",
+          algorithmName: "btc-race-candidate-one",
+          csv,
+        }),
+      ),
+      importQualificationDatasetV1(
+        payload({
+          sessionId: "ses-fund-qualification-race",
+          algorithmName: "btc-race-candidate-two",
+          csv,
+        }),
+      ),
+    ])
+    expect(settled.filter((item) => item.status === "fulfilled")).toHaveLength(1)
+    const rejected = settled.find((item) => item.status === "rejected")
+    expect(rejected?.status).toBe("rejected")
+    if (rejected?.status === "rejected") {
+      expect(String(rejected.reason)).toContain("already bound to another workspace")
+    }
+  })
+})

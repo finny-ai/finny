@@ -140,4 +140,29 @@ describe("finny_dataset_evidence_finalize", () => {
     )
     await expect(finalizeDatasetEvidenceFile({ ...base, csvPath: "../outside.csv" })).rejects.toThrow()
   })
+
+  test("rejects a csv-named symlink whose resolved target is not csv", async () => {
+    const { dataRoot } = await fixture()
+    const target = path.join(dataRoot, "crypto", "payload.txt")
+    const link = path.join(dataRoot, "crypto", "payload.csv")
+    await fs.writeFile(target, "not a csv target")
+    await fs.symlink(target, link)
+    await expect(
+      finalizeDatasetEvidenceFile({
+        dataRoot,
+        csvPath: "crypto/payload.csv",
+        request,
+        workspaceSlug: "btc-daily-momentum.1.1.00.00",
+        provider: { id: "binance", feed: "public-klines", venue: "BINANCE", providerSymbol: "BTCUSDT" },
+        priceBasis: {
+          basis: "raw",
+          split_treatment: "not_applicable",
+          dividend_treatment: "not_applicable",
+          corporate_action_status: "not_applicable",
+          events: [],
+        },
+      }),
+    ).rejects.toThrow("must resolve to a .csv file")
+    expect(await fs.readFile(target, "utf8")).toBe("not a csv target")
+  })
 })
