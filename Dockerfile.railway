@@ -1,12 +1,18 @@
 FROM oven/bun:1.3.14-debian AS build
 
 WORKDIR /src
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates git node-gyp python3 \
+    && rm -rf /var/lib/apt/lists/*
 COPY . .
 
 ENV HUSKY=0
-RUN bun install --frozen-lockfile
-RUN OPENCODE_VERSION=0.0.0-fund-manager \
-    bun run --cwd packages/opencode build --single --skip-install --skip-embed-web-ui
+ENV PYTHON=/usr/bin/python3
+RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile
+RUN OPENCODE_CHANNEL=fund-manager OPENCODE_VERSION=0.0.0-fund-manager \
+    bun run --cwd packages/opencode build --single --skip-install --skip-embed-web-ui \
+    && install -Dm0755 packages/opencode/dist/finny-linux-*/bin/opencode /out/finny
 
 FROM debian:bookworm-slim AS runtime
 
@@ -18,7 +24,7 @@ RUN groupadd --system --gid 10001 finny \
     && useradd --system --uid 10001 --gid finny --home-dir /var/lib/finny --create-home finny \
     && install -d -o finny -g finny /var/lib/finny/workspace
 
-COPY --from=build /src/packages/opencode/dist/finny-linux-x64/bin/opencode /usr/local/bin/finny
+COPY --from=build /out/finny /usr/local/bin/finny
 COPY --chmod=0755 docker/finny-agent-entrypoint.sh /usr/local/bin/finny-agent-entrypoint
 
 ENV HOME=/var/lib/finny
