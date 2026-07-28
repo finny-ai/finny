@@ -32,6 +32,10 @@ export function compatibilityError(input: {
   if (isFundRuntimeAgent(input.agent.name)) {
     const provider = input.provider
     const endpoint = input.model.api?.url?.replace(/\/+$/, "")
+    // models.dev represents the built-in SDK endpoint as an empty URL. The
+    // Google SDK resolves that value to its own fixed default; provider-level
+    // endpoint/fetch overrides remain forbidden below.
+    const officialEndpoint = endpoint === "" || endpoint === "https://generativelanguage.googleapis.com"
     if (
       !provider ||
       !["api", "env"].includes(provider.source) ||
@@ -40,7 +44,7 @@ export function compatibilityError(input: {
       provider.options.fetch !== undefined ||
       input.model.api?.npm !== "@ai-sdk/google" ||
       input.model.api?.id !== "gemini-3.6-flash" ||
-      endpoint !== "https://generativelanguage.googleapis.com"
+      !officialEndpoint
     ) {
       return (
         `Agent "${input.agent.name}" requires the built-in @ai-sdk/google transport for ` +
