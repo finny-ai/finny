@@ -82,6 +82,7 @@ import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
+import { fundQualificationHandlers } from "./handlers/fund-qualification"
 import { globalHandlers } from "./handlers/global"
 import { healthHandlers } from "./handlers/health"
 import { instanceHandlers } from "./handlers/instance"
@@ -151,6 +152,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     configHandlers,
     experimentalHandlers,
     fileHandlers,
+    fundQualificationHandlers(InstanceHttpApi),
     instanceHandlers,
     liveHandlers,
     mcpHandlers,

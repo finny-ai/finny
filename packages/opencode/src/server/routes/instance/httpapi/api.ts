@@ -9,6 +9,7 @@ import { ControlPlaneApi } from "./groups/control-plane"
 import { EventApi } from "./groups/event"
 import { ExperimentalApi } from "./groups/experimental"
 import { FileApi } from "./groups/file"
+import { FundQualificationApi } from "./groups/fund-qualification-api"
 import { InstanceApi } from "./groups/instance"
 import { LiveApi } from "./groups/live"
 import { McpApi } from "./groups/mcp"
@@ -54,6 +55,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ConfigApi)
   .addHttpApi(ExperimentalApi)
   .addHttpApi(FileApi)
+  .addHttpApi(FundQualificationApi)
   .addHttpApi(InstanceApi)
   .addHttpApi(LiveApi)
   .addHttpApi(McpApi)

@@ -73,7 +73,7 @@ describe("finny_dataset_evidence_finalize", () => {
         basis: "adjusted" as const,
         split_treatment: "provider_adjusted",
         dividend_treatment: "provider_adjusted",
-        corporate_action_status: "provider_adjusted",
+        corporate_action_status: "resolved",
         events: [],
       },
       now: new Date("2026-07-16T00:00:00Z"),
