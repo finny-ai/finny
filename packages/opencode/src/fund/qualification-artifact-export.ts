@@ -61,13 +61,21 @@ function validate(input: QualificationArtifactExportInputV1) {
   }
 }
 
+async function loadQualifiedPlan(planId: string) {
+  try {
+    return await loadExperimentPlanV1(planId)
+  } catch {
+    invalid("qualified experiment plan was not found or is invalid")
+  }
+}
+
 export async function exportQualificationArtifactV1(
   input: QualificationArtifactExportInputV1,
 ): Promise<QualificationArtifactExportResultV1> {
   validate(input)
   const [candidate, plan, request, evidence] = await Promise.all([
     Algorithm.getById(input.algorithmId),
-    loadExperimentPlanV1(input.experimentPlanId),
+    loadQualifiedPlan(input.experimentPlanId),
     readRequestSpecForSession({ sessionID: input.sessionId }),
     requireVerifiedDataExtractorEvidenceForSession(input.sessionId),
   ])

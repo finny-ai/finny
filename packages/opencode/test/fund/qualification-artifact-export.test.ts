@@ -224,4 +224,14 @@ describe("qualified artifact export", () => {
       }),
     ).rejects.toBeInstanceOf(QualificationArtifactExportError)
   })
+
+  test("maps an absent well-formed plan to the artifact export contract", async () => {
+    await expect(
+      exportQualificationArtifactV1({
+        sessionId: "session-missing-plan",
+        algorithmId: "algorithm-missing-plan",
+        experimentPlanId: `plan-${"a".repeat(24)}`,
+      }),
+    ).rejects.toBeInstanceOf(QualificationArtifactExportError)
+  })
 })
