@@ -24,7 +24,12 @@ from engine_v2.data.cache import (
     load_range,
 )
 from engine_v2.data.quality import QualityReport, analyze, blocking_reasons, expected_step
-from engine_v2.cli import _load_csv, _resample
+from engine_v2.cli import (
+    PointInTimeSnapshotResampleError,
+    _data_hash,
+    _load_csv,
+    _resample,
+)
 from engine_v2.core.arrays import MarketSnapshot, from_dataframe
 
 
@@ -82,8 +87,32 @@ def test_point_in_time_snapshot_survives_strict_engine_csv_path(tmp_path):
 def test_point_in_time_snapshot_fails_closed_when_resampling():
     frame = _toy_df(3)
     frame["finny_snapshot_json"] = ["", "{}", ""]
-    with pytest.raises(ValueError, match="cannot be resampled"):
+    with pytest.raises(
+        PointInTimeSnapshotResampleError,
+        match="cannot be resampled",
+    ):
         _resample(frame, "5m")
+
+
+def test_empty_snapshot_header_does_not_block_resampling(tmp_path):
+    frame = _toy_df(3)
+    frame["finny_snapshot_json"] = ["", "", ""]
+    csv_path = tmp_path / "empty-snapshot.csv"
+    frame.to_csv(csv_path, index=False)
+
+    loaded = _load_csv(csv_path)
+
+    assert "finny_snapshot_json" not in loaded.columns
+    assert len(_resample(loaded, "5m")) == 1
+
+
+def test_snapshot_content_is_part_of_strict_run_data_hash():
+    left = _toy_df(2)
+    left["finny_snapshot_json"] = ["", '{"regime":"risk_on"}']
+    right = left.copy()
+    right.loc[1, "finny_snapshot_json"] = '{"regime":"risk_off"}'
+
+    assert _data_hash(left) != _data_hash(right)
 
 
 def test_quality_sorts_unsorted_input():
