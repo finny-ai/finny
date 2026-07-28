@@ -40,7 +40,7 @@ import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
 import { DatasetEvidenceFinalizeTool } from "./dataset-evidence-finalize"
-import { FundActionProposalTool, FundSpecialistReportTool } from "./fund-contracts"
+import { FundActionDraftTool, FundActionProposalTool, FundSpecialistReportTool } from "./fund-contracts"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -85,6 +85,7 @@ import { hasPerplexityApiKey } from "./perplexity-credentials"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Bus } from "@/bus"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { effectiveFundRuntimePermission, isFundRuntimeAgent } from "@/agent/fund-policy"
 
 export function webSearchEnabled(
   providerID: ProviderV2.ID,
@@ -171,6 +172,7 @@ export const layer = Layer.effect(
     const portfolioBacktest = yield* PortfolioBacktestTool
     const discordRead = yield* DiscordReadTool
     const datasetEvidenceFinalize = yield* DatasetEvidenceFinalizeTool
+    const fundActionDraft = yield* FundActionDraftTool
     const fundActionProposal = yield* FundActionProposalTool
     const fundSpecialistReport = yield* FundSpecialistReportTool
     const agent = yield* Agent.Service
@@ -318,6 +320,7 @@ export const layer = Layer.effect(
           portfolioBacktest: Tool.init(portfolioBacktest),
           discordRead: Tool.init(discordRead),
           datasetEvidenceFinalize: Tool.init(datasetEvidenceFinalize),
+          fundActionDraft: Tool.init(fundActionDraft),
           fundActionProposal: Tool.init(fundActionProposal),
           fundSpecialistReport: Tool.init(fundSpecialistReport),
         })
@@ -369,6 +372,7 @@ export const layer = Layer.effect(
             tool.portfolioBacktest,
             tool.discordRead,
             tool.datasetEvidenceFinalize,
+            tool.fundActionDraft,
             tool.fundActionProposal,
             tool.fundSpecialistReport,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
@@ -391,8 +395,9 @@ export const layer = Layer.effect(
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
+      const effectivePermission = effectiveFundRuntimePermission(agent.name, agent.permission)
       const filtered = items.filter(
-        (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
+        (item) => Permission.evaluate("task", item.name, effectivePermission).action !== "deny",
       )
       const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
       const description = list
@@ -432,7 +437,9 @@ export const layer = Layer.effect(
             parameters: tool.parameters,
             jsonSchema: tool.jsonSchema,
           }
-          yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          if (!isFundRuntimeAgent(input.agent.name)) {
+            yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          }
           const jsonSchema =
             output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
               ? output.jsonSchema

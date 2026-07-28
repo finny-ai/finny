@@ -2,6 +2,12 @@
   "schemaVersion": "1.0.0",
   "scenarioId": "regime-change-open-position",
   "model": "google/gemini-3.6-flash",
+  "provenance": {
+    "evidenceMode": "synthetic_offline",
+    "fixture": "static_json",
+    "providerBacked": false,
+    "networkAccess": "disabled"
+  },
   "events": [
     {
       "type": "event_bound",
@@ -38,15 +44,15 @@
     {
       "type": "decision_proposed",
       "action": "propose_pause",
-      "riskTier": "material_change",
+      "riskTier": "bounded_paper",
       "proposalSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "executionAuthorized": false,
       "openPositionPolicy": "preserve_existing"
     },
     {
       "type": "approval_gated",
-      "required": true,
-      "status": "pending"
+      "required": false,
+      "status": "not_required"
     },
     {
       "type": "position_preserved",

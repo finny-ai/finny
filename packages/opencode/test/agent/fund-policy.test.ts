@@ -91,6 +91,24 @@ describe("fund runtime policy", () => {
     ).toBeUndefined()
   })
 
+  test("rejects protected role disablement and canonical-name collisions", () => {
+    expect(fundAgentConfigError({ agent: FUND_MANAGER_AGENT, disabled: true })).toContain("cannot be disabled")
+    expect(fundAgentConfigError({ agent: "fund_risk_analyst", disabled: true })).toContain("cannot be disabled")
+    expect(
+      fundAgentConfigError({
+        agent: "general",
+        configuredName: FUND_MANAGER_AGENT,
+      }),
+    ).toContain("cannot rename")
+    expect(
+      fundAgentConfigError({
+        agent: FUND_MANAGER_AGENT,
+        configuredName: "general",
+      }),
+    ).toContain("cannot rename")
+    expect(fundAgentConfigError({ agent: "general", configuredName: "reviewer" })).toBeUndefined()
+  })
+
   test("strips deprecated sampling fields after provider and plugin transforms", () => {
     const input = {
       temperature: 0.2,

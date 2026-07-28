@@ -1,19 +1,30 @@
-import crypto from "node:crypto"
+import { Database } from "@opencode-ai/core/database/database"
 import { Effect } from "effect"
 import z from "zod"
 import {
+  FUND_ACTION_POLICY,
   FUND_ACTION_TYPES,
+  FUND_DRAFT_REVIEWERS,
   FUND_MANAGER_AGENT,
   FUND_SPECIALIST_AGENTS,
-  fundSpecialistRole,
   isFundManagerAgent,
-  type FundSpecialistRole,
+  isFundSpecialistAgent,
+  type FundActionType as PolicyFundActionType,
 } from "@/agent/fund-policy"
+import {
+  FundCaseStore,
+  FundCaseStoreError,
+  type FundActionDraft,
+  type FundActionProposal,
+  type FundEvidenceReference as StoredFundEvidenceReference,
+  type FundProposalBody,
+  type FundReportSubmissionInput,
+} from "@/fund/case-store"
+import { MessageV2 } from "@/session/message-v2"
 import { Tool } from "./tool"
 
 const OPAQUE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/
 const SHA256_PATTERN = /^[a-f0-9]{64}$/
-const ISO_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/
 const CREDENTIAL_ASSIGNMENT_PATTERN =
   /\b(?:api[_-]?key|access[_-]?key|token|secret|password|database[_-]?url|railway[_-]?token|telegram[_-]?token|broker[_-]?credentials?)\s*[:=]\s*\S+/i
 const CREDENTIAL_URI_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^/\s:@]+:[^/\s@]+@/i
@@ -29,7 +40,6 @@ const credentialFreeText = (max: number) =>
 
 export const FundOpaqueID = z.string().regex(OPAQUE_ID_PATTERN)
 export const FundSha256 = z.string().regex(SHA256_PATTERN)
-export const FundTimestamp = z.string().regex(ISO_TIMESTAMP_PATTERN)
 
 export const FundEventType = z.enum([
   "order_filled",
@@ -45,6 +55,7 @@ export const FundEventType = z.enum([
 export const FundEvidenceReference = z
   .object({
     kind: z.enum([
+      "fund_event",
       "market_snapshot",
       "portfolio_snapshot",
       "position_snapshot",
@@ -59,6 +70,16 @@ export const FundEvidenceReference = z
     ]),
     ref: FundOpaqueID,
     sha256: FundSha256,
+  })
+  .strict()
+
+export const FundCaseEnvelopeParameters = z
+  .object({
+    eventType: FundEventType,
+    sourceEventRef: FundOpaqueID,
+    payloadSha256: FundSha256,
+    occurredAt: z.string().datetime({ offset: true }).optional(),
+    evidence: z.array(FundEvidenceReference).min(1).max(64),
   })
   .strict()
 
@@ -80,10 +101,6 @@ export const FundSpecialistReportReference = z
 
 export const FundSpecialistReportParameters = z
   .object({
-    caseId: FundOpaqueID,
-    eventId: FundOpaqueID,
-    eventType: FundEventType,
-    observedAt: FundTimestamp,
     subject: credentialFreeText(240),
     summary: credentialFreeText(2_000),
     recommendation: z.enum([
@@ -91,7 +108,11 @@ export const FundSpecialistReportParameters = z
       "investigate",
       "propose_pause",
       "propose_resume",
+      "propose_strategy_build",
+      "propose_strategy_deploy",
+      "propose_strategy_rollback",
       "propose_logic_review",
+      "propose_paper_allocation_change",
       "escalate_human",
     ]),
     confidence: z.number().min(0).max(1),
@@ -113,97 +134,120 @@ export const FundSpecialistReportParameters = z
 
 export const FundActionType = z.enum(FUND_ACTION_TYPES)
 
-export const FundActionProposalParameters = z
+const FundProposalBodyBase = z
   .object({
-    caseId: FundOpaqueID,
-    eventId: FundOpaqueID,
-    eventType: FundEventType,
-    proposedAt: FundTimestamp,
-    idempotencyKey: FundOpaqueID,
     action: FundActionType,
     strategy: FundStrategyReference.optional(),
-    portfolioSnapshot: FundEvidenceReference,
-    marketSnapshot: FundEvidenceReference,
+    portfolioSnapshot: FundEvidenceReference.optional(),
+    marketSnapshot: FundEvidenceReference.optional(),
     rationale: credentialFreeText(2_000),
     confidence: z.number().min(0).max(1),
-    riskTier: z.enum(["observation", "bounded_paper", "material_change"]),
     specialistReports: z.array(FundSpecialistReportReference).max(FUND_SPECIALIST_AGENTS.length),
     evidence: z.array(FundEvidenceReference).min(1).max(32),
     contraryEvidence: z.array(FundEvidenceReference).max(16),
+    draftSha256: FundSha256.optional(),
   })
   .strict()
-  .superRefine((value, ctx) => {
-    const advisoryOnly = value.action === "no_change" || value.action === "request_analysis"
-    if (!advisoryOnly && value.action !== "propose_strategy_build" && value.strategy === undefined) {
-      ctx.addIssue({
-        code: "custom",
-        path: ["strategy"],
-        message: "is required for a strategy-mutating proposal",
-      })
-    }
-    if (advisoryOnly && value.riskTier !== "observation") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["riskTier"],
-        message: "must be observation for no_change or request_analysis",
-      })
-    }
-    if (!advisoryOnly && value.riskTier === "observation") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["riskTier"],
-        message: "must be bounded_paper or material_change for a state-change proposal",
-      })
-    }
-    if (new Set(value.specialistReports.map((report) => report.agent)).size !== value.specialistReports.length) {
+
+function validateProposalShape(
+  value: z.infer<typeof FundProposalBodyBase>,
+  ctx: z.RefinementCtx,
+  phase: "draft" | "final",
+) {
+  const snapshotOptional = value.action === "request_analysis" || value.action === "propose_strategy_build"
+  if (!snapshotOptional && value.portfolioSnapshot?.kind !== "portfolio_snapshot") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["portfolioSnapshot"],
+      message: "a portfolio_snapshot bound to the active case is required",
+    })
+  }
+  if (!snapshotOptional && value.marketSnapshot?.kind !== "market_snapshot") {
+    ctx.addIssue({
+      code: "custom",
+      path: ["marketSnapshot"],
+      message: "a market_snapshot bound to the active case is required",
+    })
+  }
+  if (value.portfolioSnapshot && value.portfolioSnapshot.kind !== "portfolio_snapshot") {
+    ctx.addIssue({ code: "custom", path: ["portfolioSnapshot", "kind"], message: "must be portfolio_snapshot" })
+  }
+  if (value.marketSnapshot && value.marketSnapshot.kind !== "market_snapshot") {
+    ctx.addIssue({ code: "custom", path: ["marketSnapshot", "kind"], message: "must be market_snapshot" })
+  }
+  const mutating = value.action !== "no_change" && value.action !== "request_analysis"
+  if (mutating && value.action !== "propose_strategy_build" && !value.strategy) {
+    ctx.addIssue({ code: "custom", path: ["strategy"], message: "is required for this action" })
+  }
+  const uniqueRoles = new Set(value.specialistReports.map((report) => report.agent))
+  if (uniqueRoles.size !== value.specialistReports.length) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["specialistReports"],
+      message: "must contain at most one report per specialist",
+    })
+  }
+  const policy = FUND_ACTION_POLICY[value.action]
+  const required = policy.requiredSpecialists.filter((agent) =>
+    phase === "draft"
+      ? !FUND_DRAFT_REVIEWERS.includes(agent as (typeof FUND_DRAFT_REVIEWERS)[number])
+      : true,
+  )
+  for (const agent of required) {
+    if (!uniqueRoles.has(agent)) {
       ctx.addIssue({
         code: "custom",
         path: ["specialistReports"],
-        message: "must contain at most one report per specialist",
+        message: `${agent} is required for ${value.action}`,
       })
     }
-    if (value.riskTier === "material_change") {
-      const agents = new Set(value.specialistReports.map((report) => report.agent))
-      for (const required of ["fund_independent_validator", "fund_risk_sentinel"] as const) {
-        if (agents.has(required)) continue
-        ctx.addIssue({
-          code: "custom",
-          path: ["specialistReports"],
-          message: `${required} is required for a material change`,
-        })
-      }
+  }
+  if (phase === "draft") {
+    if (policy.riskTier !== "material_change") {
+      ctx.addIssue({ code: "custom", path: ["action"], message: "only material changes use a review draft" })
     }
-    if (value.portfolioSnapshot.kind !== "portfolio_snapshot") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["portfolioSnapshot", "kind"],
-        message: "must be portfolio_snapshot",
-      })
+    if (value.draftSha256 !== undefined) {
+      ctx.addIssue({ code: "custom", path: ["draftSha256"], message: "is server-derived and must be omitted" })
     }
-    if (value.marketSnapshot.kind !== "market_snapshot") {
-      ctx.addIssue({
-        code: "custom",
-        path: ["marketSnapshot", "kind"],
-        message: "must be market_snapshot",
-      })
-    }
-  })
+  } else if (policy.riskTier === "material_change" && !value.draftSha256) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["draftSha256"],
+      message: "the exact server-issued material draft digest is required",
+    })
+  } else if (policy.riskTier !== "material_change" && value.draftSha256 !== undefined) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["draftSha256"],
+      message: "must be omitted for a non-material proposal",
+    })
+  }
+}
+
+export const FundActionDraftParameters = FundProposalBodyBase.superRefine((value, ctx) =>
+  validateProposalShape(value, ctx, "draft"),
+)
+
+export const FundActionProposalParameters = FundProposalBodyBase.superRefine((value, ctx) =>
+  validateProposalShape(value, ctx, "final"),
+)
 
 export type FundSpecialistReportInput = z.infer<typeof FundSpecialistReportParameters>
+export type FundActionDraftInput = z.infer<typeof FundActionDraftParameters>
 export type FundActionProposalInput = z.infer<typeof FundActionProposalParameters>
 
-export type FundSpecialistReport = FundSpecialistReportInput & {
-  specialist: FundSpecialistRole
+export type FundSpecialistReport = {
+  caseId: string
+  eventId: string
+  eventType: z.infer<typeof FundEventType>
+  specialist: string
   reportSha256: string
+  submittedAt: number
+  draftSha256?: string
+  report: FundSpecialistReportInput
 }
 
-export type FundActionProposal = FundActionProposalInput & {
-  proposalSha256: string
-  executionAuthorized: false
-  gatewayReview: "not_executable" | "required"
-  humanApprovalRequired: boolean
-  openPositionPolicy: "preserve_existing"
-}
+export { type FundActionDraft, type FundActionProposal }
 
 export function containsCredentialMaterial(value: string): boolean {
   return (
@@ -213,121 +257,232 @@ export function containsCredentialMaterial(value: string): boolean {
   )
 }
 
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .filter(([, child]) => child !== undefined)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stable(child)}`)
-      .join(",")}}`
-  }
-  return JSON.stringify(value) ?? "null"
-}
-
-function sha256(value: unknown): string {
-  return crypto.createHash("sha256").update(stable(value)).digest("hex")
-}
-
-export function createFundSpecialistReport(
-  agent: string,
-  input: FundSpecialistReportInput,
-): FundSpecialistReport | undefined {
-  const specialist = fundSpecialistRole(agent)
-  if (!specialist) return undefined
-  const parsed = FundSpecialistReportParameters.parse(input)
+function proposalBody(
+  input: FundActionDraftInput | FundActionProposalInput,
+): FundProposalBody {
   return {
-    ...parsed,
-    specialist,
-    reportSha256: sha256({ specialist, report: parsed }),
+    action: input.action as PolicyFundActionType,
+    strategy: input.strategy,
+    portfolioSnapshot: input.portfolioSnapshot as StoredFundEvidenceReference | undefined,
+    marketSnapshot: input.marketSnapshot as StoredFundEvidenceReference | undefined,
+    rationale: input.rationale,
+    confidence: input.confidence,
+    specialistReports: input.specialistReports,
+    evidence: input.evidence,
+    contraryEvidence: input.contraryEvidence,
+    draftSha256: input.draftSha256,
   }
 }
 
-export function createFundActionProposal(
-  agent: string,
-  input: FundActionProposalInput,
-): FundActionProposal | undefined {
-  if (!isFundManagerAgent(agent)) return undefined
-  const parsed = FundActionProposalParameters.parse(input)
-  return {
-    ...parsed,
-    proposalSha256: sha256({ actor: FUND_MANAGER_AGENT, proposal: parsed }),
-    executionAuthorized: false,
-    gatewayReview:
-      parsed.action === "no_change" || parsed.action === "request_analysis" ? "not_executable" : "required",
-    humanApprovalRequired: parsed.riskTier === "material_change",
-    openPositionPolicy: "preserve_existing",
-  }
+async function triggerMessageID(ctx: Tool.Context, database: Database.Interface): Promise<string | undefined> {
+  const message = await Effect.runPromise(
+    MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
+      Effect.provideService(Database.Service, database),
+      Effect.catchCause(() => Effect.succeed(undefined)),
+    ),
+  )
+  return message?.info.role === "assistant" ? message.info.parentID : undefined
 }
+
+type RejectionCode =
+  | "unauthorized_agent"
+  | "case_not_admitted"
+  | "invalid_lineage"
+  | "unverified_specialist_reports"
+  | "draft_required"
+  | "draft_mismatch"
+  | "evidence_mismatch"
+  | "attempt_budget_exhausted"
+  | "specialist_active"
+  | "specialist_completed"
+  | "proposal_already_finalized"
+  | "required_specialist_missing"
+  | "report_not_completed"
+  | "report_missing"
+  | "report_already_submitted"
+  | "duplicate_case"
+  | "case_mismatch"
 
 type SpecialistReportMetadata = {
   accepted: boolean
   report?: FundSpecialistReport
-  code?: "unauthorized_agent"
+  code?: RejectionCode
+}
+
+type DraftMetadata = {
+  accepted: boolean
+  draft?: FundActionDraft
+  code?: RejectionCode
 }
 
 type ActionProposalMetadata = {
   accepted: boolean
   proposal?: FundActionProposal
-  code?: "unauthorized_agent"
+  code?: RejectionCode
+}
+
+function rejection(error: unknown): { code: RejectionCode; message: string } {
+  if (error instanceof FundCaseStoreError) return { code: error.code, message: error.message }
+  return {
+    code: "invalid_lineage",
+    message: error instanceof Error ? error.message : "Fund case verification failed closed.",
+  }
 }
 
 export const FundSpecialistReportTool = Tool.define<
   typeof FundSpecialistReportParameters,
   SpecialistReportMetadata,
-  never,
+  Database.Service,
   "finny_fund_specialist_report"
 >(
   "finny_fund_specialist_report",
-  Effect.succeed({
-    description:
-      "Submit a credential-free advisory finding bound to immutable fund evidence references. This records no trades, deployments, approvals, or infrastructure changes.",
-    parameters: FundSpecialistReportParameters,
-    execute: (input, ctx) =>
-      Effect.sync(() => {
-        const report = createFundSpecialistReport(ctx.agent, input)
-        if (!report) {
-          return {
-            title: "Fund specialist report rejected",
-            output: "Only a registered Fund Manager specialist may submit this advisory report.",
-            metadata: { accepted: false, code: "unauthorized_agent" } satisfies SpecialistReportMetadata,
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    return {
+      description:
+        "Submit one credential-free advisory finding from this admitted specialist child. Case, event, role, draft, timestamps, and report attestation are derived by the server. This grants no execution authority.",
+      parameters: FundSpecialistReportParameters,
+      execute: (input, ctx) =>
+        Effect.promise(async () => {
+          if (!isFundSpecialistAgent(ctx.agent) || !ctx.parentSessionID) {
+            return {
+              title: "Fund specialist report rejected",
+              output: "Only a registered specialist child of a Fund Manager case may submit a report.",
+              metadata: { accepted: false, code: "unauthorized_agent" } satisfies SpecialistReportMetadata,
+            }
           }
-        }
-        return {
-          title: "Fund specialist report accepted",
-          output: `Advisory report ${report.reportSha256} accepted for Fund Manager review. It grants no execution authority.`,
-          metadata: { accepted: true, report } satisfies SpecialistReportMetadata,
-        }
-      }),
+          try {
+            const stored = await FundCaseStore.submitReport(
+              {
+                managerSessionID: ctx.parentSessionID,
+                specialistSessionID: ctx.sessionID,
+                agent: ctx.agent,
+                report: input satisfies FundReportSubmissionInput,
+              },
+              database,
+            )
+            const report: FundSpecialistReport = {
+              ...stored,
+              eventType: stored.eventType as z.infer<typeof FundEventType>,
+            }
+            return {
+              title: "Fund specialist report submitted",
+              output:
+                `Advisory report ${report.reportSha256} was append-only submitted for ${report.caseId}. ` +
+                "It becomes admissible only after this exact child TaskState completes and grants no execution authority.",
+              metadata: { accepted: true, report } satisfies SpecialistReportMetadata,
+            }
+          } catch (error) {
+            const issue = rejection(error)
+            return {
+              title: "Fund specialist report rejected",
+              output: issue.message,
+              metadata: { accepted: false, code: issue.code } satisfies SpecialistReportMetadata,
+            }
+          }
+        }),
+    }
+  }),
+)
+
+export const FundActionDraftTool = Tool.define<
+  typeof FundActionDraftParameters,
+  DraftMetadata,
+  Database.Service,
+  "finny_fund_action_draft"
+>(
+  "finny_fund_action_draft",
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    return {
+      description:
+        "Record the immutable non-executable digest of a material proposed action before launching independent validator and risk-sentinel review. The draft cannot execute or authorize anything.",
+      parameters: FundActionDraftParameters,
+      execute: (input, ctx) =>
+        Effect.promise(async () => {
+          if (!isFundManagerAgent(ctx.agent)) {
+            return {
+              title: "Fund action draft rejected",
+              output: `Only "${FUND_MANAGER_AGENT}" may record a fund action draft.`,
+              metadata: { accepted: false, code: "unauthorized_agent" } satisfies DraftMetadata,
+            }
+          }
+          try {
+            const draft = await FundCaseStore.createDraft(
+              {
+                managerSessionID: ctx.sessionID,
+                triggerMessageID: await triggerMessageID(ctx, database),
+                body: proposalBody(input),
+              },
+              database,
+            )
+            return {
+              title: "Fund action draft recorded",
+              output:
+                `Material draft ${draft.draftSha256} was append-only recorded. ` +
+                "It is non-executable; validator and risk-sentinel children must review this exact digest.",
+              metadata: { accepted: true, draft } satisfies DraftMetadata,
+            }
+          } catch (error) {
+            const issue = rejection(error)
+            return {
+              title: "Fund action draft rejected",
+              output: issue.message,
+              metadata: { accepted: false, code: issue.code } satisfies DraftMetadata,
+            }
+          }
+        }),
+    }
   }),
 )
 
 export const FundActionProposalTool = Tool.define<
   typeof FundActionProposalParameters,
   ActionProposalMetadata,
-  never,
+  Database.Service,
   "finny_fund_action_propose"
 >(
   "finny_fund_action_propose",
-  Effect.succeed({
-    description:
-      "Create a credential-free, non-executable fund action proposal bound to immutable evidence and strategy hashes. A separate policy gateway must authorize and perform any state change.",
-    parameters: FundActionProposalParameters,
-    execute: (input, ctx) =>
-      Effect.sync(() => {
-        const proposal = createFundActionProposal(ctx.agent, input)
-        if (!proposal) {
-          return {
-            title: "Fund action proposal rejected",
-            output: `Only "${FUND_MANAGER_AGENT}" may submit a fund action proposal.`,
-            metadata: { accepted: false, code: "unauthorized_agent" } satisfies ActionProposalMetadata,
+  Effect.gen(function* () {
+    const database = yield* Database.Service
+    return {
+      description:
+        "Append exactly one credential-free final recommendation for the active immutable fund event. Case, event, risk, approval, time, and idempotency are derived by the server. Output is always non-executable.",
+      parameters: FundActionProposalParameters,
+      execute: (input, ctx) =>
+        Effect.promise(async () => {
+          if (!isFundManagerAgent(ctx.agent)) {
+            return {
+              title: "Fund action proposal rejected",
+              output: `Only "${FUND_MANAGER_AGENT}" may submit a fund action proposal.`,
+              metadata: { accepted: false, code: "unauthorized_agent" } satisfies ActionProposalMetadata,
+            }
           }
-        }
-        return {
-          title: "Fund action proposal accepted",
-          output: `Proposal ${proposal.proposalSha256} accepted for policy-gateway review. No action was executed.`,
-          metadata: { accepted: true, proposal } satisfies ActionProposalMetadata,
-        }
-      }),
+          try {
+            const proposal = await FundCaseStore.finalizeProposal(
+              {
+                managerSessionID: ctx.sessionID,
+                triggerMessageID: await triggerMessageID(ctx, database),
+                body: proposalBody(input),
+              },
+              database,
+            )
+            return {
+              title: "Fund action proposal recorded",
+              output:
+                `Proposal ${proposal.proposalSha256} was append-only recorded for external policy-gateway review. ` +
+                "executionAuthorized=false; no action, approval, deployment, or broker call occurred.",
+              metadata: { accepted: true, proposal } satisfies ActionProposalMetadata,
+            }
+          } catch (error) {
+            const issue = rejection(error)
+            return {
+              title: "Fund action proposal rejected",
+              output: issue.message,
+              metadata: { accepted: false, code: issue.code } satisfies ActionProposalMetadata,
+            }
+          }
+        }),
+    }
   }),
 )

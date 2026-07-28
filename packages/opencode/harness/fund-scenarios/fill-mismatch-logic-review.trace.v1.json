@@ -2,6 +2,12 @@
   "schemaVersion": "1.0.0",
   "scenarioId": "fill-mismatch-logic-review",
   "model": "google/gemini-3.6-flash",
+  "provenance": {
+    "evidenceMode": "synthetic_offline",
+    "fixture": "static_json",
+    "providerBacked": false,
+    "networkAccess": "disabled"
+  },
   "events": [
     {
       "type": "event_bound",

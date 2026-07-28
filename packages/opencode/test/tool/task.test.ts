@@ -510,11 +510,9 @@ describe("tool.task", () => {
       expect(asks).toBe(0)
 
       const result = yield* def.execute(task, context("fund_manager"))
-      expect(asks).toBe(1)
-      expect(result.output).toContain("advisory complete")
-      expect(seen?.agent).toBe("fund_regime_analyst")
-      expect(String(seen?.model?.providerID)).toBe("google")
-      expect(String(seen?.model?.modelID)).toBe("gemini-3.6-flash")
+      expect(asks).toBe(0)
+      expect(result.output).toContain("No immutable fund event is admitted")
+      expect(seen).toBeUndefined()
     }),
   )
 

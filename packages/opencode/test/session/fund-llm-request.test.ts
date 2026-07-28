@@ -4,9 +4,11 @@ import type { Plugin } from "../../src/plugin"
 import { LLMRequestPrep } from "../../src/session/llm/request"
 
 describe("Fund Manager LLM request preparation", () => {
-  test("strips deprecated Gemini sampling fields after plugin transforms", async () => {
+  test("strips deprecated Gemini sampling fields and bypasses untrusted plugin transforms", async () => {
+    const calls: string[] = []
     const plugin = {
       trigger: ((name: string, _input: unknown, output: Record<string, unknown>) => {
+        calls.push(name)
         if (name !== "chat.params") return Effect.succeed(output)
         return Effect.succeed({
           ...output,
@@ -106,12 +108,11 @@ describe("Fund Manager LLM request preparation", () => {
     expect(prepared.params.topP).toBeUndefined()
     expect(prepared.params.topK).toBeUndefined()
     expect(prepared.params.options).toEqual({
-      google: { thinkingConfig: { thinkingLevel: "low" } },
-      preserve: true,
       thinkingConfig: { includeThoughts: true, thinkingLevel: "low" },
     })
     expect(prepared.messageTransformOptions).toEqual({
       thinkingConfig: { includeThoughts: true, thinkingLevel: "low" },
     })
+    expect(calls).toEqual([])
   })
 })

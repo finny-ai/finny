@@ -269,7 +269,7 @@ export const layer = Layer.effect(
           "webfetch",
           "skill",
         ]
-        const fundManagerTools = ["task", "finny_fund_action_propose"]
+        const fundManagerTools = ["task", "finny_fund_action_draft", "finny_fund_action_propose"]
         const fundSpecialistTools = ["finny_fund_specialist_report"]
 
         function finnyAlgoRoot() {
@@ -857,18 +857,20 @@ export const layer = Layer.effect(
         }
 
         for (const [key, value] of Object.entries(cfg.agent ?? {})) {
-          if (value.disable) {
-            delete agents[key]
-            continue
-          }
           const fundConfigIssue = fundAgentConfigError({
             agent: key,
+            configuredName: value.name,
+            disabled: value.disable,
             model: value.model,
             temperature: value.temperature,
             topP: value.top_p,
             options: value.options,
           })
           if (fundConfigIssue) throw new Error(fundConfigIssue)
+          if (value.disable) {
+            delete agents[key]
+            continue
+          }
           let item = agents[key]
           if (!item)
             item = agents[key] = {
@@ -898,7 +900,13 @@ export const layer = Layer.effect(
         // prompt and visibility are pinned to the reviewed built-in policy.
         const fundManager = agents[FUND_MANAGER_AGENT]
         if (fundManager) {
+          fundManager.name = FUND_MANAGER_AGENT
           fundManager.model = { ...FUND_RUNTIME_MODEL }
+          fundManager.variant = undefined
+          fundManager.options = {}
+          fundManager.temperature = undefined
+          fundManager.topP = undefined
+          fundManager.steps = undefined
           fundManager.mode = "primary"
           fundManager.native = true
           fundManager.hidden = false
@@ -913,7 +921,13 @@ export const layer = Layer.effect(
         for (const name of FUND_SPECIALIST_AGENTS) {
           const specialist = agents[name]
           if (!specialist) continue
+          specialist.name = name
           specialist.model = { ...FUND_RUNTIME_MODEL }
+          specialist.variant = undefined
+          specialist.options = {}
+          specialist.temperature = undefined
+          specialist.topP = undefined
+          specialist.steps = undefined
           specialist.mode = "subagent"
           specialist.native = true
           specialist.hidden = true

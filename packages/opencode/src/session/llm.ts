@@ -33,6 +33,7 @@ import { repairQuestionToolInput, repairToolCallInput } from "./repair-tool-call
 import { modelTelemetry } from "./llm/telemetry"
 import { sessionTracer } from "@/otel-context"
 import { acquireTelemetrySpan, runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
+import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 import { SpanStatusCode, trace } from "@opentelemetry/api"
 
 export const OUTPUT_TOKEN_MAX = ProviderTransform.OUTPUT_TOKEN_MAX
@@ -167,7 +168,11 @@ const live: Layer.Layer<
           }
         }
 
-        const ruleset = Permission.merge(input.agent.permission ?? [], input.permission ?? [])
+        const ruleset = effectiveFundRuntimePermission(
+          input.agent.name,
+          input.agent.permission ?? [],
+          input.permission ?? [],
+        )
         workflowModel.sessionPreapprovedTools = Object.keys(prepared.tools).filter((name) => {
           const match = ruleset.findLast((rule) => Wildcard.match(name, rule.permission))
           return !match || match.action !== "ask"

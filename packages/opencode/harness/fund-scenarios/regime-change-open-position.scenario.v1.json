@@ -16,9 +16,9 @@
   },
   "expected": {
     "action": "propose_pause",
-    "riskTier": "material_change",
+    "riskTier": "bounded_paper",
     "specialists": ["fund_regime_analyst", "fund_risk_analyst", "fund_independent_validator", "fund_risk_sentinel"],
-    "humanApprovalRequired": true,
+    "humanApprovalRequired": false,
     "preserveOpenPosition": true
   },
   "limits": {

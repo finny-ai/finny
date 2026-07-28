@@ -1,7 +1,7 @@
 import type { Auth } from "@/auth"
 import type { Agent } from "@/agent/agent"
 import type { Provider } from "@/provider/provider"
-import { fundModelCompatibilityError } from "@/agent/fund-policy"
+import { fundModelCompatibilityError, isFundRuntimeAgent } from "@/agent/fund-policy"
 
 export type CredentialMode = Auth.Info["type"] | "environment" | "configured" | "anonymous"
 
@@ -20,6 +20,7 @@ export function requiresToolCalls(agent: Agent.Info, tools?: Record<string, bool
 export function compatibilityError(input: {
   agent: Agent.Info
   model: Provider.Model
+  provider?: Provider.Info
   tools?: Record<string, boolean>
 }): string | undefined {
   const fundModelError = fundModelCompatibilityError({
@@ -28,6 +29,25 @@ export function compatibilityError(input: {
     modelID: input.model.id,
   })
   if (fundModelError) return fundModelError
+  if (isFundRuntimeAgent(input.agent.name)) {
+    const provider = input.provider
+    const endpoint = input.model.api?.url?.replace(/\/+$/, "")
+    if (
+      !provider ||
+      !["api", "env"].includes(provider.source) ||
+      provider.id !== "google" ||
+      provider.options.baseURL !== undefined ||
+      provider.options.fetch !== undefined ||
+      input.model.api?.npm !== "@ai-sdk/google" ||
+      input.model.api?.id !== "gemini-3.6-flash" ||
+      endpoint !== "https://generativelanguage.googleapis.com"
+    ) {
+      return (
+        `Agent "${input.agent.name}" requires the built-in @ai-sdk/google transport for ` +
+        "https://generativelanguage.googleapis.com with no configured endpoint or fetch override."
+      )
+    }
+  }
   if (requiresToolCalls(input.agent, input.tools) && !input.model.capabilities.toolcall) {
     return `Model ${input.model.providerID}/${input.model.id} does not support tool calls required by agent "${input.agent.name}". Choose a tool-capable model or a non-tool agent.`
   }
