@@ -4,13 +4,13 @@ import type { Auth } from "../../src/auth"
 import type { Provider } from "../../src/provider/provider"
 import { ProviderPreflight } from "../../src/session/provider-preflight"
 
-const agent = (permission: Agent.Info["permission"]): Agent.Info =>
-  ({ name: "build", mode: "primary", permission, options: {} }) as Agent.Info
+const agent = (permission: Agent.Info["permission"], name = "build"): Agent.Info =>
+  ({ name, mode: "primary", permission, options: {} }) as Agent.Info
 
-const model = (toolcall: boolean): Provider.Model =>
+const model = (toolcall: boolean, providerID = "provider", id = "model"): Provider.Model =>
   ({
-    id: "model",
-    providerID: "provider",
+    id,
+    providerID,
     capabilities: { toolcall },
   }) as Provider.Model
 
@@ -49,5 +49,27 @@ describe("provider preflight", () => {
         model: model(false),
       }),
     ).toBeUndefined()
+  })
+
+  test("fund roles fail closed unless the exact Google Gemini model is selected", () => {
+    const manager = agent([{ permission: "*", pattern: "*", action: "deny" }], "fund_manager")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: model(true, "google", "gemini-3.6-flash"),
+      }),
+    ).toBeUndefined()
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: model(true, "google", "gemini-3.5-flash"),
+      }),
+    ).toContain("locked to google/gemini-3.6-flash")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: model(true, "openrouter", "gemini-3.6-flash"),
+      }),
+    ).toContain("locked to google/gemini-3.6-flash")
   })
 })

@@ -14,6 +14,7 @@ import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
 import { mergeDeep } from "remeda"
+import { isFundRuntimeModel, sanitizeFundModelRequestParams, stripDeprecatedSamplingOptions } from "@/agent/fund-policy"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
 
@@ -111,7 +112,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
           ...input.messages,
         ]
 
-  const params = yield* input.plugin.trigger(
+  const rawParams = yield* input.plugin.trigger(
     "chat.params",
     {
       sessionID: input.sessionID,
@@ -130,6 +131,11 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
       options,
     },
   )
+  // google/gemini-3.6-flash rejects the legacy sampling controls. Strip them
+  // after plugin transforms as well as from nested provider options so no
+  // runtime hook can accidentally reintroduce an unsupported field.
+  const params = sanitizeFundModelRequestParams(input.model, rawParams)
+  const messageTransformOptions = isFundRuntimeModel(input.model) ? stripDeprecatedSamplingOptions(options) : options
 
   const { headers } = yield* input.plugin.trigger(
     "chat.headers",
@@ -169,7 +175,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     messages,
     tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
     params,
-    messageTransformOptions: options,
+    messageTransformOptions,
     headers: {
       ...(input.model.providerID.startsWith("opencode")
         ? {

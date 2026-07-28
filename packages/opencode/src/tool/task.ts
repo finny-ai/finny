@@ -48,6 +48,7 @@ import { parseSecRequestContext } from "@/data/sec-edgar"
 import { renderSubagentArtifactPointer } from "@/agent/subagent-artifact"
 import { TaskState } from "@/task/state"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { fundDelegationError } from "@/agent/fund-policy"
 import { StrategyContext } from "@/task/strategy-context"
 import {
   activeWorkflowForSession,
@@ -905,6 +906,8 @@ const taskExecutor = Effect.gen(function* () {
     ctx: Tool.Context,
     options: { mode: "background" | "foreground"; batch?: boolean },
   ) {
+    const fundDelegationIssue = fundDelegationError(ctx.agent, params.subagent_type)
+    if (fundDelegationIssue) return yield* Effect.fail(new Error(fundDelegationIssue))
     const cfg = yield* config.get()
     const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
       Effect.provideService(Database.Service, database),

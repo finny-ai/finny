@@ -1,0 +1,58 @@
+{
+  "schemaVersion": "1.0.0",
+  "scenarioId": "regime-change-open-position",
+  "model": "google/gemini-3.6-flash",
+  "events": [
+    {
+      "type": "event_bound",
+      "eventId": "evt-regime-001",
+      "eventType": "regime_changed",
+      "strategyId": "btc-trend-001",
+      "strategyVersion": 3
+    },
+    {
+      "type": "context_verified",
+      "portfolioSnapshotSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "marketSnapshotSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "type": "specialist_completed",
+      "agent": "fund_regime_analyst",
+      "reportSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    },
+    {
+      "type": "specialist_completed",
+      "agent": "fund_risk_analyst",
+      "reportSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "type": "specialist_completed",
+      "agent": "fund_independent_validator",
+      "reportSha256": "abababababababababababababababababababababababababababababababab"
+    },
+    {
+      "type": "specialist_completed",
+      "agent": "fund_risk_sentinel",
+      "reportSha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    },
+    {
+      "type": "decision_proposed",
+      "action": "propose_pause",
+      "riskTier": "material_change",
+      "proposalSha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "executionAuthorized": false,
+      "openPositionPolicy": "preserve_existing"
+    },
+    {
+      "type": "approval_gated",
+      "required": true,
+      "status": "pending"
+    },
+    {
+      "type": "position_preserved",
+      "positionId": "pos-btc-001",
+      "beforeQuantity": 0.05,
+      "afterQuantity": 0.05
+    }
+  ]
+}
