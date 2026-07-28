@@ -70,6 +70,13 @@ import { StrategyContext } from "@/task/strategy-context"
 import { ProviderPreflight } from "./provider-preflight"
 import { Auth } from "@/auth"
 import { buildCapabilityManifest, capabilityManifestSystemFragment } from "@/capability/manifest"
+import {
+  effectiveFundRuntimePermission,
+  FUND_MANAGER_AGENT,
+  isFundManagerAgent,
+  isFundRuntimeAgent,
+  isFundSpecialistAgent,
+} from "@/agent/fund-policy"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
 import { inspectResearchBriefForBuildHandoff, renderResearchBriefHandoff } from "@/agent/research-brief"
 import type { ToolHookContext } from "@opencode-ai/plugin"
@@ -81,6 +88,8 @@ import {
   hasParentOverlapActionAfterContextLaunch,
   shouldResumeInterruptedWorkflow,
 } from "./build-workflow-continuation"
+import { TaskState } from "@/task/state"
+import { FundCaseStore, fundCaseSha256, type FundCaseContract, type FundCaseEnvelope } from "@/fund/case-store"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -338,7 +347,11 @@ export const layer = Layer.effect(
                   .ask({
                     ...req,
                     sessionID,
-                    ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                    ruleset: effectiveFundRuntimePermission(
+                      taskAgent.name,
+                      taskAgent.permission,
+                      session.permission ?? [],
+                    ),
                   })
                   .pipe(Effect.orDie),
             })
@@ -655,13 +668,80 @@ export const layer = Layer.effect(
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
+      if (
+        isFundRuntimeAgent(ag.name) &&
+        (input.model ||
+          input.variant ||
+          input.system ||
+          input.format ||
+          (isFundSpecialistAgent(ag.name) && input.fundCase))
+      ) {
+        const fields = [
+          ...(input.model ? ["model"] : []),
+          ...(input.variant ? ["variant"] : []),
+          ...(input.system ? ["system"] : []),
+          ...(input.format ? ["format"] : []),
+          ...(isFundSpecialistAgent(ag.name) && input.fundCase ? ["fundCase"] : []),
+        ]
+        const error = new NamedError.Unknown({
+          message: `Protected fund runtime profile does not accept per-request overrides: ${fields.join(", ")}.`,
+        })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      }
 
       const current = yield* db
-        .select({ agent: SessionTable.agent, model: SessionTable.model })
+        .select({ agent: SessionTable.agent, model: SessionTable.model, parentID: SessionTable.parent_id })
         .from(SessionTable)
         .where(eq(SessionTable.id, input.sessionID))
         .get()
         .pipe(Effect.orDie)
+      if (isFundRuntimeAgent(ag.name) && current?.agent !== ag.name) {
+        const error = new NamedError.Unknown({
+          message:
+            "Protected fund runtime roles require a session created with the exact canonical agent; cross-mode session switching is denied.",
+        })
+        yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+        throw error
+      }
+      if (isFundSpecialistAgent(ag.name)) {
+        const specialistAgent = ag.name
+        const task = yield* Effect.promise(() => TaskState.get(input.sessionID, database))
+        const parent = current?.parentID
+          ? yield* db
+              .select({ agent: SessionTable.agent })
+              .from(SessionTable)
+              .where(eq(SessionTable.id, current.parentID))
+              .get()
+              .pipe(Effect.orDie)
+          : undefined
+        if (
+          !current?.parentID ||
+          !task ||
+          task.parentSessionID !== current.parentID ||
+          task.subagentType !== specialistAgent ||
+          TaskState.isTerminal(task.status) ||
+          parent?.agent !== FUND_MANAGER_AGENT ||
+          !(yield* Effect.promise(() =>
+            FundCaseStore.validateChildLineage(
+              {
+                managerSessionID: current.parentID!,
+                childSessionID: input.sessionID,
+                agent: specialistAgent,
+                activeOnly: true,
+              },
+              database,
+            ),
+          ))
+        ) {
+          const error = new NamedError.Unknown({
+            message:
+              "Protected fund specialists may run only as active registered child tasks of a Fund Manager session.",
+          })
+          yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+          throw error
+        }
+      }
       const model = input.model ?? ag.model ?? (yield* currentModel(input.sessionID))
       yield* status.set(input.sessionID, {
         type: "preflight",
@@ -677,6 +757,7 @@ export const layer = Layer.effect(
       const incompatibility = ProviderPreflight.compatibilityError({
         agent: ag,
         model: resolvedModel,
+        provider: providerInfo,
         tools: input.tools,
       })
       yield* Effect.logInfo("provider preflight", {
@@ -1012,21 +1093,112 @@ export const layer = Layer.effect(
         return [{ ...part, messageID: info.id, sessionID: input.sessionID }]
       })
 
-      const resolvedParts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
+      let resolvedParts = yield* Effect.forEach(input.parts, resolvePart, { concurrency: "unbounded" }).pipe(
         Effect.map((x) => x.flat().map(assign)),
       )
 
-      yield* plugin.trigger(
-        "chat.message",
-        {
-          sessionID: input.sessionID,
-          agent: input.agent,
-          model: input.model,
-          messageID: input.messageID,
-          variant: input.variant,
-        },
-        { message: info, parts: resolvedParts },
-      )
+      let fundCase: FundCaseContract | undefined
+      if (isFundManagerAgent(ag.name)) {
+        const operatorPrompt = input.parts.some(
+          (part) => part.type === "text" && !("synthetic" in part && part.synthetic === true),
+        )
+        const serverSourceEventRef = info.id
+        const serverPayloadSha256 = fundCaseSha256(input.parts)
+        if (
+          input.fundCase &&
+          (input.fundCase.sourceEventRef !== serverSourceEventRef ||
+            input.fundCase.payloadSha256 !== serverPayloadSha256 ||
+            !input.fundCase.evidence.some(
+              (reference) =>
+                reference.kind === "fund_event" &&
+                reference.ref === serverSourceEventRef &&
+                reference.sha256 === serverPayloadSha256,
+            ))
+        ) {
+          throw new NamedError.Unknown({
+            message:
+              "Fund event identity must match the server-resolved message and payload, with an exact fund_event evidence reference.",
+          })
+        }
+        const envelope: FundCaseEnvelope | undefined = input.fundCase
+          ? {
+              eventType: input.fundCase.eventType,
+              sourceEventRef: serverSourceEventRef,
+              payloadSha256: serverPayloadSha256,
+              occurredAt: input.fundCase.occurredAt,
+              evidence: input.fundCase.evidence,
+            }
+          : operatorPrompt
+            ? {
+                eventType: "operator_request",
+                sourceEventRef: serverSourceEventRef,
+                payloadSha256: serverPayloadSha256,
+                evidence: [
+                  {
+                    kind: "fund_event",
+                    ref: serverSourceEventRef,
+                    sha256: serverPayloadSha256,
+                  },
+                ],
+              }
+            : undefined
+        if (envelope) {
+          fundCase = yield* Effect.promise(() =>
+            FundCaseStore.admitCase(
+              {
+                managerSessionID: input.sessionID,
+                triggerMessageID: info.id,
+                envelope,
+              },
+              database,
+            ),
+          )
+          resolvedParts = [
+            assign({
+              messageID: info.id,
+              sessionID: input.sessionID,
+              type: "text",
+              synthetic: true,
+              text: [
+                "<fund-case-contract>",
+                JSON.stringify({
+                  caseId: fundCase.caseId,
+                  eventId: fundCase.eventId,
+                  eventType: fundCase.eventType,
+                  eventSha256: fundCase.eventSha256,
+                  evidenceSha256: fundCase.evidenceSha256,
+                  evidence: fundCase.evidence,
+                  serverDerived: [
+                    "caseId",
+                    "eventId",
+                    "eventSha256",
+                    "admittedAt",
+                    "idempotency",
+                    "riskTier",
+                    "approval",
+                  ],
+                }),
+                "</fund-case-contract>",
+              ].join("\n"),
+            }),
+            ...resolvedParts,
+          ]
+        }
+      }
+
+      if (!isFundRuntimeAgent(ag.name)) {
+        yield* plugin.trigger(
+          "chat.message",
+          {
+            sessionID: input.sessionID,
+            agent: input.agent,
+            model: input.model,
+            messageID: input.messageID,
+            variant: input.variant,
+          },
+          { message: info, parts: resolvedParts },
+        )
+      }
 
       const parts = yield* Effect.forEach(resolvedParts, (part) =>
         part.type === "file" && part.mime.startsWith("image/")
@@ -1499,7 +1671,7 @@ export const layer = Layer.effect(
               messages: msgs,
               promptOps,
               definitions: turnDefinitions,
-              includeMcpTools: pendingContext.length === 0 && !contextLaunchRequired,
+              includeMcpTools: !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired,
               strategyContextGate: {
                 unlaunchedRequiredRoles,
                 pendingTasks: pendingContext,
@@ -1542,16 +1714,23 @@ export const layer = Layer.effect(
               }
             }
 
-            yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            const protectedFundRuntime = isFundRuntimeAgent(agent.name)
+            if (!protectedFundRuntime) {
+              yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+            }
 
-            const [skills, env, instructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
-              sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
-              MessageV2.toModelMessagesEffect(msgs, model),
-            ])
-            const system = [...env, ...instructions, ...(skills ? [skills] : [])]
-            if (unlaunchedRequiredRoles.length > 0) {
+            const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
+            const system = protectedFundRuntime
+              ? []
+              : yield* Effect.gen(function* () {
+                  const [skills, env, instructions] = yield* Effect.all([
+                    sys.skills(agent),
+                    sys.environment(model),
+                    instruction.system().pipe(Effect.orDie),
+                  ])
+                  return [...env, ...instructions, ...(skills ? [skills] : [])]
+                })
+            if (!protectedFundRuntime && unlaunchedRequiredRoles.length > 0) {
               system.push(StrategyContext.requiredContextLaunchSystemFragment(unlaunchedRequiredRoles))
             }
             const manifest = buildCapabilityManifest({
@@ -1570,7 +1749,7 @@ export const layer = Layer.effect(
                 },
               }),
             )
-            if (capabilityManifest.phase !== "internal") {
+            if (!protectedFundRuntime && capabilityManifest.phase !== "internal") {
               system.push(capabilityManifestSystemFragment(capabilityManifest))
             }
             if (agent.name === "build") {
@@ -1582,7 +1761,9 @@ export const layer = Layer.effect(
                 if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
               }
             }
-            const activeBrokerKind = yield* Effect.promise(() => readActiveBrokerKind())
+            const activeBrokerKind = protectedFundRuntime
+              ? undefined
+              : yield* Effect.promise(() => readActiveBrokerKind())
             if (activeBrokerKind) system.push(BrokerRegistry.getSpec(activeBrokerKind).promptFragment)
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
@@ -1663,6 +1844,9 @@ export const layer = Layer.effect(
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
       "SessionPrompt.shell",
     )(function* (input: ShellInput) {
+      if (isFundRuntimeAgent(input.agent)) {
+        throw new NamedError.Unknown({ message: "Protected fund runtime roles cannot execute shell requests." })
+      }
       const ready = yield* Latch.make()
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
@@ -1682,6 +1866,9 @@ export const layer = Layer.effect(
         throw error
       }
       const agentName = cmd.agent ?? input.agent
+      if (isFundRuntimeAgent(agentName)) {
+        throw new NamedError.Unknown({ message: "Protected fund runtime roles cannot execute command templates." })
+      }
 
       const raw = input.arguments.match(argsRegex) ?? []
       const args = raw.map((arg) => arg.replace(quoteTrimRegex, ""))
@@ -1848,6 +2035,42 @@ const ModelRef = Schema.Struct({
   modelID: ModelV2.ID,
 })
 
+const FundCaseEvidenceInput = Schema.Struct({
+  kind: Schema.Literals([
+    "fund_event",
+    "market_snapshot",
+    "portfolio_snapshot",
+    "position_snapshot",
+    "strategy_version",
+    "regime_observation",
+    "fill",
+    "backtest_run",
+    "review_packet",
+    "specialist_report",
+    "fund_policy",
+    "news_context",
+  ]),
+  ref: Schema.String,
+  sha256: Schema.String,
+})
+
+const FundCaseEnvelopeInput = Schema.Struct({
+  eventType: Schema.Literals([
+    "order_filled",
+    "order_cancelled",
+    "regime_changed",
+    "strategy_health_changed",
+    "risk_limit_changed",
+    "deployment_result",
+    "scheduled_review",
+    "operator_request",
+  ]),
+  sourceEventRef: Schema.String,
+  payloadSha256: Schema.String,
+  occurredAt: Schema.optional(Schema.String),
+  evidence: Schema.Array(FundCaseEvidenceInput),
+})
+
 export const PromptInput = Schema.Struct({
   sessionID: SessionID,
   messageID: Schema.optional(MessageID),
@@ -1861,6 +2084,7 @@ export const PromptInput = Schema.Struct({
   format: Schema.optional(SessionV1.Format),
   system: Schema.optional(Schema.String),
   variant: Schema.optional(Schema.String),
+  fundCase: Schema.optional(FundCaseEnvelopeInput),
   parts: Schema.Array(
     Schema.Union([
       SessionV1.TextPartInput,

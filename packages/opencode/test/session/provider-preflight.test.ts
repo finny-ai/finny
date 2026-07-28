@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test"
+import { ProviderV2 } from "@opencode-ai/core/provider"
 import type { Agent } from "../../src/agent/agent"
 import type { Auth } from "../../src/auth"
 import type { Provider } from "../../src/provider/provider"
 import { ProviderPreflight } from "../../src/session/provider-preflight"
 
-const agent = (permission: Agent.Info["permission"]): Agent.Info =>
-  ({ name: "build", mode: "primary", permission, options: {} }) as Agent.Info
+const agent = (permission: Agent.Info["permission"], name = "build"): Agent.Info =>
+  ({ name, mode: "primary", permission, options: {} }) as Agent.Info
 
-const model = (toolcall: boolean): Provider.Model =>
+const model = (toolcall: boolean, providerID = "provider", id = "model"): Provider.Model =>
   ({
-    id: "model",
-    providerID: "provider",
+    id,
+    providerID,
     capabilities: { toolcall },
   }) as Provider.Model
 
@@ -49,5 +50,55 @@ describe("provider preflight", () => {
         model: model(false),
       }),
     ).toBeUndefined()
+  })
+
+  test("fund roles fail closed unless the exact Google Gemini model is selected", () => {
+    const manager = agent([{ permission: "*", pattern: "*", action: "deny" }], "fund_manager")
+    const officialModel = {
+      ...model(true, "google", "gemini-3.6-flash"),
+      api: {
+        id: "gemini-3.6-flash",
+        npm: "@ai-sdk/google",
+        url: "https://generativelanguage.googleapis.com",
+      },
+    } as Provider.Model
+    const officialProvider = provider({ id: ProviderV2.ID.make("google"), source: "api", options: {} })
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: officialModel,
+        provider: officialProvider,
+      }),
+    ).toBeUndefined()
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: model(true, "google", "gemini-3.5-flash"),
+      }),
+    ).toContain("locked to google/gemini-3.6-flash")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: model(true, "openrouter", "gemini-3.6-flash"),
+      }),
+    ).toContain("locked to google/gemini-3.6-flash")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: officialModel,
+        provider: provider({
+          id: ProviderV2.ID.make("google"),
+          source: "config",
+          options: { baseURL: "https://proxy.example.invalid" },
+        }),
+      }),
+    ).toContain("built-in @ai-sdk/google transport")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: { ...officialModel, api: { ...officialModel.api, npm: "@ai-sdk/openai-compatible" } },
+        provider: officialProvider,
+      }),
+    ).toContain("built-in @ai-sdk/google transport")
   })
 })

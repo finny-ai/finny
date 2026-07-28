@@ -14,6 +14,13 @@ import { Effect, Record } from "effect"
 import { jsonSchema, tool as aiTool, type ModelMessage, type Tool } from "ai"
 import type { Plugin } from "@/plugin"
 import { mergeDeep } from "remeda"
+import {
+  effectiveFundRuntimePermission,
+  isFundRuntimeAgent,
+  isFundRuntimeModel,
+  sanitizeFundModelRequestParams,
+  stripDeprecatedSamplingOptions,
+} from "@/agent/fund-policy"
 
 const USER_AGENT = `opencode/${InstallationVersion}`
 
@@ -55,22 +62,31 @@ const mergeOptions = (target: Record<string, any>, source: Record<string, any> |
 
 export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: PrepareInput) {
   const isOpenaiOauth = input.provider.id === "openai" && input.auth?.type === "oauth"
+  const protectedFundRuntime = isFundRuntimeAgent(input.agent.name)
   const system = [
     [
-      ...(input.agent.prompt ? [input.agent.prompt] : SystemPrompt.provider(input.model)),
-      ...input.system,
-      ...(input.user.system ? [input.user.system] : []),
+      ...(protectedFundRuntime
+        ? input.agent.prompt
+          ? [input.agent.prompt]
+          : []
+        : input.agent.prompt
+          ? [input.agent.prompt]
+          : SystemPrompt.provider(input.model)),
+      ...(!protectedFundRuntime ? input.system : []),
+      ...(!protectedFundRuntime && input.user.system ? [input.user.system] : []),
     ]
       .filter((x) => x)
       .join("\n"),
   ]
 
   const header = system[0]
-  yield* input.plugin.trigger(
-    "experimental.chat.system.transform",
-    { sessionID: input.sessionID, model: input.model },
-    { system },
-  )
+  if (!protectedFundRuntime) {
+    yield* input.plugin.trigger(
+      "experimental.chat.system.transform",
+      { sessionID: input.sessionID, model: input.model },
+      { system },
+    )
+  }
   if (system.length > 2 && system[0] === header) {
     const rest = system.slice(1)
     system.length = 0
@@ -111,39 +127,49 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
           ...input.messages,
         ]
 
-  const params = yield* input.plugin.trigger(
-    "chat.params",
-    {
-      sessionID: input.sessionID,
-      agent: input.agent.name,
-      model: input.model,
-      provider: input.provider,
-      message: input.user,
-    },
-    {
-      temperature: input.model.capabilities.temperature
-        ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
-        : undefined,
-      topP: input.agent.topP ?? ProviderTransform.topP(input.model),
-      topK: ProviderTransform.topK(input.model),
-      maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
-      options,
-    },
-  )
+  const baseParams = {
+    temperature: input.model.capabilities.temperature
+      ? (input.agent.temperature ?? ProviderTransform.temperature(input.model))
+      : undefined,
+    topP: input.agent.topP ?? ProviderTransform.topP(input.model),
+    topK: ProviderTransform.topK(input.model),
+    maxOutputTokens: ProviderTransform.maxOutputTokens(input.model, input.flags.outputTokenMax),
+    options,
+  }
+  const rawParams = protectedFundRuntime
+    ? baseParams
+    : yield* input.plugin.trigger(
+        "chat.params",
+        {
+          sessionID: input.sessionID,
+          agent: input.agent.name,
+          model: input.model,
+          provider: input.provider,
+          message: input.user,
+        },
+        baseParams,
+      )
+  // google/gemini-3.6-flash rejects the legacy sampling controls. Strip them
+  // after plugin transforms as well as from nested provider options so no
+  // runtime hook can accidentally reintroduce an unsupported field.
+  const params = sanitizeFundModelRequestParams(input.model, rawParams)
+  const messageTransformOptions = isFundRuntimeModel(input.model) ? stripDeprecatedSamplingOptions(options) : options
 
-  const { headers } = yield* input.plugin.trigger(
-    "chat.headers",
-    {
-      sessionID: input.sessionID,
-      agent: input.agent.name,
-      model: input.model,
-      provider: input.provider,
-      message: input.user,
-    },
-    {
-      headers: {},
-    },
-  )
+  const { headers } = protectedFundRuntime
+    ? { headers: {} }
+    : yield* input.plugin.trigger(
+        "chat.headers",
+        {
+          sessionID: input.sessionID,
+          agent: input.agent.name,
+          model: input.model,
+          provider: input.provider,
+          message: input.user,
+        },
+        {
+          headers: {},
+        },
+      )
 
   const tools = resolveTools(input)
   if (needsNoopCompatibilityTool(input) && Object.keys(tools).length === 0 && hasToolCalls(input.messages)) {
@@ -169,7 +195,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     messages,
     tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
     params,
-    messageTransformOptions: options,
+    messageTransformOptions,
     headers: {
       ...(input.model.providerID.startsWith("opencode")
         ? {
@@ -203,7 +229,7 @@ function needsNoopCompatibilityTool(input: Pick<PrepareInput, "model" | "provide
 function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
   const disabled = Permission.disabled(
     Object.keys(input.tools),
-    Permission.merge(input.agent.permission, input.permission ?? []),
+    effectiveFundRuntimePermission(input.agent.name, input.agent.permission, input.permission ?? []),
   )
   const resolved = Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
 
