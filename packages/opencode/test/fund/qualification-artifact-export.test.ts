@@ -212,6 +212,17 @@ describe("qualified artifact export", () => {
       experimentPlanHash: plan.planHash,
       completedPhases: ["exploratory", "validation", "confirmatory"],
     })
+    expect(result.confirmatoryResult).toEqual({
+      ok: true,
+      results: qualifyingResults(),
+    })
+    expect(result.confirmatoryResultHash).toBe(
+      qualificationHash(result.confirmatoryResult),
+    )
+    expect(result.qualificationDecision.ok).toBe(true)
+    expect(result.qualificationDecisionHash).toBe(
+      qualificationHash(result.qualificationDecision),
+    )
     expect(result.artifactEvidenceHash).toHaveLength(64)
   })
 

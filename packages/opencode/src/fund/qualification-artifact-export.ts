@@ -6,9 +6,10 @@ import {
   readHoldoutOpenEventsV1,
 } from "@/backtest/experiment-plan-store"
 import { candidateMatchesExperimentPlanV1 } from "@/backtest/experiment-plan"
-import { qualifyCandidateV1 } from "@/backtest/qualification"
+import { qualifyCandidateV1, type QualifyCandidateResultV1 } from "@/backtest/qualification"
 import { readQualificationAttemptEventsV1 } from "@/backtest/qualification-attempt-ledger"
 import { qualificationHash } from "@/backtest/qualification-policy"
+import type { BacktestRunner } from "@/backtest/runner"
 import { requireVerifiedDataExtractorEvidenceForSession } from "@/data/data-extractor-evidence"
 
 const ID_RE = /^[A-Za-z0-9._-]{8,120}$/
@@ -47,8 +48,10 @@ export interface QualificationArtifactExportResultV1 {
   datasetManifestHash: string
   holdoutEventHash: string
   confirmatoryAttemptId: string
+  confirmatoryResult: BacktestRunner.RunResult
   confirmatoryResultHash: string
   completedPhases: readonly ["exploratory", "validation", "confirmatory"]
+  qualificationDecision: Extract<QualifyCandidateResultV1, { ok: true }>
   qualificationDecisionHash: string
   artifactEvidenceHash: string
 }
@@ -193,8 +196,10 @@ export async function exportQualificationArtifactV1(
     datasetManifestHash: plan.datasetEvidence.manifestHash,
     holdoutEventHash: holdoutEvents[0]!.eventHash,
     confirmatoryAttemptId: confirmatory.attemptId,
+    confirmatoryResult: confirmatory.result,
     confirmatoryResultHash: qualificationHash(confirmatory.result),
     completedPhases,
+    qualificationDecision: decision,
     qualificationDecisionHash: qualificationHash(decision),
   }
   return { ...draft, artifactEvidenceHash: qualificationHash(draft) }

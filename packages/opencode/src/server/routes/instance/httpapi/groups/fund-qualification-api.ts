@@ -65,12 +65,14 @@ const ArtifactResult = Schema.Struct({
   datasetManifestHash: Schema.String,
   holdoutEventHash: Schema.String,
   confirmatoryAttemptId: Schema.String,
+  confirmatoryResult: Schema.Record(Schema.String, Schema.Unknown),
   confirmatoryResultHash: Schema.String,
   completedPhases: Schema.Tuple([
     Schema.Literal("exploratory"),
     Schema.Literal("validation"),
     Schema.Literal("confirmatory"),
   ]),
+  qualificationDecision: Schema.Record(Schema.String, Schema.Unknown),
   qualificationDecisionHash: Schema.String,
   artifactEvidenceHash: Schema.String,
 })
