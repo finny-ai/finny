@@ -9,7 +9,8 @@ COPY . .
 
 ENV HUSKY=0
 ENV PYTHON=/usr/bin/python3
-RUN --mount=type=cache,target=/root/.bun/install/cache bun install --frozen-lockfile
+RUN --mount=type=cache,id=finny-bun-install,target=/root/.bun/install/cache \
+    bun install --frozen-lockfile
 RUN OPENCODE_CHANNEL=fund-manager OPENCODE_VERSION=0.0.0-fund-manager \
     bun run --cwd packages/opencode build --single --skip-install --skip-embed-web-ui \
     && install -Dm0755 packages/opencode/dist/finny-linux-*/bin/opencode /out/finny
