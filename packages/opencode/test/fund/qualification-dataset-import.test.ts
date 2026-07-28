@@ -142,4 +142,26 @@ describe("fund qualification dataset import", () => {
       expect(String(rejected.reason)).toContain("already bound to another workspace")
     }
   })
+
+  test("replays the same import into the exact session workspace", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "finny-fund-dataset-replay-"))
+    roots.push(root)
+    process.env.FINNY_HOME = root
+    const csv = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-13T00:00:00Z,100,105,99,104,1000",
+      "2026-07-14T00:00:00Z,104,108,103,107,1200",
+      "2026-07-15T00:00:00Z,107,110,106,109,900",
+    ].join("\n")
+    const input = payload({
+      sessionId: "ses-fund-qualification-replay",
+      algorithmName: "btc-replay-candidate",
+      csv,
+    })
+
+    const first = await importQualificationDatasetV1(input)
+    const replay = await importQualificationDatasetV1(input)
+
+    expect(replay).toEqual(first)
+  })
 })

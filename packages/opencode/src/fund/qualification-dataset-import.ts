@@ -1,13 +1,15 @@
 import { createHash } from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
-import { algoDir, bindSessionWorkspace, ensureAlgoWorkspace, getSessionWorkspace } from "@finny-ai/core/algo"
-import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
 import {
-  commitRequestSpec,
-  writeRequestSpecProjection,
-  type RequestSpec,
-} from "@/agent/request-spec"
+  algoDir,
+  bindSessionWorkspace,
+  ensureAlgoWorkspace,
+  getSessionWorkspace,
+  humanNameOf,
+} from "@finny-ai/core/algo"
+import type { WorkspaceRequestContext } from "@/agent/finny-workspace-context"
+import { commitRequestSpec, writeRequestSpecProjection, type RequestSpec } from "@/agent/request-spec"
 import { normalizeInterval, normalizeSymbol } from "@/agent/request-identity"
 import { finalizeDatasetEvidenceFile } from "@/data/dataset-evidence-finalizer"
 import { Flock } from "@/util/flock"
@@ -151,13 +153,15 @@ export async function importQualificationDatasetV1(
     invalid("qualification dataset content hash mismatch")
   }
 
-  const ensured = await ensureAlgoWorkspace(input.algorithmName)
-  await Flock.withLock(`fund-qualification-session:${input.sessionId}`, async () => {
+  const ensured = await Flock.withLock(`fund-qualification-session:${input.sessionId}`, async () => {
     const existingWorkspace = await getSessionWorkspace(input.sessionId)
-    if (existingWorkspace && existingWorkspace !== ensured.slug) {
+    if (existingWorkspace && humanNameOf(existingWorkspace) !== input.algorithmName) {
       invalid("qualification session is already bound to another workspace")
     }
-    if (!existingWorkspace) await bindSessionWorkspace(input.sessionId, ensured.slug)
+    if (existingWorkspace) return ensureAlgoWorkspace(existingWorkspace)
+    const created = await ensureAlgoWorkspace(input.algorithmName)
+    await bindSessionWorkspace(input.sessionId, created.slug)
+    return created
   })
   const spec = await commitRequestSpec({
     requestID: input.sessionId,
