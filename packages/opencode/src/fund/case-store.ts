@@ -268,6 +268,17 @@ function assertEvidence(caseRecord: FundCaseContract, references: readonly FundE
   }
 }
 
+function assertEvidencePartition(input: FundProposalBody) {
+  const references = [...input.evidence, ...input.contraryEvidence]
+  if (new Set(references.map(evidenceKey)).size !== references.length) {
+    throw new FundCaseStoreError({
+      code: "evidence_mismatch",
+      message:
+        "Supporting and contrary evidence must contain unique, disjoint references.",
+    })
+  }
+}
+
 function assertEventEnvelope(envelope: FundCaseEnvelope) {
   const sourceReferences = envelope.evidence.filter(
     (reference) =>
@@ -1039,6 +1050,7 @@ export async function createDraft(
     })
   }
   assertSnapshotKinds(input.body)
+  assertEvidencePartition(input.body)
   assertEvidence(caseRecord, [
     ...(input.body.portfolioSnapshot ? [input.body.portfolioSnapshot] : []),
     ...(input.body.marketSnapshot ? [input.body.marketSnapshot] : []),
@@ -1132,6 +1144,7 @@ export async function finalizeProposal(
   }
   const policy = FUND_ACTION_POLICY[input.body.action]
   assertSnapshotKinds(input.body)
+  assertEvidencePartition(input.body)
   assertEvidence(caseRecord, [
     ...(input.body.portfolioSnapshot ? [input.body.portfolioSnapshot] : []),
     ...(input.body.marketSnapshot ? [input.body.marketSnapshot] : []),

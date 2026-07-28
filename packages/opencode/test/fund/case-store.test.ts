@@ -132,6 +132,27 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
     expect(replay).toEqual(caseRecord)
     expect(caseRecord.caseId).toStartWith("case_")
     expect(caseRecord.eventId).toStartWith("evt_")
+    const duplicateEvidence = yield* Effect.promise(() =>
+      FundCaseStore.finalizeProposal(
+        {
+          managerSessionID: managerID,
+          triggerMessageID: triggerID,
+          body: {
+            action: "request_analysis",
+            rationale: "Do not accept one reference as both support and contradiction.",
+            confidence: 0.4,
+            specialistReports: [],
+            evidence: [refs.event],
+            contraryEvidence: [refs.event],
+          },
+        },
+        database,
+      ).catch((error) => error),
+    )
+    expect(duplicateEvidence).toBeInstanceOf(FundCaseStoreError)
+    expect((duplicateEvidence as FundCaseStoreError).code).toBe(
+      "evidence_mismatch",
+    )
     expect(
       yield* Effect.promise(() =>
         FundCaseStore.specialistLaunchStatus(
