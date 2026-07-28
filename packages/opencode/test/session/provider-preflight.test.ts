@@ -73,6 +73,13 @@ describe("provider preflight", () => {
     expect(
       ProviderPreflight.compatibilityError({
         agent: manager,
+        model: { ...officialModel, api: { ...officialModel.api, url: "" } },
+        provider: { ...officialProvider, source: "env" },
+      }),
+    ).toBeUndefined()
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
         model: model(true, "google", "gemini-3.5-flash"),
       }),
     ).toContain("locked to google/gemini-3.6-flash")
@@ -97,6 +104,13 @@ describe("provider preflight", () => {
       ProviderPreflight.compatibilityError({
         agent: manager,
         model: { ...officialModel, api: { ...officialModel.api, npm: "@ai-sdk/openai-compatible" } },
+        provider: officialProvider,
+      }),
+    ).toContain("built-in @ai-sdk/google transport")
+    expect(
+      ProviderPreflight.compatibilityError({
+        agent: manager,
+        model: { ...officialModel, api: { ...officialModel.api, url: "https://proxy.example.invalid" } },
         provider: officialProvider,
       }),
     ).toContain("built-in @ai-sdk/google transport")
