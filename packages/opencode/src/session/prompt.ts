@@ -89,12 +89,7 @@ import {
   shouldResumeInterruptedWorkflow,
 } from "./build-workflow-continuation"
 import { TaskState } from "@/task/state"
-import {
-  FundCaseStore,
-  fundCaseSha256,
-  type FundCaseContract,
-  type FundCaseEnvelope,
-} from "@/fund/case-store"
+import { FundCaseStore, fundCaseSha256, type FundCaseContract, type FundCaseEnvelope } from "@/fund/case-store"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1107,24 +1102,42 @@ export const layer = Layer.effect(
         const operatorPrompt = input.parts.some(
           (part) => part.type === "text" && !("synthetic" in part && part.synthetic === true),
         )
+        const serverSourceEventRef = info.id
+        const serverPayloadSha256 = fundCaseSha256(input.parts)
+        if (
+          input.fundCase &&
+          (input.fundCase.sourceEventRef !== serverSourceEventRef ||
+            input.fundCase.payloadSha256 !== serverPayloadSha256 ||
+            !input.fundCase.evidence.some(
+              (reference) =>
+                reference.kind === "fund_event" &&
+                reference.ref === serverSourceEventRef &&
+                reference.sha256 === serverPayloadSha256,
+            ))
+        ) {
+          throw new NamedError.Unknown({
+            message:
+              "Fund event identity must match the server-resolved message and payload, with an exact fund_event evidence reference.",
+          })
+        }
         const envelope: FundCaseEnvelope | undefined = input.fundCase
           ? {
               eventType: input.fundCase.eventType,
-              sourceEventRef: input.fundCase.sourceEventRef,
-              payloadSha256: input.fundCase.payloadSha256,
+              sourceEventRef: serverSourceEventRef,
+              payloadSha256: serverPayloadSha256,
               occurredAt: input.fundCase.occurredAt,
               evidence: input.fundCase.evidence,
             }
           : operatorPrompt
             ? {
                 eventType: "operator_request",
-                sourceEventRef: info.id,
-                payloadSha256: fundCaseSha256(input.parts),
+                sourceEventRef: serverSourceEventRef,
+                payloadSha256: serverPayloadSha256,
                 evidence: [
                   {
                     kind: "fund_event",
-                    ref: info.id,
-                    sha256: fundCaseSha256(input.parts),
+                    ref: serverSourceEventRef,
+                    sha256: serverPayloadSha256,
                   },
                 ],
               }
@@ -1658,8 +1671,7 @@ export const layer = Layer.effect(
               messages: msgs,
               promptOps,
               definitions: turnDefinitions,
-              includeMcpTools:
-                !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired,
+              includeMcpTools: !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired,
               strategyContextGate: {
                 unlaunchedRequiredRoles,
                 pendingTasks: pendingContext,

@@ -32,7 +32,6 @@ ENV XDG_DATA_HOME=/var/lib/finny/data
 ENV XDG_CACHE_HOME=/var/lib/finny/cache
 ENV XDG_CONFIG_HOME=/var/lib/finny/config
 ENV XDG_STATE_HOME=/var/lib/finny/state
-ENV FINNY_DISABLE_SESSION_PREFLIGHT=1
 
 USER finny
 WORKDIR /var/lib/finny/workspace

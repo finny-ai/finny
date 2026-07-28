@@ -16,7 +16,6 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "@/format"
 import { Git } from "@/git"
 import { Installation } from "@/installation"
-import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
@@ -75,6 +74,7 @@ import {
   serverAuthorizationLayer,
 } from "./middleware/authorization"
 import { EventApi } from "./groups/event"
+import { HealthApi } from "./groups/health"
 import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
@@ -83,6 +83,7 @@ import { controlPlaneHandlers } from "./handlers/control-plane"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
 import { globalHandlers } from "./handlers/global"
+import { healthHandlers } from "./handlers/health"
 import { instanceHandlers } from "./handlers/instance"
 import { liveHandlers } from "./handlers/live"
 import { mcpHandlers } from "./handlers/mcp"
@@ -120,7 +121,7 @@ const cors = (corsOptions?: CorsOptions) =>
   )
 
 // Route tree:
-// - healthRoutes: unauthenticated process probes for private platform health checks.
+// - healthApiRoutes: typed unauthenticated process probes for private platform health checks.
 // - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
 // - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
 // - ptyConnectApiRoutes: typed WebSocket upgrade route with ticket-aware auth.
@@ -131,6 +132,7 @@ const httpApiAuthLayer = authorizationLayer.pipe(Layer.provide(ServerAuth.Config
 const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
+const healthApiRoutes = HttpApiBuilder.layer(HealthApi).pipe(Layer.provide(healthHandlers))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
   Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
   Layer.provide(schemaErrorLayer),
@@ -182,28 +184,6 @@ const docResponse = lazy(() => HttpServerResponse.jsonUnsafe(OpenApi.fromApi(Pub
 
 const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effect.succeed(docResponse()))).pipe(
   Layer.provide(authOnlyRouterLayer),
-)
-
-const healthRoutes = HttpRouter.use((router) =>
-  Effect.gen(function* () {
-    const response = (status: "live" | "ready") =>
-      Effect.succeed(
-        HttpServerResponse.jsonUnsafe(
-          {
-            status,
-            version: InstallationVersion,
-          },
-          {
-            headers: {
-              "Cache-Control": "no-store",
-              "X-Content-Type-Options": "nosniff",
-            },
-          },
-        ),
-      )
-    yield* router.add("GET", "/livez", () => response("live"))
-    yield* router.add("GET", "/readyz", () => response("ready"))
-  }),
 )
 
 const uiRoute = HttpRouter.use((router) =>
@@ -293,7 +273,7 @@ export function createRoutes(
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   return Layer.suspend(() =>
     Layer.mergeAll(
-      healthRoutes,
+      healthApiRoutes,
       rootApiRoutes,
       eventApiRoutes,
       ptyConnectApiRoutes,

@@ -3,11 +3,7 @@ import { expect } from "bun:test"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { SessionTable } from "@opencode-ai/core/session/sql"
-import {
-  FundCaseProposalTable,
-  FundCaseReportAdmissionTable,
-  FundCaseTable,
-} from "@opencode-ai/core/fund/case.sql"
+import { FundCaseProposalTable, FundCaseReportAdmissionTable, FundCaseTable } from "@opencode-ai/core/fund/case.sql"
 import { Effect } from "effect"
 import { count, eq } from "drizzle-orm"
 import { testEffect } from "../lib/effect"
@@ -61,6 +57,12 @@ function evidence(suffix: string): {
   return { portfolio, market, event, all: [portfolio, market, event] }
 }
 
+function eventEvidence(refs: ReturnType<typeof evidence>, ref: string, sha256: string): FundEvidenceReference[] {
+  refs.event.ref = ref
+  refs.event.sha256 = sha256
+  return refs.all
+}
+
 it.live("binds case, child, report, and final proposal provenance append-only", () =>
   Effect.gen(function* () {
     const suffix = crypto.randomUUID()
@@ -76,6 +78,25 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
     })
     yield* setupSession(db, { projectID, id: managerID, agent: "fund_manager" })
     const refs = evidence(suffix)
+    const sourceEventRef = `provider-event-${suffix}`
+    const payloadSha256 = hash(`payload-${suffix}`)
+    const tamperedEnvelope = yield* Effect.promise(() =>
+      FundCaseStore.admitCase(
+        {
+          managerSessionID: managerID,
+          triggerMessageID: `${triggerID}_tampered`,
+          envelope: {
+            eventType: "regime_changed",
+            sourceEventRef,
+            payloadSha256,
+            evidence: refs.all,
+          },
+        },
+        database,
+      ).catch((error) => error),
+    )
+    expect(tamperedEnvelope).toBeInstanceOf(FundCaseStoreError)
+    expect((tamperedEnvelope as FundCaseStoreError).code).toBe("evidence_mismatch")
     const caseRecord = yield* Effect.promise(() =>
       FundCaseStore.admitCase(
         {
@@ -83,10 +104,10 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
           triggerMessageID: triggerID,
           envelope: {
             eventType: "regime_changed",
-            sourceEventRef: `provider-event-${suffix}`,
-            payloadSha256: hash(`payload-${suffix}`),
+            sourceEventRef,
+            payloadSha256,
             occurredAt: "2026-07-27T18:00:00Z",
-            evidence: refs.all,
+            evidence: eventEvidence(refs, sourceEventRef, payloadSha256),
           },
         },
         database,
@@ -99,10 +120,10 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
           triggerMessageID: triggerID,
           envelope: {
             eventType: "regime_changed",
-            sourceEventRef: `provider-event-${suffix}`,
-            payloadSha256: hash(`payload-${suffix}`),
+            sourceEventRef,
+            payloadSha256,
             occurredAt: "2026-07-27T18:00:00Z",
-            evidence: refs.all,
+            evidence: eventEvidence(refs, sourceEventRef, payloadSha256),
           },
         },
         database,
@@ -225,10 +246,7 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
       ]),
     )
     const proposal = yield* Effect.promise(() =>
-      FundCaseStore.finalizeProposal(
-        { managerSessionID: managerID, triggerMessageID: triggerID, body },
-        database,
-      ),
+      FundCaseStore.finalizeProposal({ managerSessionID: managerID, triggerMessageID: triggerID, body }, database),
     )
     expect(proposal).toMatchObject({
       caseId: caseRecord.caseId,
@@ -244,10 +262,7 @@ it.live("binds case, child, report, and final proposal provenance append-only", 
     expect(proposal.proposedAt).toEndWith("Z")
     expect(
       yield* Effect.promise(() =>
-        FundCaseStore.finalizeProposal(
-          { managerSessionID: managerID, triggerMessageID: triggerID, body },
-          database,
-        ),
+        FundCaseStore.finalizeProposal({ managerSessionID: managerID, triggerMessageID: triggerID, body }, database),
       ),
     ).toEqual(proposal)
 
@@ -297,6 +312,8 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
     })
     yield* setupSession(db, { projectID, id: managerID, agent: "fund_manager" })
     const refs = evidence(suffix)
+    const sourceEventRef = `health-${suffix}`
+    const payloadSha256 = hash(`health-payload-${suffix}`)
     const caseRecord = yield* Effect.promise(() =>
       FundCaseStore.admitCase(
         {
@@ -304,9 +321,9 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
           triggerMessageID: triggerID,
           envelope: {
             eventType: "strategy_health_changed",
-            sourceEventRef: `health-${suffix}`,
-            payloadSha256: hash(`health-payload-${suffix}`),
-            evidence: refs.all,
+            sourceEventRef,
+            payloadSha256,
+            evidence: eventEvidence(refs, sourceEventRef, payloadSha256),
           },
         },
         database,
@@ -400,10 +417,7 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
       humanApprovalRequired: true,
     })
 
-    const review = (
-      agent: "fund_independent_validator" | "fund_risk_sentinel",
-      index: number,
-    ) =>
+    const review = (agent: "fund_independent_validator" | "fund_risk_sentinel", index: number) =>
       Effect.gen(function* () {
         const childID = yield* createChild(agent, index)
         const admitted = yield* Effect.promise(() =>
@@ -537,6 +551,9 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
     )
     expect((budget as FundCaseStoreError).code).toBe("attempt_budget_exhausted")
 
+    const secondRefs = evidence(`second-${suffix}`)
+    const secondSourceEventRef = `second-${suffix}`
+    const secondPayloadSha256 = hash(`second-${suffix}`)
     const crossCase = yield* Effect.promise(() =>
       FundCaseStore.admitCase(
         {
@@ -544,9 +561,9 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
           triggerMessageID: `msg_second_${suffix}`,
           envelope: {
             eventType: "scheduled_review",
-            sourceEventRef: `second-${suffix}`,
-            payloadSha256: hash(`second-${suffix}`),
-            evidence: evidence(`second-${suffix}`).all,
+            sourceEventRef: secondSourceEventRef,
+            payloadSha256: secondPayloadSha256,
+            evidence: eventEvidence(secondRefs, secondSourceEventRef, secondPayloadSha256),
           },
         },
         database,
@@ -571,11 +588,7 @@ it.live("enforces two attempts, exact TaskState lineage, draft-bound reviewers, 
     )
     expect(["evidence_mismatch", "report_missing"]).toContain((replayError as FundCaseStoreError).code)
 
-    const row = yield* db
-      .select()
-      .from(FundCaseTable)
-      .where(eq(FundCaseTable.case_id, caseRecord.caseId))
-      .get()
+    const row = yield* db.select().from(FundCaseTable).where(eq(FundCaseTable.case_id, caseRecord.caseId)).get()
     expect(row?.manager_session_id).toBe(managerID)
   }),
 )

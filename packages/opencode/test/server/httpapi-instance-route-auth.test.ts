@@ -1,6 +1,7 @@
+import { NodeHttpServer, NodeServices } from "@effect/platform-node"
 import { afterEach, describe, expect, test } from "bun:test"
-import { ConfigProvider, Layer } from "effect"
-import { HttpRouter } from "effect/unstable/http"
+import { Config, ConfigProvider, Effect, Layer } from "effect"
+import { HttpClient, HttpRouter, HttpServer } from "effect/unstable/http"
 import { EventPaths } from "../../src/server/routes/instance/httpapi/groups/event"
 import { PtyPaths } from "../../src/server/routes/instance/httpapi/groups/pty"
 import { HttpApiApp } from "../../src/server/routes/instance/httpapi/server"
@@ -8,6 +9,7 @@ import { ServerAuth } from "../../src/server/auth"
 import { PtyID } from "@opencode-ai/core/pty/schema"
 import { resetDatabase } from "../fixture/db"
 import { disposeAllInstances, tmpdir } from "../fixture/fixture"
+import { testEffect } from "../lib/effect"
 
 function app(input: { password?: string; username?: string }) {
   const handler = HttpRouter.toWebHandler(
@@ -36,6 +38,27 @@ function basic(username: string, password: string) {
   return ServerAuth.header({ username, password }) ?? ""
 }
 
+const servedRoutes: Layer.Layer<never, Config.ConfigError, HttpServer.HttpServer> = HttpRouter.serve(
+  HttpApiApp.routes.pipe(
+    Layer.provide(
+      ConfigProvider.layer(
+        ConfigProvider.fromUnknown({
+          OPENCODE_SERVER_PASSWORD: "secret",
+        }),
+      ),
+    ),
+  ),
+  {
+    disableListenLog: true,
+    disableLogger: true,
+  },
+)
+const servedRoutesWithNode = servedRoutes.pipe(
+  Layer.provideMerge(NodeHttpServer.layerTest),
+  Layer.provideMerge(NodeServices.layer),
+)
+const it = testEffect(servedRoutesWithNode)
+
 async function cancelBody(response: Response) {
   await response.body?.cancel().catch(() => {})
 }
@@ -46,25 +69,25 @@ afterEach(async () => {
 })
 
 describe("HttpApi instance route authorization", () => {
-  test("leaves only minimal platform health probes unauthenticated", async () => {
-    const server = app({ password: "secret" })
+  it.live("leaves only minimal platform health probes unauthenticated", () =>
+    Effect.gen(function* () {
+      for (const [path, status] of [
+        ["/livez", "live"],
+        ["/readyz", "ready"],
+      ] as const) {
+        const response = yield* HttpClient.get(path)
+        expect(response.status).toBe(200)
+        expect(yield* response.json).toEqual({
+          status,
+          version: expect.any(String),
+        })
+        expect(response.headers["cache-control"]).toBe("no-store")
+      }
 
-    for (const [path, status] of [
-      ["/livez", "live"],
-      ["/readyz", "ready"],
-    ] as const) {
-      const response = await server.request(path)
-      expect(response.status).toBe(200)
-      expect(await response.json()).toEqual({
-        status,
-        version: expect.any(String),
-      })
-      expect(response.headers.get("cache-control")).toBe("no-store")
-    }
-
-    const protectedHealth = await server.request("/global/health")
-    expect(protectedHealth.status).toBe(401)
-  })
+      const protectedHealth = yield* HttpClient.get("/global/health")
+      expect(protectedHealth.status).toBe(401)
+    }),
+  )
 
   test("requires configured auth before opening the instance event stream", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })

@@ -24,7 +24,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
 import { contextPhaseExecutionBlock, type ContextPhaseGate } from "@/task/strategy-context"
-import { effectiveFundRuntimePermission, isFundRuntimeAgent } from "@/agent/fund-policy"
+import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -128,9 +128,6 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       description: item.description,
       inputSchema: jsonSchema(schema),
       execute(args, options) {
-        if (isFundRuntimeAgent(input.agent.name)) {
-          return run.promise(executeRegisteredTool(item, args, options))
-        }
         const hook = hookContext(item.id, options.toolCallId)
         return run.promise(
           runToolHookLifecycle({

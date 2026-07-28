@@ -603,9 +603,22 @@ export function evaluateFundScenario(
     stageCompletion.add("position_preserved")
   }
 
+  const stageViolationCodes: Record<FundHarnessStageName, readonly string[]> = {
+    event_bound: ["event_binding_count", "event_identity_mismatch"],
+    context_verified: ["context_count", "context_hash_collision"],
+    specialists_completed: [
+      "specialist_limit",
+      "duplicate_specialist",
+      "unexpected_specialist",
+      "required_specialist_missing",
+    ],
+    decision_proposed: ["decision_count", "decision_mismatch", "execution_authority_leak", "risk_tier_mismatch"],
+    approval_gated: ["approval_gate_count", "approval_gate_mismatch", "synthetic_approval_claim"],
+    position_preserved: ["position_evidence_count", "position_not_preserved"],
+  }
   const stages: Record<string, "completed" | "missing" | "failed"> = {}
   for (const stage of scenario.requiredStages) {
-    const failed = violations.some((item) => item.code.startsWith(stage.split("_")[0]))
+    const failed = violations.some((item) => stageViolationCodes[stage].includes(item.code))
     stages[stage] = stageCompletion.has(stage) ? "completed" : failed ? "failed" : "missing"
     if (!stageCompletion.has(stage)) {
       add("required_stage_missing", `Required stage "${stage}" did not complete.`, { stage, status: stages[stage] })
@@ -1130,7 +1143,17 @@ async function executeFundRuntimeSession(
         }
       }
 
-      if (registeredReports.length !== scenario.expected.specialists.length) return
+      if (registeredReports.length !== scenario.expected.specialists.length) {
+        add(
+          "required_specialist_missing",
+          "The Fund Manager cannot propose without every required specialist report.",
+          {
+            expected: scenario.expected.specialists.length,
+            actual: registeredReports.length,
+          },
+        )
+        return
+      }
       const proposalInput = makeProposalInput({
         scenario,
         caseEvidence,
