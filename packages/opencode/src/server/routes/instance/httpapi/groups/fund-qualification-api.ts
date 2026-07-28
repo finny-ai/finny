@@ -39,6 +39,42 @@ const Result = Schema.Struct({
   outputPath: Schema.String,
 })
 
+const ArtifactPayload = Schema.Struct({
+  sessionId: Schema.String,
+  algorithmId: Schema.String,
+  experimentPlanId: Schema.String,
+})
+
+const ArtifactResult = Schema.Struct({
+  schemaVersion: Schema.Literal(1),
+  sessionId: Schema.String,
+  algorithmId: Schema.String,
+  algorithmVersion: Schema.Number,
+  algorithmName: Schema.String,
+  language: Schema.String,
+  code: Schema.String,
+  config: Schema.String,
+  codeHash: Schema.String,
+  configHash: Schema.String,
+  experimentPlanId: Schema.String,
+  experimentPlanHash: Schema.String,
+  qualificationPolicyId: Schema.String,
+  qualificationPolicyHash: Schema.String,
+  datasetEvidenceId: Schema.String,
+  datasetHash: Schema.String,
+  datasetManifestHash: Schema.String,
+  holdoutEventHash: Schema.String,
+  confirmatoryAttemptId: Schema.String,
+  confirmatoryResultHash: Schema.String,
+  completedPhases: Schema.Tuple([
+    Schema.Literal("exploratory"),
+    Schema.Literal("validation"),
+    Schema.Literal("confirmatory"),
+  ]),
+  qualificationDecisionHash: Schema.String,
+  artifactEvidenceHash: Schema.String,
+})
+
 export class FundQualificationImportApiError extends Schema.ErrorClass<FundQualificationImportApiError>(
   "FundQualificationImportError",
 )(
@@ -51,31 +87,57 @@ export class FundQualificationImportApiError extends Schema.ErrorClass<FundQuali
   { httpApiStatus: 400 },
 ) {}
 
-export const FundQualificationApi = HttpApi.make("fundQualification")
-  .add(
-    HttpApiGroup.make("fundQualification")
-      .add(
-        HttpApiEndpoint.post("datasetImport", "/fund/qualification/dataset", {
-          query: WorkspaceRoutingQuery,
-          payload: Payload,
-          success: described(Result, "Imported authoritative qualification dataset"),
-          error: FundQualificationImportApiError,
-        }).annotateMerge(
-          OpenApi.annotations({
-            identifier: "fund.qualification.dataset.import",
-            summary: "Import a controller-owned qualification dataset",
-            description:
-              "Hash-verifies a bounded OHLCV CSV and creates DatasetEvidenceV2 inside the exact Finny session workspace.",
-          }),
-        ),
-      )
-      .annotateMerge(
+export class FundQualificationArtifactApiError extends Schema.ErrorClass<FundQualificationArtifactApiError>(
+  "FundQualificationArtifactError",
+)(
+  {
+    name: Schema.Literal("FundQualificationArtifactError"),
+    data: Schema.Struct({
+      message: Schema.String,
+    }),
+  },
+  { httpApiStatus: 400 },
+) {}
+
+export const FundQualificationApi = HttpApi.make("fundQualification").add(
+  HttpApiGroup.make("fundQualification")
+    .add(
+      HttpApiEndpoint.post("datasetImport", "/fund/qualification/dataset", {
+        query: WorkspaceRoutingQuery,
+        payload: Payload,
+        success: described(Result, "Imported authoritative qualification dataset"),
+        error: FundQualificationImportApiError,
+      }).annotateMerge(
         OpenApi.annotations({
-          title: "fund qualification",
-          description: "Private controller bridge for strict strategy qualification.",
+          identifier: "fund.qualification.dataset.import",
+          summary: "Import a controller-owned qualification dataset",
+          description:
+            "Hash-verifies a bounded OHLCV CSV and creates DatasetEvidenceV2 inside the exact Finny session workspace.",
         }),
-      )
-      .middleware(InstanceContextMiddleware)
-      .middleware(WorkspaceRoutingMiddleware)
-      .middleware(Authorization),
-  )
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("artifactExport", "/fund/qualification/artifact", {
+        query: WorkspaceRoutingQuery,
+        payload: ArtifactPayload,
+        success: described(ArtifactResult, "Exact qualified artifact evidence"),
+        error: FundQualificationArtifactApiError,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "fund.qualification.artifact.export",
+          summary: "Export exact qualified artifact evidence",
+          description:
+            "Revalidates and exports the exact saved code/config plus immutable plan, dataset, holdout, policy, and durable confirmatory evidence.",
+        }),
+      ),
+    )
+    .annotateMerge(
+      OpenApi.annotations({
+        title: "fund qualification",
+        description: "Private controller bridge for strict strategy qualification.",
+      }),
+    )
+    .middleware(InstanceContextMiddleware)
+    .middleware(WorkspaceRoutingMiddleware)
+    .middleware(Authorization),
+)
