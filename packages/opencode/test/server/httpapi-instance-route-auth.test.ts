@@ -46,6 +46,26 @@ afterEach(async () => {
 })
 
 describe("HttpApi instance route authorization", () => {
+  test("leaves only minimal platform health probes unauthenticated", async () => {
+    const server = app({ password: "secret" })
+
+    for (const [path, status] of [
+      ["/livez", "live"],
+      ["/readyz", "ready"],
+    ] as const) {
+      const response = await server.request(path)
+      expect(response.status).toBe(200)
+      expect(await response.json()).toEqual({
+        status,
+        version: expect.any(String),
+      })
+      expect(response.headers.get("cache-control")).toBe("no-store")
+    }
+
+    const protectedHealth = await server.request("/global/health")
+    expect(protectedHealth.status).toBe(401)
+  })
+
   test("requires configured auth before opening the instance event stream", async () => {
     await using tmp = await tmpdir({ git: true, config: { formatter: false, lsp: false } })
     const server = app({ password: "secret" })

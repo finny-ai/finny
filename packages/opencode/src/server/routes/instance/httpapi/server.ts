@@ -16,6 +16,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Format } from "@/format"
 import { Git } from "@/git"
 import { Installation } from "@/installation"
+import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { LSP } from "@/lsp/lsp"
 import { MCP } from "@/mcp"
 import { McpAuth } from "@/mcp/auth"
@@ -119,6 +120,7 @@ const cors = (corsOptions?: CorsOptions) =>
   )
 
 // Route tree:
+// - healthRoutes: unauthenticated process probes for private platform health checks.
 // - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
 // - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
 // - ptyConnectApiRoutes: typed WebSocket upgrade route with ticket-aware auth.
@@ -180,6 +182,28 @@ const docResponse = lazy(() => HttpServerResponse.jsonUnsafe(OpenApi.fromApi(Pub
 
 const docRoute = HttpRouter.use((router) => router.add("GET", "/doc", () => Effect.succeed(docResponse()))).pipe(
   Layer.provide(authOnlyRouterLayer),
+)
+
+const healthRoutes = HttpRouter.use((router) =>
+  Effect.gen(function* () {
+    const response = (status: "live" | "ready") =>
+      Effect.succeed(
+        HttpServerResponse.jsonUnsafe(
+          {
+            status,
+            version: InstallationVersion,
+          },
+          {
+            headers: {
+              "Cache-Control": "no-store",
+              "X-Content-Type-Options": "nosniff",
+            },
+          },
+        ),
+      )
+    yield* router.add("GET", "/livez", () => response("live"))
+    yield* router.add("GET", "/readyz", () => response("ready"))
+  }),
 )
 
 const uiRoute = HttpRouter.use((router) =>
@@ -269,6 +293,7 @@ export function createRoutes(
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   return Layer.suspend(() =>
     Layer.mergeAll(
+      healthRoutes,
       rootApiRoutes,
       eventApiRoutes,
       ptyConnectApiRoutes,
