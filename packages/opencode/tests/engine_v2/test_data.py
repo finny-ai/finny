@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import os
 import sys
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -22,6 +24,8 @@ from engine_v2.data.cache import (
     load_range,
 )
 from engine_v2.data.quality import QualityReport, analyze, blocking_reasons, expected_step
+from engine_v2.cli import _load_csv, _resample
+from engine_v2.core.arrays import MarketSnapshot, from_dataframe
 
 
 def _toy_df(n: int = 200, gap_at: int = -1) -> pd.DataFrame:
@@ -48,6 +52,38 @@ def test_quality_clean_data():
     assert rep.ohlc_violations == 0
     assert rep.zero_volume_bars == 0
     assert rep.coverage_pct >= 0.99
+
+
+def test_point_in_time_snapshot_survives_strict_engine_csv_path(tmp_path):
+    snapshot = {
+        "schema_version": 1,
+        "bar_time": "2026-07-28T12:00:00Z",
+        "symbol": "SPY",
+        "bar": {"open": "100", "high": "101", "low": "99", "close": "100"},
+        "features": {"horizons": {"1h": {"ema_slope": "0.1"}}},
+        "regime": {"composite": "risk_on_trend"},
+        "context": {},
+    }
+    frame = _toy_df(2)
+    frame["finny_snapshot_json"] = ["", json.dumps(snapshot)]
+    csv_path = tmp_path / "snapshot.csv"
+    frame.to_csv(csv_path, index=False)
+
+    loaded = _resample(_load_csv(csv_path), "1m")
+    assert "finny_snapshot_json" in loaded.columns
+    arrays = from_dataframe(loaded, symbol="SPY")
+    market = MarketSnapshot({"SPY": arrays})
+    market.set_index(0)
+    assert "finny_snapshot" not in market.decision_safe_bar("SPY")
+    market.set_index(1)
+    assert market.decision_safe_bar("SPY")["finny_snapshot"] == snapshot
+
+
+def test_point_in_time_snapshot_fails_closed_when_resampling():
+    frame = _toy_df(3)
+    frame["finny_snapshot_json"] = ["", "{}", ""]
+    with pytest.raises(ValueError, match="cannot be resampled"):
+        _resample(frame, "5m")
 
 
 def test_quality_sorts_unsorted_input():

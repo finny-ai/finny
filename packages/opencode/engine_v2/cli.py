@@ -75,7 +75,22 @@ def _load_csv(path: Path) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(raw_timestamps, utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
     keep = ["timestamp", "open", "high", "low", "close", "volume"]
-    return df[keep].astype({c: "float64" for c in keep[1:]})
+    if "finny_snapshot_json" in df.columns:
+        for raw in df["finny_snapshot_json"]:
+            if pd.isna(raw) or str(raw).strip() == "":
+                continue
+            encoded = str(raw).encode("utf-8")
+            if len(encoded) > 1_000_000:
+                raise SystemExit("finny_snapshot_json exceeds the 1 MB row limit")
+            try:
+                snapshot = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise SystemExit("finny_snapshot_json is not valid JSON") from exc
+            if not isinstance(snapshot, dict):
+                raise SystemExit("finny_snapshot_json must decode to an object")
+        keep.append("finny_snapshot_json")
+    result = df[keep].copy()
+    return result.astype({c: "float64" for c in keep[1:6]})
 
 
 def _quality_failure(
@@ -131,6 +146,10 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     # to preserve for intraday aggregate bars.
     if target_step < pd.Timedelta(days=1) and (positive_deltas.empty or positive_deltas.min() >= target_step):
         return df.sort_values("timestamp").reset_index(drop=True)
+    if "finny_snapshot_json" in df.columns:
+        raise ValueError(
+            "point-in-time finny_snapshot_json rows cannot be resampled"
+        )
     d = df.set_index("timestamp").resample(rule, label="left", closed="left").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
     }).dropna().reset_index()
@@ -1048,7 +1067,10 @@ def main() -> None:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv(
+    processed_columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    if "finny_snapshot_json" in df.columns:
+        processed_columns.append("finny_snapshot_json")
+    df[processed_columns].to_csv(
         out_dir / "processed_ohlcv.csv",
         index=False,
     )
