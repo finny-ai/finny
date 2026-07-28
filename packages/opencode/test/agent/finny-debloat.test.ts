@@ -4,6 +4,7 @@ import path from "path"
 import { Agent } from "../../src/agent/agent"
 import PROMPT_FINNY from "../../src/agent/prompt/finny.txt"
 import PROMPT_FINNY_FUND_MANAGER from "../../src/agent/prompt/finny-fund-manager.txt"
+import PROMPT_FINNY_FUND_SPECIALIST from "../../src/agent/prompt/finny-fund-specialist.txt"
 import PROMPT_BUILD from "../../src/agent/prompt/finny-build.txt"
 import PROMPT_RESEARCH from "../../src/agent/prompt/finny-research.txt"
 import PROMPT_CHAT from "../../src/agent/prompt/finny-chat.txt"
@@ -366,7 +367,10 @@ describe("Finny debloat", () => {
         expect(specialist!.mode).toBe("subagent")
         expect(specialist!.native).toBe(true)
         expect(specialist!.hidden).toBe(true)
-        expect(specialist!.prompt).toBeUndefined()
+        expect(specialist!.prompt).toBe(PROMPT_FINNY_FUND_SPECIALIST)
+        expect(specialist!.prompt).toContain("You are advisory only.")
+        expect(specialist!.prompt).toContain("You cannot approve or execute actions")
+        expect(specialist!.prompt).toContain("Your report cannot authorize execution")
         expect(specialist!.model).toEqual(FUND_RUNTIME_MODEL)
         expect(Permission.evaluate("finny_fund_specialist_report", "*", specialist!.permission).action).toBe("allow")
         expect(Permission.evaluate("finny_fund_action_propose", "*", specialist!.permission).action).toBe("deny")
@@ -411,7 +415,7 @@ describe("Finny debloat", () => {
       expect(manager!.hidden).toBe(false)
       expect(sentinel!.hidden).toBe(true)
       expect(manager!.prompt).toBe(PROMPT_FINNY_FUND_MANAGER)
-      expect(sentinel!.prompt).toBeUndefined()
+      expect(sentinel!.prompt).toBe(PROMPT_FINNY_FUND_SPECIALIST)
       expect(Permission.evaluate("task", "general", manager!.permission).action).toBe("deny")
       expect(Permission.evaluate("bash", "*", manager!.permission).action).toBe("deny")
       expect(Permission.evaluate("finny_brokerage_switch", "*", manager!.permission).action).toBe("deny")

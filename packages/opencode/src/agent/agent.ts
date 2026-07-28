@@ -25,6 +25,7 @@ import PROMPT_FINNY_NEWS_AGENT from "./prompt/finny-news-agent.txt"
 import PROMPT_FINNY_SEC_AGENT from "./prompt/finny-sec-agent.txt"
 import PROMPT_FINNY_SENTIMENT_AGENT from "./prompt/finny-sentiment-agent.txt"
 import PROMPT_FINNY_FUND_MANAGER_RAW from "./prompt/finny-fund-manager.txt"
+import PROMPT_FINNY_FUND_SPECIALIST_RAW from "./prompt/finny-fund-specialist.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
@@ -60,6 +61,7 @@ const PROMPT_FINNY_RESEARCH = renderPromptWithSymbols(PROMPT_FINNY_RESEARCH_RAW)
 const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
 const PROMPT_FINNY_FUND_MANAGER = renderPromptWithSymbols(PROMPT_FINNY_FUND_MANAGER_RAW)
+const PROMPT_FINNY_FUND_SPECIALIST = renderPromptWithSymbols(PROMPT_FINNY_FUND_SPECIALIST_RAW)
 type PermissionConfig = Parameters<typeof Permission.fromConfig>[0]
 
 const BUILTIN_AGENT_ALIASES: Record<string, string> = {
@@ -492,6 +494,7 @@ export const layer = Layer.effect(
             name,
             description,
             options: {},
+            prompt: PROMPT_FINNY_FUND_SPECIALIST,
             model: { ...FUND_RUNTIME_MODEL },
             permission: Permission.merge(
               defaults,
@@ -931,7 +934,7 @@ export const layer = Layer.effect(
           specialist.mode = "subagent"
           specialist.native = true
           specialist.hidden = true
-          specialist.prompt = undefined
+          specialist.prompt = PROMPT_FINNY_FUND_SPECIALIST
           specialist.permission = Permission.merge(
             specialist.permission,
             finnyToolBundle(fundSpecialistTools),
