@@ -777,6 +777,7 @@ export const layer = Layer.effect(
       const same = ag.model && model.providerID === ag.model.providerID && model.modelID === ag.model.modelID
       const full = !input.variant && ag.variant && same ? resolvedModel : undefined
       const variant = input.variant ?? (ag.variant && full?.variants?.[ag.variant] ? ag.variant : undefined)
+      const format = normalizePromptFormat(input.format)
 
       const info: SessionV1.User = {
         id: input.messageID ?? MessageID.ascending(),
@@ -791,7 +792,7 @@ export const layer = Layer.effect(
           variant,
         },
         system: input.system,
-        format: input.format,
+        format,
       }
 
       if (current?.agent !== info.agent) {
@@ -2095,6 +2096,11 @@ export const PromptInput = Schema.Struct({
   ),
 })
 export type PromptInput = Schema.Schema.Type<typeof PromptInput>
+
+export const normalizePromptFormat = (
+  format: PromptInput["format"],
+): Schema.Schema.Type<typeof SessionV1.Format> | undefined =>
+  format === undefined ? undefined : Schema.decodeUnknownSync(SessionV1.Format)(format)
 
 export class LoopInput extends Schema.Class<LoopInput>("SessionPrompt.LoopInput")({
   sessionID: SessionID,
