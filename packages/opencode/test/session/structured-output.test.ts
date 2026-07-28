@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Exit, Schema } from "effect"
 import { MessageV2 } from "../../src/session/message-v2"
-import { SessionPrompt } from "../../src/session/prompt"
+import { normalizePromptFormat, SessionPrompt } from "../../src/session/prompt"
 import { SessionID, MessageID } from "../../src/session/schema"
 
 const decodeFormat = Schema.decodeUnknownExit(SessionV1.Format)
@@ -10,6 +10,34 @@ const decodeUser = Schema.decodeUnknownExit(SessionV1.User)
 const decodeAssistant = Schema.decodeUnknownExit(SessionV1.Assistant)
 
 describe("structured-output.OutputFormat", () => {
+  test("normalizes HTTP-decoded plain formats before message persistence", () => {
+    const raw = JSON.parse(
+      JSON.stringify({
+        type: "json_schema",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            instruments: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  symbol: { type: "string", pattern: "^[A-Z][A-Z0-9.-]{0,23}$" },
+                },
+              },
+            },
+          },
+        },
+        retryCount: 2,
+      }),
+    )
+    expect(Exit.isFailure(Schema.encodeUnknownExit(SessionV1.Format)(raw))).toBe(true)
+
+    const normalized = normalizePromptFormat(raw)
+    expect(Exit.isSuccess(Schema.encodeUnknownExit(SessionV1.Format)(normalized))).toBe(true)
+  })
+
   test("parses text format", () => {
     const result = decodeFormat({ type: "text" })
     expect(Exit.isSuccess(result)).toBe(true)
