@@ -29,7 +29,11 @@ import * as OtelTracer from "@effect/opentelemetry/Tracer"
 import { LLMAISDK } from "./llm/ai-sdk"
 import { LLMNativeRuntime } from "./llm/native-runtime"
 import { LLMRequestPrep } from "./llm/request"
-import { repairQuestionToolInput, repairToolCallInput } from "./repair-tool-call"
+import {
+  repairQuestionToolInput,
+  repairToolCallInput,
+  repairWorkspacePrepareToolInput,
+} from "./repair-tool-call"
 import { modelTelemetry } from "./llm/telemetry"
 import { sessionTracer } from "@/otel-context"
 import { acquireTelemetrySpan, runTelemetryAttributes, sessionTelemetryAttributes } from "@/telemetry/run-attributes"
@@ -335,6 +339,16 @@ const live: Layer.Layer<
             }
 
             // Tool-specific schema repairs
+            if (lower === "finny_workspace_prepare") {
+              const workspaceRepaired = repairWorkspacePrepareToolInput(failed.toolCall.input)
+              if (workspaceRepaired !== undefined) {
+                return {
+                  ...failed.toolCall,
+                  toolName: lower,
+                  input: workspaceRepaired,
+                }
+              }
+            }
             const schemaRepaired = tryRepairQuestionSchema(failed.toolCall)
             if (schemaRepaired !== undefined) return schemaRepaired
 
