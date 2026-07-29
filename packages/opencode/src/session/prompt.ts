@@ -1476,6 +1476,8 @@ export const layer = Layer.effect(
             workflowContinuation = buildWorkflowContinuationReminder({
               workflow: activeWorkflow,
               pendingContextTasks: pendingContext.length,
+              controllerManaged:
+                session.metadata?.fund_controller_managed_qualification === true,
               unverifiedContextRoles: activeWorkflow
                 ? StrategyContext.unlaunchedRequiredContextRoles(activeWorkflow, contextTasks)
                 : [],
