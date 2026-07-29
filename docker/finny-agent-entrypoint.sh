@@ -8,7 +8,8 @@ if [ "$(id -u)" = "0" ]; then
         /var/lib/finny/data \
         /var/lib/finny/cache \
         /var/lib/finny/config \
-        /var/lib/finny/state
+        /var/lib/finny/state \
+        /var/lib/finny/python-env
     exec gosu finny "$0" "$@"
 fi
 
