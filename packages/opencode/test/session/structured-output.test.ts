@@ -10,6 +10,31 @@ const decodeUser = Schema.decodeUnknownExit(SessionV1.User)
 const decodeAssistant = Schema.decodeUnknownExit(SessionV1.Assistant)
 
 describe("structured-output.OutputFormat", () => {
+  test("encodes persisted plain JSON schema formats", () => {
+    const raw = JSON.parse(
+      JSON.stringify({
+        type: "json_schema",
+        schema: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            instruments: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  symbol: { type: "string", pattern: "^[A-Z][A-Z0-9.-]{0,23}$" },
+                },
+              },
+            },
+          },
+        },
+        retryCount: 2,
+      }),
+    )
+    expect(Exit.isSuccess(Schema.encodeUnknownExit(SessionV1.Format)(raw))).toBe(true)
+  })
+
   test("parses text format", () => {
     const result = decodeFormat({ type: "text" })
     expect(Exit.isSuccess(result)).toBe(true)
