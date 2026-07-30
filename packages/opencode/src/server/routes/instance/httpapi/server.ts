@@ -74,6 +74,7 @@ import {
   serverAuthorizationLayer,
 } from "./middleware/authorization"
 import { EventApi } from "./groups/event"
+import { HealthApi } from "./groups/health"
 import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
@@ -81,7 +82,9 @@ import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
+import { fundQualificationHandlers } from "./handlers/fund-qualification"
 import { globalHandlers } from "./handlers/global"
+import { healthHandlers } from "./handlers/health"
 import { instanceHandlers } from "./handlers/instance"
 import { liveHandlers } from "./handlers/live"
 import { mcpHandlers } from "./handlers/mcp"
@@ -119,6 +122,7 @@ const cors = (corsOptions?: CorsOptions) =>
   )
 
 // Route tree:
+// - healthApiRoutes: typed unauthenticated process probes for private platform health checks.
 // - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
 // - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
 // - ptyConnectApiRoutes: typed WebSocket upgrade route with ticket-aware auth.
@@ -129,6 +133,7 @@ const httpApiAuthLayer = authorizationLayer.pipe(Layer.provide(ServerAuth.Config
 const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
+const healthApiRoutes = HttpApiBuilder.layer(HealthApi).pipe(Layer.provide(healthHandlers))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
   Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
   Layer.provide(schemaErrorLayer),
@@ -147,6 +152,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     configHandlers,
     experimentalHandlers,
     fileHandlers,
+    fundQualificationHandlers(InstanceHttpApi),
     instanceHandlers,
     liveHandlers,
     mcpHandlers,
@@ -269,6 +275,7 @@ export function createRoutes(
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   return Layer.suspend(() =>
     Layer.mergeAll(
+      healthApiRoutes,
       rootApiRoutes,
       eventApiRoutes,
       ptyConnectApiRoutes,

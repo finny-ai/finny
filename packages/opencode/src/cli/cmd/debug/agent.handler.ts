@@ -14,6 +14,7 @@ import { iife } from "../../../util/iife"
 import { fail } from "../../effect-cmd"
 import { InstanceRef } from "@/effect/instance-ref"
 import type { InstanceContext } from "@/project/instance-context"
+import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 
 export const debugAgent = Effect.fn("Cli.debug.agent")(function* (args: {
   name: string
@@ -88,7 +89,7 @@ const getAvailableTools = Effect.fn("Cli.debug.agent.getAvailableTools")(functio
 function resolveTools(agent: Agent.Info, availableTools: { id: string }[]) {
   const disabled = Permission.disabled(
     availableTools.map((tool) => tool.id),
-    agent.permission,
+    effectiveFundRuntimePermission(agent.name, agent.permission),
   )
   const resolved: Record<string, boolean> = {}
   for (const tool of availableTools) {
@@ -169,7 +170,7 @@ const createToolContext = Effect.fn("Cli.debug.agent.createToolContext")(functio
   }
   yield* sessionSvc.updateMessage(message)
 
-  const ruleset = Permission.merge(agent.permission, session.permission ?? [])
+  const ruleset = effectiveFundRuntimePermission(agent.name, agent.permission, session.permission ?? [])
 
   return {
     sessionID: session.id,
