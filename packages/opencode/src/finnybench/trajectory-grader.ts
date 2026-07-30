@@ -90,6 +90,14 @@ export interface Trajectory {
     robustness_checks: string[]
     annualization_periods?: number
     packaging_valid?: boolean
+    quality_evidence_class?: "synthetic_pinned" | "provider_backed_pinned"
+    repeat?: number
+    strategy_sharpe?: number
+    strategy_total_return?: number
+    benchmark_sharpe?: number
+    benchmark_total_return?: number
+    exploratory_gate_passed?: boolean
+    closed_trades?: number
   }
   security?: { canary: string; allowlisted_fields: string[]; observed: Array<{ field: string; value: string }> }
   control_file?: { before_sha256: string; after_sha256: string }
@@ -564,7 +572,6 @@ function validateProviderFamilies(suite: SuiteContract): string[] {
 }
 
 function validateTrackedIssues(suite: SuiteContract): string[] {
-  const ids = new Set<string>()
   const trackedIssues = new Set(suite.scenarios.flatMap((scenario) => scenario.tracks))
   const requiredIssues = [67, 129, 130, 131, 132, 133, 134, 135, 136, 140, 141, 142, 143, 144, 145, 146]
   return requiredIssues

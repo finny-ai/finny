@@ -41,6 +41,8 @@ From `packages/opencode`:
 ```bash
 bun run finnybench:trajectory:smoke
 
+bun run finnybench:quality:smoke
+
 bun run script/finnybench-trajectory.ts \
   --suite finnybench/trajectory-suite.json \
   --input /private/captures/full.jsonl \
@@ -52,6 +54,47 @@ The smoke command is offline and cheap enough for pull requests. The full comman
 for both the pinned Gemini and OpenAI-compatible provider profiles. The scheduled workflow downloads the
 private capture bundle through a configured repository variable and grades it without printing prompt text
 or credentials.
+
+## Harness-output quality regression gate
+
+`quality-gate.json` defines the reviewed warning and failure deltas for the four issue #43 aggregates:
+median excess Sharpe versus the same-window benchmark, share beating buy-and-hold, share clearing the
+exploratory gate, and median closed-trade count. Warning thresholds keep the workflow green while making a
+smaller drift visible. Failure thresholds exit non-zero.
+
+The gate compares exact cohorts. A cohort is keyed by task, provider, model, and repetition, and its task,
+provider-configuration, and data-snapshot hashes must match the accepted baseline. Missing, new, duplicate,
+or repinned cohorts fail closed instead of creating a misleading comparison. The minimum of eight
+observations bounds noise; the scheduled capture should use at least two tasks, two provider profiles, and
+two repetitions. Updating an accepted baseline is a separately reviewed operation, never something the
+grader does.
+
+Pull requests run `quality-baseline.synthetic.jsonl` against `quality-candidate.synthetic.jsonl`. These
+small committed fixtures exercise aggregation, thresholds, pin enforcement, reporting, and failure
+behavior with zero provider cost. They are deliberately labeled `synthetic_pinned` and are not a claim
+about current harness performance.
+
+The scheduled lane downloads both a normalized provider-backed capture and its accepted baseline from
+immutable private URLs:
+
+- `FINNYBENCH_FULL_ARTIFACT_URL` points at current trajectories produced from the fixed suite and pinned
+  snapshots.
+- `FINNYBENCH_QUALITY_BASELINE_URL` points at the reviewed accepted observations or trajectories.
+- `FINNYBENCH_ARTIFACT_TOKEN` authorizes both downloads.
+
+The trajectory grader also receives `--require-harness-revision $GITHUB_SHA`. A capture for another
+commit is rejected before scoring, so a mutable “latest” URL cannot silently turn a stale run into current
+CI evidence.
+
+Every valid-backtest trajectory used for quality grading must include `quality_evidence_class`,
+`repeat`, strategy and benchmark Sharpe/total return, `exploratory_gate_passed`, and `closed_trades` in
+`strategy_quality`. The quality runner can also read normalized `finnybench.quality-observation.v1`
+JSONL directly. It emits a machine-readable report, a GitHub step summary, and a 90-day workflow artifact;
+the PR smoke lane updates one marker-scoped comment with the synthetic deltas.
+
+All reports set `interpretation` to `benchmark_evidence_only` and `promotion_eligible` to `false`.
+Provider-backed benchmark results still do not establish live alpha, paper eligibility, or deployment
+approval.
 
 ## Capture adapter requirements
 
