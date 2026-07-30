@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  ensureWorkspaceTodo,
   promptFromParams,
   resolveWorkspacePrepareWindow,
   workspacePrepareClarificationBlock,
@@ -16,6 +17,29 @@ import os from "node:os"
 import path from "node:path"
 
 describe("workspace prepare request context", () => {
+  test("creates the advertised todo.md scaffold", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-todo-"))
+    try {
+      await ensureWorkspaceTodo(workspace)
+      expect(await fs.readFile(path.join(workspace, "todo.md"), "utf8")).toBe("# Todo\n\n")
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("does not overwrite an existing workspace todo", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-todo-"))
+    const todoPath = path.join(workspace, "todo.md")
+    const userTodo = "# Todo\n\n- [ ] Preserve this task\n"
+    try {
+      await fs.writeFile(todoPath, userTodo)
+      await ensureWorkspaceTodo(workspace)
+      expect(await fs.readFile(todoPath, "utf8")).toBe(userTodo)
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   test("resolves a one-year duration to an absolute UTC date window", () => {
     expect(
       resolveWorkspacePrepareWindow({ duration: "1y", interval: "1d" }, new Date("2026-07-16T18:30:00-04:00")),

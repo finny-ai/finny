@@ -7,6 +7,7 @@ IDs are explicit and unsupported combinations fail closed.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from zoneinfo import ZoneInfo
@@ -190,7 +191,16 @@ def expected_timestamps(request: ExpectedTimestampRequest) -> pd.DatetimeIndex:
         "24/7": lambda: _continuous_expected(start, end, step),
     }
     values = generators[policy.calendar_id]()
-    return pd.DatetimeIndex(values, tz="UTC").drop_duplicates().sort_values()
+    expected = pd.DatetimeIndex(values, tz="UTC").drop_duplicates().sort_values()
+    # Date-only requests intentionally mean complete calendar/session days.
+    # Qualification phase windows, however, are immutable bar-level timestamps
+    # and commonly split a continuous day. Preserve those exact inclusive
+    # boundaries instead of expanding them back to midnight-to-midnight.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", request.requested_start):
+        expected = expected[expected >= _utc(request.requested_start)]
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", request.requested_end):
+        expected = expected[expected <= _utc(request.requested_end)]
+    return expected
 
 
 def requested_input_start(request: ExpectedTimestampRequest) -> pd.Timestamp:
