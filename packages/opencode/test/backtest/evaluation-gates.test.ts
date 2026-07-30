@@ -174,7 +174,7 @@ describe("evaluateBacktestQuality", () => {
     expect(quality.reasons).not.toContain("Sharpe <= buy-and-hold Sharpe")
   })
 
-  test("labels legacy risk runs research-only and never paper eligible", () => {
+  test("labels runs without optional walk-forward as unevaluated, not candidate", () => {
     const quality = evaluate(
       result({
         runKind: "legacy",
@@ -182,9 +182,28 @@ describe("evaluateBacktestQuality", () => {
       }),
     )
 
-    expect(quality.label).toBe("candidate")
+    expect(quality.label).toBe("unevaluated")
     expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("walk-forward robustness not run")
     expect(quality.reasons).toContain("legacy/v3 risk contract is research-only")
+  })
+
+  test("fails explicitly when policy-required walk-forward is missing", () => {
+    const quality = evaluate(result({}), { minWalkForwardFolds: 5 })
+
+    expect(quality.label).toBe("failed")
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.reasons).toContain("walk-forward robustness required by policy (5 folds) but not run")
+    expect(quality.reasons).not.toContain("walk-forward robustness not run")
+  })
+
+  test("keeps optional missing walk-forward unevaluated even when absolute gates are weak", () => {
+    const quality = evaluate(result({ sharpeRatio: 0.8, profitFactor: 1.2 }))
+
+    expect(quality.label).toBe("unevaluated")
+    expect(quality.reasons).toContain("Sharpe < 1.0")
+    expect(quality.reasons).toContain("profit factor < 1.5")
+    expect(quality.reasons).toContain("walk-forward robustness not run")
   })
 
   test("keeps defensive outperformance blocked by the absolute return gate", () => {
