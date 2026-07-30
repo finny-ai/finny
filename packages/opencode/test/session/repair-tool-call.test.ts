@@ -4,6 +4,7 @@ import {
   reconstructCharIndexedInput,
   repairQuestionToolInput,
   repairToolCallInput,
+  repairWorkspacePrepareToolInput,
 } from "../../src/session/repair-tool-call"
 
 describe("reconstructCharIndexedInput", () => {
@@ -101,6 +102,56 @@ describe("repairQuestionToolInput", () => {
 
   test("returns undefined for unparseable input", () => {
     expect(repairQuestionToolInput("not json")).toBeUndefined()
+  })
+})
+
+describe("repairWorkspacePrepareToolInput", () => {
+  test("normalizes Gemini workspace aliases from the fund qualification transcript", () => {
+    const repaired = repairWorkspacePrepareToolInput({
+      name: "xrp-mean-reversion-v1",
+      asset_class: "crypto",
+      symbol: "XRPUSDT",
+      interval: "1m",
+      startDate: "2026-01-27",
+      endDate: "2026-07-28",
+    })
+    expect(JSON.parse(repaired!)).toEqual({
+      algorithmName: "xrp-mean-reversion-v1",
+      assetClass: "crypto",
+      symbol: "XRPUSDT",
+      interval: "1m",
+      startDate: "2026-01-27",
+      endDate: "2026-07-28",
+    })
+  })
+
+  test("normalizes known snake_case fields in JSON text", () => {
+    const repaired = repairWorkspacePrepareToolInput(
+      '{"algorithm_name":"spy-breakout","request_summary":"SPY breakout","start_date":"2026-01-01"}',
+    )
+    expect(JSON.parse(repaired!)).toEqual({
+      algorithmName: "spy-breakout",
+      requestSummary: "SPY breakout",
+      startDate: "2026-01-01",
+    })
+  })
+
+  test("fails closed on conflicting canonical and alias values", () => {
+    expect(
+      repairWorkspacePrepareToolInput({
+        name: "xrp-one",
+        algorithmName: "xrp-two",
+      }),
+    ).toBeUndefined()
+  })
+
+  test("does not rewrite already canonical input", () => {
+    expect(
+      repairWorkspacePrepareToolInput({
+        algorithmName: "xrp-one",
+        assetClass: "crypto",
+      }),
+    ).toBeUndefined()
   })
 })
 

@@ -21,12 +21,22 @@ import {
 
 export type PlanExecutionPhase = "exploratory" | "validation" | "confirmatory"
 
+export const REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS = 2
+
+export function walkForwardFoldsForPhase(
+  phase: PlanExecutionPhase,
+  policy: Pick<QualificationPolicyV1, "minWalkForwardFolds">,
+): number {
+  return phase === "confirmatory" ? policy.minWalkForwardFolds : REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS
+}
+
 export interface PhaseExecutionInputV1 {
   candidateId: string
   plan: ExperimentPlanV1
   phase: PlanExecutionPhase
   window: ExperimentWindowV1
   qualification: QualificationInputV1
+  walkForwardFolds: number
 }
 
 export type PhaseExecutorV1 = (input: PhaseExecutionInputV1) => Promise<BacktestRunner.RunResult>
@@ -248,6 +258,7 @@ async function executePhaseSafely(
       phase,
       window: input.plan.windows[phase],
       qualification,
+      walkForwardFolds: walkForwardFoldsForPhase(phase, input.policy),
     })
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error), kind: "internal" } as const

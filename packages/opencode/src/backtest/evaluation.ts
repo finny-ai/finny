@@ -1,7 +1,13 @@
 import type { BacktestRunner } from "./runner"
 import { qualificationInputErrors, type QualificationInputV1 } from "./qualification-policy"
 
-export type BacktestQualityLabel = "failed" | "inconclusive" | "weak_positive" | "candidate" | "paper_eligible"
+export type BacktestQualityLabel =
+  | "failed"
+  | "inconclusive"
+  | "unevaluated"
+  | "weak_positive"
+  | "candidate"
+  | "paper_eligible"
 
 export interface BacktestQuality {
   label: BacktestQualityLabel
@@ -146,25 +152,39 @@ export function evaluateBacktestQuality(
     const costSensitivity = results.sensitivityOutcomes?.find((item) => /cost|fee|slippage/i.test(item.name))
     if (!costSensitivity || costSensitivity.status !== "pass") reasons.push("configured cost sensitivity did not pass")
   }
-  if (policy.minWalkForwardFolds > 0 && (!wf || finite(wf.n_folds, 0) < policy.minWalkForwardFolds)) {
+  const missingRequiredWalkForward = policy.minWalkForwardFolds > 0 && !wf
+  if (missingRequiredWalkForward) {
+    reasons.push(`walk-forward robustness required by policy (${policy.minWalkForwardFolds} folds) but not run`)
+  } else if (wf && policy.minWalkForwardFolds > 0 && finite(wf.n_folds, 0) < policy.minWalkForwardFolds) {
     reasons.push(`walk-forward folds < ${policy.minWalkForwardFolds}`)
   }
   if (policy.requireRiskContract && researchOnlyRisk) reasons.push("legacy/v3 risk contract is research-only")
   reasons.push(...qualificationReasons)
 
-  if (reasons.length > 0) {
-    return { label: qualificationReasons.length ? "failed" : "weak_positive", paperEligible: false, reasons, minTrades }
+  if (qualificationReasons.length > 0 || missingRequiredWalkForward) {
+    return {
+      label: "failed",
+      paperEligible: false,
+      reasons,
+      minTrades,
+    }
   }
 
   if (!wf) {
-    const candidateReasons = ["walk-forward robustness not run"]
-    if (researchOnlyRisk) candidateReasons.push("legacy/v3 risk contract is research-only")
+    const unevaluatedReasons = [...reasons, "walk-forward robustness not run"]
+    if (researchOnlyRisk && !unevaluatedReasons.includes("legacy/v3 risk contract is research-only")) {
+      unevaluatedReasons.push("legacy/v3 risk contract is research-only")
+    }
     return {
-      label: "candidate",
+      label: "unevaluated",
       paperEligible: false,
-      reasons: candidateReasons,
+      reasons: unevaluatedReasons,
       minTrades,
     }
+  }
+
+  if (reasons.length > 0) {
+    return { label: "weak_positive", paperEligible: false, reasons, minTrades }
   }
 
   if (researchOnlyRisk) {
