@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test"
-import { Effect, Layer } from "effect"
+import { Cause, Effect, Exit, Layer } from "effect"
 import path from "path"
 import { Agent } from "../../src/agent/agent"
 import PROMPT_FINNY from "../../src/agent/prompt/finny.txt"
+import PROMPT_FINNY_FUND_MANAGER from "../../src/agent/prompt/finny-fund-manager.txt"
+import PROMPT_FINNY_FUND_SPECIALIST from "../../src/agent/prompt/finny-fund-specialist.txt"
 import PROMPT_BUILD from "../../src/agent/prompt/finny-build.txt"
 import PROMPT_RESEARCH from "../../src/agent/prompt/finny-research.txt"
 import PROMPT_CHAT from "../../src/agent/prompt/finny-chat.txt"
@@ -19,6 +21,7 @@ import { Skill } from "../../src/skill"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { FUND_MANAGER_AGENT, FUND_RUNTIME_MODEL, FUND_SPECIALIST_AGENTS } from "../../src/agent/fund-policy"
 
 const ALL_TOOL_IDS = [
   "invalid",
@@ -33,6 +36,7 @@ const ALL_TOOL_IDS = [
   "task_start",
   "task_run",
   "task_batch_run",
+  "finny_strategy_context_wait",
   "webfetch",
   "todowrite",
   "list_tasks",
@@ -55,10 +59,12 @@ const ALL_TOOL_IDS = [
   "finny_brokerage_switch",
   "finny_workspace_prepare",
   "finny_backtest",
+  "qualify_candidate",
   "finny_backtest_history",
   "finny_review_packet",
   "finny_paper_approve",
   "finny_workflow_request_approval",
+  "finny_workflow_invalidate_candidate",
   "finny_backtest_sweep",
   "finny_monitor_snapshot",
   "schedule_subagent",
@@ -69,6 +75,8 @@ const ALL_TOOL_IDS = [
   "finny_portfolio_backtest",
   "finny_discord_read",
   "finny_dataset_evidence_finalize",
+  "finny_fund_action_propose",
+  "finny_fund_specialist_report",
 ]
 
 const EXPECTED_TOOLS = {
@@ -91,8 +99,11 @@ const EXPECTED_TOOLS = {
     "finny_paper_approve",
     "finny_portfolio_backtest",
     "finny_review_packet",
+    "finny_strategy_context_wait",
+    "finny_workflow_invalidate_candidate",
     "finny_workflow_request_approval",
     "finny_workspace_prepare",
+    "qualify_candidate",
     "question",
     "read",
     "skill",
@@ -119,8 +130,11 @@ const EXPECTED_TOOLS = {
     "finny_paper_approve",
     "finny_portfolio_backtest",
     "finny_review_packet",
+    "finny_strategy_context_wait",
+    "finny_workflow_invalidate_candidate",
     "finny_workflow_request_approval",
     "finny_workspace_prepare",
+    "qualify_candidate",
     "question",
     "read",
     "skill",
@@ -318,6 +332,131 @@ describe("Finny debloat", () => {
       expect(Permission.evaluate("task", "data_extractor", chat!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "sec_agent", chat!.permission).action).toBe("deny")
       expect(Permission.evaluate("task", "general", chat!.permission).action).toBe("deny")
+    }),
+  )
+
+  it.instance("fund roles use the approved prompt, fixed model, and minimal capabilities", () =>
+    Effect.gen(function* () {
+      const agentService = yield* Agent.Service
+      const manager = yield* agentService.get(FUND_MANAGER_AGENT)
+      expect(manager).toBeDefined()
+      expect(manager!.mode).toBe("primary")
+      expect(manager!.native).toBe(true)
+      expect(manager!.hidden).toBe(false)
+      expect(manager!.prompt).toBe(PROMPT_FINNY_FUND_MANAGER)
+      expect(manager!.model).toEqual(FUND_RUNTIME_MODEL)
+      expect(Permission.evaluate("finny_fund_action_propose", "*", manager!.permission).action).toBe("allow")
+      expect(Permission.evaluate("finny_fund_specialist_report", "*", manager!.permission).action).toBe("deny")
+      for (const specialist of FUND_SPECIALIST_AGENTS) {
+        expect(Permission.evaluate("task", specialist, manager!.permission).action).toBe("allow")
+      }
+      for (const denied of [
+        "general",
+        "data_extractor",
+        "bash",
+        "read",
+        "write",
+        "edit",
+        "apply_patch",
+        "finny_brokerage_switch",
+        "finny_paper_approve",
+      ]) {
+        expect(
+          Permission.evaluate(
+            denied === "general" || denied === "data_extractor" ? "task" : denied,
+            denied,
+            manager!.permission,
+          ).action,
+        ).toBe("deny")
+      }
+
+      for (const name of FUND_SPECIALIST_AGENTS) {
+        const specialist = yield* agentService.get(name)
+        expect(specialist).toBeDefined()
+        expect(specialist!.mode).toBe("subagent")
+        expect(specialist!.native).toBe(true)
+        expect(specialist!.hidden).toBe(true)
+        expect(specialist!.prompt).toBe(PROMPT_FINNY_FUND_SPECIALIST)
+        expect(specialist!.prompt).toContain("You are advisory only.")
+        expect(specialist!.prompt).toContain("You cannot approve or execute actions")
+        expect(specialist!.prompt).toContain("Your report cannot authorize execution")
+        expect(specialist!.model).toEqual(FUND_RUNTIME_MODEL)
+        expect(Permission.evaluate("finny_fund_specialist_report", "*", specialist!.permission).action).toBe("allow")
+        expect(Permission.evaluate("finny_fund_action_propose", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("task", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("bash", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("write", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("finny_paper_approve", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("finny_workflow_request_approval", "*", specialist!.permission).action).toBe("deny")
+        expect(Permission.evaluate("finny_brokerage_switch", "*", specialist!.permission).action).toBe("deny")
+      }
+    }),
+  )
+
+  it.instance("broad user permissions cannot expand fund runtime capabilities", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(test.directory, "opencode.json"),
+          JSON.stringify({
+            agent: {
+              fund_manager: {
+                model: "google/gemini-3.6-flash",
+                hidden: true,
+                prompt: "Unapproved Fund Manager prompt override.",
+                permission: { "*": "allow" },
+              },
+              fund_risk_sentinel: {
+                model: "google/gemini-3.6-flash",
+                hidden: false,
+                prompt: "Unapproved specialist prompt override.",
+                permission: { "*": "allow" },
+              },
+            },
+          }),
+        ),
+      )
+
+      const agentService = yield* Agent.Service
+      const manager = yield* agentService.get(FUND_MANAGER_AGENT)
+      const sentinel = yield* agentService.get("fund_risk_sentinel")
+      expect(manager!.hidden).toBe(false)
+      expect(sentinel!.hidden).toBe(true)
+      expect(manager!.prompt).toBe(PROMPT_FINNY_FUND_MANAGER)
+      expect(sentinel!.prompt).toBe(PROMPT_FINNY_FUND_SPECIALIST)
+      expect(Permission.evaluate("task", "general", manager!.permission).action).toBe("deny")
+      expect(Permission.evaluate("bash", "*", manager!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_brokerage_switch", "*", manager!.permission).action).toBe("deny")
+      expect(Permission.evaluate("task", "*", sentinel!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_fund_action_propose", "*", sentinel!.permission).action).toBe("deny")
+      expect(Permission.evaluate("finny_fund_specialist_report", "*", sentinel!.permission).action).toBe("allow")
+    }),
+  )
+
+  it.instance("deprecated fund sampling config fails agent startup closed", () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      yield* Effect.promise(() =>
+        Bun.write(
+          path.join(test.directory, "opencode.json"),
+          JSON.stringify({
+            agent: {
+              fund_manager: {
+                model: "google/gemini-3.6-flash",
+                top_k: 20,
+              },
+            },
+          }),
+        ),
+      )
+
+      const exit = yield* Effect.exit((yield* Agent.Service).get(FUND_MANAGER_AGENT))
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(String(Cause.squash(exit.cause))).toContain("cannot configure deprecated sampling parameters")
+        expect(String(Cause.squash(exit.cause))).toContain("options.top_k")
+      }
     }),
   )
 

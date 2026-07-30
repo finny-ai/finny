@@ -84,6 +84,25 @@ def test_24_7_crypto_has_no_weekend_closure():
     assert blocking_reasons(report, "crypto_spot") == []
 
 
+def test_exact_crypto_qualification_phase_does_not_expand_to_full_days():
+    start = "2026-01-27T00:01:00Z"
+    end = "2026-05-16T19:13:00Z"
+    expected = _expected(start, end, "1m", "crypto")
+    report = analyze(
+        _rows(expected),
+        "1m",
+        "crypto",
+        requested_start=start,
+        requested_end=end,
+    )
+    assert len(expected) == 158113
+    assert expected[0].isoformat() == "2026-01-27T00:01:00+00:00"
+    assert expected[-1].isoformat() == "2026-05-16T19:13:00+00:00"
+    assert report.missing_timestamp_count == 0
+    assert report.extra_timestamp_count == 0
+    assert blocking_reasons(report, "crypto") == []
+
+
 def test_overnight_futures_session_starts_on_sunday_and_spans_dst():
     expected = _expected("2024-03-11", "2024-03-11", "1h", "future")
     assert len(expected) == 23

@@ -8,6 +8,7 @@ import type { Algorithm } from "../../src/algorithm"
 import { validateExistingDataExtractorEvidence, type VerifiedDatasetRef } from "../../src/data/data-extractor-evidence"
 import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
 import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
+import { FINNY_BROKER_PY } from "../../src/backtest/broker-py"
 
 function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
   return {
@@ -374,6 +375,63 @@ describe("BacktestRunner strict_v2 guardrails", () => {
         fs.rm(sourceDir, { recursive: true, force: true }),
         fs.rm(runDir, { recursive: true, force: true }),
       ])
+    }
+  })
+
+  test("passes a hash-bound fund snapshot column to the strict strategy", async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-snapshot-runner-"))
+    try {
+      const snapshot = JSON.stringify({ schema_version: 1, signal: "buy" }).replaceAll('"', '""')
+      await Promise.all([
+        fs.writeFile(path.join(sourceDir, "backtest.py"), BacktestRunner._internalForTests.DEFAULT_BACKTEST_PY),
+        fs.writeFile(path.join(sourceDir, "finny_broker.py"), FINNY_BROKER_PY),
+        fs.writeFile(path.join(sourceDir, "config.json"), JSON.stringify({ symbol: "SPY" })),
+        fs.writeFile(
+          path.join(sourceDir, "ohlcv.csv"),
+          [
+            "timestamp,open,high,low,close,volume,finny_snapshot_json",
+            `2026-01-09T14:30:00Z,590,591,589,590.5,100000,"${snapshot}"`,
+            "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000,",
+          ].join("\n"),
+        ),
+        fs.writeFile(
+          path.join(sourceDir, "strategy.py"),
+          `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        snapshot = bar.get("finny_snapshot")
+        if snapshot and snapshot.get("signal") == "buy":
+            self.broker.buy(symbol, qty=1)
+`,
+        ),
+      ])
+      const proc = Bun.spawn(
+        [
+          "python3",
+          "backtest.py",
+          "--csv",
+          "ohlcv.csv",
+          "--config",
+          "config.json",
+          "--interval",
+          "5min",
+          "--capital",
+          "10000",
+        ],
+        { cwd: sourceDir, stdout: "pipe", stderr: "pipe" },
+      )
+      const [status, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
+      expect(stderr).not.toContain("strategy error")
+      expect(status).toBe(0)
+      expect(stdout).toContain("diag_buy_attempts: 1")
+      expect(stdout).toContain("diag_strategy_errors: 0")
+    } finally {
+      await fs.rm(sourceDir, { recursive: true, force: true })
     }
   })
 

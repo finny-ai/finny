@@ -1129,6 +1129,14 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         if (quality.reasons.length > 0) {
           lines.push(`Reasons: ${quality.reasons.join("; ")}`)
         }
+        if (quality.deltas.length > 0) {
+          lines.push(
+            `Next actions:`,
+            ...quality.deltas.map(
+              (delta) => `${delta.rank}. [${delta.gate}] ${delta.message} → ${delta.nextAction}`,
+            ),
+          )
+        }
         if (r.totalTrades > 0 && r.totalTrades < quality.minTrades) {
           lines.push(
             `Closed trade count is below the minimum for this window (${r.totalTrades} < ${quality.minTrades}); do not treat Sharpe/win rate as statistically meaningful.`,

@@ -244,6 +244,56 @@ describe("algorithm build workflow evidence policy", () => {
     })
     expect(projection.provenance.requested_window).toEqual(userSource)
   })
+
+  test("names the model-facing recovery and preserves immutable evidence across candidate invalidation", () => {
+    let state = reviewableWorkflow()
+    const replacement = {
+      ...evidence("market_data:SPY", "market_data", "market_data:SPY:replacement"),
+      artifactId: "replacement_manifest",
+    }
+    const locked = transition(state, {
+      id: "evt_replacement_locked",
+      type: "evidence.recorded",
+      occurredAt: 1_500,
+      source: { actor: "tool" },
+      evidence: replacement,
+    })
+    expect(locked).toMatchObject({ allowed: false, code: "evidence_locked" })
+    if (!locked.allowed) {
+      expect(locked.message).toContain("finny_workflow_invalidate_candidate")
+    }
+
+    const originalEvidence = state.evidence
+    state = applied(
+      transition(state, {
+        id: "evt_candidate_invalidated_for_evidence",
+        type: "candidate.invalidated",
+        occurredAt: 1_510,
+        source: { actor: "tool" },
+        reason: "Replacement evidence requested.",
+      }),
+    )
+    expect(state).toMatchObject({
+      stage: "evidence_ready",
+      phase: "research_frozen",
+      candidate: undefined,
+      backtest: undefined,
+    })
+    expect(state.evidence).toEqual(originalEvidence)
+
+    state = applied(
+      transition(state, {
+        id: "evt_replacement_recorded",
+        type: "evidence.recorded",
+        occurredAt: 1_520,
+        source: { actor: "tool" },
+        evidence: replacement,
+      }),
+    )
+    expect(state.phase).toBe("evidence_ready")
+    expect(state.evidence).toEqual([...originalEvidence, replacement])
+    expect(state.invalidations).toEqual([])
+  })
 })
 
 describe("algorithm build workflow approvals", () => {
