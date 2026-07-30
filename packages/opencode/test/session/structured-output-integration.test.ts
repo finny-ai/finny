@@ -15,6 +15,56 @@ const it = testEffect(
 const live = hasApiKey ? it.instance : it.instance.skip
 
 describe("StructuredOutput Integration", () => {
+  it.instance(
+    "persists a normalized HTTP-style JSON schema format",
+    () =>
+      Effect.gen(function* () {
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.create({ title: "Structured Output Persistence" })
+        const format = JSON.parse(
+          JSON.stringify({
+            type: "json_schema",
+            schema: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                instruments: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    properties: {
+                      symbol: { type: "string", pattern: "^[A-Z][A-Z0-9.-]{0,23}$" },
+                    },
+                  },
+                },
+              },
+            },
+            retryCount: 2,
+          }),
+        )
+        const result = yield* prompt.prompt({
+          sessionID: session.id,
+          noReply: true,
+          parts: [{ type: "text", text: "Persist this schema without running a model." }],
+          format,
+        })
+        const messages = yield* sessions.messages({ sessionID: session.id, limit: 10 })
+        const stored = messages.find((message) => message.info.id === result.info.id)
+        expect(stored).toBeDefined()
+        if (!stored) return
+        expect(stored.info.role).toBe("user")
+        if (stored.info.role === "user") {
+          expect(stored.info.format?.type).toBe("json_schema")
+          if (stored.info.format?.type === "json_schema") {
+            expect(stored.info.format.retryCount).toBe(2)
+            expect(stored.info.format.schema).toEqual(format.schema)
+          }
+        }
+      }),
+    { git: true },
+  )
+
   live(
     "produces structured output with simple schema",
     () =>

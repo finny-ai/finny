@@ -13,6 +13,7 @@ type MessageLike = {
 
 const PRIMARY_BUILD_AGENTS = new Set(["finny", "build"])
 const STRATEGY_BUILD_RE = /\b(?:build|create|make|design|develop|implement)\b[\s\S]*\b(?:strategy|algo(?:rithm)?)\b/i
+const CONTROL_QUALIFICATION_SCHEMA_RE = /"schema"\s*:\s*"FinnyFundQualificationPromptV1"/
 
 export function latestUserBuildPrompt(messages: ReadonlyArray<MessageLike>): {
   id: string
@@ -32,6 +33,13 @@ export function latestUserBuildPrompt(messages: ReadonlyArray<MessageLike>): {
 export function isVagueStrategyBuild(input: { agent: string; messages: ReadonlyArray<MessageLike> }): boolean {
   if (!PRIMARY_BUILD_AGENTS.has(input.agent)) return false
   const latest = latestUserBuildPrompt(input.messages)
+  // The fund controller supplies a complete, immutable qualification identity
+  // and exact reference artifact in this typed envelope. It is not an opening
+  // user build request, even though the embedded instruction may contain words
+  // such as "implement" and "strategy". Keeping it behind the vague-build
+  // discovery gate would expose only `question` and make every controller
+  // qualification tool call unavailable.
+  if (latest && CONTROL_QUALIFICATION_SCHEMA_RE.test(latest.text)) return false
   return Boolean(latest && STRATEGY_BUILD_RE.test(latest.text) && requiresIdentityClarification(latest.text))
 }
 

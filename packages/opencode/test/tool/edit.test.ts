@@ -308,9 +308,41 @@ describe("tool.edit", () => {
         const filepath = path.join(test.directory, "file.txt")
         yield* put(filepath, "actual content")
 
-        expect(yield* fail({ filePath: filepath, oldString: "not in file", newString: "replacement" })).toBeInstanceOf(
-          Error,
+        const error = yield* fail({ filePath: filepath, oldString: "not in file", newString: "replacement" })
+        expect(error).toBeInstanceOf(Error)
+        expect(error.message).not.toContain("Closest near-match")
+      }),
+    )
+
+    it.instance("returns a bounded closest near-match when oldString is similar", () =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const filepath = path.join(test.directory, "file.ts")
+        const longSuffix = "x".repeat(1_200)
+        yield* put(
+          filepath,
+          [
+            "const unrelated = true",
+            "function configure() {",
+            "  const enabled = false",
+            `  return enabled // ${longSuffix}`,
+            "}",
+            "const footer = true",
+          ].join("\n"),
         )
+
+        const error = yield* fail({
+          filePath: filepath,
+          oldString: ["function configure() {", "  const enabled = true", "  return enabled", "}"].join("\n"),
+          newString: "replacement",
+        })
+
+        expect(error.message).toContain("Closest near-match (lines 2-5):")
+        expect(error.message).toContain("const enabled = false")
+        expect(error.message).toContain("[near-match truncated]")
+        expect(error.message).not.toContain("const unrelated")
+        expect(error.message).not.toContain("const footer")
+        expect(error.message.length).toBeLessThan(1_100)
       }),
     )
 

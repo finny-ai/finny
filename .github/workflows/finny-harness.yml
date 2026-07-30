@@ -63,6 +63,7 @@ jobs:
         run: >-
           bun --cwd packages/opencode test
           test/harness/headless-harness.test.ts
+          test/harness/headless-fixtures.test.ts
           test/observability/phoenix-trace-grader.test.ts
           test/observability/telemetry-shutdown.test.ts
       - name: Execute real isolated scripted-model fixture matrix

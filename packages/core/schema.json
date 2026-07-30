@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "19ce798e-4a56-418a-92bd-dc501ff48494",
+  "id": "1223c051-ab0d-43e6-bcc2-27acd24eac96",
   "prevIds": [
-    "b1396a21-76ba-4940-a281-d79968566240"
+    "19ce798e-4a56-418a-92bd-dc501ff48494"
   ],
   "ddl": [
     {
@@ -28,6 +28,30 @@
     },
     {
       "name": "storage_root_migration",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case_child",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case_draft",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case_proposal",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case_report_admission",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case_report_submission",
+      "entityType": "tables"
+    },
+    {
+      "name": "fund_case",
       "entityType": "tables"
     },
     {
@@ -541,6 +565,616 @@
       "name": "time_completed",
       "entityType": "columns",
       "table": "storage_root_migration"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "manager_session_id",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "role",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "attempt_no",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "draft_sha256",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "fund_case_child"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "draft_id",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "action",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_json",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "draft_sha256",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "risk_tier",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "human_approval_required",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "fund_case_draft"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "proposal_id",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "action",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "payload_json",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "proposal_sha256",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "risk_tier",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "human_approval_required",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "gateway_review",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": "false",
+      "generated": null,
+      "name": "execution_authorized",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "fund_case_proposal"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "attestation_id",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "submission_id",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "role",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "report_sha256",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "admitted_at",
+      "entityType": "columns",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "submission_id",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "manager_session_id",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "child_session_id",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "role",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "subject",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "summary",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "recommendation",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "real",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "confidence",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "evidence_json",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "evidence_sha256",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "risk_flags_json",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "draft_sha256",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "report_sha256",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "submitted_at",
+      "entityType": "columns",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "case_id",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "manager_session_id",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "trigger_message_id",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_id",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_type",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "source_event_ref",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "event_sha256",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "evidence_json",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "evidence_sha256",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "idempotency_key",
+      "entityType": "columns",
+      "table": "fund_case"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "fund_case"
     },
     {
       "type": "integer",
@@ -2039,6 +2673,126 @@
     },
     {
       "columns": [
+        "case_id"
+      ],
+      "tableTo": "fund_case",
+      "columnsTo": [
+        "case_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_child_case_id_fund_case_case_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_child"
+    },
+    {
+      "columns": [
+        "case_id"
+      ],
+      "tableTo": "fund_case",
+      "columnsTo": [
+        "case_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_draft_case_id_fund_case_case_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_draft"
+    },
+    {
+      "columns": [
+        "case_id"
+      ],
+      "tableTo": "fund_case",
+      "columnsTo": [
+        "case_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_proposal_case_id_fund_case_case_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_proposal"
+    },
+    {
+      "columns": [
+        "case_id"
+      ],
+      "tableTo": "fund_case",
+      "columnsTo": [
+        "case_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_report_admission_case_id_fund_case_case_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        "submission_id"
+      ],
+      "tableTo": "fund_case_report_submission",
+      "columnsTo": [
+        "submission_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_report_admission_submission_id_fund_case_report_submission_submission_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "fund_case_child",
+      "columnsTo": [
+        "child_session_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_report_admission_child_session_id_fund_case_child_child_session_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        "case_id"
+      ],
+      "tableTo": "fund_case",
+      "columnsTo": [
+        "case_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_report_submission_case_id_fund_case_case_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "columns": [
+        "child_session_id"
+      ],
+      "tableTo": "fund_case_child",
+      "columnsTo": [
+        "child_session_id"
+      ],
+      "onUpdate": "NO ACTION",
+      "onDelete": "RESTRICT",
+      "nameExplicit": false,
+      "name": "fk_fund_case_report_submission_child_session_id_fund_case_child_child_session_id_fk",
+      "entityType": "fks",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "columns": [
         "active_account_id"
       ],
       "tableTo": "account",
@@ -2333,6 +3087,60 @@
     },
     {
       "columns": [
+        "child_session_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_child_pk",
+      "table": "fund_case_child",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "draft_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_draft_pk",
+      "table": "fund_case_draft",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "proposal_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_proposal_pk",
+      "table": "fund_case_proposal",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "attestation_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_report_admission_pk",
+      "table": "fund_case_report_admission",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "submission_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_report_submission_pk",
+      "table": "fund_case_report_submission",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
+        "case_id"
+      ],
+      "nameExplicit": false,
+      "name": "fund_case_pk",
+      "table": "fund_case",
+      "entityType": "pks"
+    },
+    {
+      "columns": [
         "id"
       ],
       "nameExplicit": false,
@@ -2573,6 +3381,310 @@
       "name": "algorithm_build_workflow_workspace_idx",
       "entityType": "indexes",
       "table": "algorithm_build_workflow"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        },
+        {
+          "value": "role",
+          "isExpression": false
+        },
+        {
+          "value": "attempt_no",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_child_role_attempt_idx",
+      "entityType": "indexes",
+      "table": "fund_case_child"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_created",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_child_case_idx",
+      "entityType": "indexes",
+      "table": "fund_case_child"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_draft_case_idx",
+      "entityType": "indexes",
+      "table": "fund_case_draft"
+    },
+    {
+      "columns": [
+        {
+          "value": "event_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_draft_event_idx",
+      "entityType": "indexes",
+      "table": "fund_case_draft"
+    },
+    {
+      "columns": [
+        {
+          "value": "draft_sha256",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_draft_sha_idx",
+      "entityType": "indexes",
+      "table": "fund_case_draft"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_proposal_case_idx",
+      "entityType": "indexes",
+      "table": "fund_case_proposal"
+    },
+    {
+      "columns": [
+        {
+          "value": "event_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_proposal_event_idx",
+      "entityType": "indexes",
+      "table": "fund_case_proposal"
+    },
+    {
+      "columns": [
+        {
+          "value": "proposal_sha256",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_proposal_sha_idx",
+      "entityType": "indexes",
+      "table": "fund_case_proposal"
+    },
+    {
+      "columns": [
+        {
+          "value": "idempotency_key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_proposal_idempotency_idx",
+      "entityType": "indexes",
+      "table": "fund_case_proposal"
+    },
+    {
+      "columns": [
+        {
+          "value": "submission_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_admission_submission_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_admission_child_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        {
+          "value": "report_sha256",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_admission_sha_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        },
+        {
+          "value": "role",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_admission_case_role_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_admission"
+    },
+    {
+      "columns": [
+        {
+          "value": "child_session_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_child_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "columns": [
+        {
+          "value": "report_sha256",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_sha_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "columns": [
+        {
+          "value": "case_id",
+          "isExpression": false
+        },
+        {
+          "value": "role",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_report_case_role_idx",
+      "entityType": "indexes",
+      "table": "fund_case_report_submission"
+    },
+    {
+      "columns": [
+        {
+          "value": "trigger_message_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_trigger_message_idx",
+      "entityType": "indexes",
+      "table": "fund_case"
+    },
+    {
+      "columns": [
+        {
+          "value": "event_id",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_event_id_idx",
+      "entityType": "indexes",
+      "table": "fund_case"
+    },
+    {
+      "columns": [
+        {
+          "value": "idempotency_key",
+          "isExpression": false
+        }
+      ],
+      "isUnique": true,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_idempotency_idx",
+      "entityType": "indexes",
+      "table": "fund_case"
+    },
+    {
+      "columns": [
+        {
+          "value": "manager_session_id",
+          "isExpression": false
+        },
+        {
+          "value": "time_created",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "fund_case_manager_time_idx",
+      "entityType": "indexes",
+      "table": "fund_case"
     },
     {
       "columns": [
@@ -2911,6 +4023,24 @@
       "name": "task_run_status_idx",
       "entityType": "indexes",
       "table": "task_run"
+    },
+    {
+      "value": "\"attempt_no\" BETWEEN 1 AND 2",
+      "name": "fund_case_child_attempt_range",
+      "entityType": "checks",
+      "table": "fund_case_child"
+    },
+    {
+      "value": "\"execution_authorized\" = 0",
+      "name": "fund_case_proposal_never_executable",
+      "entityType": "checks",
+      "table": "fund_case_proposal"
+    },
+    {
+      "value": "\"confidence\" BETWEEN 0 AND 1",
+      "name": "fund_case_report_confidence_range",
+      "entityType": "checks",
+      "table": "fund_case_report_submission"
     }
   ],
   "renames": []

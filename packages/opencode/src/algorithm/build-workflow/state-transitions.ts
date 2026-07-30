@@ -142,7 +142,7 @@ function recordEvidence(state: BuildWorkflowState, event: Extract<WorkflowEvent,
     return rejected(
       state,
       "evidence_locked",
-      "Evidence cannot change after a candidate is saved; invalidate the candidate before replacing evidence.",
+      "Evidence cannot change after a candidate is saved. Call finny_workflow_invalidate_candidate before recording replacement evidence.",
     )
   }
   const requirement = state.evidenceRequirements.find((candidate) => candidate.id === event.evidence.requirementId)

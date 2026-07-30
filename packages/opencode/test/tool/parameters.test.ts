@@ -140,6 +140,15 @@ describe("tool parameters", () => {
       const parsed = parse(Edit, { filePath: "/a", oldString: "x", newString: "y" })
       expect(parsed.replaceAll).toBeUndefined()
     })
+    test.each([
+      ["true", true],
+      ["false", false],
+    ])("coerces the explicit boolean string %s", (replaceAll, expected) => {
+      expect(parse(Edit, { filePath: "/a", oldString: "x", newString: "y", replaceAll }).replaceAll).toBe(expected)
+    })
+    test.each(["TRUE", "False", "yes", "1", "", 1, 0, null])("rejects ambiguous replaceAll value %p", (replaceAll) => {
+      expect(accepts(Edit, { filePath: "/a", oldString: "x", newString: "y", replaceAll })).toBe(false)
+    })
     test("rejects missing filePath", () => {
       expect(accepts(Edit, { oldString: "x", newString: "y" })).toBe(false)
     })

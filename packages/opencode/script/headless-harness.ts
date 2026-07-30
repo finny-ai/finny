@@ -5,6 +5,7 @@ import { runHeadlessHarnessPromise } from "./headless/orchestrator"
 
 export { runHeadlessHarness, runHeadlessHarnessPromise } from "./headless/orchestrator"
 export * from "./headless/types"
+export * from "./headless/fund-scenario"
 
 if (import.meta.main) {
   const parsed = parseArgs({
