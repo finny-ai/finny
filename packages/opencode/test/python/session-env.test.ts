@@ -15,16 +15,21 @@ import { Python } from "../../src/python/env"
 
 let sandbox: string
 let prevXdg: string | undefined
+let prevSharedPythonEnv: string | undefined
 
 beforeEach(async () => {
   sandbox = await fs.mkdtemp(path.join(os.tmpdir(), "finny-session-env-"))
   prevXdg = process.env.XDG_DATA_HOME
+  prevSharedPythonEnv = process.env.FINNY_SHARED_PYTHON_ENV
   process.env.XDG_DATA_HOME = sandbox
+  delete process.env.FINNY_SHARED_PYTHON_ENV
 })
 
 afterEach(async () => {
   if (prevXdg === undefined) delete process.env.XDG_DATA_HOME
   else process.env.XDG_DATA_HOME = prevXdg
+  if (prevSharedPythonEnv === undefined) delete process.env.FINNY_SHARED_PYTHON_ENV
+  else process.env.FINNY_SHARED_PYTHON_ENV = prevSharedPythonEnv
   await fs.rm(sandbox, { recursive: true, force: true })
 })
 
@@ -43,6 +48,20 @@ describe("workspace session env", () => {
   test("uses .venv under the workspace directory", () => {
     const ws = path.join(sandbox, "algos", "aapl-5m-strategy.abc123")
     expect(workspaceEnvDir(ws)).toBe(path.join(ws, WORKSPACE_VENV))
+  })
+
+  test("uses one explicit absolute production environment across workspaces", () => {
+    const shared = path.join(sandbox, "shared-python")
+    process.env.FINNY_SHARED_PYTHON_ENV = shared
+    expect(workspaceEnvDir(path.join(sandbox, "algos", "a"))).toBe(shared)
+    expect(workspaceEnvDir(path.join(sandbox, "algos", "b"))).toBe(shared)
+  })
+
+  test("rejects a relative shared production environment", () => {
+    process.env.FINNY_SHARED_PYTHON_ENV = "relative-python"
+    expect(() => workspaceEnvDir(path.join(sandbox, "algos", "a"))).toThrow(
+      "FINNY_SHARED_PYTHON_ENV must be an absolute path",
+    )
   })
 
   test(

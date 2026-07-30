@@ -3,6 +3,7 @@ import { compileExperimentPlanV1, planHash, type AuthoritativeBarV1 } from "../.
 import {
   executeQualificationPlanV1,
   executeQualificationWithHoldoutApprovalV1,
+  REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS,
 } from "../../src/backtest/qualification-operation"
 import {
   DEFAULT_QUALIFICATION_POLICY_V1,
@@ -119,14 +120,14 @@ const passingPhaseMetrics = {
 
 describe("executeQualificationPlanV1", () => {
   test("owns the legal phase sequence and passes exact timestamp windows", async () => {
-    const observed: Array<{ phase: string; start: string; end: string }> = []
+    const observed: Array<{ phase: string; start: string; end: string; walkForwardFolds: number }> = []
     const result = await executeQualificationPlanV1({
       candidateId: "candidate-operation",
       plan,
       holdoutOpenEvents: [event],
       ...durableInput(),
-      executePhase: async ({ phase, window }) => {
-        observed.push({ phase, start: window.start, end: window.end })
+      executePhase: async ({ phase, window, walkForwardFolds }) => {
+        observed.push({ phase, start: window.start, end: window.end, walkForwardFolds })
         return { ok: true, results: phase === "confirmatory" ? failedMetrics : passingPhaseMetrics }
       },
     })
@@ -135,6 +136,11 @@ describe("executeQualificationPlanV1", () => {
       [plan.windows.exploratory.start, plan.windows.exploratory.end],
       [plan.windows.validation.start, plan.windows.validation.end],
       [plan.windows.confirmatory.start, plan.windows.confirmatory.end],
+    ])
+    expect(observed.map((item) => item.walkForwardFolds)).toEqual([
+      REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS,
+      REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS,
+      DEFAULT_QUALIFICATION_POLICY_V1.minWalkForwardFolds,
     ])
     expect(result.ok).toBe(false)
     expect(result.completedPhases).toEqual(["exploratory", "validation", "confirmatory"])

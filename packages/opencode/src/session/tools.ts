@@ -24,6 +24,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan } from "@/telemetry/run-attributes"
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
 import { contextPhaseExecutionBlock, type ContextPhaseGate } from "@/task/strategy-context"
+import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -44,6 +45,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const registry = yield* ToolRegistry.Service
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
+  const effectivePermission = effectiveFundRuntimePermission(
+    input.agent.name,
+    input.agent.permission,
+    input.session.permission ?? [],
+  )
 
   const hookContext = (toolID: string, callID: string): ToolHookContext => ({
     tool: toolID,
@@ -83,7 +89,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           ...req,
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
+          ruleset: effectivePermission,
         })
         .pipe(Effect.orDie),
   })

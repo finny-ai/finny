@@ -207,7 +207,7 @@ export const QualifyCandidateTool = Tool.define<typeof parameters, Qualification
             })
             return true
           },
-          executePhase: ({ phase, window, qualification }) => BacktestRunner.run({
+          executePhase: ({ phase, window, qualification, walkForwardFolds }) => BacktestRunner.run({
             algorithm: candidate,
             duration: "1y",
             interval: plan.request.interval,
@@ -219,7 +219,7 @@ export const QualifyCandidateTool = Tool.define<typeof parameters, Qualification
             source: "run",
             robustness: {
               regimes: true,
-              walkForwardFolds: phase === "confirmatory" ? policy.minWalkForwardFolds : 0,
+              walkForwardFolds,
               costSensitivity: phase === "confirmatory" && policy.requireCostSensitivity,
               priorSelectionTrials: qualification.context.durableTrialCount - 1,
               currentSelectionTrials: 1,

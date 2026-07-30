@@ -768,6 +768,7 @@ with open("_data_provider.txt", "w") as f:
     hasProductRiskContract,
     markNonPromotableStrictRun,
     ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
+    DEFAULT_BACKTEST_PY: "", // populated below once the source is in scope
   } as {
     parseResults: typeof parseResults
     calendarBarsPerYear: typeof calendarBarsPerYear
@@ -777,6 +778,7 @@ with open("_data_provider.txt", "w") as f:
     hasProductRiskContract: typeof hasProductRiskContract
     markNonPromotableStrictRun: typeof markNonPromotableStrictRun
     ENGINE_VERSION: string
+    DEFAULT_BACKTEST_PY: string
   }
 
   function assumptionsFromV2(v2: EngineV2.Results): Assumptions {
@@ -1241,6 +1243,14 @@ def main():
     with open(args.csv, newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
+            snapshot = None
+            raw_snapshot = row.get("finny_snapshot_json")
+            if raw_snapshot:
+                if len(raw_snapshot.encode("utf-8")) > 1_000_000:
+                    raise ValueError("finny_snapshot_json exceeds the 1 MB row limit")
+                snapshot = json.loads(raw_snapshot)
+                if not isinstance(snapshot, dict):
+                    raise ValueError("finny_snapshot_json must decode to an object")
             bars.append({
                 "timestamp": row.get("timestamp") or row.get("Timestamp") or row.get("date"),
                 "open": float(row.get("open") or row.get("Open", 0)),
@@ -1249,6 +1259,7 @@ def main():
                 "close": float(row.get("close") or row.get("Close", 0)),
                 "volume": float(row.get("volume") or row.get("Volume", 0)),
                 "symbol": symbol,
+                "finny_snapshot": snapshot,
             })
 
     if not bars:
@@ -1531,6 +1542,7 @@ def main():
 if __name__ == "__main__":
     main()
 `
+  ;(_internalForTests as any).DEFAULT_BACKTEST_PY = DEFAULT_BACKTEST_PY
 
   // Tokens commonly seen in algo names that are NOT tickers. Anything else that
   // looks like a ticker shape (2-5 alnum chars) is treated as a candidate symbol.

@@ -463,6 +463,60 @@ describe("tool.task", () => {
     },
   )
 
+  it.instance("enforces the Fund Manager delegation boundary before launch", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+      let asks = 0
+      let seen: SessionPrompt.PromptInput | undefined
+      const context = (agent: string) => ({
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent,
+        abort: new AbortController().signal,
+        extra: {
+          promptOps: stubOps({
+            text: "advisory complete",
+            onPrompt: (input) => (seen = input),
+          }),
+        },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () =>
+          Effect.sync(() => {
+            asks += 1
+          }),
+      })
+      const task = {
+        description: "Review regime",
+        prompt: "Review the supplied immutable regime evidence.",
+        subagent_type: "fund_regime_analyst",
+      }
+
+      const nonManager = yield* Effect.exit(def.execute(task, context("finny")))
+      expect(Exit.isFailure(nonManager)).toBe(true)
+      if (Exit.isFailure(nonManager)) {
+        expect(String(Cause.squash(nonManager.cause))).toContain('may be launched only by "fund_manager"')
+      }
+      expect(asks).toBe(0)
+
+      const nested = yield* Effect.exit(
+        def.execute({ ...task, subagent_type: "fund_risk_sentinel" }, context("fund_regime_analyst")),
+      )
+      expect(Exit.isFailure(nested)).toBe(true)
+      if (Exit.isFailure(nested)) {
+        expect(String(Cause.squash(nested.cause))).toContain("cannot delegate nested tasks")
+      }
+      expect(asks).toBe(0)
+
+      const result = yield* def.execute(task, context("fund_manager"))
+      expect(asks).toBe(0)
+      expect(result.output).toContain("No immutable fund event is admitted")
+      expect(seen).toBeUndefined()
+    }),
+  )
+
   it.instance("records foreground subagent lifecycle in TaskState", () =>
     Effect.gen(function* () {
       const { chat, assistant } = yield* seed()
