@@ -78,8 +78,19 @@ exports[`tool parameters JSON Schema (wire shape) edit 1`] = `
       "type": "string",
     },
     "replaceAll": {
+      "anyOf": [
+        {
+          "type": "boolean",
+        },
+        {
+          "enum": [
+            "true",
+            "false",
+          ],
+          "type": "string",
+        },
+      ],
       "description": "Replace all occurrences of oldString (default false)",
-      "type": "boolean",
     },
   },
   "required": [

@@ -48,6 +48,13 @@ import { parseSecRequestContext } from "@/data/sec-edgar"
 import { renderSubagentArtifactPointer } from "@/agent/subagent-artifact"
 import { TaskState } from "@/task/state"
 import { BuildWorkflow } from "@/task/build-workflow"
+import {
+  effectiveFundRuntimePermission,
+  fundDelegationError,
+  isFundRuntimeAgent,
+  isFundSpecialistAgent,
+} from "@/agent/fund-policy"
+import { FundCaseStore } from "@/fund/case-store"
 import { StrategyContext } from "@/task/strategy-context"
 import {
   activeWorkflowForSession,
@@ -905,6 +912,8 @@ const taskExecutor = Effect.gen(function* () {
     ctx: Tool.Context,
     options: { mode: "background" | "foreground"; batch?: boolean },
   ) {
+    const fundDelegationIssue = fundDelegationError(ctx.agent, params.subagent_type)
+    if (fundDelegationIssue) return yield* Effect.fail(new Error(fundDelegationIssue))
     const cfg = yield* config.get()
     const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
       Effect.provideService(Database.Service, database),
@@ -920,6 +929,26 @@ const taskExecutor = Effect.gen(function* () {
       : undefined
     const latestUserText =
       latestUserMessage?.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ") ?? ""
+    const fundSpecialistAgent = isFundSpecialistAgent(params.subagent_type) ? params.subagent_type : undefined
+    const fundLaunch = fundSpecialistAgent
+      ? yield* Effect.promise(() =>
+          FundCaseStore.specialistLaunchStatus(
+            {
+              managerSessionID: ctx.sessionID,
+              triggerMessageID: workflowRunID,
+              agent: fundSpecialistAgent,
+            },
+            database,
+          ),
+        )
+      : undefined
+    if (fundLaunch && !fundLaunch.allowed) {
+      return {
+        title: `${params.subagent_type} launch rejected`,
+        metadata: { parentSessionId: ctx.sessionID } as TaskMetadata,
+        output: `BLOCKED: ${fundLaunch.message}`,
+      }
+    }
     const activeWorkflow = EVIDENCE_AGENT_TYPES.has(params.subagent_type)
       ? yield* activeWorkflowForSession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database))
       : undefined
@@ -954,6 +983,13 @@ const taskExecutor = Effect.gen(function* () {
     }
     if (params.task_id) {
       const activeTask = yield* Effect.promise(() => TaskState.get(params.task_id!, database))
+      if (isFundSpecialistAgent(params.subagent_type)) {
+        return yield* Effect.fail(
+          new Error(
+            "Protected fund specialist tasks cannot be resumed by task_id; retry a terminal failure with a fresh registered child.",
+          ),
+        )
+      }
       if (
         activeTask &&
         activeTask.parentSessionID === ctx.sessionID &&
@@ -1165,16 +1201,32 @@ const taskExecutor = Effect.gen(function* () {
     const session = params.task_id
       ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
       : undefined
+    if (
+      params.task_id &&
+      isFundRuntimeAgent(next.name) &&
+      (!session ||
+        session.parentID !== ctx.sessionID ||
+        session.agent !== next.name ||
+        session.permission?.some((rule) => rule.action === "allow"))
+    ) {
+      return yield* Effect.fail(new Error("Protected fund task_id lineage or canonical permissions do not match."))
+    }
     const parent = yield* sessions.get(ctx.sessionID)
     const childPermission = deriveSubagentSessionPermission({
       parentSessionPermission: parent.permission ?? [],
       subagent: next,
     })
+    const effectiveChildPermission = effectiveFundRuntimePermission(next.name, next.permission)
+    const protectedFundChild = isFundRuntimeAgent(next.name)
     const childToolDenies = [
-      ...(next.permission.some((rule) => rule.permission === "todowrite")
+      ...((protectedFundChild
+        ? Permission.evaluate("todowrite", "*", effectiveChildPermission).action === "allow"
+        : next.permission.some((rule) => rule.permission === "todowrite"))
         ? []
         : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-      ...(next.permission.some((rule) => rule.permission === permission)
+      ...((protectedFundChild
+        ? Permission.evaluate(permission, "*", effectiveChildPermission).action === "allow"
+        : next.permission.some((rule) => rule.permission === permission))
         ? []
         : [{ permission, pattern: "*" as const, action: "deny" as const }]),
       ...(cfg.experimental?.primary_tools?.map((permission) => ({
@@ -1303,7 +1355,11 @@ const taskExecutor = Effect.gen(function* () {
     // The scripted fixture keeps real child sessions/tools but bypasses the
     // optional task registry, whose lazy dev migration can race in a fresh
     // isolated database. This path is unavailable to live-model harnesses.
-    const scriptedHarness = process.env.FINNY_HARNESS_MODE === "1" && process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1"
+    const scriptedHarness =
+      process.env.FINNY_HARNESS_MODE === "1" &&
+      process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1" &&
+      !isFundRuntimeAgent(ctx.agent) &&
+      !isFundSpecialistAgent(params.subagent_type)
     const registryExit = scriptedHarness
       ? Exit.succeed(undefined)
       : yield* Effect.exit(
@@ -1318,6 +1374,17 @@ const taskExecutor = Effect.gen(function* () {
                   subagentType: params.subagent_type,
                   mode,
                   status: TaskState.Status.queued,
+                },
+                database,
+              )
+            }
+            if (isFundSpecialistAgent(params.subagent_type)) {
+              await FundCaseStore.admitChildAttempt(
+                {
+                  managerSessionID: ctx.sessionID,
+                  triggerMessageID: workflowRunID,
+                  childSessionID: nextSession.id,
+                  agent: params.subagent_type,
                 },
                 database,
               )
@@ -1346,6 +1413,10 @@ const taskExecutor = Effect.gen(function* () {
         }),
       }
     }
+
+    const fundChildContext = isFundSpecialistAgent(params.subagent_type)
+      ? yield* Effect.promise(() => FundCaseStore.childContext(nextSession.id, database))
+      : undefined
 
     yield* ctx.metadata({
       title: params.description,
@@ -1460,16 +1531,25 @@ const taskExecutor = Effect.gen(function* () {
         if (existing.found && existing.result?.ok) return existing.result.text
       }
       const parts = yield* ops.resolvePromptParts(
-        withFinnySubagentContext(params, params.prompt, workspace, workspaceContext),
+        withFinnySubagentContext(
+          params,
+          fundChildContext ? `${fundChildContext}\n\n${params.prompt}` : params.prompt,
+          workspace,
+          workspaceContext,
+        ),
       )
       let result = yield* ops.prompt({
         messageID: MessageID.ascending(),
         sessionID: nextSession.id,
-        model: {
-          modelID: model.modelID,
-          providerID: model.providerID,
-        },
-        variant: next.model ? undefined : variant,
+        ...(isFundRuntimeAgent(next.name)
+          ? {}
+          : {
+              model: {
+                modelID: model.modelID,
+                providerID: model.providerID,
+              },
+              variant: next.model ? undefined : variant,
+            }),
         agent: next.name,
         parts,
       })
@@ -1529,11 +1609,15 @@ const taskExecutor = Effect.gen(function* () {
           result = yield* ops.prompt({
             messageID: MessageID.ascending(),
             sessionID: nextSession.id,
-            model: {
-              modelID: model.modelID,
-              providerID: model.providerID,
-            },
-            variant: next.model ? undefined : variant,
+            ...(isFundRuntimeAgent(next.name)
+              ? {}
+              : {
+                  model: {
+                    modelID: model.modelID,
+                    providerID: model.providerID,
+                  },
+                  variant: next.model ? undefined : variant,
+                }),
             agent: next.name,
             parts: correction,
           })
@@ -1690,10 +1774,20 @@ const taskExecutor = Effect.gen(function* () {
       })
       const deliver = (): Effect.Effect<boolean> =>
         waitForParentIdle().pipe(
-          // Construct the prompt effect only after readiness, because custom
-          // prompt adapters may perform bookkeeping when invoked.
-          Effect.andThen(Effect.suspend(() => ops.prompt(input))),
-          Effect.as(true),
+          // A foreground strategy-context wait may have consumed and
+          // terminalized this result while the notifier was waiting for the
+          // parent to become idle. Re-check at the delivery boundary so the
+          // same result cannot trigger a second synthesis turn.
+          Effect.andThen(
+            Effect.promise(() => TaskState.get(nextSession.id, database)).pipe(
+              Effect.flatMap((task) => {
+                if (task && TaskState.isTerminal(task.status)) return Effect.succeed(false)
+                // Construct the prompt effect only after readiness, because
+                // custom prompt adapters may perform bookkeeping when invoked.
+                return Effect.suspend(() => ops.prompt(input)).pipe(Effect.as(true))
+              }),
+            ),
+          ),
           Effect.catchCause((cause) => {
             const error = Cause.squash(cause)
             // Status can race from idle back to busy between the readiness

@@ -46,6 +46,33 @@ describe("vague build clarification boundary", () => {
     ).toBe(false)
   })
 
+  test("does not reduce a typed fund qualification envelope to question-only", () => {
+    const productionEnvelope = JSON.stringify({
+      schema: "FinnyFundQualificationPromptV1",
+      candidateIdentity: {
+        strategy_id: "xrp-mean-reversion-v1-q-8377d5d7b43b",
+        controller_strategy_id: "xrp-mean-reversion-v1",
+        slot: 1,
+        market: "binance_usdm_testnet",
+        symbol: "XRPUSDT",
+      },
+      symbol: "XRPUSDT",
+      assetClass: "crypto",
+      interval: "1m",
+      requestedStart: "2026-01-27",
+      requestedEnd: "2026-07-28",
+      instruction:
+        "Do not independently implement the strategy. Use candidateIdentity.strategy_id exactly as the algorithm name passed to finny_workspace_prepare.",
+    })
+
+    expect(
+      requiresQuestionOnlyTools({
+        agent: "finny",
+        messages: [user(productionEnvelope)],
+      }),
+    ).toBe(false)
+  })
+
   test("reports missing portfolio and evaluation gates", () => {
     const incomplete = discoveryIssues([
       {

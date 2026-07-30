@@ -65,6 +65,12 @@ function requiredIterationAction(workflow: BuildWorkflowState, rotateConcept: bo
 type ContinuationInput = {
   workflow: BuildWorkflowState | undefined
   pendingContextTasks: number
+  /**
+   * A durable external controller owns the next transition. The model must
+   * stop at the current tool boundary instead of mutating a frozen candidate
+   * through another save/backtest iteration.
+   */
+  controllerManaged?: boolean
   unverifiedContextRoles?: readonly string[]
   parentOverlapComplete?: boolean
   saveHardBoundary?: boolean
@@ -195,6 +201,7 @@ export function buildWorkflowContinuationReminder(input: ContinuationInput) {
   // live Build-mode product behavior and will spin forever against a fixed
   // scripted model that only knows one save/backtest sequence.
   if (process.env.FINNY_HARNESS_MODE === "1") return undefined
+  if (input.controllerManaged === true) return undefined
 
   const workflow = input.workflow
   if (!workflow || workflow.status !== "active") return undefined

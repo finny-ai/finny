@@ -116,6 +116,16 @@ describe("active Build workflow continuation", () => {
     expect(reminder).toContain("User control wins")
   })
 
+  test("controller-managed qualification stops automatic build iteration", () => {
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(1),
+        pendingContextTasks: 0,
+        controllerManaged: true,
+      }),
+    ).toBeUndefined()
+  })
+
   test("a newly saved candidate requires backtest next rather than another save or a narrative", () => {
     const workflow = { ...failedWorkflow(4), backtest: undefined }
     const reminder = buildWorkflowContinuationReminder({ workflow, pendingContextTasks: 0 })

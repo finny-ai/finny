@@ -6,6 +6,7 @@ pandas.iloc overhead in the hot loop.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Dict, List, Mapping, Optional, Tuple
 
@@ -33,6 +34,9 @@ class BarArrays:
     vega: Optional[np.ndarray] = None
     iv: Optional[np.ndarray] = None
     underlying_close: Optional[np.ndarray] = None
+    # Optional controller-authored, point-in-time context. Each object is
+    # already aligned to the execution row at which it became available.
+    finny_snapshot: Optional[np.ndarray] = None
 
     def __len__(self) -> int:
         return int(self.ts.shape[0])
@@ -91,12 +95,26 @@ def from_dataframe(df: pd.DataFrame, symbol: str, atr_period: int = 14) -> BarAr
     def _opt_col(name: str) -> "Optional[np.ndarray]":
         return df[name].to_numpy(dtype=np.float64) if name in df.columns else None
 
+    snapshots = None
+    if "finny_snapshot_json" in df.columns:
+        decoded = []
+        for raw in df["finny_snapshot_json"]:
+            if pd.isna(raw) or str(raw).strip() == "":
+                decoded.append(None)
+                continue
+            value = json.loads(str(raw))
+            if not isinstance(value, dict):
+                raise ValueError("finny_snapshot_json must decode to an object")
+            decoded.append(value)
+        snapshots = np.asarray(decoded, dtype=object)
+
     return BarArrays(
         symbol=symbol, ts=ts, open=o, high=h, low=low, close=c, volume=v,
         atr=_atr(h, low, c, atr_period),
         delta=_opt_col("delta"), gamma=_opt_col("gamma"), theta=_opt_col("theta"),
         vega=_opt_col("vega"), iv=_opt_col("iv"),
         underlying_close=_opt_col("underlying_close"),
+        finny_snapshot=snapshots,
     )
 
 
@@ -189,6 +207,13 @@ class MarketSnapshot:
             "vol_regime": vol_regime,
             "trend_regime": trend_regime,
         }
+        if ba.finny_snapshot is not None:
+            snapshot = ba.finny_snapshot[self._i]
+            if snapshot is not None:
+                # The sidecar is attached to the current execution row by the
+                # fund controller after provider availability, so exposing it
+                # here preserves the normal next-open decision boundary.
+                bar["finny_snapshot"] = dict(snapshot)
 
         # Option metadata — present only for option symbols. Read from the
         # settled (previous) bar so it's decision-time-safe with no lookahead,
