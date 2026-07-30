@@ -76,13 +76,14 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("exposes high-level qualification and strategy-context wait operations", () =>
+  it.instance("exposes high-level qualification, wait, and invalidate operations", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
 
       expect(ids).toContain("qualify_candidate")
       expect(ids).toContain("finny_strategy_context_wait")
+      expect(ids).toContain("finny_workflow_invalidate_candidate")
     }),
   )
 
