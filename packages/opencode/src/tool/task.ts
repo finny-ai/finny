@@ -1774,10 +1774,20 @@ const taskExecutor = Effect.gen(function* () {
       })
       const deliver = (): Effect.Effect<boolean> =>
         waitForParentIdle().pipe(
-          // Construct the prompt effect only after readiness, because custom
-          // prompt adapters may perform bookkeeping when invoked.
-          Effect.andThen(Effect.suspend(() => ops.prompt(input))),
-          Effect.as(true),
+          // A foreground strategy-context wait may have consumed and
+          // terminalized this result while the notifier was waiting for the
+          // parent to become idle. Re-check at the delivery boundary so the
+          // same result cannot trigger a second synthesis turn.
+          Effect.andThen(
+            Effect.promise(() => TaskState.get(nextSession.id, database)).pipe(
+              Effect.flatMap((task) => {
+                if (task && TaskState.isTerminal(task.status)) return Effect.succeed(false)
+                // Construct the prompt effect only after readiness, because
+                // custom prompt adapters may perform bookkeeping when invoked.
+                return Effect.suspend(() => ops.prompt(input)).pipe(Effect.as(true))
+              }),
+            ),
+          ),
           Effect.catchCause((cause) => {
             const error = Cause.squash(cause)
             // Status can race from idle back to busy between the readiness

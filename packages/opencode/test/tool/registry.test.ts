@@ -76,12 +76,13 @@ describe("tool.registry", () => {
     }),
   )
 
-  it.instance("exposes the high-level qualify_candidate operation", () =>
+  it.instance("exposes high-level qualification and strategy-context wait operations", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
 
       expect(ids).toContain("qualify_candidate")
+      expect(ids).toContain("finny_strategy_context_wait")
     }),
   )
 

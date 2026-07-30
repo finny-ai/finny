@@ -207,6 +207,7 @@ export const layer = Layer.effect(
         const finnyBuildTools = [
           "question",
           "task",
+          "finny_strategy_context_wait",
           "finny_workspace_prepare",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
@@ -228,6 +229,7 @@ export const layer = Layer.effect(
         const finnyModeTools = [
           "question",
           "task",
+          "finny_strategy_context_wait",
           "bash",
           "read",
           "write",
