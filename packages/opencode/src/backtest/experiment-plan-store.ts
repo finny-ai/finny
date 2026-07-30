@@ -8,8 +8,8 @@ import {
   type ExperimentPlanV1,
 } from "./experiment-plan"
 import {
+  confirmatoryPolicyErrors,
   makeHoldoutOpenEventV1,
-  verifyQualificationPolicyV1,
   type HoldoutOpenEventV1,
   type QualificationPolicyV1,
 } from "./qualification-policy"
@@ -40,7 +40,7 @@ async function writeImmutableJson(input: { file: string; value: unknown; mismatc
 export async function saveExperimentPlanV1(plan: ExperimentPlanV1, policy: QualificationPolicyV1) {
   const errors = verifyExperimentPlanV1(plan)
   if (errors.length) throw new Error(errors.join("; "))
-  const policyErrors = verifyQualificationPolicyV1(policy)
+  const policyErrors = confirmatoryPolicyErrors(policy)
   if (policyErrors.length) throw new Error(policyErrors.join("; "))
   if (plan.qualificationPolicyId !== policy.policyId || plan.qualificationPolicyHash !== policy.policyHash) {
     throw new Error("experiment plan qualification policy binding mismatch")
@@ -59,7 +59,7 @@ export async function compileAndSaveExperimentPlanV1(input: CompileExperimentPla
 export async function loadExperimentPlanPolicyV1(planId: string): Promise<QualificationPolicyV1> {
   const plan = await loadExperimentPlanV1(planId)
   const policy = JSON.parse(await fs.readFile(path.join(planDir({ planId }), "policy.json"), "utf8")) as QualificationPolicyV1
-  const errors = verifyQualificationPolicyV1(policy)
+  const errors = confirmatoryPolicyErrors(policy)
   if (errors.length) throw new Error(errors.join("; "))
   if (plan.qualificationPolicyId !== policy.policyId || plan.qualificationPolicyHash !== policy.policyHash) {
     throw new Error("stored qualification policy does not match experiment plan")

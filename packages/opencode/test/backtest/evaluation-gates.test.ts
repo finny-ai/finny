@@ -2,7 +2,9 @@ import { describe, expect, test } from "bun:test"
 import { evaluateBacktestQuality } from "../../src/backtest/evaluation"
 import type { BacktestRunner } from "../../src/backtest/runner"
 import {
+  qualificationInputForResearch,
   makeHoldoutOpenEventV1,
+  makeExploratoryQualificationPolicyV1,
   makeQualificationPolicyV1,
   type QualificationContextV1,
   type QualificationPolicyV1,
@@ -79,6 +81,73 @@ function result(overrides: Partial<BacktestRunner.Results>): BacktestRunner.Resu
 }
 
 describe("evaluateBacktestQuality", () => {
+  test("ranks exploratory search deltas and excludes confirmatory-only gates", () => {
+    const quality = evaluateBacktestQuality(
+      result({
+        totalTrades: 1,
+        v2: {
+          walk_forward: {
+            stitched_oos_return: -0.02,
+          },
+        } as any,
+      }),
+      qualificationInputForResearch(),
+    )
+    expect(quality.paperEligible).toBe(false)
+    expect(quality.label).toBe("failed")
+    expect(quality.deltas.map((delta) => [delta.rank, delta.gate])).toEqual([
+      [1, "stitched_oos_return"],
+      [2, "trade_count"],
+      [3, "cost_sensitivity"],
+    ])
+    expect(quality.reasons.join(" ")).not.toContain("confirmatory")
+    expect(quality.reasons.join(" ")).not.toContain("deflated Sharpe")
+  })
+
+  test("returns an explicit promotion action after exploratory gates pass but never paper eligibility", () => {
+    const quality = evaluateBacktestQuality(
+      result({
+        sensitivityOutcomes: [{ name: "cost/slippage stress", status: "pass", value: 0.01, explanation: "" }],
+        v2: {
+          walk_forward: {
+            stitched_oos_return: 0.03,
+          },
+        } as any,
+      }),
+      qualificationInputForResearch(),
+    )
+    expect(quality).toMatchObject({
+      label: "weak_positive",
+      paperEligible: false,
+      deltas: [
+        {
+          rank: 1,
+          gate: "phase_promotion",
+        },
+      ],
+    })
+    expect(quality.deltas[0].nextAction).toContain("qualify_candidate")
+  })
+
+  test("cannot turn a relaxed research preset into paper eligibility by relabeling its phase", () => {
+    const quality = evaluateBacktestQuality(
+      result({
+        sensitivityOutcomes: [{ name: "cost/slippage stress", status: "pass", value: 0.01, explanation: "" }],
+        v2: {
+          walk_forward: {
+            stitched_oos_return: 0.03,
+          },
+        } as any,
+      }),
+      {
+        policy: makeExploratoryQualificationPolicyV1({ requiredPhase: "confirmatory" }),
+        context: CONTEXT,
+      },
+    )
+    expect(quality.label).toBe("weak_positive")
+    expect(quality.paperEligible).toBe(false)
+  })
+
   test("classifies a 1-trade positive result as inconclusive", () => {
     const quality = evaluate(result({ totalTrades: 1 }))
     expect(quality.label).toBe("inconclusive")

@@ -5,6 +5,7 @@ import matter from "gray-matter"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import { readSpec, writeSpec } from "./experiment-store"
 import { withExperimentLock } from "./experiment-lock"
+import { EXPLORATORY_QUALIFICATION_POLICY_V1 } from "./qualification-policy"
 import {
   ExperimentContractError,
   type BeginTrialInput,
@@ -94,13 +95,15 @@ async function missionFacts(algorithmId: string): Promise<MissionFacts> {
   }
 }
 
-function qualityGates(input?: Partial<ExperimentQualityGates>): ExperimentQualityGates {
+export function exploratoryQualityGates(input?: Partial<ExperimentQualityGates>): ExperimentQualityGates {
   return {
-    minDeflatedSharpe: input?.minDeflatedSharpe ?? 0.95,
-    minProbabilisticSharpe: input?.minProbabilisticSharpe ?? 0.95,
-    minOosCoverage: input?.minOosCoverage ?? 0.95,
-    minTrades: input?.minTrades ?? 30,
-    requireCostSensitivity: input?.requireCostSensitivity ?? false,
+    minDeflatedSharpe: input?.minDeflatedSharpe ?? EXPLORATORY_QUALIFICATION_POLICY_V1.minDeflatedSharpe,
+    minProbabilisticSharpe:
+      input?.minProbabilisticSharpe ?? EXPLORATORY_QUALIFICATION_POLICY_V1.minProbabilisticSharpe,
+    minOosCoverage: input?.minOosCoverage ?? EXPLORATORY_QUALIFICATION_POLICY_V1.minOosCoverage,
+    minTrades: input?.minTrades ?? EXPLORATORY_QUALIFICATION_POLICY_V1.minTrades,
+    requireCostSensitivity:
+      input?.requireCostSensitivity ?? EXPLORATORY_QUALIFICATION_POLICY_V1.requireCostSensitivity,
   }
 }
 
@@ -159,7 +162,7 @@ function draftContractFields(
       "maximum drawdown and positive benchmark alpha",
     ),
     benchmark: textValue([experiment?.benchmark], `buy-and-hold ${symbol === "unknown" ? "same asset" : symbol}`),
-    qualityGates: qualityGates(experiment?.qualityGates),
+    qualityGates: exploratoryQualityGates(experiment?.qualityGates),
     sealedHoldout: Boolean(experiment?.boundaries),
   }
 }

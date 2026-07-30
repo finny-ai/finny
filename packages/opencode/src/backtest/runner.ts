@@ -2490,6 +2490,7 @@ if __name__ == "__main__":
         verdict: recommendation.verdict,
         blockerCode: qualificationDecision.ok ? undefined : qualificationDecision.blocker.code,
         gateReasons: qualificationDecision.quality.reasons,
+        gateDeltas: qualificationDecision.quality.deltas,
       },
     })
     const current = await RunIntegrity.currentAlgorithmHashes(input.algorithm)
