@@ -714,17 +714,15 @@ export const layer = Layer.effect(
           data_extractor: {
             name: "data_extractor",
             description:
-              "Data extraction subagent. Reads repo-level data-agent instructions, fetches or transforms data " +
-              "through host bash, writes files into the active algorithm's data/ folder, and returns a structured " +
-              "digest or artifact summary — not raw bars. Use this when the main agent needs market data for strategy " +
-              "design, backtesting, or analysis.",
+              "Collects historical market data and returns concise coverage and regime analysis for strategy research. " +
+              "It does not create strategies or run backtests.",
             color: "#06b6d4",
             options: {},
             prompt: PROMPT_FINNY_DATA_EXTRACTOR,
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
-              finnyToolBundle(["bash", "read", "skill", "finny_dataset_evidence_finalize"]),
+              finnyToolBundle(["bash", "read", "websearch", "webfetch", "finny_dataset_evidence_finalize"]),
               user,
               finnyDataAgentAccess,
               finnySecretReadDeny,
