@@ -319,6 +319,63 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     }
   })
 
+  test("materializes an immutable Crucible provider manifest without DatasetEvidence", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-crucible-manifest-"))
+    try {
+      const csv = [
+        "timestamp,open,high,low,close,volume",
+        "2026-01-09T14:30:00Z,590,591,589,590.5,100000",
+        "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000",
+      ].join("\n")
+      await fs.writeFile(path.join(runDir, "ohlcv.csv"), csv)
+      const rawHash = crypto.createHash("sha256").update(csv).digest("hex")
+      await BacktestRunner._internalForTests.writeCrucibleProviderManifest({
+        tmpDir: runDir,
+        runId: "run-provider-1",
+        algorithmName: "spy-sma",
+        results: {
+          v2: { start_ts: "2026-01-09T14:30:00Z", end_ts: "2026-01-09T14:35:00Z" },
+        } as unknown as BacktestRunner.Results,
+        provenance: {
+          mode: "provider_fetch",
+          provider: "finny-harness-fixture",
+          raw_sha256: rawHash,
+          snapshot_id: "crucible-data-provider-1",
+          requested: {
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "5m",
+            start: "2026-01-09",
+            end: "2026-01-09",
+          },
+          source_attempts: [{ provider: "finny-harness-fixture", status: "success", rows: 2 }],
+        },
+      })
+
+      const manifest = JSON.parse(await fs.readFile(path.join(runDir, "data_extractor.manifest.json"), "utf8"))
+      expect(manifest).toMatchObject({
+        schema: "finny.crucible_data_manifest",
+        source: "finny-harness-fixture",
+        snapshot_id: "crucible-data-provider-1",
+        requested_symbol: "SPY",
+        requested_interval: "5m",
+        requested_start: "2026-01-09",
+        requested_end: "2026-01-09",
+        actual_start: "2026-01-09",
+        actual_end: "2026-01-09",
+        rows: 2,
+        run_id: "run-provider-1",
+        usable_for_parent: "yes",
+        strict_backtest_eligible: "yes",
+        qualification: "unqualified",
+        csv_sha256: rawHash,
+      })
+      expect(JSON.stringify(manifest)).not.toContain("DatasetEvidence")
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true })
+    }
+  })
+
   test("rejects structurally forged verified dataset references", async () => {
     const forged = {
       manifestPath: "/tmp/forged.manifest.json",

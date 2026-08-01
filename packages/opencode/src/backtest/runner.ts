@@ -536,6 +536,56 @@ with open("_data_collection.json", "w") as f:
     provenance: BacktestDataProvenance
   }
 
+  async function writeCrucibleProviderManifest(input: {
+    tmpDir: string
+    runId: string
+    algorithmName: string
+    results: Results
+    provenance: Extract<BacktestDataProvenance, { mode: "provider_fetch" }>
+  }): Promise<void> {
+    const requested = input.provenance.requested
+    if (!requested || !input.provenance.raw_sha256 || !input.provenance.snapshot_id) {
+      throw new Error("Crucible provider provenance is incomplete; immutable run publication was refused")
+    }
+    const raw = await fs.readFile(path.join(input.tmpDir, RAW_OHLCV_ARTIFACT), "utf8")
+    const rows = Math.max(0, raw.trimEnd().split(/\r?\n/).length - 1)
+    const actualStart = input.results.v2?.start_ts?.slice(0, 10) ?? requested.start
+    const actualEnd = input.results.v2?.end_ts?.slice(0, 10) ?? requested.end
+    await fs.writeFile(
+      path.join(input.tmpDir, VERIFIED_MANIFEST_ARTIFACT),
+      JSON.stringify(
+        {
+          schema: "finny.crucible_data_manifest",
+          version: 1,
+          source: input.provenance.provider ?? "unknown",
+          provider_attempts: input.provenance.source_attempts ?? [],
+          snapshot_id: input.provenance.snapshot_id,
+          symbols: [requested.symbol],
+          requested_symbol: requested.symbol,
+          actual_symbol: requested.symbol,
+          requested_interval: requested.interval,
+          actual_interval: requested.interval,
+          requested_asset_class: requested.asset_class,
+          actual_asset_class: requested.asset_class,
+          requested_algorithm_name: input.algorithmName,
+          requested_start: requested.start,
+          requested_end: requested.end,
+          actual_start: actualStart,
+          actual_end: actualEnd,
+          output_path: RAW_OHLCV_ARTIFACT,
+          rows,
+          run_id: input.runId,
+          usable_for_parent: "yes",
+          strict_backtest_eligible: "yes",
+          qualification: "unqualified",
+          csv_sha256: input.provenance.raw_sha256,
+        },
+        null,
+        2,
+      ),
+    )
+  }
+
   class BacktestDataPreparationError extends Error {
     constructor(
       message: string,
@@ -786,6 +836,7 @@ with open("_data_collection.json", "w") as f:
     attachDataSourceProvenance,
     hasProductRiskContract,
     markNonPromotableStrictRun,
+    writeCrucibleProviderManifest,
     ENGINE_VERSION: "", // populated below once ENGINE_VERSION is in scope
     DEFAULT_BACKTEST_PY: "", // populated below once the source is in scope
   } as {
@@ -796,6 +847,7 @@ with open("_data_collection.json", "w") as f:
     attachDataSourceProvenance: typeof attachDataSourceProvenance
     hasProductRiskContract: typeof hasProductRiskContract
     markNonPromotableStrictRun: typeof markNonPromotableStrictRun
+    writeCrucibleProviderManifest: typeof writeCrucibleProviderManifest
     ENGINE_VERSION: string
     DEFAULT_BACKTEST_PY: string
   }
@@ -2471,6 +2523,7 @@ if __name__ == "__main__":
     endDate: string
     dataQualityMode: "strict" | "repair_outliers"
     qualification?: QualificationInputV1
+    datasetSnapshotId?: string
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2492,7 +2545,7 @@ if __name__ == "__main__":
       ...fallback,
       context: {
         ...fallback.context,
-        datasetEvidenceId: `legacy-${rawDataHash.slice(0, 24)}`,
+        datasetEvidenceId: input.datasetSnapshotId ?? `legacy-${rawDataHash.slice(0, 24)}`,
         datasetHash: rawDataHash,
       },
     }
@@ -3121,7 +3174,27 @@ if __name__ == "__main__":
           dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.qualification : undefined
         const promotableVerified =
           dataSource.kind === "verified_artifact" && verifiedQualification === "strict_qualified"
-        if (promotableVerified && hasProductRiskContract(config) && dataQualityMode === "strict") {
+        const publishableProviderRun =
+          dataSource.kind === "provider_fetch" && hasProductRiskContract(config) && dataQualityMode === "strict"
+        if (publishableProviderRun) {
+          markNonPromotableStrictRun({
+            results,
+            runId,
+            dataSource,
+            verifiedQualification,
+            dataQualityMode,
+            hasProductRiskContract: true,
+          })
+          await writeCrucibleProviderManifest({
+            tmpDir,
+            runId,
+            algorithmName: algorithm.name,
+            results,
+            provenance: preparedData.provenance as Extract<BacktestDataProvenance, { mode: "provider_fetch" }>,
+          })
+          await fs.writeFile(path.join(tmpDir, "results.json"), JSON.stringify(results.v2, null, 2))
+        }
+        if ((promotableVerified || publishableProviderRun) && hasProductRiskContract(config) && dataQualityMode === "strict") {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -3137,6 +3210,10 @@ if __name__ == "__main__":
             endDate: end,
             dataQualityMode,
             qualification,
+            datasetSnapshotId:
+              preparedData.provenance.mode === "provider_fetch"
+                ? preparedData.provenance.snapshot_id
+                : undefined,
           })
         } else {
           // Qualification evidence and the schema-v4 risk contract remain
