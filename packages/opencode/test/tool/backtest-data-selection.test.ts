@@ -3,6 +3,7 @@ import { BacktestRunner } from "../../src/backtest/runner"
 import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
 import {
   authoritativeBacktestInputIssue,
+  BacktestParameters,
   backtestAttemptFingerprint,
   backtestDataSourceSummary,
   experimentInputForBacktest,
@@ -35,7 +36,7 @@ describe("backtest data selection", () => {
     expect(v1).not.toBe(v2)
   })
 
-  test("keeps provider fetch research-only and rejects it for qualification", () => {
+  test("uses provider fetch as the normal Crucible source while keeping promotion qualification separate", () => {
     expect(
       BacktestRunner.qualificationDataSourceIssue({
         engineMode: "strict_v2",
@@ -50,7 +51,16 @@ describe("backtest data selection", () => {
         dataSource: { kind: "provider_fetch" },
         qualification: qualificationInputForResearch(),
       }),
-    ).toContain("research-only")
+    ).toContain("Qualification requires")
+    expect(backtestDataSourceSummary({ kind: "provider_fetch" })).toBe(
+      "Data source: Crucible-managed provider pipeline (strict collection and quality validation)",
+    )
+  })
+
+  test("exposes no repaired-data mode in the user-facing backtest schema", () => {
+    expect(Object.keys(BacktestParameters.shape)).not.toContain("dataQualityMode")
+    expect(Object.keys(BacktestParameters.shape)).not.toContain("repairOutliersApproved")
+    expect(JSON.stringify(BacktestParameters)).not.toContain("repair_outliers")
   })
 
   test("does not label research-only verified evidence as qualification eligible", () => {
@@ -113,7 +123,7 @@ describe("backtest data selection", () => {
     ).toBeUndefined()
   })
 
-  test("isolates provider-fetched research from unrelated experiment snapshots", () => {
+  test("isolates provider-fetched Crucible runs from unrelated experiment snapshots", () => {
     const left = experimentInputForBacktest({
       dataSourceKind: "provider_fetch",
       sessionId: "ses_left",

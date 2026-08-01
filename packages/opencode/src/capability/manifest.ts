@@ -341,11 +341,12 @@ function blockerCapabilities(): CapabilityManifest["blockers"] {
     { class: "validation_failed", recovery: "Fix validator errors before backtesting." },
     {
       class: "data_blocked",
-      recovery: "Run data_extractor with the requested symbol, interval, asset class, and dates.",
+      recovery:
+        "Report Crucible's provider-collection blocker for the exact requested symbol, interval, asset class, and dates.",
     },
     {
       class: "data_quality_failed",
-      recovery: "Change the window/interval or request approval for a repair_outliers research rerun.",
+      recovery: "Report Crucible's strict quality facts and keep the confirmed request unchanged.",
     },
     { class: "insufficient_walk_forward", recovery: "Use a longer duration or coarser interval." },
     {

@@ -94,7 +94,7 @@ export namespace BacktestRunner {
     /** Mandatory verdict inputs. Omit only for legacy/research-only runs. */
     qualification?: QualificationInputV1
     sessionID?: string
-    /** Verified artifacts can qualify; provider fetches are research-only. */
+    /** User-facing Crucible runs use provider_fetch; verified artifacts remain for qualification-only callers. */
     dataSource?: BacktestDataSource
   }
 
@@ -387,6 +387,7 @@ try:
     from engine_v2.data.providers.yfinance import YFinanceProvider
     from engine_v2.data.quality import completed_window_exclusive_end
     import pandas as pd
+    import json
 except Exception as e:
     print(f"__FINNY_FETCH_ERROR__: python_env: provider import failed: {e}", file=sys.stderr)
     sys.exit(2)
@@ -417,20 +418,25 @@ else:
 df = None
 provider_used = "unknown"
 errors = []
+attempts = []
 for provider in providers:
     try:
         if not provider.supports_interval(interval):
             errors.append(f"{provider.name}: unsupported interval {interval}")
+            attempts.append({"provider": provider.name, "status": "unsupported_interval", "detail": interval})
             continue
         candidate = provider.fetch(symbol, start, fetch_end, interval)
         if candidate is not None and not candidate.empty:
             df = candidate
             provider_used = provider.name
+            attempts.append({"provider": provider.name, "status": "success", "rows": int(len(candidate))})
             print(f"Downloaded {len(candidate)} rows from {provider.name}")
             break
         errors.append(f"{provider.name}: empty result")
+        attempts.append({"provider": provider.name, "status": "empty"})
     except Exception as e:
         errors.append(f"{provider.name}: {e}")
+        attempts.append({"provider": provider.name, "status": "failed", "detail": str(e)})
 
 if df is None or df.empty:
     print(f"__FINNY_FETCH_ERROR__: empty_window: {symbol}: no bars between {start} and {end} at {interval}. Tried: {'; '.join(errors)}", file=sys.stderr)
@@ -470,6 +476,8 @@ if missing:
 df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv("${csvPath}", index=False)
 with open("_data_provider.txt", "w") as f:
     f.write(provider_used)
+with open("_data_collection.json", "w") as f:
+    json.dump({"attempts": attempts}, f)
 `
   }
 
@@ -510,7 +518,18 @@ with open("_data_provider.txt", "w") as f:
           rows?: number
         }
       }
-    | { mode: "provider_fetch"; provider?: string; fixture_sha256?: string }
+    | {
+        mode: "provider_fetch"
+        provider?: string
+        fixture_sha256?: string
+        raw_sha256?: string
+        raw_bytes?: number
+        processed_sha256?: string
+        processed_bytes?: number
+        snapshot_id?: string
+        requested?: { symbol: string; asset_class: string; interval: string; start: string; end: string }
+        source_attempts?: Array<{ provider: string; status: string; rows?: number; detail?: string }>
+      }
 
   interface PreparedBacktestData {
     providerUsed: string
@@ -2288,6 +2307,15 @@ if __name__ == "__main__":
           benchmarkRows: benchmark.rows,
         })
       : undefined
+    const dataQualityJson = path.join(input.tmpDir, "finny_data_quality.json")
+    const dataProvenanceJson = path.join(input.tmpDir, "finny_data_provenance.json")
+    await Promise.all([
+      fs.writeFile(dataQualityJson, JSON.stringify(input.results.v2?.data_quality ?? {}, null, 2)),
+      fs.writeFile(
+        dataProvenanceJson,
+        JSON.stringify(input.results.v2?.run_metadata?.raw_data_provenance ?? {}, null, 2),
+      ),
+    ])
 
     const saved = await BacktestStore.save({
       record: {
@@ -2329,6 +2357,10 @@ if __name__ == "__main__":
         equityCsv,
         tradesCsv: path.join(input.tmpDir, "trades.csv"),
         sourceArtifacts: input.results.artifactDir,
+        dataSnapshotCsv: path.join(input.tmpDir, "ohlcv.csv"),
+        processedDataSnapshotCsv: path.join(input.tmpDir, PROCESSED_OHLCV_CSV),
+        dataQualityJson,
+        dataProvenanceJson,
       },
     })
     input.results.evidenceDir = saved.dir
@@ -2409,13 +2441,12 @@ if __name__ == "__main__":
     hasProductRiskContract: boolean
   }): void {
     input.results.runId = input.runId
-    input.results.runKind = "legacy"
     input.results.eligibilityStatus = "backtested"
     if (!input.results.v2) return
     input.results.v2.run_metadata = {
       ...(input.results.v2.run_metadata ?? {}),
       product_eligibility_blockers: [
-        ...(input.dataSource.kind !== "verified_artifact" ? ["provider_fetch_research_only"] : []),
+        ...(input.dataSource.kind === "provider_fetch" ? ["qualification_operation_required"] : []),
         ...(input.dataSource.kind === "verified_artifact" && input.verifiedQualification !== "strict_qualified"
           ? [`verified_dataset_${input.verifiedQualification ?? "unqualified"}`]
           : []),
@@ -2622,16 +2653,7 @@ if __name__ == "__main__":
       sessionID,
       dataSource = { kind: "provider_fetch" },
     } = params
-    // Research-only verified evidence is intentionally usable for research but
-    // not promotable. Isolated outliers are the most common reason for that
-    // demotion — repair them for the research path instead of refusing the
-    // confirmed window and forcing the agent to thrash duration/interval.
-    const dataQualityMode =
-      dataSource.kind === "verified_artifact" &&
-      dataSource.dataset.identity.qualification === "research_only" &&
-      requestedDataQualityMode === "strict"
-        ? ("repair_outliers" as const)
-        : requestedDataQualityMode
+    const dataQualityMode = requestedDataQualityMode
     // One-shot sweep so stale tmpdirs from prior crashed runs don't accumulate.
     if (!sweepDone) {
       sweepDone = true
@@ -2887,6 +2909,10 @@ if __name__ == "__main__":
                     mode: "provider_fetch",
                     provider: "finny-harness-fixture",
                     fixture_sha256: actual,
+                    raw_sha256: actual,
+                    raw_bytes: bytes.byteLength,
+                    requested: { symbol, asset_class: assetClass, interval: providerInterval, start, end },
+                    source_attempts: [{ provider: "finny-harness-fixture", status: "success" }],
                   },
                 }
               }
@@ -2914,7 +2940,7 @@ if __name__ == "__main__":
                       : `Backtest failed (unknown_symbol): ${symbol} is not recognized by the selected data provider. ` +
                         `The curated examples are only suggestions, not an exhaustive symbol allowlist.`
                     : kind === "empty_window"
-                      ? `Backtest failed (empty_window): no bars for ${symbol} between ${start} and ${end} at ${providerInterval}. Try a wider duration or a coarser interval.`
+                      ? `Crucible data collection blocked (empty_window): no usable bars for ${symbol} between ${start} and ${end} at ${providerInterval}. The confirmed request was not changed.`
                       : kind === "network"
                         ? `Backtest failed (network): could not reach the market data provider. ${detail}`
                         : kind === "auth"
@@ -2932,9 +2958,20 @@ if __name__ == "__main__":
               const providerUsed = (
                 await fs.readFile(path.join(tmpDir!, "_data_provider.txt"), "utf8").catch(() => "")
               ).trim()
+              const rawBytes = await fs.readFile(path.join(tmpDir!, csvPath))
+              const collection = JSON.parse(
+                await fs.readFile(path.join(tmpDir!, "_data_collection.json"), "utf8").catch(() => '{"attempts":[]}'),
+              ) as { attempts?: Array<{ provider: string; status: string; rows?: number; detail?: string }> }
               return {
                 providerUsed,
-                provenance: { mode: "provider_fetch", provider: providerUsed || undefined },
+                provenance: {
+                  mode: "provider_fetch",
+                  provider: providerUsed || undefined,
+                  raw_sha256: sha256Bytes(rawBytes),
+                  raw_bytes: rawBytes.byteLength,
+                  requested: { symbol, asset_class: assetClass, interval: providerInterval, start, end },
+                  source_attempts: collection.attempts ?? [],
+                },
               }
             },
           })
@@ -3046,6 +3083,23 @@ if __name__ == "__main__":
             kind: "results_unparseable",
           }
         }
+        if (preparedData.provenance.mode === "provider_fetch") {
+          const processedBytes = await fs.readFile(path.join(tmpDir, PROCESSED_OHLCV_CSV))
+          preparedData.provenance.processed_sha256 = sha256Bytes(processedBytes)
+          preparedData.provenance.processed_bytes = processedBytes.byteLength
+          const identityHash = crypto
+            .createHash("sha256")
+            .update(
+              JSON.stringify({
+                requested: preparedData.provenance.requested,
+                raw: preparedData.provenance.raw_sha256,
+                processed: preparedData.provenance.processed_sha256,
+                provider: preparedData.provenance.provider,
+              }),
+            )
+            .digest("hex")
+          preparedData.provenance.snapshot_id = `crucible-data-${identityHash.slice(0, 24)}`
+        }
         attachDataSourceProvenance(results, preparedData.provenance)
         results.experiment = experiment
         // Keep the engine-native artifact aligned with the enriched in-memory
@@ -3085,10 +3139,9 @@ if __name__ == "__main__":
             qualification,
           })
         } else {
-          // Provider fetches and research_only verified artifacts remain useful
-          // for research, but they do not produce an immutable product run and
-          // can never be promoted. Legacy v3 algorithms without a schema-v4
-          // risk contract are also fail-closed for promotion.
+          // Qualification evidence and the schema-v4 risk contract remain
+          // separate promotion gates. They do not downgrade a completed
+          // Crucible provider-pipeline backtest into a different product mode.
           markNonPromotableStrictRun({
             results,
             runId,
@@ -3140,7 +3193,7 @@ if __name__ == "__main__":
             datasetEvidenceVersion:
               dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.evidenceVersion : undefined,
             datasetQualification:
-              dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.qualification : "research_only",
+              dataSource.kind === "verified_artifact" ? dataSource.dataset.identity.qualification : "unqualified",
             evidenceError: results.evidenceError,
             eligibilityStatus: results.eligibilityStatus,
             diagnostics: {

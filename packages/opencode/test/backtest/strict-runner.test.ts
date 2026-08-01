@@ -189,7 +189,7 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     ).toBe(true)
   })
 
-  test("keeps a traceable run ID on non-promotable strict research results", () => {
+  test("keeps a provider-pipeline run as Crucible instead of downgrading it to research-only", () => {
     const results = { v2: { run_metadata: { existing: "value" } } } as unknown as BacktestRunner.Results
 
     BacktestRunner._internalForTests.markNonPromotableStrictRun({
@@ -202,12 +202,11 @@ describe("BacktestRunner strict_v2 guardrails", () => {
 
     expect(results).toMatchObject({
       runId: "run_research_only",
-      runKind: "legacy",
       eligibilityStatus: "backtested",
       v2: {
         run_metadata: {
           existing: "value",
-          product_eligibility_blockers: ["provider_fetch_research_only"],
+          product_eligibility_blockers: ["qualification_operation_required"],
         },
       },
     })
@@ -276,7 +275,7 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     }
   })
 
-  test("allows provider fetch for research but requires verified evidence for qualification", () => {
+  test("allows Crucible provider collection without evidence but keeps qualification evidence-bound", () => {
     expect(
       BacktestRunner.qualificationDataSourceIssue({
         engineMode: "strict_v2",
@@ -291,7 +290,33 @@ describe("BacktestRunner strict_v2 guardrails", () => {
         dataSource: { kind: "provider_fetch" },
         qualification: qualificationInputForResearch(),
       }),
-    ).toContain("research-only")
+    ).toContain("Qualification requires")
+  })
+
+  test("launches provider preparation without DatasetEvidence", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-crucible-provider-"))
+    try {
+      let launched = 0
+      const prepared = await BacktestRunner._internalForTests.prepareBacktestData({
+        dataSource: { kind: "provider_fetch" },
+        tmpDir: runDir,
+        fetchProvider: async () => {
+          launched += 1
+          return {
+            providerUsed: "fixture-provider",
+            provenance: { mode: "provider_fetch", provider: "fixture-provider" },
+          }
+        },
+      })
+      expect(launched).toBe(1)
+      expect(prepared).toEqual({
+        providerUsed: "fixture-provider",
+        provenance: { mode: "provider_fetch", provider: "fixture-provider" },
+      })
+      expect(JSON.stringify(prepared)).not.toContain("research_only")
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true })
+    }
   })
 
   test("rejects structurally forged verified dataset references", async () => {

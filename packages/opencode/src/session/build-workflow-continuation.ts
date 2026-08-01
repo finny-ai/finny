@@ -120,13 +120,12 @@ function unverifiedEvidenceReminder(workflow: BuildWorkflowState, roles: readonl
  * stop auto-iteration so the agent can show the champion to the user instead
  * of burning tokens on endless save/backtest retries.
  *
- * `recommended_for_paper` also becomes phase=qualified, but `candidate` and
- * provider-fetch `research_only` never do — those still count as a proper
- * strategy the user should see and decide on.
+ * `recommended_for_paper` also becomes phase=qualified; `candidate` remains a
+ * proper strategy the user should see and decide on.
  */
 export function hasPresentableResearchResult(workflow: BuildWorkflowState) {
   const verdict = workflow.backtest?.verdict
-  return verdict === "candidate" || verdict === "research_only" || verdict === "recommended_for_paper"
+  return verdict === "candidate" || verdict === "recommended_for_paper"
 }
 
 const USER_YIELD_PHRASE_RE =
@@ -172,10 +171,10 @@ function iterationReminder(workflow: BuildWorkflowState) {
     `Completed metric trials: ${metricTrials}. Trial count does not authorize a terminal failure while this workflow remains active without a presentable non-failed research result.`,
     `After ${MIN_FAILED_METRIC_TRIALS} failed metric trials, rotate to a fresh strategy concept family and continue save/backtest iteration.`,
     "concept_exhausted is not an admissible outcome while the workflow remains active and every metric trial is still failed. Do not emit it or paraphrase it as a terminal summary.",
-    "Do not stop with a narrative-only summary after a failed or missing metric trial. Keep iterating until you either produce a presentable non-failed result (candidate, research_only, or recommended_for_paper) or yield control by asking the user what to do next.",
+    "Do not stop with a narrative-only summary after a failed or missing metric trial. Keep iterating until you either produce a presentable non-failed result (candidate or recommended_for_paper) or yield control by asking the user what to do next.",
     "User control wins: if you need a user decision, ask clearly and stop. Do not auto-continue past a user-facing question.",
     ...requiredAction,
-    "Only after a robust recommended_for_paper WorkflowRun qualification, generate the one recommended_for_paper final review packet before stopping; paper approval remains a separate human decision. A research_only/candidate champion should be presented to the user and stopped without further forced iteration.",
+    "Only after a robust recommended_for_paper WorkflowRun qualification, generate the one recommended_for_paper final review packet before stopping; paper approval remains a separate human decision. A candidate champion should be presented to the user and stopped without further forced iteration.",
     "</system-reminder>",
   ].join("\n")
 }
