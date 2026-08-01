@@ -5,6 +5,7 @@ import { Filesystem } from "../../util/filesystem"
 import { Log } from "../../util/log"
 import type { BrokerKind } from "@/live/brokers"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import type { CatalogMetadata, VerifiedPackage } from "@/algorithm/version-package"
 
 const log = Log.create({ service: "local-algorithm-store" })
 
@@ -38,6 +39,7 @@ export interface AlgorithmMeta {
   name: string
   language: string
   status: string
+  description?: string
   brokerKind?: BrokerKind
   targetBrokerage?: BrokerKind
   latestVersion: number
@@ -277,6 +279,10 @@ function nameKey(userId: string, name: string): string {
   return `${userId}:${name}`
 }
 
+function knownBrokerKind(value: string | undefined): BrokerKind | undefined {
+  return value === "alpaca" || value === "binance" || value === "ibkr" ? value : undefined
+}
+
 async function rebuildNameIndex(): Promise<Record<string, string>> {
   const index: Record<string, string> = {}
   try {
@@ -347,7 +353,7 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
       language: meta.language ?? "python",
       version,
       status: meta.status,
-      description: undefined,
+      description: meta.description,
       config,
       backtestCode,
       reasoning,
@@ -367,6 +373,12 @@ export namespace LocalAlgorithmStore {
     sourceDir: string
     userId: string
     now?: number
+  }
+
+  export interface MaterializeCanonicalVersionInput {
+    catalog: CatalogMetadata
+    userId: string
+    package: VerifiedPackage
   }
 
   export function directoryFor(algorithmId: string): string {
@@ -472,6 +484,110 @@ export namespace LocalAlgorithmStore {
     } catch (err) {
       await fs.rm(targetDir, { recursive: true, force: true })
       throw err
+    }
+  }
+
+  export async function materializeCanonicalVersion(input: MaterializeCanonicalVersionInput): Promise<AlgorithmRow> {
+    const { catalog, package: verified } = input
+    if (catalog.algorithmId !== verified.manifest.algorithmId || catalog.version !== verified.manifest.version) {
+      throw new Error("Catalog identity does not match the verified package")
+    }
+    if (!catalog.name.trim()) throw new Error("Catalog algorithm name must not be empty")
+
+    const releaseVersionLock = await acquireVersionLock(catalog.algorithmId)
+    try {
+      const existingByName = await getByName(input.userId, catalog.name)
+      if (existingByName && existingByName.algorithmId !== catalog.algorithmId) {
+        throw new Error(`Algorithm name collision for "${catalog.name}"`)
+      }
+
+      const existingMeta = await readMeta(catalog.algorithmId)
+      if (existingMeta && existingMeta.name !== catalog.name) {
+        throw new Error(`Algorithm identity collision for ${catalog.algorithmId}`)
+      }
+
+      const dir = algoDir(catalog.algorithmId)
+      await fs.mkdir(dir, { recursive: true })
+      if (!existingMeta) await scaffoldAlgoStructure(catalog.algorithmId)
+      const finalDir = versionDirPath(catalog.algorithmId, catalog.version)
+      const existingStat = await fs.stat(finalDir).catch(() => null)
+      if (existingStat) {
+        if (!existingStat.isDirectory())
+          throw new Error(`Algorithm version path is not a directory: ${versionTag(catalog.version)}`)
+        for (const filename of [
+          "strategy.py",
+          "config.json",
+          "reasoning.md",
+          ...Object.values(VERSION_DOCUMENT_FILES),
+          "backtest.py",
+        ]) {
+          const expected = verified.files.get(filename)
+          const actual = await fs.readFile(path.join(finalDir, filename)).catch((error: any) => {
+            if (error?.code === "ENOENT") return undefined
+            throw error
+          })
+          if (expected === undefined && actual === undefined) continue
+          if (expected === undefined || actual === undefined || !Buffer.from(expected).equals(actual)) {
+            throw new Error(`Conflicting bytes for ${catalog.algorithmId} ${versionTag(catalog.version)} ${filename}`)
+          }
+        }
+      } else {
+        const staging = path.join(dir, `.tmp-${versionTag(catalog.version)}-${crypto.randomUUID()}`)
+        try {
+          await fs.mkdir(staging)
+          for (const [filename, bytes] of verified.files) await fs.writeFile(path.join(staging, filename), bytes)
+          await fs.rename(staging, finalDir)
+        } catch (error) {
+          await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+          throw error
+        }
+      }
+
+      const latestVersion = Math.max(existingMeta?.latestVersion ?? 0, catalog.version)
+      const preserveCurrentMeta = Boolean(existingMeta && catalog.version < existingMeta.latestVersion)
+      const meta: AlgorithmMeta = {
+        algorithmId: catalog.algorithmId,
+        userId: input.userId,
+        name: catalog.name,
+        language: preserveCurrentMeta ? existingMeta!.language : catalog.language,
+        status: preserveCurrentMeta ? existingMeta!.status : catalog.status,
+        description: preserveCurrentMeta ? existingMeta!.description : catalog.description,
+        brokerKind: preserveCurrentMeta
+          ? existingMeta!.brokerKind
+          : (knownBrokerKind(catalog.brokerKind) ?? existingMeta?.brokerKind),
+        targetBrokerage: preserveCurrentMeta
+          ? existingMeta!.targetBrokerage
+          : (knownBrokerKind(catalog.targetBrokerage) ?? existingMeta?.targetBrokerage),
+        latestVersion,
+        time_created: existingMeta?.time_created ?? catalog.timeCreated,
+        time_updated: preserveCurrentMeta
+          ? existingMeta!.time_updated
+          : Math.max(existingMeta?.time_updated ?? 0, catalog.timeUpdated),
+      }
+      const index = await readNameIndex()
+      index[nameKey(input.userId, catalog.name)] = catalog.algorithmId
+      await writeMeta(meta)
+      await writeNameIndex(index)
+
+      if (!existingMeta || catalog.version >= existingMeta.latestVersion) {
+        const docs = await readVersionDocuments(catalog.algorithmId, catalog.version)
+        await writeCurrent(catalog.algorithmId, catalog.version)
+        await mirrorCurrentDocuments(catalog.algorithmId, docs)
+      }
+
+      const row = await readVersion(catalog.algorithmId, catalog.version, meta)
+      if (!row)
+        throw new Error(
+          `Materialized algorithm version is unreadable: ${catalog.algorithmId} ${versionTag(catalog.version)}`,
+        )
+      log.info("canonical algorithm version materialized", {
+        algorithmId: catalog.algorithmId,
+        version: catalog.version,
+        idempotent: Boolean(existingStat),
+      })
+      return row
+    } finally {
+      await releaseVersionLock()
     }
   }
 
@@ -583,6 +699,7 @@ export namespace LocalAlgorithmStore {
       name: values.name,
       language: values.language,
       status: values.status,
+      description: values.description,
       brokerKind: values.brokerKind,
       targetBrokerage: values.targetBrokerage,
       latestVersion: nextVersion,

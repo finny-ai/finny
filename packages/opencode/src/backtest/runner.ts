@@ -27,6 +27,7 @@ import {
 import * as RunIntegrity from "./run-integrity"
 import { qualifyCandidateV1 } from "./qualification"
 import { qualificationInputForResearch, type QualificationInputV1 } from "./qualification-policy"
+import { CentralSync } from "@/algorithm/central-sync"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
@@ -2422,6 +2423,7 @@ if __name__ == "__main__":
     try {
       await persistBacktestEvidence(input)
     } catch (error) {
+      if (error instanceof CentralSync.CentralSyncError) throw error
       const message = errorText(error)
       input.results.evidenceError = message
       console.warn(`[backtest] failed to persist local evidence: ${message}`)

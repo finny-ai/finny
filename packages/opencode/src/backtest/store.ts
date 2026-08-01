@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { Global } from "../global"
 import type { ExperimentReference } from "./experiment"
+import { CentralSync } from "@/algorithm/central-sync"
 
 export type Source = "run" | "walkforward" | "sweep"
 
@@ -298,6 +299,11 @@ export async function save(input: SaveInput): Promise<{ dir: string; manifest: M
     },
   }
   await fs.writeFile(path.join(dir, "manifest.json"), JSON.stringify(manifest, null, 2))
+  if (manifest.results.runKind === "crucible_2_0" && manifest.artifacts.sourceArtifacts) {
+    await CentralSync.publishStrictRun({ manifest, dir: manifest.artifacts.sourceArtifacts })
+  } else {
+    await CentralSync.publishBacktestSummary(manifest)
+  }
   return { dir, manifest }
 }
 
