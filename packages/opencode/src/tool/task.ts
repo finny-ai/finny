@@ -107,7 +107,6 @@ export interface TaskPromptOps {
 }
 
 const permission = "task"
-const DATA_AGENT_COOKBOOK_PATH = path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")
 const TASK_START_DESCRIPTION = [
   DESCRIPTION,
   "Launch exactly one optional subagent asynchronously and return immediately.",
@@ -576,33 +575,19 @@ export function withFinnySubagentContext(
   if (params.subagent_type === "data_extractor") {
     const intent = withoutDataRequestBlock(prompt)
     return [
-      "<finny-subagent-context>",
-      "Authoritative runtime context. It overrides conflicting task wording.",
-      "Data request context:",
-      field("workspace_slug", workspace),
-      ...requestLineageFields(context),
-      field("requested_algorithm_name", algorithmName),
-      field("requested_symbol", symbolsOrUniverse),
-      field("symbols_or_universe", symbolsOrUniverse),
-      field("requested_interval", interval),
-      field("requested_asset_class", assetClass),
-      field("requested_start", dataWindow.start),
-      field("requested_end", dataWindow.end),
-      field("symbol", symbolsOrUniverse),
-      field("start_date", dataWindow.start),
-      field("end_date", dataWindow.end),
-      "- end_date_inclusive: true",
-      field("provider", dataRequestProvider(prompt) ?? explicitlyRequestedDataProvider(prompt) ?? "auto"),
-      field("workspace", dataDir),
-      field("allowed_data_dir", dataDir),
-      field("mission_path", path.join(workspacePath, "mission.md")),
-      field("cookbook_path", DATA_AGENT_COOKBOOK_PATH),
+      "<data-request>",
+      field("request_id", context?.request_id),
+      field("algorithm", algorithmName),
+      field("workspace", workspace),
+      field("symbols", symbolsOrUniverse),
       field("asset_class", assetClass),
       field("interval", interval),
-      "",
-      "Use only allowed_data_dir for generated data and use cookbook_path for provider recipes.",
-      "</finny-subagent-context>",
-      ...(intent ? ["", "Task intent:", intent] : []),
+      field("start_inclusive", dataWindow.start),
+      field("end_inclusive", dataWindow.end),
+      field("provider", dataRequestProvider(prompt) ?? explicitlyRequestedDataProvider(prompt) ?? "auto"),
+      field("output_dir", dataDir),
+      "</data-request>",
+      ...(intent ? ["", intent] : []),
     ].join("\n")
   }
 

@@ -171,7 +171,7 @@ const EXPECTED_TOOLS = {
     "task_start",
     "webfetch",
   ],
-  data_extractor: ["bash", "finny_dataset_evidence_finalize", "read", "skill"],
+  data_extractor: ["bash", "finny_dataset_evidence_finalize", "read", "webfetch", "websearch"],
   news_agent: ["apply_patch", "edit", "finny_discord_read", "read", "webfetch", "websearch", "write"],
   sec_agent: ["apply_patch", "bash", "edit", "read", "webfetch", "websearch", "write"],
 }
@@ -464,8 +464,9 @@ describe("Finny debloat", () => {
     expect(PROMPT_FINNY).toContain("expert trading-strategy research and implementation agent")
     expect(PROMPT_FINNY).toContain("todowrite")
     expect(PROMPT_FINNY).toContain("Do not silently assume horizon")
-    expect(PROMPT_FINNY).toContain("launching `data_extractor` plus a relevant context agent is highly recommended")
-    expect(PROMPT_FINNY).toContain("This is not a universal hard gate")
+    expect(PROMPT_FINNY).toContain("Use `data_extractor` when historical price behavior would improve strategy design")
+    expect(PROMPT_FINNY).toContain("optional research support, not a prerequisite for Crucible")
+    expect(PROMPT_FINNY).toContain("Do not launch evidence subagents automatically")
     expect(PROMPT_FINNY).toContain("Do not launch `news_agent` merely to satisfy a fixed two-agent count")
     expect(PROMPT_FINNY).toContain("simple revisions")
     expect(PROMPT_FINNY).not.toContain("launch at least two evidence subagents before strategy synthesis")
@@ -477,7 +478,7 @@ describe("Finny debloat", () => {
     expect(PROMPT_FINNY).toContain("paper_watchlist")
     expect(PROMPT_FINNY).toContain("live_eligible")
     expect(PROMPT_FINNY).toContain('bar["open"]')
-    expect(PROMPT_FINNY).toContain("Strategy-build data evidence should come from `data_extractor`")
+    expect(PROMPT_FINNY).toContain("Crucible owns its own backtest data collection")
     expect(PROMPT_FINNY).not.toContain("finny_discord_read")
 
     expect(PROMPT_BUILD).toContain("Conceptual/explainer question")
@@ -536,10 +537,9 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("never infer relevance from prose")
     expect(PROMPT_BUILD).toContain("btc-usdt-5m-momentum")
 
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Request Identity Contract")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Never reuse another algorithm's note")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("request identity block at the very top")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("`BLOCKED: context mismatch`")
+    expect(PROMPT_DATA_EXTRACTOR.length).toBeLessThan(2_000)
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Do not change the requested symbol, interval, or dates")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("write outside the provided output directory")
 
     // saveMode policy: no silent version-bump on a "new" request.
     expect(PROMPT_BUILD).toContain("do not silently switch to")
@@ -584,12 +584,10 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("market_universe")
     expect(PROMPT_BUILD).toContain("backtest_window_success_metric")
     expect(PROMPT_BUILD).toContain("do not end with an approval question")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Storage is bound to your session workspace")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("workspace_slug")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("do not report it as `requested_algorithm_name`")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("runtime-injected context block")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("requested_start/requested_end")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("actual_start/actual_end")
+    expect(PROMPT_DATA_EXTRACTOR.length).toBeLessThan(2_000)
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Use your judgment")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("official provider documentation")
+    expect(PROMPT_DATA_EXTRACTOR).not.toContain("Return Checklist")
     // Evidence window must cover the full requested backtest duration.
     expect(PROMPT_BUILD).toContain("evidence window must cover the FULL backtest duration")
     expect(PROMPT_BUILD).toContain("never let an intraday extractor fall back to its 30-day default")
@@ -609,10 +607,9 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("do NOT blame data/backtest")
     expect(PROMPT_BUILD).toContain("never ask backtest vs strategy when metrics exist")
     expect(PROMPT_BUILD).toContain("failed runs include `failure_diagnosis`")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Only write through guarded `bash`")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("pagination/cursor plan")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("A 1000-row Binance kline page is not provider-truncated partial coverage")
-    expect(PROMPT_DATA_EXTRACTOR).toContain("Do not read `.env` or `.env.*`")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("preserve what you collected")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Report only facts you observed or computed")
+    expect(PROMPT_DATA_EXTRACTOR).toContain("Never expose credentials")
     expect(PROMPT_NEWS_AGENT).toContain("Use `write` with a concrete markdown file path")
     expect(PROMPT_NEWS_AGENT).toContain("workspace_news_dir")
     expect(PROMPT_NEWS_AGENT).toContain("Do not write to `algos/_template/data/news`")

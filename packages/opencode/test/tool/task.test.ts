@@ -660,32 +660,24 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text.match(/Data request context:/g)).toHaveLength(1)
-          expect(text).toContain("<finny-subagent-context>")
-          expect(text).toContain(`- workspace_slug: ${slug}`)
+          expect(text.match(/<data-request>/g)).toHaveLength(1)
+          expect(text.match(/<\/data-request>/g)).toHaveLength(1)
           expect(text).toMatch(/- request_id: ses_[A-Za-z0-9]+/)
-          expect(text).toContain("- request_version: 1")
-          expect(text).toMatch(/- request_content_hash: sha256:[a-f0-9]{64}/)
-          expect(text).toContain("- requested_algorithm_name: spy-5m-strategy")
-          expect(text).toContain("- requested_symbol: SPY")
-          expect(text).toContain("- requested_interval: 5m")
-          expect(text).toContain("- requested_asset_class: equity")
-          expect(text).toContain("- requested_start: 2026-03-10")
-          expect(text).toContain("- requested_end: 2026-06-10")
-          expect(text).toContain("- symbol: SPY")
-          expect(text).toContain("- start_date: 2026-03-10")
-          expect(text).toContain("- end_date: 2026-06-10")
-          expect(text).toContain("- end_date_inclusive: true")
-          expect(text).toContain("- provider: auto")
-          expect(text).toContain(`- workspace: ${dataDir}`)
-          expect(text).toContain(`- allowed_data_dir: ${dataDir}`)
-          expect(text).toContain(`- mission_path: ${path.join(algoDir(slug), "mission.md")}`)
-          expect(text).toContain(
-            `- cookbook_path: ${path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")}`,
-          )
+          expect(text).toContain("- algorithm: spy-5m-strategy")
+          expect(text).toContain(`- workspace: ${slug}`)
+          expect(text).toContain("- symbols: SPY")
           expect(text).toContain("- asset_class: equity")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("Task intent:\nAcquire SPY OHLCV for an intraday strategy study.")
+          expect(text).toContain("- start_inclusive: 2026-03-10")
+          expect(text).toContain("- end_inclusive: 2026-06-10")
+          expect(text).toContain("- provider: auto")
+          expect(text).toContain(`- output_dir: ${dataDir}`)
+          expect(text).toContain("</data-request>\n\nAcquire SPY OHLCV for an intraday strategy study.")
+          expect(text).not.toContain("requested_symbol")
+          expect(text).not.toContain("request_content_hash")
+          expect(text).not.toContain("allowed_data_dir")
+          expect(text).not.toContain("cookbook_path")
+          expect(text).not.toContain("mission_path")
           expect(text).not.toContain("provider_capabilities")
           expect(text).not.toContain("MISSING")
 
@@ -745,7 +737,7 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("data request context mismatch")
           expect(seen).toBeDefined()
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: BTC")
+          expect(text).toContain("- symbols: BTC")
           expect(text).toContain("- interval: 1d")
           expect(text).toContain("- asset_class: crypto")
         } finally {
@@ -798,8 +790,8 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: DJT, RUM, GEO, CXW")
-          expect(text).not.toContain("- symbol: ES")
+          expect(text).toContain("- symbols: DJT, RUM, GEO, CXW")
+          expect(text).not.toContain("- symbols: ES")
           expect(text).toContain("- interval: 1d")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
@@ -913,10 +905,10 @@ describe("tool.task", () => {
           const childWorkspace = yield* Effect.promise(() => getSessionWorkspace(seenInput.sessionID))
           expect(childWorkspace).toBe(slug)
           const text = seenInput.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: RUM")
-          expect(text).toContain("- start_date: 2026-01-01")
-          expect(text).toContain("- end_date: 2026-06-29")
-          expect(text).not.toContain("- symbol: ES")
+          expect(text).toContain("- symbols: RUM")
+          expect(text).toContain("- start_inclusive: 2026-01-01")
+          expect(text).toContain("- end_inclusive: 2026-06-29")
+          expect(text).not.toContain("- symbols: ES")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -967,9 +959,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: DJT")
-          expect(text).toContain("- start_date: 2026-01-01")
-          expect(text).toContain("- end_date: 2026-06-29")
+          expect(text).toContain("- symbols: DJT")
+          expect(text).toContain("- start_inclusive: 2026-01-01")
+          expect(text).toContain("- end_inclusive: 2026-06-29")
 
           const request = JSON.parse(
             yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
@@ -1133,9 +1125,8 @@ describe("tool.task", () => {
 
           expect(allowed.output).not.toContain("BLOCKED: incomplete authoritative data window")
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- start_date: 2025-06-30")
-          expect(text).toContain("- end_date: 2026-06-30")
-          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain("- start_inclusive: 2025-06-30")
+          expect(text).toContain("- end_inclusive: 2026-06-30")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1466,8 +1457,7 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("- interval: 1h")
-          expect(text).toContain(`- end_date: ${yesterdayIso}`)
-          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain(`- end_inclusive: ${yesterdayIso}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1785,10 +1775,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).toContain("Task intent:")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("Name it spy-5m-product-demo-20260614-v2")
-          expect(text).toContain("- requested_algorithm_name: spy-5m-product-demo-20260614-v2")
+          expect(text).toContain("- algorithm: spy-5m-product-demo-20260614-v2")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1840,10 +1829,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).toContain("Task intent:")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("spy-1h-momentum-breakout")
-          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
+          expect(text).toContain("- algorithm: spy-1h-momentum-breakout")
           const persisted = yield* Effect.promise(() =>
             fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
           )
@@ -1900,15 +1888,15 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: SPY")
+          expect(text).toContain("- symbols: SPY")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("- start_date: 2026-03-10")
-          expect(text).toContain("- end_date: 2026-06-10")
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).not.toContain("- symbol: MISSING")
+          expect(text).toContain("- start_inclusive: 2026-03-10")
+          expect(text).toContain("- end_inclusive: 2026-06-10")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
+          expect(text).not.toContain("- symbols: MISSING")
           expect(text).not.toContain("- interval: MISSING")
-          expect(text).not.toContain("- start_date: MISSING")
-          expect(text).not.toContain("- end_date: MISSING")
+          expect(text).not.toContain("- start_inclusive: MISSING")
+          expect(text).not.toContain("- end_inclusive: MISSING")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -2692,9 +2680,9 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: MSFT")
+          expect(text).toContain("- symbols: MSFT")
           expect(text).toContain("- interval: 1d")
-          expect(text).toContain(`- workspace: ${path.join(algoDir(parentWorkspace!), "data")}`)
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(parentWorkspace!), "data")}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

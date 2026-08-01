@@ -41,6 +41,9 @@ type DatasetEvidenceFinalizeMetadata = {
   manifestPath?: string
   evidenceId?: string
   qualification?: string
+  coverage?: string
+  usableForParent?: "yes" | "no"
+  missingRanges?: Array<{ start: string; end: string; count: number }>
 }
 
 function toolInput(params: z.infer<typeof parameters>, request: WorkspaceRequestContext, workspaceSlug: string) {
@@ -80,7 +83,9 @@ export const DatasetEvidenceFinalizeTool = Tool.define<
   "finny_dataset_evidence_finalize",
   Effect.succeed({
     description:
-      "Finalize a Data Agent OHLCV CSV into a canonical DatasetEvidenceV2 manifest. Runtime request identity, calendar reconciliation, quality counts, hashes, qualification, and the manifest path are computed server-side. Call this once after the CSV and optional analysis summary are complete; do not write or edit the manifest yourself.",
+      "Validate and publish the Data Agent's current canonical OHLCV CSV. Runtime request identity, coverage, " +
+      "quality, hashes, and artifact paths are computed server-side. The agent may call this again after updating " +
+      "the same dataset to repair coverage.",
     parameters,
     execute: (params, ctx) =>
       Effect.promise(async () => {
@@ -98,6 +103,9 @@ export const DatasetEvidenceFinalizeTool = Tool.define<
               manifestPath: result.manifestPath,
               evidenceId: result.manifest.evidence_id,
               qualification: result.manifest.qualification.status,
+              coverage: result.manifest.coverage,
+              usableForParent: result.manifest.usable_for_parent,
+              missingRanges: result.manifest.timestamps.missing_ranges,
             },
           }
         } catch (error) {
