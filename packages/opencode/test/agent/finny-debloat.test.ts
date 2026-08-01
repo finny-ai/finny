@@ -570,8 +570,13 @@ describe("Finny debloat", () => {
     expect(PROMPT_BUILD).toContain("do not save comma-separated `symbol`")
     expect(PROMPT_BUILD).toContain("`finny_portfolio_backtest` or save")
     expect(PROMPT_BUILD).toContain("do not narrow to one ticker")
-    expect(PROMPT_BUILD).toContain("Launch one concrete-symbol task per ticker when that research is useful")
+    expect(PROMPT_BUILD).toContain("Launch one concrete-symbol `data_extractor` task per portfolio ticker")
+    expect(PROMPT_BUILD).toContain("Do not put multiple `data_extractor` entries in one `task_batch_run`")
+    expect(PROMPT_BUILD).toContain("batch mode requires distinct subagent types")
+    expect(PROMPT_BUILD).toContain("Full coverage is best effort")
     expect(PROMPT_BUILD).toContain("never prerequisites or inputs for Crucible backtests")
+    expect(PROMPT_BUILD).toContain("let Crucible collect its own backtest data")
+    expect(PROMPT_BUILD).toContain("Do not relaunch an extractor for the whole window")
     // Low closed trade count is inconclusive, not a positive caveat.
     expect(PROMPT_BUILD).toContain("Closed trade count below the dynamic minimum is an inconclusive result")
     // Per-request workspace: storage routing is automatic, never invented.

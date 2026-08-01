@@ -20,6 +20,7 @@ import {
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalSpecialistTaskText,
   finalTaskText,
+  dataExtractorRepairInstruction,
   shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
   TaskBatchRunTool,
@@ -51,6 +52,7 @@ import {
   parseMission,
 } from "@finny-ai/core/algo"
 import { syncWorkspaceRequestContext } from "../../src/agent/finny-workspace-context"
+import { finalizeDatasetEvidenceFile } from "../../src/data/dataset-evidence-finalizer"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -319,6 +321,45 @@ function reply(input: SessionPrompt.PromptInput, text: string): SessionV1.WithPa
   }
 }
 
+async function seedPartialBtcEvidence(input: { sessionID: string; slug: string }) {
+  await bindSessionWorkspace(input.sessionID, input.slug)
+  const context = await syncWorkspaceRequestContext({
+    sessionID: input.sessionID,
+    slug: input.slug,
+    prompt: "Research BTC crypto with 1d bars from 2026-07-01 to 2026-07-10.",
+  })
+  const dataRoot = path.join(algoDir(input.slug), "data")
+  const csvPath = "crypto/BTC_1d_2026-07-01_2026-07-10.csv"
+  await fs.mkdir(path.join(dataRoot, "crypto"), { recursive: true })
+  await fs.writeFile(
+    path.join(dataRoot, csvPath),
+    [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-01T00:00:00Z,100,101,99,100.5,1000",
+      "2026-07-02T00:00:00Z,100.5,102,100,101.5,1200",
+    ].join("\n"),
+  )
+  return finalizeDatasetEvidenceFile({
+    dataRoot,
+    csvPath,
+    request: context,
+    workspaceSlug: input.slug,
+    canonicalSymbol: "BTC",
+    provider: { id: "binance", feed: "public-klines", venue: "BINANCE", providerSymbol: "BTCUSDT" },
+    priceBasis: {
+      basis: "raw",
+      split_treatment: "not_applicable",
+      dividend_treatment: "not_applicable",
+      corporate_action_status: "not_applicable",
+      events: [],
+    },
+    analysisSummaryPath: "crypto/BTC_1d_2026-07-01_2026-07-10.analysis_summary.json",
+    analysisRegime: "range_bound",
+    analysisHypotheses: ["Candidate mean reversion; requires backtest."],
+    now: new Date("2026-07-11T12:00:00Z"),
+  })
+}
+
 describe("finalTaskText", () => {
   const part = (type: string, text?: string) => ({ type, text })
 
@@ -358,6 +399,30 @@ describe("finalTaskText", () => {
       }),
     ).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
   })
+})
+
+test("data repair instruction targets only exact missing ranges and the existing canonical dataset", () => {
+  const text = dataExtractorRepairInstruction({
+    requestedSymbol: "SPY",
+    requestedInterval: "1h",
+    requestedStart: "2025-08-01",
+    requestedEnd: "2026-07-31",
+    rows: 2_183,
+    expectedCount: 3_934,
+    actualCount: 2_183,
+    missingCount: 2,
+    extraCount: 0,
+    missingRanges: [{ start: "2026-07-30T14:30:00Z", end: "2026-07-30T15:30:00Z", count: 2 }],
+    csvPath: "stock/SPY_1h.csv",
+    manifestPath: "stock/SPY_1h.manifest.json",
+    source: "alpaca/iex/IEX",
+    coverage: "partial",
+  })
+  expect(text).toContain('"start":"2026-07-30T14:30:00Z"')
+  expect(text).toContain("Canonical CSV: stock/SPY_1h.csv")
+  expect(text).toContain("Fetch only those missing ranges")
+  expect(text).toContain("Do not redownload the full window")
+  expect(text).toContain("coverage, regime, and candidate-hypothesis artifacts")
 })
 
 describe("completedIntradayWindow", () => {
@@ -688,6 +753,66 @@ describe("tool.task", () => {
           expect(mission.frontmatter.scope.horizon).toBe("intraday")
           expect(missionRaw).toContain("requested_start: 2026-03-10")
           expect(missionRaw).toContain("requested_end: 2026-06-10")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("continues partial coverage in the same child and reuses the exhausted partial handoff", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "btc-partial-repair.1.1.00.00"
+          const partial = yield* Effect.promise(() => seedPartialBtcEvidence({ sessionID: chat.id, slug }))
+          const prompts: SessionPrompt.PromptInput[] = []
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          const params = {
+            description: "BTC partial data repair",
+            prompt: "Extract BTC crypto 1d bars from 2026-07-01 to 2026-07-10.",
+            subagent_type: "data_extractor",
+          }
+          const context = {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                onPrompt: (input) => prompts.push(input),
+                text: partial.digest,
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          }
+
+          const first = yield* def.execute(params, context)
+          expect(prompts).toHaveLength(2)
+          expect(prompts[0]!.sessionID).toBe(prompts[1]!.sessionID)
+          const repairText = prompts[1]!.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(repairText).toContain("Fetch only those missing ranges")
+          expect(repairText).toContain('"start":"2026-07-03T00:00:00Z"')
+          expect(repairText).toContain("Do not redownload the full window or create another canonical dataset")
+          expect(first.output).toContain("PARTIAL_DATASET:")
+          expect(first.output).toContain("usable_for_research: yes")
+          expect(first.output).toContain("analysis_regime: range_bound")
+          expect(first.output).toContain("Candidate mean reversion; requires backtest.")
+          expect(first.output).toContain("Crucible/backtest collection is independent")
+          expect(first.output).not.toContain("BLOCKED:")
+
+          const second = yield* def.execute(params, context)
+          expect(prompts).toHaveLength(2)
+          expect(second.output).toContain("Bounded repair already completed")
+          expect(second.output).toContain("PARTIAL_DATASET:")
+          expect(second.metadata.sessionId).toBe(prompts[0]!.sessionID)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -3182,7 +3307,8 @@ describe("tool.task", () => {
       const result = yield* def.execute(
         {
           description: "BTC daily data",
-          prompt: "Continue and finish the previously started BTC/USD daily data extraction task. Return the final structured digest only.",
+          prompt:
+            "Continue and finish the previously started BTC/USD daily data extraction task. Return the final structured digest only.",
           subagent_type: "data_extractor",
           task_id: active.id,
         },
