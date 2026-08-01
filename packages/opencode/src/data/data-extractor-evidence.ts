@@ -123,6 +123,30 @@ export interface ValidateDataExtractorResult {
   text: string
   issues: string[]
   failureLayer?: DataProviderFailureLayer
+  partialEvidence?: PartialDataExtractorEvidence
+}
+
+export interface PartialDataExtractorEvidence {
+  requestedSymbol: string
+  requestedInterval: string
+  requestedStart: string
+  requestedEnd: string
+  actualStart?: string
+  actualEnd?: string
+  rows: number
+  expectedCount: number
+  actualCount: number
+  missingCount: number
+  extraCount: number
+  missingRanges: Array<{ start: string; end: string; count: number }>
+  csvPath: string
+  manifestPath: string
+  source: string
+  coverage: string
+  coverageNote?: string
+  analysisSummaryPath?: string
+  analysisRegime?: string
+  analysisHypotheses?: string
 }
 
 export interface ExistingDataExtractorEvidenceResult {
@@ -1192,6 +1216,69 @@ function usabilityBlocker(
   }
 }
 
+function partialEvidenceFromManifest(input: {
+  manifest: DataExtractorManifest
+  artifacts: string[]
+  digest: Record<string, string | undefined>
+}): PartialDataExtractorEvidence | undefined {
+  const { manifest, artifacts, digest } = input
+  const timestamps = manifest.timestamps
+  const rows = manifest.rows ?? timestamps?.actual_count ?? 0
+  const coverage = manifest.coverage?.trim() ?? ""
+  if (rows <= 0 || !timestamps || (timestamps.missing_count <= 0 && !/partial/i.test(coverage))) return undefined
+  const csvPath = manifest.output_path
+  const manifestPath = artifacts.find((artifact) => artifact.toLowerCase().endsWith(".manifest.json"))
+  const requestedSymbol = digest.requested_symbol ?? manifest.requested_symbol
+  const requestedInterval = digest.requested_interval ?? manifest.requested_interval
+  const requestedStart = digest.requested_start ?? manifest.requested_start
+  const requestedEnd = digest.requested_end ?? manifest.requested_end
+  if (!csvPath || !manifestPath || !requestedSymbol || !requestedInterval || !requestedStart || !requestedEnd) {
+    return undefined
+  }
+  const provider = manifest.provider
+  return {
+    requestedSymbol,
+    requestedInterval,
+    requestedStart,
+    requestedEnd,
+    actualStart: digest.actual_start ?? manifest.actual_start,
+    actualEnd: digest.actual_end ?? manifest.actual_end,
+    rows,
+    expectedCount: timestamps.expected_count,
+    actualCount: timestamps.actual_count,
+    missingCount: timestamps.missing_count,
+    extraCount: timestamps.extra_count,
+    missingRanges: timestamps.missing_ranges,
+    csvPath,
+    manifestPath,
+    source: [provider?.id ?? manifest.source, provider?.feed, provider?.venue].filter(Boolean).join("/") || "unknown",
+    coverage: coverage || "partial",
+    coverageNote: manifest.coverage_note,
+    analysisSummaryPath: manifest.analysis_summary_path,
+    analysisRegime: manifest.analysis_regime,
+    analysisHypotheses: normalizeHypotheses(manifest.analysis_hypotheses),
+  }
+}
+
+export function renderPartialDataExtractorHandoff(partial: PartialDataExtractorEvidence): string {
+  const ranges = JSON.stringify(partial.missingRanges)
+  return [
+    "PARTIAL_DATASET: compatible-source repair finished without full coverage; preserving valid research evidence.",
+    `identity: ${partial.requestedSymbol} ${partial.requestedInterval} ${partial.requestedStart} through ${partial.requestedEnd}`,
+    `artifact_paths: ${partial.csvPath}, ${partial.manifestPath}`,
+    `source_provenance: ${partial.source}`,
+    `coverage: ${partial.coverage}; rows=${partial.rows}; expected=${partial.expectedCount}; actual=${partial.actualCount}; missing=${partial.missingCount}; extra=${partial.extraCount}`,
+    `missing_ranges: ${ranges}`,
+    `limitations: ${partial.coverageNote ?? "the canonical dataset does not fully cover the requested calendar"}`,
+    "usable_for_research: yes",
+    "strict_backtest_eligible: no",
+    `analysis_summary_path: ${partial.analysisSummaryPath ?? "not_returned"}`,
+    `analysis_regime: ${partial.analysisRegime ?? "not_returned"}`,
+    `analysis_hypotheses: ${partial.analysisHypotheses ?? "not_returned"}`,
+    "Crucible/backtest collection is independent; do not launch another data_extractor for this request.",
+  ].join("\n")
+}
+
 function emitQualificationTelemetry(manifest: DataExtractorManifest, issues: string[]): void {
   if (manifest.schema !== DATASET_EVIDENCE_SCHEMA || manifest.version !== DATASET_EVIDENCE_VERSION) return
   emit({
@@ -1342,7 +1429,10 @@ async function validateLoadedEvidence(input: {
   if (effectiveUsable && !/^(yes|no)\b/.test(effectiveUsable)) issues.push("usable_for_parent must be yes/no")
 
   const unusable = usabilityBlocker(textUsable, effectiveDigest, isOpenCurrentCandlePartial(manifest, effectiveDigest))
-  if (unusable) {
+  const partialEvidence = partialEvidenceFromManifest({ manifest, artifacts, digest: effectiveDigest })
+  // Preserve the legacy fail-fast usability diagnostic when an old manifest
+  // has no structured timestamp reconciliation to repair.
+  if (unusable && !partialEvidence) {
     emitQualificationTelemetry(manifest, unusable.issues)
     return unusable
   }
@@ -1350,10 +1440,19 @@ async function validateLoadedEvidence(input: {
     ...(input.csvIssues ?? (await csvEvidenceIssues(manifest, dataRoot))),
     ...digestContextIssues(digest, input.context),
   )
+  if (unusable && issues.length === 0) {
+    emitQualificationTelemetry(manifest, unusable.issues)
+    return partialEvidence ? { ...unusable, partialEvidence } : unusable
+  }
   emitQualificationTelemetry(manifest, issues)
   return issues.length > 0
     ? blocked(issues)
-    : { ok: true, text: `${text}\n\n${renderManifestBlock(manifest, effectiveDigest)}`, issues: [] }
+    : {
+        ok: true,
+        text: `${text}\n\n${renderManifestBlock(manifest, effectiveDigest)}`,
+        issues: [],
+        partialEvidence,
+      }
 }
 
 export async function validateDataExtractorTaskText(

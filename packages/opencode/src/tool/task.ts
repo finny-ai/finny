@@ -39,9 +39,11 @@ import { bindSessionRequest, readRequestSpec } from "@/agent/request-spec"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
 import {
   requireVerifiedDataExtractorEvidenceForSession,
+  renderPartialDataExtractorHandoff,
   validateDataExtractorTaskText,
   validateExistingDataExtractorEvidence,
   validateExistingDataExtractorEvidenceSet,
+  type PartialDataExtractorEvidence,
 } from "@/data/data-extractor-evidence"
 import { validateNewsAgentTaskText } from "@/data/news-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
@@ -791,6 +793,25 @@ function summarizeTaskResult(text: string) {
   return trimmed.length > 4_000 ? trimmed.slice(0, 4_000) : trimmed
 }
 
+const DATA_EXTRACTOR_REPAIR_ATTEMPTS = 1
+
+export function dataExtractorRepairInstruction(partial: PartialDataExtractorEvidence): string {
+  return [
+    "<data-repair>",
+    `Continue this same extraction task for ${partial.requestedSymbol} ${partial.requestedInterval}, ${partial.requestedStart} through ${partial.requestedEnd}.`,
+    `Progress: ${partial.rows} canonical rows; missing=${partial.missingCount}; extra=${partial.extraCount}.`,
+    `Canonical CSV: ${partial.csvPath}`,
+    `Evidence manifest: ${partial.manifestPath} (timestamps.missing_ranges is the exact repair target).`,
+    `Missing ranges: ${JSON.stringify(partial.missingRanges)}`,
+    "Fetch only those missing ranges. Do not redownload the full window or create another canonical dataset.",
+    "Try compatible alternative sources where useful, merge into the existing CSV, deduplicate by timestamp, and preserve source provenance in the analysis/limitations artifact.",
+    "Generate or refresh the coverage, regime, and candidate-hypothesis artifacts even if coverage remains partial.",
+    "Keep the requested symbol, interval, and dates unchanged, then run the evidence finalizer again.",
+    "If compatible sources are exhausted, leave the valid partial CSV and its coverage/regime/hypothesis artifacts in place and report that limitation.",
+    "</data-repair>",
+  ].join("\n")
+}
+
 const EVIDENCE_AGENT_TYPES = new Set(["data_extractor", "news_agent", "researcher", "sec_agent", "sentiment_agent"])
 
 const EXPLICIT_EVIDENCE_REQUEST =
@@ -1017,7 +1038,11 @@ const taskExecutor = Effect.gen(function* () {
         }
       }
     }
-    if (!params.task_id && BuildWorkflow.isBuildAgent(ctx.agent) && EVIDENCE_AGENT_TYPES.has(params.subagent_type)) {
+    if (
+      !params.task_id &&
+      ((BuildWorkflow.isBuildAgent(ctx.agent) && EVIDENCE_AGENT_TYPES.has(params.subagent_type)) ||
+        params.subagent_type === "data_extractor")
+    ) {
       const activeSameRole = (yield* Effect.promise(() => TaskState.listByParent(ctx.sessionID, database))).find(
         (task) => task.subagentType === params.subagent_type && !TaskState.isTerminal(task.status),
       )
@@ -1115,6 +1140,48 @@ const taskExecutor = Effect.gen(function* () {
           "The invalid task was not registered and did not terminalize this Build run.",
           "Retry once after correcting the authoritative request identity above.",
         ].join("\n"),
+      }
+    }
+    if (!params.task_id && params.subagent_type === "data_extractor") {
+      const priorTerminalExtractor = (yield* Effect.promise(() =>
+        TaskState.listByParent(ctx.sessionID, database),
+      )).findLast((task) => task.subagentType === "data_extractor" && TaskState.isTerminal(task.status))
+      if (priorTerminalExtractor) {
+        const parentWorkspace =
+          activeWorkflow?.workspaceSlug ??
+          (yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null)))
+        const parentContext = yield* Effect.promise(() => readRuntimeRequestFacts(ctx.sessionID))
+        const contextMismatch = dataRequestContextMismatchBlock({
+          prompt: params.prompt,
+          workspace: parentWorkspace,
+          context: parentContext as WorkspaceRequestContext,
+        })
+        const validationContext = dataExtractorValidationContext(
+          parentContext as WorkspaceRequestContext,
+          parseRequestFacts(params.prompt),
+        )
+        const existing = yield* Effect.promise(() =>
+          validateExistingDataExtractorEvidence({
+            workspaceSlug: parentWorkspace,
+            context: validationContext,
+            requestedProvider: explicitlyRequestedDataProvider(params.prompt),
+          }),
+        )
+        if (!contextMismatch && existing.result?.partialEvidence) {
+          return {
+            title: "Existing partial data extraction reused",
+            metadata: {
+              parentSessionId: ctx.sessionID,
+              sessionId: priorTerminalExtractor.id,
+            } as TaskMetadata,
+            output: renderOutput({
+              sessionID: priorTerminalExtractor.id,
+              state: "completed",
+              summary: "Bounded repair already completed",
+              text: renderPartialDataExtractorHandoff(existing.result.partialEvidence),
+            }),
+          }
+        }
       }
     }
     const durableFingerprint = mandatoryEvidence
@@ -1513,7 +1580,7 @@ const taskExecutor = Effect.gen(function* () {
             requestedProvider: explicitlyRequestedDataProvider(params.prompt),
           }),
         )
-        if (existing.found && existing.result?.ok) return existing.result.text
+        if (existing.found && existing.result?.ok && !existing.result.partialEvidence) return existing.result.text
       }
       const parts = yield* ops.resolvePromptParts(
         withFinnySubagentContext(
@@ -1629,14 +1696,17 @@ const taskExecutor = Effect.gen(function* () {
         return finalSpecialistTaskText({ subagentType: "sentiment_agent", text, pointer })
       }
       if (params.subagent_type !== "data_extractor") return text
-      const validated = yield* Effect.promise(() =>
-        validateDataExtractorTaskText({
-          text,
-          workspaceSlug: workspace,
-          context: validationContext,
-        }),
-      )
-      if (!validated.ok) {
+      const validateCurrentEvidence = Effect.fn("TaskTool.validateCurrentDataEvidence")(function* (
+        candidateText: string,
+      ) {
+        const candidate = yield* Effect.promise(() =>
+          validateDataExtractorTaskText({
+            text: candidateText,
+            workspaceSlug: workspace,
+            context: validationContext,
+          }),
+        )
+        if (candidate.ok) return candidate
         const existing = yield* Effect.promise(() =>
           validateExistingDataExtractorEvidence({
             workspaceSlug: workspace,
@@ -1644,8 +1714,31 @@ const taskExecutor = Effect.gen(function* () {
             requestedProvider: explicitlyRequestedDataProvider(params.prompt),
           }),
         )
-        if (existing.found && existing.result?.ok) return existing.result.text
+        return existing.found && existing.result ? existing.result : candidate
+      })
+
+      let validated = yield* validateCurrentEvidence(text)
+      for (let attempt = 0; attempt < DATA_EXTRACTOR_REPAIR_ATTEMPTS && validated.partialEvidence; attempt++) {
+        const repair = yield* ops.resolvePromptParts(dataExtractorRepairInstruction(validated.partialEvidence))
+        result = yield* ops.prompt({
+          messageID: MessageID.ascending(),
+          sessionID: nextSession.id,
+          ...(isFundRuntimeAgent(next.name)
+            ? {}
+            : {
+                model: {
+                  modelID: model.modelID,
+                  providerID: model.providerID,
+                },
+                variant: next.model ? undefined : variant,
+              }),
+          agent: next.name,
+          parts: repair,
+        })
+        text = finalTaskText(result.parts)
+        validated = yield* validateCurrentEvidence(text)
       }
+      if (validated.partialEvidence) return renderPartialDataExtractorHandoff(validated.partialEvidence)
       return validated.text
     })
 

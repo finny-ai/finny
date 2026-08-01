@@ -607,7 +607,9 @@ function legacyManifestFields(input: ManifestAssemblyInput) {
     coverage: qualification.coverage,
     coverage_note: qualification.coverageNote,
     usable_for_parent: qualification.usableForParent,
-    usable_for_research: qualification.usableForParent,
+    // Coverage can prevent strict parent admission without erasing the valid
+    // bars' research value. Structural CSV failures throw before assembly.
+    usable_for_research: bars.length > 0 ? ("yes" as const) : ("no" as const),
     strict_backtest_eligible: (qualification.status === "strict_qualified" ? "yes" : "no") as "yes" | "no",
   }
 }
