@@ -61,6 +61,7 @@ function digest(input: {
     `evidence_id: ${manifest.evidence_id}`,
     `qualification: ${manifest.qualification.status}`,
     `coverage: ${manifest.coverage}; ${manifest.coverage_note}`,
+    `missing_ranges: ${JSON.stringify(manifest.timestamps.missing_ranges)}`,
     `quality: rows=${manifest.rows}, duplicates=${manifest.quality.duplicate_count}, gaps=${manifest.timestamps.missing_count}, invalid_ohlc=${manifest.quality.ohlc_violation_count}, zero_volume=${manifest.quality.zero_volume_count}, outliers=${manifest.quality.outlier_count}, partial_provider_coverage=${manifest.coverage === "full" ? "no" : "yes"}`,
     `usable_for_parent: ${manifest.usable_for_parent}`,
     `usable_for_research: ${manifest.usable_for_research}`,

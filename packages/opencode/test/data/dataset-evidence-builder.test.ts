@@ -263,6 +263,36 @@ describe("DatasetEvidenceV2 builder", () => {
     expect(built.manifest.strict_backtest_eligible).toBe("no")
   })
 
+  test("preserves structurally valid low-coverage bars for research", () => {
+    const partialRequest = {
+      ...request,
+      request_id: "request-btc-low-coverage",
+      requested_start: "2026-06-01",
+      requested_end: "2026-06-10",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-06-01T00:00:00Z,100,101,99,100.5,1000",
+      "2026-06-02T00:00:00Z,100.5,102,100,101.5,1200",
+    ].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: partialRequest,
+      workspaceSlug: "btc-low-coverage.1.1.00.00",
+      outputPath: "crypto/BTC_1d_2026-06-01_2026-06-10.csv",
+      provider,
+      priceBasis,
+      now: new Date("2026-06-11T12:00:00Z"),
+    })
+
+    expect(built.manifest.timestamps).toMatchObject({ expected_count: 10, actual_count: 2, missing_count: 8 })
+    expect(built.manifest.qualification.status).toBe("blocked")
+    expect(built.manifest.usable_for_parent).toBe("no")
+    expect(built.manifest.usable_for_research).toBe("yes")
+    expect(built.manifest.strict_backtest_eligible).toBe("no")
+  })
+
   test("keeps an entitlement-delayed current equity session research-usable", () => {
     const equityRequest = {
       ...request,
