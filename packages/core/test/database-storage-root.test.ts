@@ -74,7 +74,72 @@ function seedTaskOnly(filename: string) {
   })
 }
 
+function seedProject(filename: string, now: number) {
+  return Effect.gen(function* () {
+    const { db } = yield* Database.Service
+    yield* db.run(
+      sql.raw(`
+        INSERT INTO project (id, worktree, time_created, time_updated, sandboxes)
+        VALUES ('project', '/tmp/project', ${now}, ${now}, '[]')
+      `),
+    )
+  }).pipe(Effect.provide(Database.layerFromPath(filename)), Effect.scoped)
+}
+
 describe("Finny storage root", () => {
+  it.live("merges benign timestamp drift for the same project identity", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const data = path.join(tmp.path, "data")
+          const source = path.join(data, "opencode", "opencode-local.db")
+          const target = path.join(data, "finny", "opencode-local.db")
+          yield* Effect.promise(() => fs.mkdir(path.dirname(source), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }))
+
+          // Seed the target before the sibling source exists so its initial
+          // database boot cannot reconcile early.
+          yield* seedProject(target, FIXED_NOW)
+          yield* seedProject(source, FIXED_NOW + 10_000)
+          const originalSourceBackup = `${source}.pre-unify-opencode.bak`
+          const originalTargetBackup = `${target}.pre-unify-finny.bak`
+          yield* Effect.promise(() => fs.writeFile(originalSourceBackup, "previous source snapshot"))
+          yield* Effect.promise(() => fs.writeFile(originalTargetBackup, "previous target snapshot"))
+
+          yield* Effect.gen(function* () {
+            const { db } = yield* Database.Service
+            expect(
+              yield* db.get<{ timeCreated: number; timeUpdated: number }>(
+                sql.raw(
+                  `SELECT time_created AS timeCreated, time_updated AS timeUpdated FROM project WHERE id = 'project'`,
+                ),
+              ),
+            ).toEqual({ timeCreated: FIXED_NOW, timeUpdated: FIXED_NOW + 10_000 })
+            const migration = yield* db.get<{ sourceBackup: string; targetBackup: string }>(sql`
+              SELECT source_backup AS sourceBackup, target_backup AS targetBackup
+              FROM storage_root_migration
+              WHERE id = ${StorageRoot.migrationID}
+            `)
+            expect(migration?.sourceBackup).toStartWith(`${originalSourceBackup}.retry-`)
+            expect(migration?.targetBackup).toStartWith(`${originalTargetBackup}.retry-`)
+            expect(yield* Effect.promise(() => Bun.file(migration!.sourceBackup).exists())).toBe(true)
+            expect(yield* Effect.promise(() => Bun.file(migration!.targetBackup).exists())).toBe(true)
+          }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+
+          expect(yield* Effect.promise(() => fs.readFile(originalSourceBackup, "utf8"))).toBe(
+            "previous source snapshot",
+          )
+          expect(yield* Effect.promise(() => fs.readFile(originalTargetBackup, "utf8"))).toBe(
+            "previous target snapshot",
+          )
+        }),
+      ),
+    ),
+  )
+
   it.live("bootstraps past a task-only Finny-root DB and merges after session reconcile", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),
