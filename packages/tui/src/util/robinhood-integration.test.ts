@@ -25,13 +25,7 @@ test("managed login launches the local pinned entrypoint cross-platform without 
     }),
   ).toEqual({
     command: "C:\\finny\\bun.exe",
-    args: [
-      "C:\\finny\\packages\\rhx\\node_modules\\rhx\\bin\\rhx.cjs",
-      "--profile",
-      "work",
-      "auth",
-      "login",
-    ],
+    args: ["C:\\finny\\packages\\rhx\\node_modules\\rhx\\bin\\rhx.cjs", "--profile", "work", "auth", "login"],
     entrypoint: "C:\\finny\\packages\\rhx\\node_modules\\rhx\\bin\\rhx.cjs",
   })
 })
@@ -80,6 +74,34 @@ test("Robinhood integration client uses the global endpoint contract", async () 
     { path: `${ROBINHOOD_INTEGRATION_PATH}/verify`, method: "POST", body: { profile: "work" } },
     { path: ROBINHOOD_INTEGRATION_PATH, method: "DELETE", body: undefined },
   ])
+})
+
+test("Robinhood integration client normalizes nullable optional fields from Effect HttpApi", async () => {
+  const wireStatus = {
+    ...ready,
+    source: null,
+    executablePath: null,
+    profile: null,
+    loginArgs: null,
+    message: null,
+    checkedAt: null,
+  }
+  const client = createRobinhoodIntegrationClient({
+    url: "http://localhost:4096",
+    fetch: (async () => Response.json(wireStatus)) as unknown as typeof fetch,
+  })
+
+  expect(await client.status()).toEqual({
+    provider: "robinhood",
+    package: "rhx",
+    pinnedVersion: "0.4.8",
+    status: "ready",
+    supported: true,
+    installed: true,
+    ready: true,
+    brokerage: { configured: true, ready: true, state: "ready" },
+    crypto: { configured: false, ready: false, state: "not_configured" },
+  })
 })
 
 test("Robinhood integration client rejects malformed success payloads", async () => {

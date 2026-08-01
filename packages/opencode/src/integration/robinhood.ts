@@ -60,14 +60,14 @@ export const Status = Schema.Struct({
   supported: Schema.Boolean,
   installed: Schema.Boolean,
   ready: Schema.Boolean,
-  source: Schema.optional(Schema.Literals(["managed", "manual"])),
-  executablePath: Schema.optional(Schema.String),
-  profile: Schema.optional(Schema.String),
-  loginArgs: Schema.optional(Schema.Array(Schema.String)),
+  source: Schema.optionalKey(Schema.Literals(["managed", "manual"])),
+  executablePath: Schema.optionalKey(Schema.String),
+  profile: Schema.optionalKey(Schema.String),
+  loginArgs: Schema.optionalKey(Schema.Array(Schema.String)),
   brokerage: CapabilityStatus,
   crypto: CapabilityStatus,
-  message: Schema.optional(Schema.String),
-  checkedAt: Schema.optional(Schema.String),
+  message: Schema.optionalKey(Schema.String),
+  checkedAt: Schema.optionalKey(Schema.String),
 }).annotate({ identifier: "RobinhoodIntegrationStatus" })
 export type Status = typeof Status.Type
 
@@ -176,6 +176,7 @@ function makeStatus(input: {
   checkedAt?: string
 }): Status {
   const metadata = input.metadata
+  const message = stateMessage(input.state)
   return {
     provider: "robinhood",
     package: packageName,
@@ -184,14 +185,18 @@ function makeStatus(input: {
     supported: input.managedSupported || metadata?.source === "manual",
     installed: metadata !== undefined,
     ready: input.state === "ready",
-    source: metadata?.source,
-    executablePath: metadata?.executablePath,
-    profile: metadata?.profile,
-    loginArgs: metadata ? ["--profile", metadata.profile, "auth", "login"] : undefined,
+    ...(metadata
+      ? {
+          source: metadata.source,
+          executablePath: metadata.executablePath,
+          profile: metadata.profile,
+          loginArgs: ["--profile", metadata.profile, "auth", "login"],
+        }
+      : {}),
     brokerage: input.brokerage ?? unknownCapability(),
     crypto: input.crypto ?? unknownCapability(),
-    message: stateMessage(input.state),
-    checkedAt: input.checkedAt,
+    ...(message ? { message } : {}),
+    ...(input.checkedAt ? { checkedAt: input.checkedAt } : {}),
   }
 }
 

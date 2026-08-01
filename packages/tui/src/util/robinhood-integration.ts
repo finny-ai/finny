@@ -97,6 +97,20 @@ function responseMessage(value: unknown, fallback: string) {
   return fallback
 }
 
+const optionalStatusFields = ["source", "executablePath", "profile", "loginArgs", "message", "checkedAt"] as const
+
+function normalizeStatus(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return value
+  const status = { ...value }
+  // Effect HttpApi encodes optional schema fields as JSON null. Keep the TUI's
+  // domain model ergonomic by normalizing that wire representation back to an
+  // absent optional value before validating the rest of the payload.
+  for (const field of optionalStatusFields) {
+    if (Reflect.get(status, field) === null) Reflect.deleteProperty(status, field)
+  }
+  return status
+}
+
 function isStatus(value: unknown): value is RobinhoodIntegrationStatus {
   if (!value || typeof value !== "object") return false
   const status = value as Partial<RobinhoodIntegrationStatus>
@@ -174,10 +188,11 @@ export function createRobinhoodIntegrationClient(input: ClientInput) {
     if (!response.ok) {
       throw new Error(responseMessage(payload, text || `${method} ${url.pathname} failed (${response.status})`))
     }
-    if (!isStatus(payload)) {
+    const status = normalizeStatus(payload)
+    if (!isStatus(status)) {
       throw new Error(`Unexpected response from ${method} ${url.pathname}`)
     }
-    return payload
+    return status
   }
 
   return {

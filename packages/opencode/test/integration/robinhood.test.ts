@@ -193,7 +193,18 @@ describe("RobinhoodIntegration", () => {
       },
       run: (service) =>
         Effect.gen(function* () {
-          expect(yield* service.status()).toMatchObject({ status: "unsupported", installed: false, supported: false })
+          expect(yield* service.status()).toEqual({
+            provider: "robinhood",
+            package: "rhx",
+            pinnedVersion: "0.4.8",
+            status: "unsupported",
+            supported: false,
+            installed: false,
+            ready: false,
+            brokerage: { configured: false, ready: false, state: "unknown" },
+            crypto: { configured: false, ready: false, state: "unknown" },
+            message: "Managed rhx installation is not available on this platform.",
+          })
           expect(yield* service.install()).toMatchObject({ status: "unsupported", installed: false, supported: false })
         }),
     })
@@ -241,10 +252,7 @@ describe("RobinhoodIntegration", () => {
       process: (_command, args) => {
         if (args.at(-1) === "doctor")
           return {
-            stdout: envelope(
-              "doctor",
-              doctorData({ brokerage: scenario !== "crypto", crypto: scenario === "crypto" }),
-            ),
+            stdout: envelope("doctor", doctorData({ brokerage: scenario !== "crypto", crypto: scenario === "crypto" })),
           }
         const brokerage =
           scenario === "mfa"
