@@ -56,6 +56,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { ROBINHOOD_MANAGE_COMMAND } from "../../util/robinhood-integration"
 
 export type PromptProps = {
   sessionID?: string
@@ -958,6 +959,17 @@ export function Prompt(props: PromptProps) {
     const trimmed = store.prompt.input.trim()
     if (trimmed === "exit" || trimmed === "quit" || trimmed === ":q") {
       void exit()
+      return true
+    }
+    // App-level slash commands normally dispatch through autocomplete. Keep
+    // Robinhood deterministic even when the command was pasted or autocomplete
+    // was dismissed: it must never become a model prompt or create a session.
+    if (trimmed === "/robinhood") {
+      keymap.dispatchCommand(ROBINHOOD_MANAGE_COMMAND)
+      input.extmarks.clear()
+      setStore("prompt", { input: "", parts: [] })
+      setStore("extmarkToPartIndex", new Map())
+      input.clear()
       return true
     }
     const selectedModel = local.model.current()

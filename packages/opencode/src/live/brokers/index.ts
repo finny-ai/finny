@@ -8,6 +8,12 @@ import {
   listRegionalAccounts,
   readRegionalCredentials,
 } from "./regional"
+import {
+  generateRobinhoodProviderID,
+  listRobinhoodAccounts,
+  readRobinhoodCredentials,
+  robinhoodSpec,
+} from "./robinhood"
 
 export type {
   BrokerAccount,
@@ -23,12 +29,14 @@ export { ALPACA_PROVIDER_PREFIX } from "./alpaca"
 export { BINANCE_PROVIDER_PREFIX } from "./binance"
 export { IBKR_PROVIDER_PREFIX } from "./ibkr"
 export { futuSpec, questradeSpec, saxoSpec, zerodhaSpec } from "./regional"
+export { ROBINHOOD_PROVIDER_PREFIX } from "./robinhood"
 
 const SPECS: Record<BrokerKind, BrokerSpec> = {
   alpaca: alpacaSpec,
   binance: binanceSpec,
   ibkr: ibkrSpec,
   ...REGIONAL_BROKER_SPECS,
+  robinhood: robinhoodSpec,
 }
 
 export namespace BrokerRegistry {
@@ -58,6 +66,7 @@ export namespace BrokerRegistry {
     if (kind === "zerodha" || kind === "saxo" || kind === "questrade" || kind === "futu") {
       return generateRegionalProviderID(kind)
     }
+    if (kind === "robinhood") return generateRobinhoodProviderID()
     throw new Error(`generateProviderID not implemented for ${kind}`)
   }
 
@@ -70,6 +79,7 @@ export namespace BrokerRegistry {
     if (!kind || kind === "saxo") all.push(...(await listRegionalAccounts("saxo")))
     if (!kind || kind === "questrade") all.push(...(await listRegionalAccounts("questrade")))
     if (!kind || kind === "futu") all.push(...(await listRegionalAccounts("futu")))
+    if (!kind || kind === "robinhood") all.push(...(await listRobinhoodAccounts()))
     return all
   }
 
@@ -82,6 +92,7 @@ export namespace BrokerRegistry {
     if (kind === "zerodha" || kind === "saxo" || kind === "questrade" || kind === "futu") {
       return readRegionalCredentials(kind, providerID)
     }
+    if (kind === "robinhood") return readRobinhoodCredentials(providerID)
     return null
   }
 
@@ -105,7 +116,11 @@ export namespace BrokerRegistry {
         nativeSymbol: supports ? spec.resolvePair(canonicalSymbol) : canonicalSymbol,
         assetClass,
         takerFee: spec.staticTakerFee,
-        accounts: allAccounts.filter((a) => a.brokerKind === spec.kind),
+        accounts: allAccounts.filter(
+          (account) =>
+            account.brokerKind === spec.kind &&
+            (!account.assetClasses || !assetClass || account.assetClasses.includes(assetClass)),
+        ),
       }
     })
   }

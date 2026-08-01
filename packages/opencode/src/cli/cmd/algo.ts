@@ -299,7 +299,7 @@ const algoAddOptionSpecs = [
     "target-brokerage",
     {
       type: "string",
-      choices: ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"] as const,
+      choices: ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu", "robinhood"] as const,
       describe: "optional target brokerage metadata",
     },
   ],

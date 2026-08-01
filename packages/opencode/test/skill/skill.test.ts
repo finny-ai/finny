@@ -77,6 +77,23 @@ const withHome = <A, E, R>(home: string, self: Effect.Effect<A, E, R>) =>
   )
 
 describe("skill", () => {
+  it.live("includes the built-in Robinhood skill", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const skill = yield* Skill.Service
+          expect(yield* skill.get("finny-robinhood")).toEqual(
+            expect.objectContaining({
+              name: "finny-robinhood",
+              location: "<built-in>",
+              content: expect.stringContaining("credentials"),
+            }),
+          )
+        }),
+      { git: true },
+    ),
+  )
+
   it.live("discovers skills from .opencode/skill/ directory", () =>
     provideTmpdirInstance(
       (dir) =>

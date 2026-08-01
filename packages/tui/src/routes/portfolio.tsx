@@ -13,6 +13,7 @@ import { maskKey } from "@/live/alpaca-accounts"
 import { BrokerRegistry, type BrokerAccount, type BrokerKind } from "@/live/brokers"
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
+import { DialogRobinhood } from "../component/dialog-robinhood"
 
 function formatCurrency(value?: number): string {
   if (value === undefined || value === null || !isFinite(value)) return "—"
@@ -65,6 +66,11 @@ export function Portfolio() {
   const goToSettings = () => route.navigate({ type: "settings", tab: "paper-trading" })
 
   const openAddDialog = async () => {
+    if (activeKind() === "robinhood") {
+      await DialogRobinhood.show(dialog, { onChanged: () => void refreshAccounts() })
+      await refreshAccounts()
+      return
+    }
     const saved = await DialogAddAccount.show(dialog, { initialKind: activeKind() })
     if (saved) await refreshAccounts()
   }
@@ -92,7 +98,7 @@ export function Portfolio() {
               Not investment advice
             </text>
             <text fg={theme.textMuted}>
-              Keys are saved locally at ~/.local/share/finny/auth.json (0600 perms).
+              API keys are saved locally (0600). Robinhood credentials stay in RHX / the OS keychain.
             </text>
             <text fg={theme.textMuted}>
               Paper / testnet uses virtual money. Strategies are not financial advice.
@@ -201,7 +207,7 @@ export function Portfolio() {
                   <text fg={theme.textMuted}>
                     Connect a {activeSpec().displayName} account to see live positions.
                   </text>
-                  <Show when={activeSpec().docsUrl}>
+                  <Show when={activeSpec().docsUrl && activeKind() !== "robinhood"}>
                     <box flexDirection="row" flexShrink={0}>
                       <text fg={theme.textMuted}>Get keys at </text>
                       <Link href={activeSpec().docsUrl} fg={theme.primary}>
@@ -216,7 +222,7 @@ export function Portfolio() {
                     onMouseUp={openAddDialog}
                   >
                     <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                      → Connect {activeSpec().displayName}
+                      → {activeKind() === "robinhood" ? "Set up Robinhood" : `Connect ${activeSpec().displayName}`}
                     </text>
                   </box>
                 </box>
@@ -242,7 +248,9 @@ export function Portfolio() {
                       </box>
                       <ModeBadge mode={account.mode} />
                       <text fg={theme.textMuted}>
-                        Key: {maskKey(account.keyId)}
+                        {account.brokerKind === "robinhood"
+                          ? `RHX profile: ${account.keyId}`
+                          : `Key: ${maskKey(account.keyId)}`}
                       </text>
                     </box>
                   )}
@@ -250,7 +258,7 @@ export function Portfolio() {
                 <text fg={theme.textMuted}>
                   Positions, cash, and P&L will render here once a live runner reports back.
                 </text>
-                <Show when={activeSpec().docsUrl}>
+                <Show when={activeSpec().docsUrl && activeKind() !== "robinhood"}>
                   <box flexDirection="row" flexShrink={0}>
                     <text fg={theme.textMuted}>Account dashboard: </text>
                     <Link href={activeSpec().docsUrl} fg={theme.primary}>
@@ -266,7 +274,7 @@ export function Portfolio() {
                     onMouseUp={openAddDialog}
                   >
                     <text fg={theme.background} attributes={TextAttributes.BOLD}>
-                      + Add {activeSpec().displayName} account
+                      {activeKind() === "robinhood" ? "Manage Robinhood" : `+ Add ${activeSpec().displayName} account`}
                     </text>
                   </box>
                   <box

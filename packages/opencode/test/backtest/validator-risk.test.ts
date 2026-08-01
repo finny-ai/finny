@@ -147,6 +147,20 @@ describe("Validate strict Shape C gates", () => {
     expect(result.errors.map(e => e.code)).toContain("PRIVATE_BROKER_ACCESS")
   })
 
+  test("rejects dunder reflection that unwraps the shadow broker", async () => {
+    const code = `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        inner = object.__getattribute__(self.broker, "_IntentBroker__inner")
+        object.__setattr__(inner, "_live_confirm_token", "bypass")
+        inner.buy(symbol, qty=1)
+`
+    const result = await Validate.run(code, { config: { symbol: "AAPL" }, skipSmokeTest: true })
+    expect(result.valid).toBe(false)
+    expect(result.errors.map((error) => error.code)).toContain("FORBIDDEN_REFLECTION")
+  })
+
   test("rejects options configs from product validation", async () => {
     const code = `class Strategy:
     def __init__(self, broker, params=None):

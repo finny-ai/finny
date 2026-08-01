@@ -64,7 +64,7 @@ import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
 import { ServerAuth } from "@/server/auth"
-import { InstanceHttpApi, RootHttpApi } from "./api"
+import { InstanceHttpApi, IntegrationsHttpApi, RootHttpApi } from "./api"
 import { Api } from "@opencode-ai/server/api"
 import { PublicApi } from "./public"
 import {
@@ -85,6 +85,7 @@ import { fileHandlers } from "./handlers/file"
 import { fundQualificationHandlers } from "./handlers/fund-qualification"
 import { globalHandlers } from "./handlers/global"
 import { healthHandlers } from "./handlers/health"
+import { integrationHandlers } from "./handlers/integrations"
 import { instanceHandlers } from "./handlers/instance"
 import { liveHandlers } from "./handlers/live"
 import { mcpHandlers } from "./handlers/mcp"
@@ -109,6 +110,7 @@ import { corsVaryFix } from "./middleware/cors-vary"
 import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
+import { RobinhoodIntegration } from "@/integration/robinhood"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -136,6 +138,11 @@ const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.lay
 const healthApiRoutes = HttpApiBuilder.layer(HealthApi).pipe(Layer.provide(healthHandlers))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
   Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
+  Layer.provide(schemaErrorLayer),
+  Layer.provide(httpApiAuthLayer),
+)
+const integrationApiRoutes = HttpApiBuilder.layer(IntegrationsHttpApi).pipe(
+  Layer.provide(integrationHandlers),
   Layer.provide(schemaErrorLayer),
   Layer.provide(httpApiAuthLayer),
 )
@@ -213,6 +220,7 @@ const lazyNode = <T extends LayerNode.Node<unknown, unknown>>(get: () => T) =>
   ) as T
 
 const app = LayerNode.group([
+  RobinhoodIntegration.node,
   Npm.node,
   FSUtil.node,
   Database.node,
@@ -277,6 +285,7 @@ export function createRoutes(
     Layer.mergeAll(
       healthApiRoutes,
       rootApiRoutes,
+      integrationApiRoutes,
       eventApiRoutes,
       ptyConnectApiRoutes,
       instanceRoutes,

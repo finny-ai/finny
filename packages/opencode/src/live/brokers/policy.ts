@@ -12,6 +12,8 @@ const TARGET_BROKER_LABEL_TO_KIND: Record<string, BrokerKind> = {
   saxo: "saxo",
   questrade: "questrade",
   futu: "futu",
+  robinhood: "robinhood",
+  rhx: "robinhood",
 }
 
 export type PolicyErrorCode =

@@ -65,6 +65,8 @@ import { createStructuredOutputTool, STRUCTURED_OUTPUT_SYSTEM_PROMPT } from "./s
 import { decodeMessageInfo, decodeMessagePart, isOrphanedInterruptedTool } from "./prompt-decode"
 import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
+import { renderRobinhoodIntegrationContext } from "@/live/brokers/robinhood"
+import { RobinhoodIntegration } from "@/integration/robinhood"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 import { StrategyContext } from "@/task/strategy-context"
 import { ProviderPreflight } from "./provider-preflight"
@@ -1476,8 +1478,7 @@ export const layer = Layer.effect(
             workflowContinuation = buildWorkflowContinuationReminder({
               workflow: activeWorkflow,
               pendingContextTasks: pendingContext.length,
-              controllerManaged:
-                session.metadata?.fund_controller_managed_qualification === true,
+              controllerManaged: session.metadata?.fund_controller_managed_qualification === true,
               unverifiedContextRoles: activeWorkflow
                 ? StrategyContext.unlaunchedRequiredContextRoles(activeWorkflow, contextTasks)
                 : [],
@@ -1765,7 +1766,16 @@ export const layer = Layer.effect(
             const activeBrokerKind = protectedFundRuntime
               ? undefined
               : yield* Effect.promise(() => readActiveBrokerKind())
-            if (activeBrokerKind) system.push(BrokerRegistry.getSpec(activeBrokerKind).promptFragment)
+            if (activeBrokerKind) {
+              system.push(BrokerRegistry.getSpec(activeBrokerKind).promptFragment)
+              if (activeBrokerKind === "robinhood") {
+                const context = yield* Effect.tryPromise({
+                  try: () => RobinhoodIntegration.getPromptContext(),
+                  catch: () => undefined,
+                }).pipe(Effect.option)
+                if (Option.isSome(context)) system.push(renderRobinhoodIntegrationContext(context.value))
+              }
+            }
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({

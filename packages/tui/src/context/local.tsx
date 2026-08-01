@@ -13,7 +13,7 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 
-type BrokerKind = "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+type BrokerKind = "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
 const BROKER_DISPLAY: Record<BrokerKind, string> = {
   alpaca: "Alpaca",
   binance: "Binance",
@@ -22,6 +22,11 @@ const BROKER_DISPLAY: Record<BrokerKind, string> = {
   saxo: "Saxo",
   questrade: "Questrade",
   futu: "Futu OpenD",
+  robinhood: "Robinhood",
+}
+
+function isBrokerKind(value: unknown): value is BrokerKind {
+  return typeof value === "string" && Object.hasOwn(BROKER_DISPLAY, value)
 }
 
 export type LocalTheme = {
@@ -421,15 +426,98 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     const model = createModel()
 
     function createBrokerage() {
-      const [brokerageStore, setBrokerageStore] = createStore<{ current: BrokerKind | undefined }>({
+      const [brokerageStore, setBrokerageStore] = createStore<{
+        ready: boolean
+        current: BrokerKind | undefined
+        recent: BrokerKind[]
+      }>({
+        ready: false,
         current: undefined,
+        recent: [],
       })
+      const filePath = path.join(paths.state, "brokerage.json")
+      let selectedLocally = false
+      let pending = false
+      let writes = Promise.resolve()
+
+      function save() {
+        if (!brokerageStore.ready) {
+          pending = true
+          return Promise.resolve()
+        }
+        pending = false
+        const current = brokerageStore.current
+        const recent = [...brokerageStore.recent]
+        const next = writes
+          .catch(() => undefined)
+          .then(async () => {
+            let prior: Record<string, unknown> = {}
+            try {
+              const value = await readJson<unknown>(filePath)
+              if (value && typeof value === "object") prior = value as Record<string, unknown>
+            } catch {
+              // First selection; the atomic writer creates the state file.
+            }
+            await writeJsonAtomic(filePath, { ...prior, current, recent })
+          })
+        writes = next
+        return next
+      }
+
+      readJson<unknown>(filePath)
+        .then((value) => {
+          if (!value || typeof value !== "object") return
+          const saved = value as Record<string, unknown>
+          const savedCurrent = isBrokerKind(saved.current) ? saved.current : undefined
+          const savedRecent = Array.isArray(saved.recent)
+            ? saved.recent.filter(isBrokerKind).filter((kind, index, all) => all.indexOf(kind) === index)
+            : []
+          batch(() => {
+            if (!selectedLocally) setBrokerageStore("current", savedCurrent)
+            setBrokerageStore(
+              "recent",
+              brokerageStore.current
+                ? [brokerageStore.current, ...savedRecent.filter((kind) => kind !== brokerageStore.current)].slice(
+                    0,
+                    10,
+                  )
+                : savedRecent.slice(0, 10),
+            )
+          })
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          setBrokerageStore("ready", true)
+          if (pending) void save()
+        })
+
       return {
+        get ready() {
+          return brokerageStore.ready
+        },
         current() {
           return brokerageStore.current
         },
-        set(kind: BrokerKind) {
-          setBrokerageStore("current", kind)
+        async set(kind: BrokerKind) {
+          selectedLocally = true
+          batch(() => {
+            setBrokerageStore("current", kind)
+            setBrokerageStore("recent", [kind, ...brokerageStore.recent.filter((value) => value !== kind)].slice(0, 10))
+          })
+          await save()
+        },
+        async clear(kind?: BrokerKind) {
+          selectedLocally = true
+          batch(() => {
+            if (!kind || brokerageStore.current === kind) setBrokerageStore("current", undefined)
+            if (kind)
+              setBrokerageStore(
+                "recent",
+                brokerageStore.recent.filter((value) => value !== kind),
+              )
+            else setBrokerageStore("recent", [])
+          })
+          await save()
         },
         spec() {
           const current = brokerageStore.current
