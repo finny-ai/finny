@@ -84,6 +84,19 @@ interface ZipEntryLike {
   getData?: (writer: Uint8ArrayWriter, options?: typeof ZIP_OPTIONS) => Promise<Uint8Array>
 }
 
+type VersionFileName = (typeof VERSION_FILE_ALLOWLIST)[number]
+
+interface PackageIdentity {
+  algorithmId: string
+  version: number
+}
+
+interface CanonicalFile {
+  filename: VersionFileName
+  file: string
+  bytes: number
+}
+
 function sha256(bytes: crypto.BinaryLike): string {
   return crypto.createHash("sha256").update(bytes).digest("hex")
 }
@@ -101,49 +114,84 @@ function payloadHash(files: Manifest["files"]): string {
   return sha256(stableStringify(files))
 }
 
-function assertIdentity(algorithmId: string, version: number): void {
-  if (!algorithmId || algorithmId === "." || algorithmId === ".." || /[\\/\0]/.test(algorithmId)) {
-    throw new Error("algorithmId must be a safe path segment")
-  }
-  if (!Number.isSafeInteger(version) || version < 1) throw new Error("version must be a positive integer")
+const SAFE_ALGORITHM_ID_CHECKS: ReadonlyArray<(value: string) => boolean> = [
+  (value) => value.length > 0,
+  (value) => value !== ".",
+  (value) => value !== "..",
+  (value) => !/[\\/\0]/.test(value),
+]
+
+function isSafeAlgorithmIdSegment(value: string): boolean {
+  return SAFE_ALGORITHM_ID_CHECKS.every((check) => check(value))
+}
+
+function isPositiveVersion(value: number): boolean {
+  if (!Number.isSafeInteger(value)) return false
+  return value >= 1
+}
+
+function assertIdentity(identity: PackageIdentity): void {
+  if (!isSafeAlgorithmIdSegment(identity.algorithmId)) throw new Error("algorithmId must be a safe path segment")
+  if (!isPositiveVersion(identity.version)) throw new Error("version must be a positive integer")
 }
 
 function versionTag(version: number): string {
   return `v${String(version).padStart(2, "0")}`
 }
 
-async function canonicalFiles(input: { algorithmId: string; version: number }): Promise<Map<string, Uint8Array>> {
-  assertIdentity(input.algorithmId, input.version)
-  const dir = path.join(LocalAlgorithmStore.directoryFor(input.algorithmId), versionTag(input.version))
-  const paths: Array<{ filename: string; file: string; bytes: number }> = []
-  let total = 0
-  for (const filename of VERSION_FILE_ALLOWLIST) {
-    const file = path.join(dir, filename)
-    let stat: Awaited<ReturnType<typeof fs.lstat>>
-    try {
-      stat = await fs.lstat(file)
-    } catch (error: any) {
-      if (error?.code === "ENOENT" && !REQUIRED_FILES.has(filename)) continue
-      if (error?.code === "ENOENT") throw new Error(`Canonical version is missing ${filename}`)
-      throw error
-    }
-    if (stat.isSymbolicLink() || !stat.isFile()) {
-      throw new Error(`Canonical version entry must be a regular file: ${filename}`)
-    }
-    if (stat.size > VERSION_MAX_ENTRY_BYTES) throw new Error(`Canonical version entry is too large: ${filename}`)
-    total += stat.size
-    if (total > VERSION_MAX_TOTAL_BYTES) throw new Error("Canonical version exceeds maximum total size")
-    paths.push({ filename, file, bytes: stat.size })
-  }
+function isMissingFileError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
+}
 
+async function inspectCanonicalFile(input: {
+  directory: string
+  filename: VersionFileName
+}): Promise<CanonicalFile | undefined> {
+  const file = path.join(input.directory, input.filename)
+  const stat = await fs.lstat(file).catch((error: unknown) => {
+    if (!isMissingFileError(error)) throw error
+    if (REQUIRED_FILES.has(input.filename)) throw new Error(`Canonical version is missing ${input.filename}`)
+    return undefined
+  })
+  if (!stat) return undefined
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    throw new Error(`Canonical version entry must be a regular file: ${input.filename}`)
+  }
+  if (stat.size > VERSION_MAX_ENTRY_BYTES) {
+    throw new Error(`Canonical version entry is too large: ${input.filename}`)
+  }
+  return { filename: input.filename, file, bytes: stat.size }
+}
+
+async function collectCanonicalFiles(input: PackageIdentity): Promise<CanonicalFile[]> {
+  assertIdentity(input)
+  const directory = path.join(LocalAlgorithmStore.directoryFor(input.algorithmId), versionTag(input.version))
+  const files: CanonicalFile[] = []
+  let totalBytes = 0
+  for (const filename of VERSION_FILE_ALLOWLIST) {
+    const file = await inspectCanonicalFile({ directory, filename })
+    if (!file) continue
+    totalBytes += file.bytes
+    if (totalBytes > VERSION_MAX_TOTAL_BYTES) throw new Error("Canonical version exceeds maximum total size")
+    files.push(file)
+  }
+  return files
+}
+
+async function readCanonicalFiles(entries: CanonicalFile[]): Promise<Map<string, Uint8Array>> {
   const result = new Map<string, Uint8Array>()
-  for (const entry of paths) {
+  for (const entry of entries) {
     const bytes = new Uint8Array(await fs.readFile(entry.file))
-    if (bytes.length !== entry.bytes)
+    if (bytes.length !== entry.bytes) {
       throw new Error(`Canonical version entry changed while reading: ${entry.filename}`)
+    }
     result.set(entry.filename, bytes)
   }
   return result
+}
+
+async function canonicalFiles(input: PackageIdentity): Promise<Map<string, Uint8Array>> {
+  return readCanonicalFiles(await collectCanonicalFiles(input))
 }
 
 export async function createArchive(entries: ReadonlyMap<string, Uint8Array>): Promise<Uint8Array> {
@@ -187,17 +235,19 @@ export async function build(input: { algorithmId: string; version: number }): Pr
   return { archive, archiveSha256: sha256(archive), manifest }
 }
 
+const INVALID_PATH_PARTS = new Set(["", ".", ".."])
+const SAFE_ENTRY_NAME_CHECKS: ReadonlyArray<(filename: string) => boolean> = [
+  (filename) => filename.length > 0,
+  (filename) => !filename.includes("\\"),
+  (filename) => !path.posix.isAbsolute(filename),
+  (filename) => !/^[A-Za-z]:/.test(filename),
+  (filename) => path.posix.normalize(filename) === filename,
+  (filename) => !filename.split("/").some((part) => INVALID_PATH_PARTS.has(part)),
+]
+
 function assertSafeEntryName(filename: string): void {
-  if (
-    !filename ||
-    filename.includes("\\") ||
-    filename.startsWith("/") ||
-    /^[A-Za-z]:/.test(filename) ||
-    filename.split("/").some((part) => part === "" || part === "." || part === "..") ||
-    path.posix.normalize(filename) !== filename
-  ) {
-    throw new Error(`Unsafe package entry path: ${filename}`)
-  }
+  const safe = SAFE_ENTRY_NAME_CHECKS.every((check) => check(filename))
+  if (!safe) throw new Error(`Unsafe package entry path: ${filename}`)
 }
 
 function entrySize(entry: ZipEntryLike): number {
@@ -215,61 +265,108 @@ async function readEntry(entry: ZipEntryLike): Promise<Uint8Array> {
   return bytes
 }
 
+function assertArchiveEntryAllowed(entry: ZipEntryLike): void {
+  assertSafeEntryName(entry.filename)
+  if (entry.directory || entry.filename.endsWith("/")) {
+    throw new Error(`Directories are not allowed in a version package: ${entry.filename}`)
+  }
+  if (entry.filename !== VERSION_PACKAGE_MANIFEST && !ALLOWED_FILES.has(entry.filename)) {
+    throw new Error(`Unknown package entry: ${entry.filename}`)
+  }
+}
+
+function addArchiveEntry(entriesByName: Map<string, ZipEntryLike>, entry: ZipEntryLike): number {
+  assertArchiveEntryAllowed(entry)
+  if (entriesByName.has(entry.filename)) throw new Error(`Duplicate package entry: ${entry.filename}`)
+  const size = entrySize(entry)
+  if (size > VERSION_MAX_ENTRY_BYTES) throw new Error(`Package entry is too large: ${entry.filename}`)
+  entriesByName.set(entry.filename, entry)
+  return size
+}
+
+function collectZipEntries(entries: ZipEntryLike[]): Map<string, ZipEntryLike> {
+  const entriesByName = new Map<string, ZipEntryLike>()
+  let totalBytes = 0
+  for (const entry of entries) {
+    totalBytes += addArchiveEntry(entriesByName, entry)
+    if (totalBytes > VERSION_MAX_TOTAL_BYTES) throw new Error("Package exceeds maximum uncompressed size")
+  }
+  if (entries.length > VERSION_MAX_ENTRIES) throw new Error(`Package has too many entries: ${entries.length}`)
+  return entriesByName
+}
+
+async function readPackageManifest(entriesByName: ReadonlyMap<string, ZipEntryLike>): Promise<Manifest> {
+  const entry = entriesByName.get(VERSION_PACKAGE_MANIFEST)
+  if (!entry) throw new Error(`Package is missing ${VERSION_PACKAGE_MANIFEST}`)
+  let raw: unknown
+  try {
+    raw = JSON.parse(new TextDecoder().decode(await readEntry(entry)))
+  } catch {
+    throw new Error("Package manifest is not valid JSON")
+  }
+  const manifest = Manifest.parse(raw)
+  assertIdentity(manifest)
+  return manifest
+}
+
+function assertManifestFilesSorted(manifest: Manifest): void {
+  const sorted = [...manifest.files].sort((left, right) => left.path.localeCompare(right.path))
+  if (stableStringify(sorted) !== stableStringify(manifest.files)) {
+    throw new Error("Package manifest files are not sorted")
+  }
+}
+
+function assertManifestFilesUnique(manifest: Manifest): void {
+  if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length) {
+    throw new Error("Package manifest contains duplicate files")
+  }
+}
+
+function assertManifestHasRequiredFiles(manifest: Manifest): void {
+  const declaredFiles = new Set<string>(manifest.files.map((file) => file.path))
+  for (const required of REQUIRED_FILES) {
+    if (!declaredFiles.has(required)) throw new Error(`Package manifest is missing ${required}`)
+  }
+}
+
+function validateManifestFiles(manifest: Manifest): void {
+  assertManifestFilesSorted(manifest)
+  assertManifestFilesUnique(manifest)
+  assertManifestHasRequiredFiles(manifest)
+  if (manifest.payloadHash !== payloadHash(manifest.files)) throw new Error("Package payload hash mismatch")
+}
+
+async function readVerifiedPayloadFile(
+  record: Manifest["files"][number],
+  entriesByName: ReadonlyMap<string, ZipEntryLike>,
+): Promise<Uint8Array> {
+  const entry = entriesByName.get(record.path)
+  if (!entry) throw new Error(`Package is missing declared file: ${record.path}`)
+  const bytes = await readEntry(entry)
+  if (bytes.length !== record.bytes) throw new Error(`Package byte count mismatch: ${record.path}`)
+  if (sha256(bytes) !== record.sha256) throw new Error(`Package file hash mismatch: ${record.path}`)
+  return bytes
+}
+
+async function readVerifiedPayloadFiles(
+  manifest: Manifest,
+  entriesByName: ReadonlyMap<string, ZipEntryLike>,
+): Promise<Map<string, Uint8Array>> {
+  const files = new Map<string, Uint8Array>()
+  for (const record of manifest.files) {
+    files.set(record.path, await readVerifiedPayloadFile(record, entriesByName))
+  }
+  return files
+}
+
 export async function verify(archive: Uint8Array): Promise<VerifiedPackage> {
   const reader = new ZipReader(new BlobReader(new Blob([Uint8Array.from(archive).buffer])), ZIP_OPTIONS)
-  let entries: ZipEntryLike[]
   try {
-    entries = await reader.getEntries()
-    const seen = new Set<string>()
-    let total = 0
-    for (const entry of entries) {
-      assertSafeEntryName(entry.filename)
-      if (entry.directory || entry.filename.endsWith("/"))
-        throw new Error(`Directories are not allowed in a version package: ${entry.filename}`)
-      if (seen.has(entry.filename)) throw new Error(`Duplicate package entry: ${entry.filename}`)
-      seen.add(entry.filename)
-      if (entry.filename !== VERSION_PACKAGE_MANIFEST && !ALLOWED_FILES.has(entry.filename)) {
-        throw new Error(`Unknown package entry: ${entry.filename}`)
-      }
-      const size = entrySize(entry)
-      if (size > VERSION_MAX_ENTRY_BYTES) throw new Error(`Package entry is too large: ${entry.filename}`)
-      total += size
-      if (total > VERSION_MAX_TOTAL_BYTES) throw new Error("Package exceeds maximum uncompressed size")
-    }
-    if (entries.length > VERSION_MAX_ENTRIES) throw new Error(`Package has too many entries: ${entries.length}`)
-
-    const manifestEntry = entries.find((entry) => entry.filename === VERSION_PACKAGE_MANIFEST)
-    if (!manifestEntry) throw new Error(`Package is missing ${VERSION_PACKAGE_MANIFEST}`)
-    let rawManifest: unknown
-    try {
-      rawManifest = JSON.parse(new TextDecoder().decode(await readEntry(manifestEntry)))
-    } catch {
-      throw new Error("Package manifest is not valid JSON")
-    }
-    const manifest = Manifest.parse(rawManifest)
-    assertIdentity(manifest.algorithmId, manifest.version)
-    const sorted = [...manifest.files].sort((left, right) => left.path.localeCompare(right.path))
-    if (stableStringify(sorted) !== stableStringify(manifest.files))
-      throw new Error("Package manifest files are not sorted")
-    if (new Set(manifest.files.map((file) => file.path)).size !== manifest.files.length) {
-      throw new Error("Package manifest contains duplicate files")
-    }
-    for (const required of REQUIRED_FILES) {
-      if (!manifest.files.some((file) => file.path === required))
-        throw new Error(`Package manifest is missing ${required}`)
-    }
-    if (manifest.payloadHash !== payloadHash(manifest.files)) throw new Error("Package payload hash mismatch")
-    if (entries.length !== manifest.files.length + 1) throw new Error("Package entries do not match its manifest")
-
-    const files = new Map<string, Uint8Array>()
-    for (const record of manifest.files) {
-      const entry = entries.find((candidate) => candidate.filename === record.path)
-      if (!entry) throw new Error(`Package is missing declared file: ${record.path}`)
-      const bytes = await readEntry(entry)
-      if (bytes.length !== record.bytes) throw new Error(`Package byte count mismatch: ${record.path}`)
-      if (sha256(bytes) !== record.sha256) throw new Error(`Package file hash mismatch: ${record.path}`)
-      files.set(record.path, bytes)
-    }
+    const entriesByName = collectZipEntries(await reader.getEntries())
+    const manifest = await readPackageManifest(entriesByName)
+    validateManifestFiles(manifest)
+    if (entriesByName.size !== manifest.files.length + 1) throw new Error("Package entries do not match its manifest")
+    const files = await readVerifiedPayloadFiles(manifest, entriesByName)
     return { archive, archiveSha256: sha256(archive), manifest, files }
   } finally {
     await reader.close().catch(() => undefined)
