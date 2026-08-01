@@ -45,6 +45,10 @@ export interface Artifacts {
   equityCurve: string | null
   trades: string | null
   sourceArtifacts?: string | null
+  dataSnapshot?: string | null
+  processedDataSnapshot?: string | null
+  dataQuality?: string | null
+  dataProvenance?: string | null
 }
 
 export interface Manifest {
@@ -71,6 +75,10 @@ export interface SaveInput {
     equityCsv?: string
     tradesCsv?: string
     sourceArtifacts?: string
+    dataSnapshotCsv?: string
+    processedDataSnapshotCsv?: string
+    dataQualityJson?: string
+    dataProvenanceJson?: string
   }
 }
 
@@ -260,6 +268,22 @@ export async function save(input: SaveInput): Promise<{ dir: string; manifest: M
     (await copyIfReadable(input.artifacts?.tradesCsv, path.join(dir, "trades.csv"))) ??
     input.record.artifacts?.trades ??
     null
+  const dataSnapshot =
+    (await copyIfReadable(input.artifacts?.dataSnapshotCsv, path.join(dir, "ohlcv.csv"))) ??
+    input.record.artifacts?.dataSnapshot ??
+    null
+  const processedDataSnapshot = await copyIfReadable(
+    input.artifacts?.processedDataSnapshotCsv,
+    path.join(dir, "processed_ohlcv.csv"),
+  ) ?? input.record.artifacts?.processedDataSnapshot ?? null
+  const dataQuality =
+    (await copyIfReadable(input.artifacts?.dataQualityJson, path.join(dir, "data_quality.json"))) ??
+    input.record.artifacts?.dataQuality ??
+    null
+  const dataProvenance =
+    (await copyIfReadable(input.artifacts?.dataProvenanceJson, path.join(dir, "data_provenance.json"))) ??
+    input.record.artifacts?.dataProvenance ??
+    null
 
   const manifest: Manifest = {
     ...input.record,
@@ -267,6 +291,10 @@ export async function save(input: SaveInput): Promise<{ dir: string; manifest: M
       equityCurve,
       trades,
       sourceArtifacts: input.artifacts?.sourceArtifacts ?? input.record.artifacts?.sourceArtifacts ?? null,
+      dataSnapshot,
+      processedDataSnapshot,
+      dataQuality,
+      dataProvenance,
     },
   }
   await fs.writeFile(path.join(dir, "manifest.json"), JSON.stringify(manifest, null, 2))
