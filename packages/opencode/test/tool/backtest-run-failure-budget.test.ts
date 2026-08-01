@@ -106,6 +106,7 @@ describe("Crucible data collection blockers", () => {
     const output = formatCrucibleDataCollectionBlocker({
       symbol: "SPY",
       interval: "1h",
+      duration: "1y",
       startDate: "2025-08-01",
       endDate: "2026-08-01",
       error: "primary and fallback providers returned no usable bars",
@@ -115,6 +116,16 @@ describe("Crucible data collection blockers", () => {
     expect(output).toContain("No performance metrics were produced")
     expect(output).not.toContain("shorter")
     expect(output).not.toContain("coarser")
+  })
+
+  test("includes the exact duration when dates are derived", () => {
+    const output = formatCrucibleDataCollectionBlocker({
+      symbol: "BTC.USD",
+      interval: "15min",
+      duration: "3m",
+      error: "provider authentication failed",
+    })
+    expect(output).toContain("BTC.USD at 15min over duration-derived window (3m)")
   })
 })
 

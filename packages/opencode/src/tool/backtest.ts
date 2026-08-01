@@ -353,11 +353,15 @@ export function strictDataQualityNextSteps() {
 export function formatCrucibleDataCollectionBlocker(input: {
   symbol?: string
   interval: string
+  duration: string
   startDate?: string
   endDate?: string
   error: string
 }) {
-  const window = input.startDate && input.endDate ? `${input.startDate} -> ${input.endDate}` : "duration-derived window"
+  const window =
+    input.startDate && input.endDate
+      ? `${input.startDate} -> ${input.endDate}`
+      : `duration-derived window (${input.duration})`
   return [
     `Crucible data collection blocked for ${input.symbol ?? "the saved symbol"} at ${input.interval} over ${window}.`,
     input.error,
@@ -797,6 +801,7 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
                 formatCrucibleDataCollectionBlocker({
                   symbol,
                   interval: params.interval,
+                  duration: params.duration,
                   startDate: effectiveStartDate,
                   endDate: effectiveEndDate,
                   error: result.error,

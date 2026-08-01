@@ -268,16 +268,22 @@ export async function save(input: SaveInput): Promise<{ dir: string; manifest: M
     (await copyIfReadable(input.artifacts?.tradesCsv, path.join(dir, "trades.csv"))) ??
     input.record.artifacts?.trades ??
     null
-  const dataSnapshot = await copyIfReadable(input.artifacts?.dataSnapshotCsv, path.join(dir, "ohlcv.csv"))
+  const dataSnapshot =
+    (await copyIfReadable(input.artifacts?.dataSnapshotCsv, path.join(dir, "ohlcv.csv"))) ??
+    input.record.artifacts?.dataSnapshot ??
+    null
   const processedDataSnapshot = await copyIfReadable(
     input.artifacts?.processedDataSnapshotCsv,
     path.join(dir, "processed_ohlcv.csv"),
-  )
-  const dataQuality = await copyIfReadable(input.artifacts?.dataQualityJson, path.join(dir, "data_quality.json"))
-  const dataProvenance = await copyIfReadable(
-    input.artifacts?.dataProvenanceJson,
-    path.join(dir, "data_provenance.json"),
-  )
+  ) ?? input.record.artifacts?.processedDataSnapshot ?? null
+  const dataQuality =
+    (await copyIfReadable(input.artifacts?.dataQualityJson, path.join(dir, "data_quality.json"))) ??
+    input.record.artifacts?.dataQuality ??
+    null
+  const dataProvenance =
+    (await copyIfReadable(input.artifacts?.dataProvenanceJson, path.join(dir, "data_provenance.json"))) ??
+    input.record.artifacts?.dataProvenance ??
+    null
 
   const manifest: Manifest = {
     ...input.record,

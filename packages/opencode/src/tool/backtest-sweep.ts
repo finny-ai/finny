@@ -7,7 +7,7 @@ import { Validate } from "../algorithm/validate"
 
 const MAX_COMBOS = 27
 
-const parameters = z.object({
+export const BacktestSweepParameters = z.object({
   algorithmName: z
     .string()
     .describe("Name of the saved algorithm to backtest"),
@@ -59,6 +59,9 @@ const parameters = z.object({
     .nonnegative()
     .optional()
     .describe("Optional base slippage in basis points for each run. Overrides the saved execution slippage without changing the algorithm."),
+}).refine((input) => Boolean(input.startDate) === Boolean(input.endDate), {
+  message: "startDate and endDate must be supplied together to preserve the exact sweep window",
+  path: ["startDate"],
 })
 
 type Combo = Record<string, number | string | boolean>
@@ -105,8 +108,8 @@ export const BacktestSweepTool = Tool.define(
       "Crucible collects and strictly validates its own market data; Data Agent artifacts are not required or consumed. " +
       "The strategy MUST accept a `params` kwarg in its constructor and read values from it; " +
       "otherwise every combo runs identical code and the sweep is meaningless.",
-    parameters,
-    execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
+    parameters: BacktestSweepParameters,
+    execute: (input: z.infer<typeof BacktestSweepParameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
         await ctx.ask({
           permission: "finny_backtest_sweep",

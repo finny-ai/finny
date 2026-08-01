@@ -9,8 +9,20 @@ import {
   experimentInputForBacktest,
   resolveBoundBacktestDates,
 } from "../../src/tool/backtest"
+import { BacktestSweepParameters } from "../../src/tool/backtest-sweep"
 
 describe("backtest data selection", () => {
+  test("requires exact sweep dates as a pair", () => {
+    const base = {
+      algorithmName: "spy-sma",
+      paramGrid: { fast: [8, 10] },
+    }
+    expect(BacktestSweepParameters.safeParse(base).success).toBe(true)
+    expect(BacktestSweepParameters.safeParse({ ...base, startDate: "2026-01-09" }).success).toBe(false)
+    expect(
+      BacktestSweepParameters.safeParse({ ...base, startDate: "2026-01-09", endDate: "2026-07-08" }).success,
+    ).toBe(true)
+  })
   test("changes the durable retry fingerprint when request or evidence changes", () => {
     const params = { algorithmName: "xrp-1d-strategy", interval: "1d", duration: "1y" }
     const provider = backtestAttemptFingerprint({ params, requestVersion: 1 })
