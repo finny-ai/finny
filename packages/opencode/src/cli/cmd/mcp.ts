@@ -395,7 +395,15 @@ export const McpLogoutCommand = effectCmd({
       return
     }
 
-    yield* MCP.Service.use((mcp) => mcp.removeAuth(serverName))
+    const removed = yield* MCP.Service.use((mcp) => mcp.removeAuth(serverName)).pipe(
+      Effect.as(true),
+      Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.succeed(false)),
+    )
+    if (!removed) {
+      prompts.log.error("Runner-managed Robinhood MCP lifecycle is Platform-owned.")
+      prompts.outro("Done")
+      return
+    }
     prompts.log.success(`Removed OAuth credentials for ${serverName}`)
     prompts.outro("Done")
   }),

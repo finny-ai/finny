@@ -20,6 +20,7 @@ import { testEffect } from "../lib/effect"
 import { Tool } from "@/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceStore } from "@/project/instance-store"
+import { MODEL_CHILD_SECRET_ENV_KEYS } from "@/security/worker-shell"
 
 const shellLayer = Layer.mergeAll(
   CrossSpawnSpawner.defaultLayer,
@@ -1167,6 +1168,41 @@ describe("tool.shell abort", () => {
 })
 
 describe("tool.shell secret boundary", () => {
+  it.live("does not expose runner broker or server credentials to primary-agent commands", () =>
+    runIn(
+      projectRoot,
+      Effect.acquireUseRelease(
+        Effect.sync(() => {
+          const previous = Object.fromEntries(MODEL_CHILD_SECRET_ENV_KEYS.map((key) => [key, process.env[key]]))
+          for (const key of MODEL_CHILD_SECRET_ENV_KEYS) process.env[key] = `model-child-canary-${key}`
+          return previous
+        }),
+        () =>
+          Effect.gen(function* () {
+            const code = [
+              `const keys=${JSON.stringify(MODEL_CHILD_SECRET_ENV_KEYS)}`,
+              'console.log(keys.every((key) => process.env[key] === undefined) ? "scrubbed" : "leaked")',
+            ].join(";")
+            const result = yield* run({
+              command: `${bin} -e ${evalarg(code)}`,
+              description: "Verify model child environment boundary",
+            })
+            expect(result.metadata.exit).toBe(0)
+            expect(result.output).toContain("scrubbed")
+            expect(result.output).not.toContain("leaked")
+          }),
+        (previous) =>
+          Effect.sync(() => {
+            for (const key of MODEL_CHILD_SECRET_ENV_KEYS) {
+              const value = previous[key]
+              if (value === undefined) delete process.env[key]
+              else process.env[key] = value
+            }
+          }),
+      ),
+    ),
+  )
+
   it.live("removes non-allowlisted host secrets from worker expansion", () =>
     runIn(
       projectRoot,

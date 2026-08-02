@@ -37,7 +37,7 @@ export const Plugin = PluginV2.define({
           skill: new SkillV2.Info({
             name: "finny-robinhood",
             description:
-              "Use when the user wants to install, connect, verify, recover, or use Robinhood through Finny, including RHX stock and ETF brokerage or the official Robinhood Crypto API. Enforces credential isolation, capability checks, and fail-closed live-trading policy.",
+              "Use when the user wants to connect, verify, recover, or use Robinhood through Finny, including the official read-only Robinhood Trading MCP or the separate legacy RHX connector. Enforces mode-specific credential custody, exact MCP tool allowlisting, capability checks, and fail-closed execution policy.",
             location: AbsolutePath.make("/builtin/finny-robinhood.md"),
             content: FinnyRobinhoodContent,
           }),

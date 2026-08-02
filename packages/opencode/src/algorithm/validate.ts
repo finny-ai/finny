@@ -3,6 +3,7 @@ import fs from "fs"
 import os from "os"
 import { Process } from "../util/process"
 import { resolveAssetSpec } from "../backtest/asset-spec"
+import { stripModelChildSecrets } from "../security/worker-shell"
 
 declare const OPENCODE_VALIDATOR_SCRIPTS: Record<string, string> | undefined
 
@@ -245,7 +246,14 @@ export namespace Validate {
     try {
       const proc = Process.spawn(
         ["python3", scriptPath, ...extraArgs],
-        { stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: timeoutMs },
+        {
+          env: stripModelChildSecrets(process.env),
+          inheritEnv: false,
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+          timeout: timeoutMs,
+        },
       )
       proc.stdin!.write(code)
       proc.stdin!.end()
@@ -393,7 +401,13 @@ export namespace Validate {
     try {
       const proc = Process.spawn(
         ["python3", "-c", "import ast,sys; ast.parse(sys.stdin.read())"],
-        { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
+        {
+          env: stripModelChildSecrets(process.env),
+          inheritEnv: false,
+          stdin: "pipe",
+          stdout: "pipe",
+          stderr: "pipe",
+        },
       )
       proc.stdin!.write(code)
       proc.stdin!.end()

@@ -3,7 +3,18 @@ import { Effect, Schema } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
 import { McpServerNotFoundError } from "../errors"
-import { AddPayload, AuthCallbackPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"
+import {
+  AddPayload,
+  AuthCallbackPayload,
+  ManagedMcpLifecycleError,
+  StatusMap,
+  UnsupportedOAuthError,
+} from "../groups/mcp"
+
+const managedLifecycleError = () =>
+  new ManagedMcpLifecycleError({
+    error: "Runner-managed Robinhood MCP lifecycle is Platform-owned.",
+  })
 
 export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handlers) =>
   Effect.gen(function* () {
@@ -27,6 +38,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
         }
         return yield* mcp.startAuth(ctx.params.name)
       }).pipe(
+        Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())),
         Effect.catchTag("MCP.NotFoundError", (error) =>
           Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
         ),
@@ -37,15 +49,12 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       params: { name: string }
       payload: typeof AuthCallbackPayload.Type
     }) {
-      return yield* mcp
-        .finishAuth(ctx.params.name, ctx.payload.code)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
-          ),
-        )
+      return yield* mcp.finishAuth(ctx.params.name, ctx.payload.code).pipe(
+        Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())),
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
+        ),
+      )
     })
 
     const authAuthenticate = Effect.fn("McpHttpApi.authAuthenticate")(function* (ctx: { params: { name: string } }) {
@@ -55,6 +64,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
         }
         return yield* mcp.authenticate(ctx.params.name)
       }).pipe(
+        Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())),
         Effect.catchTag("MCP.NotFoundError", (error) =>
           Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
         ),
@@ -68,33 +78,29 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
           name: ctx.params.name,
           message: `MCP server not found: ${ctx.params.name}`,
         })
-      yield* mcp.removeAuth(ctx.params.name)
+      yield* mcp
+        .removeAuth(ctx.params.name)
+        .pipe(Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())))
       return { success: true as const }
     })
 
     const connect = Effect.fn("McpHttpApi.connect")(function* (ctx: { params: { name: string } }) {
-      yield* mcp
-        .connect(ctx.params.name)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
-          ),
-        )
+      yield* mcp.connect(ctx.params.name).pipe(
+        Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())),
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
+        ),
+      )
       return true
     })
 
     const disconnect = Effect.fn("McpHttpApi.disconnect")(function* (ctx: { params: { name: string } }) {
-      yield* mcp
-        .disconnect(ctx.params.name)
-        .pipe(
-          Effect.catchTag("MCP.NotFoundError", (error) =>
-            Effect.fail(
-              new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` }),
-            ),
-          ),
-        )
+      yield* mcp.disconnect(ctx.params.name).pipe(
+        Effect.catchTag("MCP.ManagedLifecycleError", () => Effect.fail(managedLifecycleError())),
+        Effect.catchTag("MCP.NotFoundError", (error) =>
+          Effect.fail(new McpServerNotFoundError({ name: error.name, message: `MCP server not found: ${error.name}` })),
+        ),
+      )
       return true
     })
 

@@ -47,6 +47,7 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
+import { McpRobinhood } from "@/mcp/robinhood"
 import {
   FUND_MANAGER_AGENT,
   FUND_RUNTIME_MODEL,
@@ -203,6 +204,7 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        const finnyRobinhoodMcpPolicy = Permission.fromConfig(McpRobinhood.permissionConfig())
 
         const finnyBuildTools = [
           "question",
@@ -525,6 +527,7 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyToolBundle(finnyModeTools, ["data_extractor", "news_agent", "sec_agent", "sentiment_agent"]),
+              finnyRobinhoodMcpPolicy,
               Permission.fromConfig({
                 question: "allow",
               }),
@@ -556,6 +559,7 @@ export const layer = Layer.effect(
                 "sec_agent",
                 "sentiment_agent",
               ]),
+              finnyRobinhoodMcpPolicy,
               Permission.fromConfig({
                 question: "allow",
               }),
@@ -579,6 +583,7 @@ export const layer = Layer.effect(
               defaults,
               finnyFileSystemSandbox,
               finnyToolBundle(finnyResearchTools, ["data_extractor", "news_agent", "researcher"]),
+              finnyRobinhoodMcpPolicy,
               user,
             ),
             mode: "primary",
@@ -595,6 +600,7 @@ export const layer = Layer.effect(
               defaults,
               finnyFileSystemSandbox,
               finnyToolBundle(finnyChatTools, ["news_agent", "researcher"]),
+              finnyRobinhoodMcpPolicy,
               user,
             ),
             mode: "primary",
@@ -611,6 +617,7 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
+              finnyRobinhoodMcpPolicy,
               user,
               Permission.fromConfig({
                 question: "allow",

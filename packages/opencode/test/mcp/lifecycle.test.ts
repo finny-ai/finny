@@ -5,6 +5,7 @@ import { Cause, Effect, Exit } from "effect"
 import type { MCP as MCPNS } from "../../src/mcp/index"
 import { testEffect } from "../lib/effect"
 import { TestInstance } from "../fixture/fixture"
+import { McpRobinhood } from "@/mcp/robinhood"
 
 // --- Mock infrastructure ---
 
@@ -294,6 +295,364 @@ it.instance(
         expect(Object.keys(toolsA).length).toBeGreaterThan(0)
         expect(Object.keys(toolsB).length).toBeGreaterThan(0)
         expect(serverState.listToolsCalls).toBe(1)
+      }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "managed Robinhood exposes only exact reads across discovery and tool refresh",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        process.env[McpRobinhood.MANAGED_ENV] = "1"
+        process.env[McpRobinhood.URL_ENV] = "http://127.0.0.1:7777/sessions/session_test/mcp/robinhood"
+        lastCreatedClientName = McpRobinhood.SERVER_NAME
+        const serverState = getOrCreateClientState(McpRobinhood.SERVER_NAME)
+        serverState.tools = [
+          ...McpRobinhood.READ_TOOLS.map((name) => ({
+            name,
+            inputSchema: { type: "object", properties: {} },
+          })),
+          { name: "place_equity_order", inputSchema: { type: "object", properties: {} } },
+          { name: "cancel_equity_order", inputSchema: { type: "object", properties: {} } },
+          { name: "create_watchlist", inputSchema: { type: "object", properties: {} } },
+          { name: "future_read_tool", inputSchema: { type: "object", properties: {} } },
+        ]
+        return { previous, previousManaged, serverState }
+      }),
+      ({ serverState }) =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            const expected = McpRobinhood.READ_TOOLS.map(McpRobinhood.toolID)
+            expect(Object.keys(yield* mcp.tools())).toEqual(expected)
+            expect(yield* mcp.prompts()).toEqual({})
+            expect(yield* mcp.resources()).toEqual({})
+            expect(yield* mcp.getPrompt(McpRobinhood.SERVER_NAME, "future_prompt")).toBeUndefined()
+            expect(yield* mcp.readResource(McpRobinhood.SERVER_NAME, "robinhood://account/private")).toBeUndefined()
+            expect(serverState.listPromptsCalls).toBe(0)
+            expect(serverState.listResourcesCalls).toBe(0)
+            expect(serverState.getPromptTimeout).toBeUndefined()
+            expect(serverState.readResourceTimeout).toBeUndefined()
+            expect(yield* mcp.robinhood()).toMatchObject({
+              id: McpRobinhood.SERVER_NAME,
+              access: "read_only",
+              source: "runner_local_broker",
+              credentialCustody: "platform",
+              status: "connected",
+            })
+
+            serverState.tools.push(
+              { name: "replace_equity_order", inputSchema: { type: "object", properties: {} } },
+              { name: "update_watchlist", inputSchema: { type: "object", properties: {} } },
+            )
+            const handler = serverState.notificationHandlers.get(ToolListChangedNotificationSchema)
+            expect(handler).toBeDefined()
+            yield* Effect.promise(() => handler?.())
+            expect(Object.keys(yield* mcp.tools())).toEqual(expected)
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "managed Robinhood rejects every local lifecycle and auth mutation without closing its client",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        process.env[McpRobinhood.MANAGED_ENV] = "1"
+        process.env[McpRobinhood.URL_ENV] = "http://127.0.0.1:7777/mcp/opaque-runner-route"
+        lastCreatedClientName = McpRobinhood.SERVER_NAME
+        const serverState = getOrCreateClientState(McpRobinhood.SERVER_NAME)
+        serverState.tools = McpRobinhood.READ_TOOLS.map((name) => ({
+          name,
+          inputSchema: { type: "object", properties: {} },
+        }))
+        return { previous, previousManaged, serverState }
+      }),
+      ({ serverState }) =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            expect((yield* mcp.status())[McpRobinhood.SERVER_NAME]).toEqual({ status: "connected" })
+
+            const operations: ReadonlyArray<readonly [string, Effect.Effect<unknown, unknown>]> = [
+              ["connect", mcp.connect(McpRobinhood.SERVER_NAME)],
+              ["disconnect", mcp.disconnect(McpRobinhood.SERVER_NAME)],
+              ["auth start", mcp.startAuth(McpRobinhood.SERVER_NAME)],
+              ["authenticate", mcp.authenticate(McpRobinhood.SERVER_NAME)],
+              ["auth callback", mcp.finishAuth(McpRobinhood.SERVER_NAME, "attacker-code")],
+              ["auth removal", mcp.removeAuth(McpRobinhood.SERVER_NAME)],
+              ["OAuth capability probe", mcp.supportsOAuth(McpRobinhood.SERVER_NAME)],
+            ]
+            yield* Effect.forEach(operations, ([label, operation]) =>
+              Effect.gen(function* () {
+                const exit = yield* operation.pipe(Effect.exit)
+                expect(Exit.isFailure(exit), label).toBe(true)
+                if (Exit.isFailure(exit)) {
+                  expect(Cause.squash(exit.cause), label).toMatchObject({
+                    _tag: "MCP.ManagedLifecycleError",
+                    name: McpRobinhood.SERVER_NAME,
+                  })
+                }
+              }),
+            )
+
+            expect((yield* mcp.status())[McpRobinhood.SERVER_NAME]).toEqual({ status: "connected" })
+            expect(Object.keys(yield* mcp.clients())).toContain(McpRobinhood.SERVER_NAME)
+            expect(serverState.closed).toBe(false)
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "canonical direct Robinhood uses local OAuth custody and the same read-only filter",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        delete process.env[McpRobinhood.URL_ENV]
+        delete process.env[McpRobinhood.MANAGED_ENV]
+        lastCreatedClientName = McpRobinhood.SERVER_NAME
+        const serverState = getOrCreateClientState(McpRobinhood.SERVER_NAME)
+        serverState.tools = [
+          { name: "get_accounts", inputSchema: { type: "object", properties: {} } },
+          { name: "get_portfolio", inputSchema: { type: "object", properties: {} } },
+          { name: "place_equity_order", inputSchema: { type: "object", properties: {} } },
+        ]
+        return { previous, previousManaged, serverState }
+      }),
+      ({ serverState }) =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            const result = yield* mcp.add(McpRobinhood.SERVER_NAME, {
+              type: "remote",
+              url: McpRobinhood.OFFICIAL_URL,
+            })
+            expect(statusName(result.status, McpRobinhood.SERVER_NAME)).toBe("connected")
+            expect(Object.keys(yield* mcp.tools())).toEqual(["robinhood_get_accounts", "robinhood_get_portfolio"])
+            expect(yield* mcp.prompts()).toEqual({})
+            expect(yield* mcp.resources()).toEqual({})
+            expect(yield* mcp.getPrompt(McpRobinhood.SERVER_NAME, "future_prompt")).toBeUndefined()
+            expect(yield* mcp.readResource(McpRobinhood.SERVER_NAME, "robinhood://account/private")).toBeUndefined()
+            expect(serverState.listPromptsCalls).toBe(0)
+            expect(serverState.listResourcesCalls).toBe(0)
+            expect(serverState.getPromptTimeout).toBeUndefined()
+            expect(serverState.readResourceTimeout).toBeUndefined()
+            expect(yield* mcp.robinhood()).toMatchObject({
+              source: "robinhood_oauth",
+              credentialCustody: "local_opencode",
+              status: "connected",
+            })
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "canonical direct Robinhood rejects disabled OAuth or caller-supplied headers from integration context",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const createdBefore = clientCreateCount
+        for (const config of [
+          { type: "remote" as const, url: McpRobinhood.OFFICIAL_URL, oauth: false },
+          {
+            type: "remote" as const,
+            url: McpRobinhood.OFFICIAL_URL,
+            headers: { Authorization: "Bearer caller-controlled" },
+          },
+        ] as const) {
+          const result = yield* mcp.add(McpRobinhood.SERVER_NAME, config)
+          expect(statusName(result.status, McpRobinhood.SERVER_NAME)).toBe("failed")
+          expect(yield* mcp.robinhood()).toBeUndefined()
+          expect(yield* mcp.tools()).toEqual({})
+        }
+        expect(clientCreateCount).toBe(createdBefore)
+      }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "managed runtime without a broker rejects direct official configuration, add, connect, and auth",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        delete process.env[McpRobinhood.URL_ENV]
+        process.env[McpRobinhood.MANAGED_ENV] = "1"
+        return { previous, previousManaged }
+      }),
+      () =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            const createdBefore = clientCreateCount
+            expect((yield* mcp.status())[McpRobinhood.SERVER_NAME]).toEqual({
+              status: "failed",
+              error: "Runner-managed Robinhood MCP lifecycle is Platform-owned.",
+            })
+            expect(yield* mcp.robinhood()).toBeUndefined()
+
+            const added = yield* mcp.add(McpRobinhood.SERVER_NAME, {
+              type: "remote",
+              url: McpRobinhood.OFFICIAL_URL,
+            })
+            expect(statusName(added.status, McpRobinhood.SERVER_NAME)).toBe("failed")
+
+            for (const operation of [
+              mcp.connect(McpRobinhood.SERVER_NAME),
+              mcp.startAuth(McpRobinhood.SERVER_NAME),
+              mcp.authenticate(McpRobinhood.SERVER_NAME),
+            ] as ReadonlyArray<Effect.Effect<unknown, unknown>>) {
+              const exit = yield* operation.pipe(Effect.exit)
+              expect(Exit.isFailure(exit)).toBe(true)
+              if (Exit.isFailure(exit)) {
+                expect(Cause.squash(exit.cause)).toMatchObject({
+                  _tag: "MCP.ManagedLifecycleError",
+                  name: McpRobinhood.SERVER_NAME,
+                })
+              }
+            }
+            expect(clientCreateCount).toBe(createdBefore)
+            expect(yield* mcp.tools()).toEqual({})
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  {
+    config: {
+      mcp: {
+        robinhood: { type: "remote", url: McpRobinhood.OFFICIAL_URL },
+      },
+    },
+  },
+)
+
+it.instance(
+  "managed Robinhood redacts runner-local endpoint details from connection failures",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        process.env[McpRobinhood.MANAGED_ENV] = "1"
+        process.env[McpRobinhood.URL_ENV] = "http://127.0.0.1:7777/sessions/private-session/mcp/robinhood"
+        lastCreatedClientName = McpRobinhood.SERVER_NAME
+        connectShouldFail = true
+        connectError = "failed to connect to /sessions/private-session/mcp/robinhood"
+        return { previous, previousManaged }
+      }),
+      () =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            const status = (yield* mcp.status())[McpRobinhood.SERVER_NAME]
+            expect(status).toEqual({
+              status: "failed",
+              error: "Runner-local Robinhood MCP broker unavailable.",
+            })
+            expect(JSON.stringify(status)).not.toContain("private-session")
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "managed Robinhood redacts post-connect tool discovery failures",
+  () =>
+    Effect.acquireUseRelease(
+      Effect.sync(() => {
+        const previous = process.env[McpRobinhood.URL_ENV]
+        const previousManaged = process.env[McpRobinhood.MANAGED_ENV]
+        process.env[McpRobinhood.MANAGED_ENV] = "1"
+        process.env[McpRobinhood.URL_ENV] = "http://127.0.0.1:7777/mcp/private-discovery-route"
+        lastCreatedClientName = McpRobinhood.SERVER_NAME
+        const serverState = getOrCreateClientState(McpRobinhood.SERVER_NAME)
+        serverState.listToolsShouldFail = true
+        serverState.listToolsError = "tool discovery exposed /mcp/private-discovery-route"
+        return { previous, previousManaged, serverState }
+      }),
+      ({ serverState }) =>
+        MCP.Service.use((mcp: MCPNS.Interface) =>
+          Effect.gen(function* () {
+            const status = (yield* mcp.status())[McpRobinhood.SERVER_NAME]
+            expect(status).toEqual({
+              status: "failed",
+              error: "Runner-local Robinhood MCP broker unavailable.",
+            })
+            expect(JSON.stringify(status)).not.toContain("private-discovery-route")
+            expect(serverState.closed).toBe(true)
+            expect(yield* mcp.tools()).toEqual({})
+          }),
+        ),
+      ({ previous, previousManaged }) =>
+        Effect.sync(() => {
+          if (previous === undefined) delete process.env[McpRobinhood.URL_ENV]
+          else process.env[McpRobinhood.URL_ENV] = previous
+          if (previousManaged === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+          else process.env[McpRobinhood.MANAGED_ENV] = previousManaged
+        }),
+    ),
+  { config: { mcp: {} } },
+)
+
+it.instance(
+  "rejects the official Robinhood endpoint under a noncanonical server name",
+  () =>
+    MCP.Service.use((mcp: MCPNS.Interface) =>
+      Effect.gen(function* () {
+        const createdBefore = clientCreateCount
+        const result = yield* mcp.add("portfolio", {
+          type: "remote",
+          url: McpRobinhood.OFFICIAL_URL,
+        })
+        expect(statusName(result.status, "portfolio")).toBe("failed")
+        expect(clientCreateCount).toBe(createdBefore)
+        expect(yield* mcp.tools()).toEqual({})
       }),
     ),
   { config: { mcp: {} } },

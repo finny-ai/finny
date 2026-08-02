@@ -1,5 +1,6 @@
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
@@ -17,7 +18,7 @@ import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
-import { PartID } from "./schema"
+import { MessageID, PartID, SessionID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -25,6 +26,43 @@ import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan }
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
 import { contextPhaseExecutionBlock, type ContextPhaseGate } from "@/task/strategy-context"
 import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
+import { McpRobinhood } from "@/mcp/robinhood"
+
+const robinhoodMcpPermission = Permission.fromConfig(McpRobinhood.permissionConfig())
+
+export function mcpInvocationPermission(
+  toolID: string,
+  effectivePermission: PermissionV1.Ruleset,
+): "inherit" | "ask" | "deny" {
+  if (!McpRobinhood.isServerToolID(toolID)) return "inherit"
+  if (!McpRobinhood.isToolID(toolID)) return "deny"
+  return Permission.evaluate(toolID, "*", effectivePermission).action === "deny" ? "deny" : "ask"
+}
+
+export function requestMcpPermission(input: {
+  readonly toolID: string
+  readonly permission: Permission.Interface
+  readonly effectivePermission: PermissionV1.Ruleset
+  readonly sessionID: SessionID
+  readonly messageID: MessageID
+  readonly callID: string
+}) {
+  const action = mcpInvocationPermission(input.toolID, input.effectivePermission)
+  if (action === "deny") {
+    return Effect.fail(new PermissionV1.DeniedError({ ruleset: robinhoodMcpPermission })).pipe(Effect.orDie)
+  }
+  return input.permission
+    .ask({
+      permission: input.toolID,
+      metadata: {},
+      patterns: ["*"],
+      always: action === "ask" ? [] : ["*"],
+      sessionID: input.sessionID,
+      tool: { messageID: input.messageID, callID: input.callID },
+      ruleset: action === "ask" ? robinhoodMcpPermission : input.effectivePermission,
+    })
+    .pipe(Effect.orDie)
+}
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -190,7 +228,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
     const requestMcpTool = (runtimeArgs: any, opts: ToolExecutionOptions, ctx: Tool.Context) =>
       Effect.gen(function* () {
-        yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+        yield* requestMcpPermission({
+          toolID: key,
+          permission,
+          effectivePermission,
+          sessionID: input.session.id,
+          messageID: input.processor.message.id,
+          callID: opts.toolCallId,
+        })
         return yield* Effect.promise(() => execute(runtimeArgs, opts))
       }).pipe(
         withTelemetrySpan("finny.tool.execute", {

@@ -67,6 +67,7 @@ import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
 import { renderRobinhoodIntegrationContext } from "@/live/brokers/robinhood"
 import { RobinhoodIntegration } from "@/integration/robinhood"
+import { McpRobinhood } from "@/mcp/robinhood"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 import { StrategyContext } from "@/task/strategy-context"
 import { ProviderPreflight } from "./provider-preflight"
@@ -1762,6 +1763,10 @@ export const layer = Layer.effect(
                 const handoff = yield* Effect.promise(() => inspectResearchBriefForBuildHandoff(algoDir(workspace)))
                 if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
               }
+            }
+            if (!protectedFundRuntime) {
+              const robinhood = yield* mcp.robinhood()
+              if (robinhood) system.push(McpRobinhood.renderContext(robinhood))
             }
             const activeBrokerKind = protectedFundRuntime
               ? undefined
