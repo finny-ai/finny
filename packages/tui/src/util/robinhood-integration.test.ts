@@ -7,10 +7,13 @@ import {
   type RobinhoodIntegrationStatus,
 } from "./robinhood-integration"
 
-test("Robinhood foreground login is limited to loopback Finny servers", () => {
+test("Robinhood foreground login accepts trusted local Finny transports", () => {
+  expect(canRunRobinhoodLoginLocally("http://opencode.internal")).toBe(true)
   expect(canRunRobinhoodLoginLocally("http://localhost:4096")).toBe(true)
   expect(canRunRobinhoodLoginLocally("http://127.0.0.1:4096")).toBe(true)
   expect(canRunRobinhoodLoginLocally("http://[::1]:4096")).toBe(true)
+  expect(canRunRobinhoodLoginLocally("https://opencode.internal")).toBe(false)
+  expect(canRunRobinhoodLoginLocally("http://opencode.internal:4096")).toBe(false)
   expect(canRunRobinhoodLoginLocally("https://finny.example.com")).toBe(false)
   expect(canRunRobinhoodLoginLocally("not a url")).toBe(false)
 })

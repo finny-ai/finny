@@ -72,7 +72,11 @@ export function managedRobinhoodLoginCommand(input: {
 
 export function canRunRobinhoodLoginLocally(serverUrl: string): boolean {
   try {
-    const hostname = new URL(serverUrl).hostname.toLowerCase()
+    const url = new URL(serverUrl)
+    // The default TUI talks to its same-process worker through this synthetic
+    // origin. It is local even though it is not represented by a loopback IP.
+    if (url.origin === "http://opencode.internal") return true
+    const hostname = url.hostname.toLowerCase()
     return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]"
   } catch {
     return false
