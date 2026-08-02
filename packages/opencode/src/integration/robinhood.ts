@@ -154,17 +154,20 @@ const capability = (state: CapabilityState): CapabilityStatus => ({
   state,
 })
 
-function stateMessage(state: State): string | undefined {
-  if (state === "unsupported") return "Managed rhx installation is not available on this platform."
-  if (state === "not_installed") return "Install rhx or attach an absolute path to an existing executable."
-  if (state === "installing") return "Installing the pinned rhx runtime."
-  if (state === "installed") return "rhx is installed. Sign in, then verify the connection."
-  if (state === "authenticating") return "Verifying Robinhood authentication."
-  if (state === "ready") return "Robinhood is ready."
-  if (state === "mfa_required")
-    return "Robinhood approval or MFA is required. Run the login command, then verify again."
-  if (state === "expired") return "The Robinhood session expired. Run the login command, then verify again."
-  if (state === "error") return "The rhx integration could not be checked."
+const stateMessages: Record<State, string> = {
+  unsupported: "Managed rhx installation is not available on this platform.",
+  not_installed: "Install rhx or attach an absolute path to an existing executable.",
+  installing: "Installing the pinned rhx runtime.",
+  installed: "rhx is installed. Sign in, then verify the connection.",
+  authenticating: "Verifying Robinhood authentication.",
+  ready: "Robinhood is ready.",
+  mfa_required: "Robinhood approval or MFA is required. Run the login command, then verify again.",
+  expired: "The Robinhood session expired. Run the login command, then verify again.",
+  error: "The rhx integration could not be checked.",
+}
+
+function stateMessage(state: State): string {
+  return stateMessages[state]
 }
 
 function makeStatus(input: {

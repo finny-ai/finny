@@ -56,36 +56,28 @@ function authStatus(state: string, input?: { authenticated?: boolean; mfa?: bool
   }
 }
 
-async function fixture(input: {
-  platform?: string
-  arch?: string
-  executablePath: string
-  process: (command: string, args: readonly string[], env: unknown) => ProcessOutput
-  run: (service: RobinhoodIntegration.Interface, auth: Record<string, Auth.Info>) => Effect.Effect<void>
-}) {
-  await using tmp = await tmpdir()
-  const npmCalls: string[] = []
-  const auth: Record<string, Auth.Info> = {}
-
-  const npmLayer = Layer.succeed(
+function makeNpmLayer(executablePath: string, npmCalls: string[]) {
+  return Layer.succeed(
     Npm.Service,
     Npm.Service.of({
       add: (spec) => {
         npmCalls.push(`add:${spec}`)
-        return Effect.succeed({ directory: path.dirname(input.executablePath), entrypoint: Option.none() })
+        return Effect.succeed({ directory: path.dirname(executablePath), entrypoint: Option.none() })
       },
       install: () => Effect.void,
       which: (spec, bin) => {
         npmCalls.push(`which:${spec}:${bin ?? ""}`)
-        return Effect.succeed(Option.some(input.executablePath))
+        return Effect.succeed(Option.some(executablePath))
       },
     }),
   )
+}
 
-  const processLayer = Layer.mock(AppProcess.Service)({
+function makeProcessLayer(process: (command: string, args: readonly string[], env: unknown) => ProcessOutput) {
+  return Layer.mock(AppProcess.Service)({
     run: (command) => {
       const standard = ChildProcess.isStandardCommand(command) ? command : undefined
-      const result = input.process(standard?.command ?? "", standard?.args ?? [], standard?.options.env)
+      const result = process(standard?.command ?? "", standard?.args ?? [], standard?.options.env)
       const stdout = result.stdout === undefined ? "" : JSON.stringify(result.stdout)
       const stderr = result.stderr === undefined ? "" : JSON.stringify(result.stderr)
       return Effect.succeed({
@@ -99,8 +91,10 @@ async function fixture(input: {
     },
     runStream: () => Stream.empty,
   })
+}
 
-  const authLayer = Layer.succeed(
+function makeAuthLayer(auth: Record<string, Auth.Info>) {
+  return Layer.succeed(
     Auth.Service,
     Auth.Service.of({
       all: () => Effect.succeed({ ...auth }),
@@ -109,12 +103,24 @@ async function fixture(input: {
       remove: (id) => Effect.sync(() => void delete auth[id]),
     }),
   )
+}
+
+async function fixture(input: {
+  platform?: string
+  arch?: string
+  executablePath: string
+  process: (command: string, args: readonly string[], env: unknown) => ProcessOutput
+  run: (service: RobinhoodIntegration.Interface, auth: Record<string, Auth.Info>) => Effect.Effect<void>
+}) {
+  await using tmp = await tmpdir()
+  const npmCalls: string[] = []
+  const auth: Record<string, Auth.Info> = {}
 
   const state = path.join(tmp.path, "state")
   const layer = RobinhoodIntegration.layerWith({ platform: input.platform, arch: input.arch }).pipe(
-    Layer.provide(npmLayer),
-    Layer.provide(processLayer),
-    Layer.provide(authLayer),
+    Layer.provide(makeNpmLayer(input.executablePath, npmCalls)),
+    Layer.provide(makeProcessLayer(input.process)),
+    Layer.provide(makeAuthLayer(auth)),
     Layer.provide(FSUtil.defaultLayer),
     Layer.provide(Global.layerWith({ state })),
   )
@@ -127,6 +133,38 @@ async function fixture(input: {
   const stateFile = Bun.file(path.join(state, "integrations", "robinhood.json"))
   const persistedState = (await stateFile.exists()) ? await stateFile.text() : undefined
   return { npmCalls, persistedState }
+}
+
+type VerificationScenario = "mfa" | "expired" | "crypto" | "ready"
+
+const brokerageStatus: Record<VerificationScenario, () => ReturnType<typeof authStatus>> = {
+  mfa: () => authStatus("MFA_REQUIRED_DO_NOT_RETRY", { mfa: true, detail: "approval for alice@example.com" }),
+  expired: () => authStatus("SESSION_EXPIRED", { detail: "token secret-token expired" }),
+  crypto: () => authStatus("CREDENTIALS_MISSING"),
+  ready: () => authStatus("READY", { authenticated: true }),
+}
+
+function verificationProcess(scenario: () => VerificationScenario) {
+  return (_command: string, args: readonly string[]): ProcessOutput => {
+    const current = scenario()
+    if (args.at(-1) === "doctor") {
+      return {
+        stdout: envelope("doctor", doctorData({ brokerage: current !== "crypto", crypto: current === "crypto" })),
+      }
+    }
+    const crypto =
+      current === "crypto"
+        ? { ...authStatus("READY", { authenticated: true }), provider: "crypto" }
+        : { ...authStatus("CREDENTIALS_MISSING"), provider: "crypto" }
+    return {
+      stdout: envelope("auth verify", {
+        brokerage: brokerageStatus[current](),
+        crypto,
+        access_token: "secret-token",
+        username: "alice@example.com",
+      }),
+    }
+  }
 }
 
 describe("RobinhoodIntegration", () => {
@@ -244,37 +282,12 @@ describe("RobinhoodIntegration", () => {
     expect(result.persistedState).toBeUndefined()
   })
 
-  test("maps MFA, expiry, and ready states without persisting rhx secrets", async () => {
+  test("maps MFA and expiry states without persisting rhx secrets", async () => {
     const executablePath = "/opt/bin/rhx"
-    let scenario: "mfa" | "expired" | "crypto" | "ready" = "mfa"
+    let scenario: VerificationScenario = "mfa"
     const result = await fixture({
       executablePath,
-      process: (_command, args) => {
-        if (args.at(-1) === "doctor")
-          return {
-            stdout: envelope("doctor", doctorData({ brokerage: scenario !== "crypto", crypto: scenario === "crypto" })),
-          }
-        const brokerage =
-          scenario === "mfa"
-            ? authStatus("MFA_REQUIRED_DO_NOT_RETRY", { mfa: true, detail: "approval for alice@example.com" })
-            : scenario === "expired"
-              ? authStatus("SESSION_EXPIRED", { detail: "token secret-token expired" })
-              : scenario === "crypto"
-                ? authStatus("CREDENTIALS_MISSING")
-                : authStatus("READY", { authenticated: true })
-        const crypto =
-          scenario === "crypto"
-            ? { ...authStatus("READY", { authenticated: true }), provider: "crypto" }
-            : { ...authStatus("CREDENTIALS_MISSING"), provider: "crypto" }
-        return {
-          stdout: envelope("auth verify", {
-            brokerage,
-            crypto,
-            access_token: "secret-token",
-            username: "alice@example.com",
-          }),
-        }
-      },
+      process: verificationProcess(() => scenario),
       run: (service, auth) =>
         Effect.gen(function* () {
           expect(yield* service.install({ executablePath, profile: "work" })).toMatchObject({ status: "installed" })
@@ -285,8 +298,22 @@ describe("RobinhoodIntegration", () => {
           scenario = "expired"
           expect(yield* service.verify()).toMatchObject({ status: "expired", ready: false })
           expect(auth).toEqual({})
+        }),
+    })
 
-          scenario = "crypto"
+    expect(result.persistedState).not.toContain("secret-token")
+    expect(result.persistedState).not.toContain("alice@example.com")
+  })
+
+  test("maps independent crypto and brokerage readiness without storing credentials", async () => {
+    const executablePath = "/opt/bin/rhx"
+    let scenario: VerificationScenario = "crypto"
+    const result = await fixture({
+      executablePath,
+      process: verificationProcess(() => scenario),
+      run: (service, auth) =>
+        Effect.gen(function* () {
+          expect(yield* service.install({ executablePath, profile: "work" })).toMatchObject({ status: "installed" })
           expect(yield* service.verify()).toMatchObject({
             status: "ready",
             brokerage: { state: "not_configured", ready: false },
@@ -322,8 +349,5 @@ describe("RobinhoodIntegration", () => {
     })
 
     expect(result.persistedState).toBeUndefined()
-    const serializedAuth = JSON.stringify({})
-    expect(serializedAuth).not.toContain("secret-token")
-    expect(serializedAuth).not.toContain("alice@example.com")
   })
 })

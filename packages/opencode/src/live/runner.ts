@@ -6,7 +6,7 @@ import { Process } from "@/util/process"
 import { Log } from "@/util/log"
 import type { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
-import { FINNY_BROKER_PY } from "@/backtest/broker-py"
+import { FINNY_LIVE_BROKER_PY } from "@/backtest/live-broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind, type BrokerMode } from "./brokers"
 import { validateSymbolForBroker } from "./brokers/policy"
@@ -932,7 +932,7 @@ if __name__ == "__main__":
         pushLog(preState, "info", `Using python at ${env.python}`)
         notify(preState)
 
-        await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_BROKER_PY)
+        await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_LIVE_BROKER_PY)
         await fs.writeFile(path.join(tmpDir, "execution_risk_gateway.py"), EXECUTION_RISK_GATEWAY_PY)
         await fs.writeFile(path.join(tmpDir, "strategy.py"), params.algorithm.code)
         await fs.writeFile(

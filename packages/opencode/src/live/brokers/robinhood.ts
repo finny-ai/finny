@@ -155,50 +155,66 @@ function isRobinhoodKey(key: string): boolean {
   return key === ROBINHOOD_PROVIDER_PREFIX || key.startsWith(`${ROBINHOOD_PROVIDER_PREFIX}-`)
 }
 
+function metadataValue(metadata: Record<string, string>, key: string, fallback: string): string {
+  return metadata[key]?.trim() || fallback
+}
+
+function hasReadinessMetadata(metadata: Record<string, string>): boolean {
+  return metadata.brokerageReady !== undefined || metadata.cryptoReady !== undefined
+}
+
+function verificationIsFresh(metadata: Record<string, string>, now = Date.now()): boolean {
+  const verifiedAt = Date.parse(metadata.verifiedAt ?? "")
+  return Number.isFinite(verifiedAt) && now >= verifiedAt && now - verifiedAt <= VERIFICATION_TTL_MS
+}
+
+function readyAssetClasses(metadata: Record<string, string>): BrokerAccount["assetClasses"] | undefined {
+  if (!hasReadinessMetadata(metadata)) return undefined
+  if (!verificationIsFresh(metadata)) return []
+  const readiness = [
+    ["equity", metadata.brokerageReady],
+    ["crypto", metadata.cryptoReady],
+  ] as const
+  return readiness.filter(([, ready]) => ready === "true").map(([assetClass]) => assetClass)
+}
+
+function robinhoodAccount(providerID: string, info: Auth.Info): BrokerAccount | undefined {
+  if (!isRobinhoodKey(providerID) || info.type !== "api") return undefined
+  const metadata = info.metadata ?? {}
+  const assetClasses = readyAssetClasses(metadata)
+  return {
+    providerID,
+    brokerKind: "robinhood",
+    label: metadata.label ?? "Default",
+    keyId: metadataValue(metadata, "keyId", DEFAULT_PROFILE),
+    endpoint: metadataValue(metadata, "endpoint", DEFAULT_COMMAND),
+    mode: "live",
+    ...(assetClasses ? { assetClasses } : {}),
+  }
+}
+
 export function generateRobinhoodProviderID(): string {
   return `${ROBINHOOD_PROVIDER_PREFIX}-${crypto.randomUUID()}`
 }
 
 export async function listRobinhoodAccounts(): Promise<BrokerAccount[]> {
   const all = await Auth.all()
-  const accounts: BrokerAccount[] = []
-  for (const [key, info] of Object.entries(all)) {
-    if (!isRobinhoodKey(key) || info.type !== "api") continue
-    const meta = (info as any).metadata ?? {}
-    const profile = typeof meta.keyId === "string" && meta.keyId.trim() ? meta.keyId.trim() : DEFAULT_PROFILE
-    const hasReadinessMetadata = meta.brokerageReady !== undefined || meta.cryptoReady !== undefined
-    const verifiedAt = typeof meta.verifiedAt === "string" ? Date.parse(meta.verifiedAt) : Number.NaN
-    const verificationFresh =
-      Number.isFinite(verifiedAt) && Date.now() >= verifiedAt && Date.now() - verifiedAt <= VERIFICATION_TTL_MS
-    const assetClasses = hasReadinessMetadata
-      ? ([
-          ...(verificationFresh && meta.brokerageReady === "true" ? ["equity" as const] : []),
-          ...(verificationFresh && meta.cryptoReady === "true" ? ["crypto" as const] : []),
-        ] satisfies BrokerAccount["assetClasses"])
-      : undefined
-    accounts.push({
-      providerID: key,
-      brokerKind: "robinhood",
-      label: meta.label ?? "Default",
-      keyId: profile,
-      endpoint: typeof meta.endpoint === "string" && meta.endpoint.trim() ? meta.endpoint.trim() : DEFAULT_COMMAND,
-      mode: "live",
-      ...(assetClasses ? { assetClasses } : {}),
-    })
-  }
-  return accounts
+  return Object.entries(all).flatMap(([providerID, info]) => {
+    const account = robinhoodAccount(providerID, info)
+    return account ? [account] : []
+  })
 }
 
 export async function readRobinhoodCredentials(providerID: string): Promise<BrokerCredentials | null> {
   const info = await Auth.get(providerID)
   if (!info || info.type !== "api") return null
-  const meta = (info as any).metadata ?? {}
-  const profile = typeof meta.keyId === "string" ? meta.keyId.trim() : ""
+  const meta = info.metadata ?? {}
+  const profile = meta.keyId?.trim() ?? ""
   if (!profile) return null
   return {
     keyId: profile,
     secret: "",
-    endpoint: typeof meta.endpoint === "string" && meta.endpoint.trim() ? meta.endpoint.trim() : DEFAULT_COMMAND,
+    endpoint: metadataValue(meta, "endpoint", DEFAULT_COMMAND),
     mode: "live",
   }
 }

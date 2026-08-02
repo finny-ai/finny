@@ -89,23 +89,55 @@ type ClientInput = {
   headers?: RequestInit["headers"]
 }
 
+type RequestMethod = "GET" | "POST" | "DELETE"
+
+const integrationStates: ReadonlySet<string> = new Set([
+  "unsupported",
+  "not_installed",
+  "installing",
+  "installed",
+  "authenticating",
+  "ready",
+  "mfa_required",
+  "expired",
+  "error",
+])
+
+const connectionStates: ReadonlySet<string> = new Set([
+  "unknown",
+  "not_configured",
+  "configured",
+  "ready",
+  "mfa_required",
+  "expired",
+  "error",
+])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return isRecord(value) ? value : undefined
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined
+}
+
 function responseMessage(value: unknown, fallback: string) {
-  if (!value || typeof value !== "object") return fallback
-  const body = value as Record<string, unknown>
-  if (typeof body.message === "string" && body.message) return body.message
-  if (typeof body.error === "string" && body.error) return body.error
-  if (body.error && typeof body.error === "object") {
-    const error = body.error as Record<string, unknown>
-    if (typeof error.message === "string" && error.message) return error.message
-  }
-  return fallback
+  const body = record(value)
+  if (!body) return fallback
+  const error = record(body.error)
+  return nonEmptyString(body.message) ?? nonEmptyString(body.error) ?? nonEmptyString(error?.message) ?? fallback
 }
 
 const optionalStatusFields = ["source", "executablePath", "profile", "loginArgs", "message", "checkedAt"] as const
 
 function normalizeStatus(value: unknown): unknown {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return value
-  const status = { ...value }
+  const body = record(value)
+  if (!body) return value
+  const status = { ...body }
   // Effect HttpApi encodes optional schema fields as JSON null. Keep the TUI's
   // domain model ergonomic by normalizing that wire representation back to an
   // absent optional value before validating the rest of the payload.
@@ -115,89 +147,87 @@ function normalizeStatus(value: unknown): unknown {
   return status
 }
 
+function isOptionalString(value: unknown) {
+  return value === undefined || typeof value === "string"
+}
+
+function isOptionalStringArray(value: unknown) {
+  return value === undefined || (Array.isArray(value) && value.every((item) => typeof item === "string"))
+}
+
+function isConnectionStatus(value: unknown): value is RobinhoodConnectionStatus {
+  const candidate = record(value)
+  if (!candidate) return false
+  return [
+    typeof candidate.configured === "boolean",
+    typeof candidate.ready === "boolean",
+    typeof candidate.state === "string" && connectionStates.has(candidate.state),
+  ].every(Boolean)
+}
+
 function isStatus(value: unknown): value is RobinhoodIntegrationStatus {
-  if (!value || typeof value !== "object") return false
-  const status = value as Partial<RobinhoodIntegrationStatus>
-  const integrationStates = new Set<RobinhoodIntegrationState>([
-    "unsupported",
-    "not_installed",
-    "installing",
-    "installed",
-    "authenticating",
-    "ready",
-    "mfa_required",
-    "expired",
-    "error",
-  ])
-  const connectionStates = new Set<RobinhoodConnectionState>([
-    "unknown",
-    "not_configured",
-    "configured",
-    "ready",
-    "mfa_required",
-    "expired",
-    "error",
-  ])
-  const connection = (item: unknown): item is RobinhoodConnectionStatus => {
-    if (!item || typeof item !== "object") return false
-    const candidate = item as Partial<RobinhoodConnectionStatus>
-    return (
-      typeof candidate.configured === "boolean" &&
-      typeof candidate.ready === "boolean" &&
-      typeof candidate.state === "string" &&
-      connectionStates.has(candidate.state as RobinhoodConnectionState)
-    )
+  const status = record(value)
+  if (!status) return false
+  return [
+    status.provider === "robinhood",
+    status.package === "rhx",
+    typeof status.status === "string" && integrationStates.has(status.status),
+    typeof status.pinnedVersion === "string",
+    typeof status.supported === "boolean",
+    typeof status.installed === "boolean",
+    typeof status.ready === "boolean",
+    status.source === undefined || status.source === "managed" || status.source === "manual",
+    isOptionalString(status.executablePath),
+    isOptionalString(status.profile),
+    isOptionalStringArray(status.loginArgs),
+    isOptionalString(status.message),
+    isOptionalString(status.checkedAt),
+    isConnectionStatus(status.brokerage),
+    isConnectionStatus(status.crypto),
+  ].every(Boolean)
+}
+
+function parsePayload(text: string): unknown {
+  try {
+    return text ? JSON.parse(text) : undefined
+  } catch {
+    return undefined
   }
-  return (
-    status.provider === "robinhood" &&
-    status.package === "rhx" &&
-    typeof status.status === "string" &&
-    integrationStates.has(status.status as RobinhoodIntegrationState) &&
-    typeof status.pinnedVersion === "string" &&
-    typeof status.supported === "boolean" &&
-    typeof status.installed === "boolean" &&
-    typeof status.ready === "boolean" &&
-    (status.source === undefined || status.source === "managed" || status.source === "manual") &&
-    (status.executablePath === undefined || typeof status.executablePath === "string") &&
-    (status.profile === undefined || typeof status.profile === "string") &&
-    (status.loginArgs === undefined ||
-      (Array.isArray(status.loginArgs) && status.loginArgs.every((item) => typeof item === "string"))) &&
-    (status.message === undefined || typeof status.message === "string") &&
-    (status.checkedAt === undefined || typeof status.checkedAt === "string") &&
-    connection(status.brokerage) &&
-    connection(status.crypto)
-  )
+}
+
+function requestHeaders(input: ClientInput, body?: RobinhoodIntegrationOptions) {
+  const headers = new Headers(input.headers)
+  headers.set("accept", "application/json")
+  if (body) headers.set("content-type", "application/json")
+  return headers
+}
+
+async function requestStatus(
+  input: ClientInput,
+  method: RequestMethod,
+  suffix = "",
+  body?: RobinhoodIntegrationOptions,
+) {
+  const url = new URL(ROBINHOOD_INTEGRATION_PATH + suffix, input.url)
+  const response = await input.fetch(url, {
+    method,
+    headers: requestHeaders(input, body),
+    body: body ? JSON.stringify(body) : undefined,
+  })
+  const text = await response.text()
+  const payload = parsePayload(text)
+
+  if (!response.ok) {
+    throw new Error(responseMessage(payload, text || `${method} ${url.pathname} failed (${response.status})`))
+  }
+  const status = normalizeStatus(payload)
+  if (!isStatus(status)) throw new Error(`Unexpected response from ${method} ${url.pathname}`)
+  return status
 }
 
 export function createRobinhoodIntegrationClient(input: ClientInput) {
-  async function request(method: "GET" | "POST" | "DELETE", suffix = "", body?: RobinhoodIntegrationOptions) {
-    const url = new URL(ROBINHOOD_INTEGRATION_PATH + suffix, input.url)
-    const headers = new Headers(input.headers)
-    headers.set("accept", "application/json")
-    if (body) headers.set("content-type", "application/json")
-
-    const response = await input.fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-    })
-    const text = await response.text()
-    let payload: unknown
-    try {
-      payload = text ? JSON.parse(text) : undefined
-    } catch {
-      payload = undefined
-    }
-
-    if (!response.ok) {
-      throw new Error(responseMessage(payload, text || `${method} ${url.pathname} failed (${response.status})`))
-    }
-    const status = normalizeStatus(payload)
-    if (!isStatus(status)) {
-      throw new Error(`Unexpected response from ${method} ${url.pathname}`)
-    }
-    return status
-  }
+  const request = (method: RequestMethod, suffix = "", body?: RobinhoodIntegrationOptions) =>
+    requestStatus(input, method, suffix, body)
 
   return {
     status: () => request("GET"),
