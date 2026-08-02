@@ -271,10 +271,10 @@ function newerVersionPublication(left: QueuedOutboxItem, right: QueuedOutboxItem
 
 async function currentVersionOutboxItem(persisted: QueuedOutboxItem): Promise<QueuedOutboxItem> {
   if (persisted.item.kind !== "version") return persisted
+  const publication = persisted.item.publication
   const queue = await readOutboxQueue(await outboxEntryNames())
   const siblings = queue.queued.filter(
-    (queued) =>
-      queued.item.kind === "version" && sameVersionPackage(queued.item.publication, persisted.item.publication),
+    (queued) => queued.item.kind === "version" && sameVersionPackage(queued.item.publication, publication),
   )
   const current = siblings.reduce(newerVersionPublication, persisted)
   for (const sibling of siblings) {
