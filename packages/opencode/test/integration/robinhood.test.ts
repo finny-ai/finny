@@ -141,13 +141,14 @@ async function fixture(input: {
   return { npmCalls, persistedState }
 }
 
-type VerificationScenario = "mfa" | "expired" | "crypto" | "ready"
+type VerificationScenario = "mfa" | "expired" | "crypto" | "ready" | "invalid"
 
 const brokerageStatus: Record<VerificationScenario, () => ReturnType<typeof authStatus>> = {
   mfa: () => authStatus("MFA_REQUIRED_DO_NOT_RETRY", { mfa: true, detail: "approval for alice@example.com" }),
   expired: () => authStatus("SESSION_EXPIRED", { detail: "token secret-token expired" }),
   crypto: () => authStatus("CREDENTIALS_MISSING"),
   ready: () => authStatus("READY", { authenticated: true }),
+  invalid: () => authStatus("READY", { authenticated: true }),
 }
 
 function verificationProcess(scenario: () => VerificationScenario) {
@@ -158,6 +159,7 @@ function verificationProcess(scenario: () => VerificationScenario) {
         stdout: envelope("doctor", doctorData({ brokerage: current !== "crypto", crypto: current === "crypto" })),
       }
     }
+    if (current === "invalid") return { stdout: envelope("auth verify", {}, "v3") }
     const crypto =
       current === "crypto"
         ? { ...authStatus("READY", { authenticated: true }), provider: "crypto" }
@@ -348,6 +350,13 @@ describe("RobinhoodIntegration", () => {
               verifiedAt: expect.any(String),
             },
           })
+
+          scenario = "invalid"
+          expect(yield* service.verify({ executablePath, profile: "other" })).toMatchObject({ status: "error" })
+          expect(auth).toEqual({})
+
+          scenario = "ready"
+          expect(yield* service.verify()).toMatchObject({ status: "ready", ready: true })
 
           expect(yield* service.install({ executablePath, profile: "other" })).toMatchObject({
             status: "installed",

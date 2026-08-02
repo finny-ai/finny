@@ -3,6 +3,8 @@
 export const ROBINHOOD_BROKER_PY = String.raw`
 import subprocess
 import time
+import urllib.parse
+import urllib.request
 
 class RobinhoodBroker(Broker):
     """Robinhood adapter backed by the rhx CLI.
@@ -172,6 +174,42 @@ class RobinhoodBroker(Broker):
         self._last_price[normalized] = float(last)
         return {"bid": float(bid or last), "ask": float(ask or last), "last": float(last)}
 
+    @staticmethod
+    def _validated_instrument_url(instrument: str) -> str:
+        parsed = urllib.parse.urlparse(instrument)
+        parts = [part for part in parsed.path.split("/") if part]
+        valid_id = len(parts) == 2 and parts[0] == "instruments" and all(
+            char.isalnum() or char == "-" for char in parts[1]
+        )
+        if (
+            parsed.scheme != "https"
+            or parsed.netloc != "api.robinhood.com"
+            or parsed.params
+            or parsed.query
+            or parsed.fragment
+            or not valid_id
+        ):
+            raise RuntimeError("rhx returned an invalid Robinhood instrument URL")
+        return instrument
+
+    def _resolve_instrument_symbol(self, instrument: str) -> str:
+        cached = self._instrument_symbols.get(instrument)
+        if cached:
+            return cached
+        url = self._validated_instrument_url(instrument)
+        request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Finny/Robinhood"})
+        try:
+            with urllib.request.urlopen(request, timeout=10) as response:
+                payload = json.load(response)
+        except Exception as exc:
+            raise RuntimeError("Unable to resolve a Robinhood stock instrument") from exc
+        raw = payload.get("symbol") if isinstance(payload, dict) else None
+        if not isinstance(raw, str) or not raw.strip():
+            raise RuntimeError("Robinhood instrument response omitted its symbol")
+        symbol = self.normalize_symbol(raw)
+        self._instrument_symbols[instrument] = symbol
+        return symbol
+
     def _row_symbol(self, row: Dict[str, Any]) -> Optional[str]:
         asset_type = str(row.get("asset_type") or "").lower()
         if asset_type == "option":
@@ -184,7 +222,7 @@ class RobinhoodBroker(Broker):
             return self.normalize_symbol(base)
         instrument = self._find_string(row, "instrument")
         if instrument:
-            return self._instrument_symbols.get(instrument)
+            return self._resolve_instrument_symbol(instrument)
         return None
 
     @classmethod

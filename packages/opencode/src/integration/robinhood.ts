@@ -476,6 +476,10 @@ export const layerWith = (options: LayerOptions = {}) =>
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
             const prior = yield* readMetadata()
+            // Verification replaces the readiness lease. Invalidate the prior
+            // account before invoking RHX so process/schema failures cannot
+            // leave an old profile or executable selectable.
+            yield* removeConnectorAccounts()
             const profile = normalizeProfile(input.profile ?? prior?.profile)
             if (!profile) return yield* new IntegrationError({ kind: "input" })
             const metadata: StoredMetadata | undefined = input.executablePath

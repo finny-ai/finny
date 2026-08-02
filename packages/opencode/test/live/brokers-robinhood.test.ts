@@ -27,13 +27,16 @@ if "account" in args and "summary" in args:
     })
 elif "positions" in args and "list" in args:
     data = ([{"asset_code": "BTC", "total_quantity": "0.5"}] if provider == "crypto" else
-            [{"asset_type": "stock", "instrument": "https://api.robinhood.com/instruments/aapl/", "quantity": "2"}])
+            [{"asset_type": "stock", "instrument": "https://api.robinhood.com/instruments/aapl/", "quantity": "2"},
+             {"asset_type": "stock", "instrument": "https://api.robinhood.com/instruments/msft/", "quantity": "3"}])
 elif "quote" in args and "get" in args:
     symbol = args[-1]
+    instrument = "aapl" if symbol == "AAPL" else "msft"
+    price = "100" if symbol == "AAPL" else "50"
     data = ({"symbol": symbol, "quote": {"results": [{"bid": "199", "ask": "201"}]}}
             if provider == "crypto" else
-            {"symbol": symbol, "quote": {"instrument": "https://api.robinhood.com/instruments/aapl/",
-                                          "bid_price": "99", "ask_price": "101", "last_trade_price": "100"}})
+            {"symbol": symbol, "quote": {"instrument": f"https://api.robinhood.com/instruments/{instrument}/",
+                                          "bid_price": price, "ask_price": price, "last_trade_price": price}})
 else:
     print(json.dumps({"ok": False, "command": "unknown", "provider": provider,
                       "data": None, "error": {"code": "VALIDATION_ERROR", "message": "unsupported fixture command"},
@@ -44,21 +47,49 @@ print(json.dumps({"ok": True, "command": "fixture", "provider": provider, "data"
                   "error": None, "meta": {"output_schema": "v4"}}))
 `
 
-const brokerScenario = String.raw`import os
+const brokerScenario = String.raw`import io
+import json
+import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 from finny_broker import RobinhoodBroker
 
 command = os.environ["FAKE_RHX_PATH"]
 
+class InstrumentResponse(io.BytesIO):
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+resolved = []
+
+def resolve_instrument(request, timeout):
+    assert timeout == 10
+    resolved.append(request.full_url)
+    assert request.full_url == "https://api.robinhood.com/instruments/msft/"
+    return InstrumentResponse(json.dumps({"symbol": "MSFT"}).encode())
+
 stock = RobinhoodBroker(profile="work", command=command, symbol="AAPL")
 assert stock.position("AAPL") == 2.0
-assert stock.execution_snapshot("AAPL") == {
-    "cash": 500.0,
-    "equity": 1000.0,
-    "positions": {"AAPL": {"qty": 2.0, "mark": 100.0}},
-}
+with patch("urllib.request.urlopen", side_effect=resolve_instrument):
+    assert stock.execution_snapshot("AAPL") == {
+        "cash": 500.0,
+        "equity": 1000.0,
+        "positions": {
+            "AAPL": {"qty": 2.0, "mark": 100.0},
+            "MSFT": {"qty": 3.0, "mark": 50.0},
+        },
+    }
+assert resolved == ["https://api.robinhood.com/instruments/msft/"]
+try:
+    stock._resolve_instrument_symbol("https://example.com/instruments/evil/")
+    raise AssertionError("untrusted instrument URL was accepted")
+except RuntimeError as exc:
+    assert "invalid Robinhood instrument URL" in str(exc)
 assert stock.buy("AAPL", qty=1).status.startswith("rejected: Robinhood order submission is disabled")
 try:
     stock._run(["live", "on", "--yes"])
