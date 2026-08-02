@@ -69,28 +69,33 @@ function backtestManifest(id: string, sourceArtifacts?: string): BacktestStore.M
   }
 }
 
-async function createStrictEvidence(input: {
+const STRICT_SOURCE_ARTIFACTS = [
+  "results.json",
+  "data_extractor.manifest.json",
+  "ohlcv.csv",
+  "processed_ohlcv.csv",
+  "orders.csv",
+  "fills.csv",
+  "rejections.csv",
+] as const
+const STRICT_CSV = "id\n"
+
+interface StrictEvidenceInput {
   runId: string
   algorithmId?: string
   algorithmVersion?: number
-}): Promise<string> {
-  const directory = path.join(sandbox, input.runId)
-  const source = path.join(sandbox, `${input.runId}-source`)
-  await fs.mkdir(source)
-  const csv = "id\n"
-  for (const name of [
-    "results.json",
-    "data_extractor.manifest.json",
-    "ohlcv.csv",
-    "processed_ohlcv.csv",
-    "orders.csv",
-    "fills.csv",
-    "rejections.csv",
-  ]) {
-    await fs.writeFile(path.join(source, name), name.endsWith(".json") ? "{}\n" : csv)
-  }
+}
 
-  const hash = (value: string) => sha256Text(value)
+async function writeStrictSourceArtifacts(runId: string): Promise<string> {
+  const source = path.join(sandbox, `${runId}-source`)
+  await fs.mkdir(source)
+  for (const name of STRICT_SOURCE_ARTIFACTS) {
+    await fs.writeFile(path.join(source, name), name.endsWith(".json") ? "{}\n" : STRICT_CSV)
+  }
+  return source
+}
+
+function strictQualification() {
   const policy = makeQualificationPolicyV1({
     minTrades: 1,
     minEffectiveSampleSize: 1,
@@ -100,8 +105,8 @@ async function createStrictEvidence(input: {
     requirePositiveAlpha: false,
     requireRiskContract: false,
   })
-  const planHash = hash("plan")
-  const qualification = {
+  const planHash = sha256Text("plan")
+  return {
     policy,
     context: {
       schema: "finny.qualification_context" as const,
@@ -120,12 +125,15 @@ async function createStrictEvidence(input: {
       durableSelectionBudget: 1,
       durableTrialCount: 1,
       datasetEvidenceId: "central-sync-dataset",
-      datasetHash: hash(csv),
+      datasetHash: sha256Text(STRICT_CSV),
       datasetQualification: "strict_qualified" as const,
       dataQualityMode: "strict" as const,
     },
   }
-  const metrics = {
+}
+
+function strictMetrics() {
+  return {
     totalReturn: -0.1,
     maxDrawdown: 0.1,
     annualizedVolatility: 0.2,
@@ -137,64 +145,73 @@ async function createStrictEvidence(input: {
     runKind: "crucible_2_0" as const,
     diagnostics: { barsProcessed: 100 },
   }
-  const emptyObjectHash = hash(stableStringify({}))
-  const engineTreeHash = hash(stableStringify([]))
+}
+
+function strictIdentity(input: StrictEvidenceInput, qualification: ReturnType<typeof strictQualification>) {
+  const emptyObjectHash = sha256Text(stableStringify({}))
+  return {
+    algorithmId: input.algorithmId ?? "sync-algorithm",
+    algorithmVersion: input.algorithmVersion ?? 1,
+    strategyHash: sha256Text("strategy"),
+    savedConfigHash: sha256Text("saved-config"),
+    effectiveConfigHash: emptyObjectHash,
+    documentHashes: {
+      mission: sha256Text("mission"),
+      preferences: sha256Text("preferences"),
+      decisions: sha256Text("decisions"),
+      reasoning: sha256Text("reasoning"),
+    },
+    riskContractHash: sha256Text("risk"),
+    rawDataHash: sha256Text(STRICT_CSV),
+    processedDataHash: sha256Text(STRICT_CSV),
+    manifestHash: sha256Text("{}\n"),
+    engineTreeHash: sha256Text(stableStringify([])),
+    assetProfileHash: emptyObjectHash,
+    executionProfileHash: emptyObjectHash,
+    experimentPlanId: qualification.context.planId,
+    experimentPlanHash: qualification.context.planHash,
+    qualificationPolicyId: qualification.policy.policyId,
+    qualificationPolicyHash: qualification.policy.policyHash,
+    datasetEvidenceId: qualification.context.datasetEvidenceId,
+    datasetQualification: qualification.context.datasetQualification,
+    dataQualityMode: qualification.context.dataQualityMode,
+    seed: 1,
+    dateWindow: { start: "2026-01-01", end: "2026-02-01", interval: "1d" },
+  }
+}
+
+function strictJsonArtifacts(
+  metrics: ReturnType<typeof strictMetrics>,
+  qualification: ReturnType<typeof strictQualification>,
+) {
+  return {
+    "validation.json": { valid: true },
+    "metrics.json": metrics,
+    "data_quality.json": {},
+    "execution_assumptions.json": {},
+    "execution_profile.json": {},
+    "effective_config.json": {},
+    "engine_tree.json": [],
+    "asset_spec.json": {},
+    "qualification_policy.json": qualification.policy,
+    "qualification_context.json": qualification.context,
+  }
+}
+
+async function createStrictEvidence(input: StrictEvidenceInput): Promise<string> {
+  const directory = path.join(sandbox, input.runId)
+  const source = await writeStrictSourceArtifacts(input.runId)
+  const qualification = strictQualification()
+  const metrics = strictMetrics()
   await publishStrictRunBundle({
     finalDir: directory,
     runId: input.runId,
-    identity: {
-      algorithmId: input.algorithmId ?? "sync-algorithm",
-      algorithmVersion: input.algorithmVersion ?? 1,
-      strategyHash: hash("strategy"),
-      savedConfigHash: hash("saved-config"),
-      effectiveConfigHash: emptyObjectHash,
-      documentHashes: {
-        mission: hash("mission"),
-        preferences: hash("preferences"),
-        decisions: hash("decisions"),
-        reasoning: hash("reasoning"),
-      },
-      riskContractHash: hash("risk"),
-      rawDataHash: hash(csv),
-      processedDataHash: hash(csv),
-      manifestHash: hash("{}\n"),
-      engineTreeHash,
-      assetProfileHash: emptyObjectHash,
-      executionProfileHash: emptyObjectHash,
-      experimentPlanId: qualification.context.planId,
-      experimentPlanHash: qualification.context.planHash,
-      qualificationPolicyId: policy.policyId,
-      qualificationPolicyHash: policy.policyHash,
-      datasetEvidenceId: qualification.context.datasetEvidenceId,
-      datasetQualification: qualification.context.datasetQualification,
-      dataQualityMode: qualification.context.dataQualityMode,
-      seed: 1,
-      dateWindow: { start: "2026-01-01", end: "2026-02-01", interval: "1d" },
-    },
+    identity: strictIdentity(input, qualification),
     qualification,
     recommendation: qualifyCandidateV1({ candidateId: input.runId, results: metrics as any, qualification })
       .recommendation,
-    artifacts: [
-      "results.json",
-      "data_extractor.manifest.json",
-      "ohlcv.csv",
-      "processed_ohlcv.csv",
-      "orders.csv",
-      "fills.csv",
-      "rejections.csv",
-    ].map((name) => ({ source: path.join(source, name), path: name })),
-    jsonArtifacts: {
-      "validation.json": { valid: true },
-      "metrics.json": metrics,
-      "data_quality.json": {},
-      "execution_assumptions.json": {},
-      "execution_profile.json": {},
-      "effective_config.json": {},
-      "engine_tree.json": [],
-      "asset_spec.json": {},
-      "qualification_policy.json": policy,
-      "qualification_context.json": qualification.context,
-    },
+    artifacts: STRICT_SOURCE_ARTIFACTS.map((name) => ({ source: path.join(source, name), path: name })),
+    jsonArtifacts: strictJsonArtifacts(metrics, qualification),
     requiredArtifacts: [],
   })
   return directory

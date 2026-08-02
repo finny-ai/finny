@@ -3,7 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { DeviceProfile } from "../../src/device"
-import { AlgorithmVersionPackage } from "../../src/algorithm/version-package"
+import { AlgorithmVersionPackage, type CatalogMetadata } from "../../src/algorithm/version-package"
 import { LocalAlgorithmStore } from "../../src/storage/local/algorithm-store"
 import { currentAlgorithmHashes } from "../../src/backtest/run-integrity"
 import { BlobWriter, Uint8ArrayReader, ZipWriter } from "@zip.js/zip.js"
@@ -46,6 +46,93 @@ async function duplicateEntryArchive(filename: string): Promise<Uint8Array> {
     if (source.every((byte, index) => archive[offset + index] === byte)) archive.set(replacement, offset)
   }
   return archive
+}
+
+type SavedVersion = Awaited<ReturnType<typeof saveFixture>>
+
+function catalogMetadata(version: SavedVersion, overrides: Partial<CatalogMetadata> = {}): CatalogMetadata {
+  return {
+    algorithmId: version.algorithmId,
+    name: version.name,
+    version: version.version,
+    language: version.language,
+    status: version.status,
+    description: version.description,
+    brokerKind: version.brokerKind,
+    targetBrokerage: version.targetBrokerage,
+    timeCreated: version.time_created,
+    timeUpdated: version.time_updated,
+    ...overrides,
+  }
+}
+
+async function saveNewerVersion(previous: SavedVersion): Promise<SavedVersion> {
+  return LocalAlgorithmStore.insertVersion({
+    algorithmId: previous.algorithmId,
+    userId: previous.userId,
+    name: previous.name,
+    code: "class Strategy:\n    version = 2\n",
+    language: "python",
+    status: "ready",
+    description: "newer metadata",
+    config: '{"symbol":"QQQ"}\n',
+    reasoning: "v2 reasoning\n",
+    docsMode: "inherit",
+    brokerKind: "ibkr",
+    targetBrokerage: "binance",
+    time_created: 10,
+    time_updated: 200,
+  })
+}
+
+async function materializeNewerThenOlder(input: {
+  newer: SavedVersion
+  newerArchive: Uint8Array
+  older: SavedVersion
+  olderArchive: Uint8Array
+}) {
+  process.env.FINNY_HOME = path.join(sandbox, "out-of-order-destination")
+  await AlgorithmVersionPackage.materialize({
+    archive: input.newerArchive,
+    catalog: catalogMetadata(input.newer),
+  })
+  return AlgorithmVersionPackage.materialize({
+    archive: input.olderArchive,
+    catalog: catalogMetadata(input.older, {
+      language: "legacy-python",
+      status: "legacy",
+      description: "older metadata",
+      brokerKind: "tradier",
+      targetBrokerage: "schwab",
+      timeCreated: 1,
+      timeUpdated: 999,
+    }),
+  })
+}
+
+async function expectCurrentVersionMetadata(algorithmId: string): Promise<void> {
+  expect(await LocalAlgorithmStore.getById(algorithmId)).toMatchObject({
+    version: 2,
+    language: "python",
+    status: "ready",
+    description: "newer metadata",
+    brokerKind: "ibkr",
+    targetBrokerage: "binance",
+    time_updated: 200,
+  })
+  expect(await fs.readFile(path.join(LocalAlgorithmStore.directoryFor(algorithmId), "CURRENT"), "utf8")).toBe("v02")
+}
+
+async function expectOlderVersionMetadata(algorithmId: string, materialized: SavedVersion): Promise<void> {
+  const expected = {
+    version: 1,
+    language: "legacy-python",
+    status: "legacy",
+    description: "older metadata",
+  }
+  expect(materialized).toMatchObject(expected)
+  expect(await LocalAlgorithmStore.getByIdAndVersion(algorithmId, 1)).toMatchObject(expected)
+  expect((await LocalAlgorithmStore.listVersions(algorithmId)).map((version) => version.version)).toEqual([2, 1])
 }
 
 beforeEach(async () => {
@@ -209,82 +296,17 @@ describe.serial("canonical algorithm version package", () => {
 
   test("adding an older version preserves newer CURRENT metadata", async () => {
     const v1 = await saveFixture("out-of-order-algo", "out-of-order-name")
-    const v2 = await LocalAlgorithmStore.insertVersion({
-      algorithmId: v1.algorithmId,
-      userId: v1.userId,
-      name: v1.name,
-      code: "class Strategy:\n    version = 2\n",
-      language: "python",
-      status: "ready",
-      description: "newer metadata",
-      config: '{"symbol":"QQQ"}\n',
-      reasoning: "v2 reasoning\n",
-      docsMode: "inherit",
-      brokerKind: "ibkr",
-      targetBrokerage: "binance",
-      time_created: 10,
-      time_updated: 200,
-    })
+    const v2 = await saveNewerVersion(v1)
     const packageV1 = await AlgorithmVersionPackage.build({ algorithmId: v1.algorithmId, version: 1 })
     const packageV2 = await AlgorithmVersionPackage.build({ algorithmId: v1.algorithmId, version: 2 })
-
-    process.env.FINNY_HOME = path.join(sandbox, "out-of-order-destination")
-    await AlgorithmVersionPackage.materialize({
-      archive: packageV2.archive,
-      catalog: {
-        algorithmId: v2.algorithmId,
-        name: v2.name,
-        version: 2,
-        language: v2.language,
-        status: v2.status,
-        description: v2.description,
-        brokerKind: v2.brokerKind,
-        targetBrokerage: v2.targetBrokerage,
-        timeCreated: v2.time_created,
-        timeUpdated: v2.time_updated,
-      },
-    })
-    const older = await AlgorithmVersionPackage.materialize({
-      archive: packageV1.archive,
-      catalog: {
-        algorithmId: v1.algorithmId,
-        name: v1.name,
-        version: 1,
-        language: "legacy-python",
-        status: "legacy",
-        description: "older metadata",
-        brokerKind: "tradier",
-        targetBrokerage: "schwab",
-        timeCreated: 1,
-        timeUpdated: 999,
-      },
+    const older = await materializeNewerThenOlder({
+      newer: v2,
+      newerArchive: packageV2.archive,
+      older: v1,
+      olderArchive: packageV1.archive,
     })
 
-    const current = await LocalAlgorithmStore.getById(v1.algorithmId)
-    expect(current).toMatchObject({
-      version: 2,
-      language: "python",
-      status: "ready",
-      description: "newer metadata",
-      brokerKind: "ibkr",
-      targetBrokerage: "binance",
-      time_updated: 200,
-    })
-    expect(older).toMatchObject({
-      version: 1,
-      language: "legacy-python",
-      status: "legacy",
-      description: "older metadata",
-    })
-    expect(await LocalAlgorithmStore.getByIdAndVersion(v1.algorithmId, 1)).toMatchObject({
-      version: 1,
-      language: "legacy-python",
-      status: "legacy",
-      description: "older metadata",
-    })
-    expect((await LocalAlgorithmStore.listVersions(v1.algorithmId)).map((version) => version.version)).toEqual([2, 1])
-    expect(await fs.readFile(path.join(LocalAlgorithmStore.directoryFor(v1.algorithmId), "CURRENT"), "utf8")).toBe(
-      "v02",
-    )
+    await expectCurrentVersionMetadata(v1.algorithmId)
+    await expectOlderVersionMetadata(v1.algorithmId, older)
   })
 })

@@ -382,42 +382,64 @@ async function expectSuccess(response: Response): Promise<void> {
   throw new Error(`Finny Platform publication failed (${response.status})${detail ? `: ${detail}` : ""}`)
 }
 
-async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
-  const declaredLength = response.headers.get("content-length")
-  if (declaredLength !== null) {
-    const bytes = Number(declaredLength)
-    if (Number.isFinite(bytes) && bytes > maximumBytes) {
-      await response.body?.cancel().catch(() => undefined)
-      throw new PreflightError(`Downloaded algorithm version bundle exceeds ${maximumBytes} bytes`)
-    }
-  }
-  if (!response.body) return new Uint8Array()
+function bundleSizeError(maximumBytes: number): PreflightError {
+  return new PreflightError(`Downloaded algorithm version bundle exceeds ${maximumBytes} bytes`)
+}
 
-  const reader = response.body.getReader()
+async function assertDeclaredBundleSize(response: Response, maximumBytes: number): Promise<void> {
+  const declaredLength = response.headers.get("content-length")
+  if (declaredLength === null) return
+  const bytes = Number(declaredLength)
+  if (!Number.isFinite(bytes) || bytes <= maximumBytes) return
+  await response.body?.cancel().catch(() => undefined)
+  throw bundleSizeError(maximumBytes)
+}
+
+interface ResponseChunks {
+  chunks: Uint8Array[]
+  totalBytes: number
+}
+
+async function collectResponseChunks(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maximumBytes: number,
+): Promise<ResponseChunks> {
   const chunks: Uint8Array[] = []
   let totalBytes = 0
-  try {
-    while (true) {
-      const next = await reader.read()
-      if (next.done) break
-      totalBytes += next.value.byteLength
-      if (totalBytes > maximumBytes) {
-        await reader.cancel().catch(() => undefined)
-        throw new PreflightError(`Downloaded algorithm version bundle exceeds ${maximumBytes} bytes`)
-      }
-      chunks.push(next.value)
+  while (true) {
+    const next = await reader.read()
+    if (next.done) return { chunks, totalBytes }
+    totalBytes += next.value.byteLength
+    if (totalBytes > maximumBytes) {
+      await reader.cancel().catch(() => undefined)
+      throw bundleSizeError(maximumBytes)
     }
-  } finally {
-    reader.releaseLock()
+    chunks.push(next.value)
   }
+}
 
-  const result = new Uint8Array(totalBytes)
+function joinResponseChunks(input: ResponseChunks): Uint8Array {
+  const result = new Uint8Array(input.totalBytes)
   let offset = 0
-  for (const chunk of chunks) {
+  for (const chunk of input.chunks) {
     result.set(chunk, offset)
     offset += chunk.byteLength
   }
   return result
+}
+
+async function consumeBoundedResponseBody(body: ReadableStream<Uint8Array>, maximumBytes: number): Promise<Uint8Array> {
+  const reader = body.getReader()
+  try {
+    return joinResponseChunks(await collectResponseChunks(reader, maximumBytes))
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
+  await assertDeclaredBundleSize(response, maximumBytes)
+  return response.body ? consumeBoundedResponseBody(response.body, maximumBytes) : new Uint8Array()
 }
 
 function defaultTransport(): Transport {
@@ -720,21 +742,37 @@ async function assertStrictEvidenceIntegrity(input: {
   directory: string
   manifest: BacktestStore.Manifest
 }): Promise<void> {
-  const verified = await verifyStrictRunDir(input.directory)
+  const run = await verifiedStrictEvidence(input.directory)
+  assertStrictEvidenceIdentity(run, input.manifest)
+}
+
+async function verifiedStrictEvidence(directory: string) {
+  const verified = await verifyStrictRunDir(directory)
   if (!verified.ok || !verified.run) {
     const detail = verified.errors.slice(0, 10).join("; ") || "unknown integrity failure"
     throw new PreflightError(`Strict-run evidence integrity verification failed: ${detail}`)
   }
+  return verified.run
+}
 
-  const identity = verified.run.identity
-  const mismatches = [
-    verified.run.runId === input.manifest.id ? undefined : "runId",
-    identity.algorithmId === input.manifest.algorithmId ? undefined : "algorithmId",
-    identity.algorithmVersion === input.manifest.algorithmVersion ? undefined : "algorithmVersion",
+function strictEvidenceIdentityMismatches(
+  run: Awaited<ReturnType<typeof verifiedStrictEvidence>>,
+  manifest: BacktestStore.Manifest,
+): string[] {
+  return [
+    run.runId === manifest.id ? undefined : "runId",
+    run.identity.algorithmId === manifest.algorithmId ? undefined : "algorithmId",
+    run.identity.algorithmVersion === manifest.algorithmVersion ? undefined : "algorithmVersion",
   ].filter((field): field is string => field !== undefined)
-  if (mismatches.length > 0) {
-    throw new PreflightError(`Strict-run evidence does not match the backtest manifest: ${mismatches.join(", ")}`)
-  }
+}
+
+function assertStrictEvidenceIdentity(
+  run: Awaited<ReturnType<typeof verifiedStrictEvidence>>,
+  manifest: BacktestStore.Manifest,
+): void {
+  const mismatches = strictEvidenceIdentityMismatches(run, manifest)
+  if (mismatches.length === 0) return
+  throw new PreflightError(`Strict-run evidence does not match the backtest manifest: ${mismatches.join(", ")}`)
 }
 
 export async function publishStrictRun(input: {
@@ -783,41 +821,57 @@ function outboxRetryOrder(left: QueuedOutboxItem, right: QueuedOutboxItem): numb
   return left.item.publication.idempotencyKey.localeCompare(right.item.publication.idempotencyKey)
 }
 
-async function collapseSupersededVersions(
-  queued: QueuedOutboxItem[],
-): Promise<{ queued: QueuedOutboxItem[]; failed: number }> {
+function versionPackageGroupKey(item: Extract<OutboxItem, { kind: "version" }>): string {
+  return stableStringify({
+    algorithmId: item.publication.algorithm.algorithmId,
+    version: item.publication.algorithm.version,
+    payloadHash: item.publication.package.payloadHash,
+    archiveSha256: item.publication.package.archiveSha256,
+  })
+}
+
+function partitionOutboxVersions(queued: QueuedOutboxItem[]): {
+  retained: QueuedOutboxItem[]
+  groups: Map<string, QueuedOutboxItem[]>
+} {
   const retained: QueuedOutboxItem[] = []
   const groups = new Map<string, QueuedOutboxItem[]>()
   for (const item of queued) {
-    if (item.item.kind !== "version") {
-      retained.push(item)
-      continue
+    if (item.item.kind !== "version") retained.push(item)
+    else {
+      const key = versionPackageGroupKey(item.item)
+      groups.set(key, [...(groups.get(key) ?? []), item])
     }
-    const key = stableStringify({
-      algorithmId: item.item.publication.algorithm.algorithmId,
-      version: item.item.publication.algorithm.version,
-      payloadHash: item.item.publication.package.payloadHash,
-      archiveSha256: item.item.publication.package.archiveSha256,
-    })
-    const group = groups.get(key) ?? []
-    group.push(item)
-    groups.set(key, group)
   }
+  return { retained, groups }
+}
 
-  let failed = 0
-  for (const group of groups.values()) {
-    const current = group.slice(1).reduce(newerVersionPublication, group[0])
-    try {
-      for (const stale of group) {
-        if (stale.file === current.file) continue
-        await fs.rm(stale.file, { force: true })
-      }
-      retained.push(current)
-    } catch {
-      failed++
-    }
+async function collapseVersionGroup(group: QueuedOutboxItem[]): Promise<QueuedOutboxItem | undefined> {
+  const current = group.slice(1).reduce(newerVersionPublication, group[0])
+  try {
+    await deleteSupersededVersionItems(group, current)
+    return current
+  } catch {
+    return undefined
   }
-  return { queued: retained, failed }
+}
+
+async function deleteSupersededVersionItems(group: QueuedOutboxItem[], current: QueuedOutboxItem): Promise<void> {
+  for (const item of group) {
+    if (item.file === current.file) continue
+    await fs.rm(item.file, { force: true })
+  }
+}
+
+async function collapseSupersededVersions(
+  queued: QueuedOutboxItem[],
+): Promise<{ queued: QueuedOutboxItem[]; failed: number }> {
+  const { retained, groups } = partitionOutboxVersions(queued)
+  const collapsed = await Promise.all([...groups.values()].map(collapseVersionGroup))
+  return {
+    queued: [...retained, ...collapsed.filter((item): item is QueuedOutboxItem => item !== undefined)],
+    failed: collapsed.filter((item) => item === undefined).length,
+  }
 }
 
 async function retryQueuedOutboxItem(input: { queued: QueuedOutboxItem; transport: Transport }): Promise<boolean> {
