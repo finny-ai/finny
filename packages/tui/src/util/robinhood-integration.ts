@@ -83,6 +83,10 @@ export function canRunRobinhoodLoginLocally(serverUrl: string): boolean {
   }
 }
 
+export function canSelectRobinhood(status: Pick<RobinhoodIntegrationStatus, "brokerage" | "crypto">): boolean {
+  return status.brokerage.ready || status.crypto.ready
+}
+
 type ClientInput = {
   url: string
   fetch: typeof fetch

@@ -13,6 +13,7 @@ import { useToast } from "../ui/toast"
 import { ForegroundCommandError, runForegroundInteractiveCommand } from "../util/foreground-command"
 import {
   canRunRobinhoodLoginLocally,
+  canSelectRobinhood,
   createRobinhoodIntegrationClient,
   managedRobinhoodLoginCommand,
   ROBINHOOD_CRYPTO_URL,
@@ -75,6 +76,33 @@ function integrationChanged(current: RobinhoodIntegrationStatus, input: Robinhoo
   const profileChanged = (input.profile ?? "default") !== (current.profile ?? "default")
   const executableChanged = !!input.executablePath && input.executablePath !== current.executablePath
   return profileChanged || executableChanged
+}
+
+function ensureLocalLogin(canRunLogin: boolean) {
+  if (canRunLogin) return
+  throw new Error(
+    "Interactive RHX login is disabled for remote Finny servers. Run `rhx --profile <profile> auth login` on the server, then choose Verify.",
+  )
+}
+
+function ensureInstalled(current: RobinhoodIntegrationStatus) {
+  if (current.installed && current.status !== "error") return
+  throw new Error(current.message || "RHX must be installed before login")
+}
+
+function validatedProfile(value?: string) {
+  const profile = selectedProfile(value ?? "default")
+  if (!RHX_PROFILE_PATTERN.test(profile)) throw new Error("Enter a valid RHX profile")
+  return profile
+}
+
+function connectionFailureMessage(verified: RobinhoodIntegrationStatus, loginError: unknown) {
+  if (verified.message) return verified.message
+  return loginError instanceof Error ? loginError.message : "RHX login was not verified"
+}
+
+function connectionSuccessMessage(status: RobinhoodIntegrationStatus) {
+  return status.brokerage.ready ? "Robinhood stocks & ETFs connected" : "Robinhood crypto connected"
 }
 
 async function loginCommand(input: {
@@ -460,7 +488,7 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
   }
 
   async function selectRobinhood(next: RobinhoodIntegrationStatus) {
-    if (!next.brokerage.ready) return false
+    if (!canSelectRobinhood(next)) return false
     await local.brokerage.set("robinhood")
     props.onChanged?.()
     return true
@@ -509,30 +537,20 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
   }
 
   async function connectBrokerageSession(initial: RobinhoodIntegrationStatus) {
-    if (!canRunLogin()) {
-      throw new Error(
-        "Interactive RHX login is disabled for remote Finny servers. Run `rhx --profile <profile> auth login` on the server, then choose Verify.",
-      )
-    }
+    ensureLocalLogin(canRunLogin())
     const input = currentOptions(initial)
     const current = await installForLogin(initial, input)
-    if (!current.installed || current.status === "error") {
-      throw new Error(current.message || "RHX must be installed before login")
-    }
-
-    const profile = selectedProfile(input.profile ?? "default")
-    if (!RHX_PROFILE_PATTERN.test(profile)) throw new Error("Enter a valid RHX profile")
+    ensureInstalled(current)
+    const profile = validatedProfile(input.profile)
     const command = await loginCommand({ options: input, profile, manualPathConfirmed: manualPathTouched })
     const loginError = await runLogin(command)
     const verified = await client.verify(input)
     applyStatus(verified)
     if (await selectRobinhood(verified)) {
-      toast.show({ message: "Robinhood stocks & ETFs connected", variant: "success", duration: 4000 })
+      toast.show({ message: connectionSuccessMessage(verified), variant: "success", duration: 4000 })
       return
     }
-    throw new Error(
-      verified.message || (loginError instanceof Error ? loginError.message : "RHX login was not verified"),
-    )
+    throw new Error(connectionFailureMessage(verified, loginError))
   }
 
   function handleConnectionError(cause: unknown) {

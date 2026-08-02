@@ -413,6 +413,10 @@ export const layerWith = (options: LayerOptions = {}) =>
             const doctor = yield* Schema.decodeUnknownEffect(DoctorData)(envelope.data).pipe(
               Effect.mapError((cause) => new IntegrationError({ kind: "schema", cause })),
             )
+            // Installation changes configuration but does not verify it. Remove
+            // any previously selectable account before persisting the connector
+            // so a cancelled login cannot reuse stale readiness metadata.
+            yield* removeConnectorAccounts()
             yield* writeMetadata(metadata)
             return makeStatus({
               managedSupported,

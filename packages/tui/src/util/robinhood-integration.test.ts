@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test"
 import {
   canRunRobinhoodLoginLocally,
+  canSelectRobinhood,
   createRobinhoodIntegrationClient,
   managedRobinhoodLoginCommand,
   ROBINHOOD_INTEGRATION_PATH,
@@ -48,6 +49,22 @@ const ready: RobinhoodIntegrationStatus = {
   brokerage: { configured: true, ready: true, state: "ready" },
   crypto: { configured: false, ready: false, state: "not_configured" },
 }
+
+test("Robinhood selection accepts either independently verified capability", () => {
+  expect(canSelectRobinhood(ready)).toBe(true)
+  expect(
+    canSelectRobinhood({
+      brokerage: { configured: false, ready: false, state: "not_configured" },
+      crypto: { configured: true, ready: true, state: "ready" },
+    }),
+  ).toBe(true)
+  expect(
+    canSelectRobinhood({
+      brokerage: { configured: true, ready: false, state: "configured" },
+      crypto: { configured: false, ready: false, state: "not_configured" },
+    }),
+  ).toBe(false)
+})
 
 test("Robinhood integration client uses the global endpoint contract", async () => {
   const calls: { path: string; method: string; body?: unknown }[] = []

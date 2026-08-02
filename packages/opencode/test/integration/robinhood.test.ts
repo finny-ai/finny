@@ -73,18 +73,24 @@ function makeNpmLayer(executablePath: string, npmCalls: string[]) {
   )
 }
 
+function serializedOutput(value: unknown) {
+  return value === undefined ? "" : JSON.stringify(value)
+}
+
+function commandText(command?: string, args: readonly string[] = []) {
+  return [command, ...args].filter(Boolean).join(" ")
+}
+
 function makeProcessLayer(process: (command: string, args: readonly string[], env: unknown) => ProcessOutput) {
   return Layer.mock(AppProcess.Service)({
     run: (command) => {
       const standard = ChildProcess.isStandardCommand(command) ? command : undefined
       const result = process(standard?.command ?? "", standard?.args ?? [], standard?.options.env)
-      const stdout = result.stdout === undefined ? "" : JSON.stringify(result.stdout)
-      const stderr = result.stderr === undefined ? "" : JSON.stringify(result.stderr)
       return Effect.succeed({
-        command: [standard?.command, ...(standard?.args ?? [])].filter(Boolean).join(" "),
+        command: commandText(standard?.command, standard?.args),
         exitCode: result.code ?? 0,
-        stdout: Buffer.from(stdout),
-        stderr: Buffer.from(stderr),
+        stdout: Buffer.from(serializedOutput(result.stdout)),
+        stderr: Buffer.from(serializedOutput(result.stderr)),
         stdoutTruncated: false,
         stderrTruncated: false,
       })
@@ -342,6 +348,12 @@ describe("RobinhoodIntegration", () => {
               verifiedAt: expect.any(String),
             },
           })
+
+          expect(yield* service.install({ executablePath, profile: "other" })).toMatchObject({
+            status: "installed",
+            profile: "other",
+          })
+          expect(auth).toEqual({})
 
           expect(yield* service.detach()).toMatchObject({ status: "not_installed", installed: false })
           expect(auth).toEqual({})
