@@ -3,6 +3,8 @@ import { Auth } from "@/auth"
 import type { BrokerAccount, BrokerCredentials, BrokerSpec } from "./types"
 
 export const ROBINHOOD_PROVIDER_PREFIX = "robinhood-rhx"
+export const ROBINHOOD_CONNECTOR_MARKER = "finny-rhx-integration"
+export const ROBINHOOD_CONNECTOR_DUMMY_KEY = "finny-rhx-managed-no-secret"
 
 const DEFAULT_COMMAND = "rhx"
 const DEFAULT_PROFILE = "default"
@@ -155,41 +157,43 @@ function isRobinhoodKey(key: string): boolean {
   return key === ROBINHOOD_PROVIDER_PREFIX || key.startsWith(`${ROBINHOOD_PROVIDER_PREFIX}-`)
 }
 
-function metadataValue(metadata: Record<string, string>, key: string, fallback: string): string {
-  return metadata[key]?.trim() || fallback
-}
-
-function hasReadinessMetadata(metadata: Record<string, string>): boolean {
-  return metadata.brokerageReady !== undefined || metadata.cryptoReady !== undefined
-}
-
 function verificationIsFresh(metadata: Record<string, string>, now = Date.now()): boolean {
   const verifiedAt = Date.parse(metadata.verifiedAt ?? "")
   return Number.isFinite(verifiedAt) && now >= verifiedAt && now - verifiedAt <= VERIFICATION_TTL_MS
 }
 
-function readyAssetClasses(metadata: Record<string, string>): BrokerAccount["assetClasses"] | undefined {
-  if (!hasReadinessMetadata(metadata)) return undefined
-  if (!verificationIsFresh(metadata)) return []
+function isReadinessFlag(value: string | undefined): value is "true" | "false" {
+  return value === "true" || value === "false"
+}
+
+function connectorRecord(providerID: string, info: Auth.Info) {
+  if (!isRobinhoodKey(providerID) || info.type !== "api" || info.key !== ROBINHOOD_CONNECTOR_DUMMY_KEY) return
+  const metadata = info.metadata
+  if (!metadata || metadata.connector !== ROBINHOOD_CONNECTOR_MARKER || !verificationIsFresh(metadata)) return
+  if (!isReadinessFlag(metadata.brokerageReady) || !isReadinessFlag(metadata.cryptoReady)) return
+  const keyId = metadata.keyId?.trim()
+  const endpoint = metadata.endpoint?.trim()
+  if (!keyId || !endpoint) return
   const readiness = [
     ["equity", metadata.brokerageReady],
     ["crypto", metadata.cryptoReady],
   ] as const
-  return readiness.filter(([, ready]) => ready === "true").map(([assetClass]) => assetClass)
+  const assetClasses = readiness.filter(([, ready]) => ready === "true").map(([assetClass]) => assetClass)
+  if (assetClasses.length === 0) return
+  return { metadata, keyId, endpoint, assetClasses }
 }
 
 function robinhoodAccount(providerID: string, info: Auth.Info): BrokerAccount | undefined {
-  if (!isRobinhoodKey(providerID) || info.type !== "api") return undefined
-  const metadata = info.metadata ?? {}
-  const assetClasses = readyAssetClasses(metadata)
+  const record = connectorRecord(providerID, info)
+  if (!record) return undefined
   return {
     providerID,
     brokerKind: "robinhood",
-    label: metadata.label ?? "Default",
-    keyId: metadataValue(metadata, "keyId", DEFAULT_PROFILE),
-    endpoint: metadataValue(metadata, "endpoint", DEFAULT_COMMAND),
+    label: record.metadata.label ?? "Default",
+    keyId: record.keyId,
+    endpoint: record.endpoint,
     mode: "live",
-    ...(assetClasses ? { assetClasses } : {}),
+    assetClasses: record.assetClasses,
   }
 }
 
@@ -207,14 +211,13 @@ export async function listRobinhoodAccounts(): Promise<BrokerAccount[]> {
 
 export async function readRobinhoodCredentials(providerID: string): Promise<BrokerCredentials | null> {
   const info = await Auth.get(providerID)
-  if (!info || info.type !== "api") return null
-  const meta = info.metadata ?? {}
-  const profile = meta.keyId?.trim() ?? ""
-  if (!profile) return null
+  if (!info) return null
+  const record = connectorRecord(providerID, info)
+  if (!record) return null
   return {
-    keyId: profile,
+    keyId: record.keyId,
     secret: "",
-    endpoint: metadataValue(meta, "endpoint", DEFAULT_COMMAND),
+    endpoint: record.endpoint,
     mode: "live",
   }
 }

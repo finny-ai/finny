@@ -27,7 +27,7 @@ export function DialogBrokerage() {
         description:
           spec.kind === "robinhood"
             ? count > 0
-              ? `${count} account · manage RHX connector`
+              ? `${count} account${count === 1 ? "" : "s"} · manage RHX connector`
               : "Set up the pinned RHX connector"
             : count > 0
               ? `${count} account${count === 1 ? "" : "s"}`

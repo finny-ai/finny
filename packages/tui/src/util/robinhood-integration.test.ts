@@ -34,6 +34,21 @@ test("managed login launches the local pinned entrypoint cross-platform without 
   })
 })
 
+test("managed login launches the POSIX pinned entrypoint without a shell shim", () => {
+  expect(
+    managedRobinhoodLoginCommand({
+      packageDirectory: "/var/lib/finny/packages/rhx/node_modules/rhx",
+      profile: "work",
+      runtimePath: "/usr/local/bin/bun",
+      platform: "linux",
+    }),
+  ).toEqual({
+    command: "/usr/local/bin/bun",
+    args: ["/var/lib/finny/packages/rhx/node_modules/rhx/bin/rhx.cjs", "--profile", "work", "auth", "login"],
+    entrypoint: "/var/lib/finny/packages/rhx/node_modules/rhx/bin/rhx.cjs",
+  })
+})
+
 const ready: RobinhoodIntegrationStatus = {
   provider: "robinhood",
   package: "rhx",

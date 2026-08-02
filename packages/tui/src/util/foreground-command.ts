@@ -1,9 +1,23 @@
 import type { CliRenderer } from "@opentui/core"
 import { ProcessSignal } from "@opencode-ai/core/process-signal"
 import { spawn } from "node:child_process"
+import { workerRuntimeEnv } from "@/security/worker-shell"
 import { win32DisableProcessedInput, win32FlushInputBuffer } from "../terminal-win32"
 
 const active = new WeakSet<CliRenderer>()
+const RHX_LOGIN_ENV_KEYS = new Set([
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "DBUS_SESSION_BUS_ADDRESS",
+  "XDG_RUNTIME_DIR",
+  "DISPLAY",
+  "WAYLAND_DISPLAY",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "NO_PROXY",
+  "SSL_CERT_DIR",
+])
 
 export class ForegroundCommandError extends Error {
   constructor(
@@ -20,6 +34,15 @@ export class ForegroundCommandError extends Error {
 function safePart(value: string, label: string) {
   if (!value || value.includes("\0")) throw new ForegroundCommandError(`Invalid ${label}`)
   return value
+}
+
+/** Runtime, keyring, and network configuration needed by RHX without unrelated host secrets. */
+export function rhxLoginEnvironment(env: NodeJS.ProcessEnv) {
+  const scoped = workerRuntimeEnv(env)
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && RHX_LOGIN_ENV_KEYS.has(key.toUpperCase())) scoped[key] = value
+  }
+  return scoped
 }
 
 /**
@@ -80,6 +103,7 @@ export async function runForegroundInteractiveCommand(input: {
         await new Promise<void>((resolve, reject) => {
           const child = spawn(command, args, {
             cwd: input.cwd,
+            env: rhxLoginEnvironment(process.env),
             stdio: "inherit",
             shell: false,
           })

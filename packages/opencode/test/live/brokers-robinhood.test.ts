@@ -8,6 +8,8 @@ import {
   listRobinhoodAccounts,
   readRobinhoodCredentials,
   renderRobinhoodIntegrationContext,
+  ROBINHOOD_CONNECTOR_DUMMY_KEY,
+  ROBINHOOD_CONNECTOR_MARKER,
   robinhoodSpec,
 } from "../../src/live/brokers/robinhood"
 
@@ -169,7 +171,7 @@ describe("Robinhood rhx broker spec", () => {
     })
   })
 
-  test("stores only the rhx profile and executable path", async () => {
+  test("rejects manually-created Robinhood-shaped auth entries", async () => {
     process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
       "robinhood-rhx-test": {
         type: "api",
@@ -178,30 +180,17 @@ describe("Robinhood rhx broker spec", () => {
       },
     })
 
-    expect(await readRobinhoodCredentials("robinhood-rhx-test")).toEqual({
-      keyId: "work",
-      secret: "",
-      endpoint: "/usr/local/bin/rhx",
-      mode: "live",
-    })
-    expect(await listRobinhoodAccounts()).toEqual([
-      {
-        providerID: "robinhood-rhx-test",
-        brokerKind: "robinhood",
-        label: "Primary",
-        keyId: "work",
-        endpoint: "/usr/local/bin/rhx",
-        mode: "live",
-      },
-    ])
+    expect(await readRobinhoodCredentials("robinhood-rhx-test")).toBeNull()
+    expect(await listRobinhoodAccounts()).toEqual([])
   })
 
   test("exposes only the asset classes whose RHX auth domain is ready", async () => {
     process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
       "robinhood-rhx-connector": {
         type: "api",
-        key: "finny-rhx-managed-no-secret",
+        key: ROBINHOOD_CONNECTOR_DUMMY_KEY,
         metadata: {
+          connector: ROBINHOOD_CONNECTOR_MARKER,
           keyId: "default",
           endpoint: "/usr/local/bin/rhx",
           label: "Robinhood (rhx)",
@@ -218,6 +207,12 @@ describe("Robinhood rhx broker spec", () => {
         assetClasses: ["crypto"],
       }),
     ])
+    expect(await readRobinhoodCredentials("robinhood-rhx-connector")).toEqual({
+      keyId: "default",
+      secret: "",
+      endpoint: "/usr/local/bin/rhx",
+      mode: "live",
+    })
     const stock = (await BrokerRegistry.compareForSymbol("AAPL")).find((row) => row.spec.kind === "robinhood")
     const crypto = (await BrokerRegistry.compareForSymbol("BTC-USD")).find((row) => row.spec.kind === "robinhood")
     expect(stock?.accounts).toHaveLength(0)
@@ -228,8 +223,9 @@ describe("Robinhood rhx broker spec", () => {
     process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
       "robinhood-rhx-connector": {
         type: "api",
-        key: "finny-rhx-managed-no-secret",
+        key: ROBINHOOD_CONNECTOR_DUMMY_KEY,
         metadata: {
+          connector: ROBINHOOD_CONNECTOR_MARKER,
           keyId: "default",
           endpoint: "/usr/local/bin/rhx",
           brokerageReady: "true",
@@ -239,11 +235,71 @@ describe("Robinhood rhx broker spec", () => {
       },
     })
 
-    expect(await listRobinhoodAccounts()).toEqual([
-      expect.objectContaining({ brokerKind: "robinhood", assetClasses: [] }),
-    ])
+    expect(await listRobinhoodAccounts()).toEqual([])
+    expect(await readRobinhoodCredentials("robinhood-rhx-connector")).toBeNull()
     const stock = (await BrokerRegistry.compareForSymbol("AAPL")).find((row) => row.spec.kind === "robinhood")
     expect(stock?.accounts).toHaveLength(0)
+  })
+
+  test("rejects forged, incomplete, and readiness-less connector records", async () => {
+    const verifiedAt = new Date().toISOString()
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      "robinhood-rhx-wrong-key": {
+        type: "api",
+        key: "forged",
+        metadata: {
+          connector: ROBINHOOD_CONNECTOR_MARKER,
+          keyId: "default",
+          endpoint: "/usr/local/bin/rhx",
+          brokerageReady: "true",
+          cryptoReady: "false",
+          verifiedAt,
+        },
+      },
+      "robinhood-rhx-wrong-marker": {
+        type: "api",
+        key: ROBINHOOD_CONNECTOR_DUMMY_KEY,
+        metadata: {
+          connector: "forged",
+          keyId: "default",
+          endpoint: "/usr/local/bin/rhx",
+          brokerageReady: "true",
+          cryptoReady: "false",
+          verifiedAt,
+        },
+      },
+      "robinhood-rhx-missing-readiness": {
+        type: "api",
+        key: ROBINHOOD_CONNECTOR_DUMMY_KEY,
+        metadata: {
+          connector: ROBINHOOD_CONNECTOR_MARKER,
+          keyId: "default",
+          endpoint: "/usr/local/bin/rhx",
+          verifiedAt,
+        },
+      },
+      "robinhood-rhx-missing-lease": {
+        type: "api",
+        key: ROBINHOOD_CONNECTOR_DUMMY_KEY,
+        metadata: {
+          connector: ROBINHOOD_CONNECTOR_MARKER,
+          keyId: "default",
+          endpoint: "/usr/local/bin/rhx",
+          brokerageReady: "true",
+          cryptoReady: "false",
+        },
+      },
+    })
+
+    expect(await listRobinhoodAccounts()).toEqual([])
+    for (const providerID of [
+      "robinhood-rhx-wrong-key",
+      "robinhood-rhx-wrong-marker",
+      "robinhood-rhx-missing-readiness",
+      "robinhood-rhx-missing-lease",
+    ]) {
+      expect(await readRobinhoodCredentials(providerID)).toBeNull()
+    }
   })
 
   test("consumes rhx JSON v4 for stock and official-crypto snapshots while remaining read-only", async () => {

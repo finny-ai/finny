@@ -37,10 +37,9 @@ tool arguments, or Finny settings.
 - Use finalized OHLCV bars from Finny's configured market-data provider for
   strategy decisions. Brokerage connectivity does not imply historical data
   availability.
-- Respect the runtime's live-trading eligibility checks, explicit confirmation
-  token, and fail-closed policy. A connected broker is not permission to place
-  live orders. If submission is disabled, remain in shadow or simulation mode
-  and say so plainly.
+- Robinhood is always shadow-only. Workers may read account, position, and quote
+  data, but they must never submit orders through RHX or the Robinhood API. Keep
+  Robinhood runs in shadow or simulation mode and state this plainly.
 
 ## Safe responses
 

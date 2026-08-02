@@ -87,6 +87,76 @@ function seedProject(filename: string, now: number) {
 }
 
 describe("Finny storage root", () => {
+  it.live("serializes concurrent reconciliation for one storage root", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const data = path.join(tmp.path, "data")
+          const source = path.join(data, "opencode", "opencode-local.db")
+          const target = path.join(data, "finny", "opencode-local.db")
+          yield* Effect.promise(() => fs.mkdir(path.dirname(source), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }))
+          yield* seedProject(target, FIXED_NOW)
+          yield* seedProject(source, FIXED_NOW + 10_000)
+          yield* Effect.promise(() => fs.writeFile(`${source}.pre-unify-opencode.bak`, "previous source snapshot"))
+          yield* Effect.promise(() => fs.writeFile(`${target}.pre-unify-finny.bak`, "previous target snapshot"))
+
+          const loadMigration = () =>
+            Effect.gen(function* () {
+              const { db } = yield* Database.Service
+              return yield* db.get<{ id: string }>(sql`
+                SELECT id FROM storage_root_migration WHERE id = ${StorageRoot.migrationID}
+              `)
+            }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+
+          const migrations = yield* Effect.all([loadMigration(), loadMigration()], { concurrency: "unbounded" })
+          expect(migrations).toEqual([{ id: StorageRoot.migrationID }, { id: StorageRoot.migrationID }])
+        }),
+      ),
+    ),
+  )
+
+  it.live("serializes task-only backup preparation across concurrent startups", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const data = path.join(tmp.path, "data")
+          const source = path.join(data, "opencode", "opencode-local.db")
+          const target = path.join(data, "finny", "opencode-local.db")
+          yield* Effect.promise(() => fs.mkdir(path.dirname(source), { recursive: true }))
+          yield* Effect.promise(() => fs.mkdir(path.dirname(target), { recursive: true }))
+          yield* seedLegacy(source)
+          yield* seedTaskOnly(target)
+
+          const loadJoinedTaskCount = () =>
+            Effect.gen(function* () {
+              const { db } = yield* Database.Service
+              return yield* db.get<{ count: number }>(
+                sql.raw(`
+                SELECT COUNT(*) AS count
+                FROM task_run task
+                JOIN session child ON child.id = task.id
+                JOIN session parent ON parent.id = task.parent_session_id
+              `),
+              )
+            }).pipe(Effect.provide(Database.layerFromPath(target)), Effect.scoped)
+
+          const results = yield* Effect.all([loadJoinedTaskCount(), loadJoinedTaskCount()], {
+            concurrency: "unbounded",
+          })
+          expect(results).toEqual([{ count: 1 }, { count: 1 }])
+          expect(yield* Effect.promise(() => Bun.file(`${target}.pre-unify-task-only.bak`).exists())).toBe(true)
+        }),
+      ),
+    ),
+  )
+
   it.live("merges benign timestamp drift for the same project identity", () =>
     Effect.acquireRelease(
       Effect.promise(() => tmpdir()),

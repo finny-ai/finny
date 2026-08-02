@@ -106,6 +106,7 @@ function connectionSuccessMessage(status: RobinhoodIntegrationStatus) {
 }
 
 async function loginCommand(input: {
+  status: Pick<RobinhoodIntegrationStatus, "package" | "pinnedVersion">
   options: RobinhoodIntegrationOptions
   profile: string
   manualPathConfirmed: boolean
@@ -123,7 +124,11 @@ async function loginCommand(input: {
     }
   }
 
-  const installed = await Npm.add("rhx@0.4.8")
+  const pinnedVersion = input.status.pinnedVersion.trim()
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(pinnedVersion)) {
+    throw new Error("The server returned an invalid RHX package version")
+  }
+  const installed = await Npm.add(`${input.status.package}@${pinnedVersion}`)
   const local = managedRobinhoodLoginCommand({ packageDirectory: installed.directory, profile: input.profile })
   await fs.access(local.entrypoint)
   return local
@@ -542,7 +547,12 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
     const current = await installForLogin(initial, input)
     ensureInstalled(current)
     const profile = validatedProfile(input.profile)
-    const command = await loginCommand({ options: input, profile, manualPathConfirmed: manualPathTouched })
+    const command = await loginCommand({
+      status: current,
+      options: input,
+      profile,
+      manualPathConfirmed: manualPathTouched,
+    })
     const loginError = await runLogin(command)
     const verified = await client.verify(input)
     applyStatus(verified)

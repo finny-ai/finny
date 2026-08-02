@@ -5,7 +5,7 @@ import { effectCmd, fail } from "../effect-cmd"
 import { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
 import { BacktestRunner } from "@/backtest/runner"
-import { BacktestStore } from "@/backtest/store"
+import { BROKER_KINDS } from "@/live/brokers/types"
 import { Filesystem } from "@/util/filesystem"
 
 type SavedAlgorithm = Awaited<ReturnType<typeof Algorithm.resolve>> extends infer T ? Exclude<T, null> : never
@@ -220,7 +220,7 @@ const AlgoListCommand = effectCmd({
     }),
   handler: Effect.fn("Cli.algo.list")(function* (args) {
     const algorithms = (yield* Effect.promise(() => Algorithm.list())) as SavedAlgorithm[]
-    if (Boolean(args["all-versions"])) {
+    if (args["all-versions"]) {
       return print((yield* Effect.promise(() => allAlgorithms(algorithms))).map(serializeAlgorithm))
     }
 
@@ -299,7 +299,7 @@ const algoAddOptionSpecs = [
     "target-brokerage",
     {
       type: "string",
-      choices: ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu", "robinhood"] as const,
+      choices: BROKER_KINDS,
       describe: "optional target brokerage metadata",
     },
   ],

@@ -1,13 +1,14 @@
 import path from "node:path"
 import { Auth } from "@/auth"
 import { makeRuntime } from "@/effect/run-service"
+import { ROBINHOOD_CONNECTOR_DUMMY_KEY, ROBINHOOD_CONNECTOR_MARKER } from "@/live/brokers/robinhood"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
 import { Npm } from "@opencode-ai/core/npm"
 import { AppProcess } from "@opencode-ai/core/process"
-import { Context, DateTime, Effect, Layer, Option, Ref, Schema, Semaphore } from "effect"
+import { Context, DateTime, Duration, Effect, Layer, Option, Ref, Schema, Semaphore } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 
 export const packageName = "rhx" as const
@@ -15,10 +16,11 @@ export const pinnedVersion = "0.4.8" as const
 export const packageSpec = `${packageName}@${pinnedVersion}` as const
 export const connectorAuthID = "robinhood-rhx-connector"
 
-const connectorMarker = "finny-rhx-integration"
-const connectorDummyKey = "finny-rhx-managed-no-secret"
+const connectorMarker = ROBINHOOD_CONNECTOR_MARKER
+const connectorDummyKey = ROBINHOOD_CONNECTOR_DUMMY_KEY
 const defaultProfile = "default"
 const verificationTtlMs = 5 * 60 * 1000
+const doctorProbeTtl = Duration.seconds(30)
 const managedTargets = new Set(["darwin-arm64", "linux-x64", "win32-x64"])
 
 export const State = Schema.Literals([
@@ -340,6 +342,38 @@ export const layerWith = (options: LayerOptions = {}) =>
         return envelope
       })
 
+      const probeDoctor = Effect.fnUntraced(function* (metadata: StoredMetadata) {
+        const envelope = yield* runRhx(metadata, "doctor", ["doctor"])
+        const data = yield* Schema.decodeUnknownEffect(DoctorData)(envelope.data).pipe(
+          Effect.mapError((cause) => new IntegrationError({ kind: "schema", cause })),
+        )
+        return { metadata, data, checkedAt: yield* now() }
+      })
+
+      const [cachedDoctorProbe, invalidateDoctorProbe] = yield* Effect.cachedInvalidateWithTTL(
+        Effect.gen(function* () {
+          const metadata = yield* readMetadata()
+          if (!metadata) return undefined
+          return yield* probeDoctor(metadata)
+        }),
+        doctorProbeTtl,
+      )
+
+      const readDoctorProbe = Effect.fnUntraced(function* (metadata: StoredMetadata) {
+        const cached = yield* cachedDoctorProbe
+        if (
+          cached &&
+          cached.metadata.executablePath === metadata.executablePath &&
+          cached.metadata.profile === metadata.profile
+        ) {
+          return cached
+        }
+        yield* invalidateDoctorProbe
+        const refreshed = yield* cachedDoctorProbe
+        if (!refreshed) return yield* new IntegrationError({ kind: "metadata" })
+        return refreshed
+      })
+
       const statusInternal = Effect.fnUntraced(function* () {
         const metadata = yield* readMetadata()
         const current = yield* Ref.get(operation)
@@ -347,13 +381,11 @@ export const layerWith = (options: LayerOptions = {}) =>
         if (!metadata) {
           return makeStatus({ managedSupported, state: managedSupported ? "not_installed" : "unsupported" })
         }
-        const envelope = yield* runRhx(metadata, "doctor", ["doctor"])
-        const data = yield* Schema.decodeUnknownEffect(DoctorData)(envelope.data).pipe(
-          Effect.mapError((cause) => new IntegrationError({ kind: "schema", cause })),
-        )
+        const probe = yield* readDoctorProbe(metadata)
+        const data = probe.data
         const brokerageConfigured = data.auth.brokerage.session_ready
         const cryptoConfigured = data.auth.crypto.authenticated
-        const checkedAt = yield* now()
+        const checkedAt = probe.checkedAt
         const checkedAtMs = Date.parse(checkedAt)
         const brokerage = passiveCapability(
           brokerageConfigured,
@@ -381,7 +413,7 @@ export const layerWith = (options: LayerOptions = {}) =>
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
             const profile = normalizeProfile(input.profile)
-            if (!profile) return makeStatus({ managedSupported, state: "error" })
+            if (!profile) return yield* new IntegrationError({ kind: "input" })
             yield* Ref.set(operation, "installing")
             const metadata = yield* Effect.gen(function* () {
               if (input.executablePath !== undefined) {
@@ -409,15 +441,13 @@ export const layerWith = (options: LayerOptions = {}) =>
               }
             })
             if (!metadata) return makeStatus({ managedSupported, state: "unsupported" })
-            const envelope = yield* runRhx(metadata, "doctor", ["doctor"])
-            const doctor = yield* Schema.decodeUnknownEffect(DoctorData)(envelope.data).pipe(
-              Effect.mapError((cause) => new IntegrationError({ kind: "schema", cause })),
-            )
+            const doctor = (yield* probeDoctor(metadata)).data
             // Installation changes configuration but does not verify it. Remove
             // any previously selectable account before persisting the connector
             // so a cancelled login cannot reuse stale readiness metadata.
             yield* removeConnectorAccounts()
             yield* writeMetadata(metadata)
+            yield* invalidateDoctorProbe
             return makeStatus({
               managedSupported,
               metadata,
@@ -482,20 +512,25 @@ export const layerWith = (options: LayerOptions = {}) =>
             yield* removeConnectorAccounts()
             const profile = normalizeProfile(input.profile ?? prior?.profile)
             if (!profile) return yield* new IntegrationError({ kind: "input" })
-            const metadata: StoredMetadata | undefined = input.executablePath
-              ? {
-                  schemaVersion: 1,
-                  source: "manual",
-                  executablePath: input.executablePath.trim(),
-                  profile,
-                }
-              : prior
-                ? { ...prior, profile }
-                : undefined
+            const explicitPath = input.executablePath?.trim()
+            const priorForPath = prior?.executablePath === explicitPath ? prior : undefined
+            const metadata: StoredMetadata | undefined =
+              input.executablePath !== undefined
+                ? {
+                    schemaVersion: 1,
+                    source: priorForPath?.source ?? "manual",
+                    executablePath: explicitPath ?? "",
+                    profile,
+                    ...(priorForPath?.installedVersion ? { installedVersion: priorForPath.installedVersion } : {}),
+                  }
+                : prior
+                  ? { ...prior, profile }
+                  : undefined
             if (!metadata)
               return makeStatus({ managedSupported, state: managedSupported ? "not_installed" : "unsupported" })
             if (!path.isAbsolute(metadata.executablePath)) return yield* new IntegrationError({ kind: "input" })
             yield* Ref.set(operation, "authenticating")
+            yield* invalidateDoctorProbe
             const envelope = yield* runRhx(metadata, "auth verify", ["auth", "verify"])
             const data = yield* Schema.decodeUnknownEffect(VerifyData)(envelope.data).pipe(
               Effect.mapError((cause) => new IntegrationError({ kind: "schema", cause })),
@@ -516,6 +551,7 @@ export const layerWith = (options: LayerOptions = {}) =>
               verifiedAt,
             }
             yield* writeMetadata(next)
+            yield* invalidateDoctorProbe
             // Readiness is stored as nonsecret strings so account selection can
             // filter stock and crypto deployments independently.
             if (state === "ready") yield* saveConnectorAccount(next, brokerage.ready, crypto.ready)
@@ -540,6 +576,7 @@ export const layerWith = (options: LayerOptions = {}) =>
             yield* fs
               .remove(stateFile, { force: true })
               .pipe(Effect.mapError((cause) => new IntegrationError({ kind: "metadata", cause })))
+            yield* invalidateDoctorProbe
             return makeStatus({ managedSupported, state: managedSupported ? "not_installed" : "unsupported" })
           }).pipe(Effect.catch(() => Effect.succeed(makeStatus({ managedSupported, state: "error" })))),
         )

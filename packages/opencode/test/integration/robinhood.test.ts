@@ -2,6 +2,7 @@ import path from "node:path"
 import { describe, expect, test } from "bun:test"
 import { Auth } from "@/auth"
 import { RobinhoodIntegration } from "@/integration/robinhood"
+import { BrokerRegistry } from "@/live/brokers"
 import { IntegrationPaths } from "@/server/routes/instance/httpapi/groups/integrations"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Global } from "@opencode-ai/core/global"
@@ -116,13 +117,18 @@ async function fixture(input: {
   arch?: string
   executablePath: string
   process: (command: string, args: readonly string[], env: unknown) => ProcessOutput
-  run: (service: RobinhoodIntegration.Interface, auth: Record<string, Auth.Info>) => Effect.Effect<void>
+  run: (
+    service: RobinhoodIntegration.Interface,
+    auth: Record<string, Auth.Info>,
+    stateFile: string,
+  ) => Effect.Effect<void>
 }) {
   await using tmp = await tmpdir()
   const npmCalls: string[] = []
   const auth: Record<string, Auth.Info> = {}
 
   const state = path.join(tmp.path, "state")
+  const stateFile = path.join(state, "integrations", "robinhood.json")
   const layer = RobinhoodIntegration.layerWith({ platform: input.platform, arch: input.arch }).pipe(
     Layer.provide(makeNpmLayer(input.executablePath, npmCalls)),
     Layer.provide(makeProcessLayer(input.process)),
@@ -133,11 +139,11 @@ async function fixture(input: {
 
   await Effect.gen(function* () {
     const service = yield* RobinhoodIntegration.Service
-    yield* input.run(service, auth)
+    yield* input.run(service, auth, stateFile)
   }).pipe(Effect.provide(layer), Effect.scoped, Effect.runPromise)
 
-  const stateFile = Bun.file(path.join(state, "integrations", "robinhood.json"))
-  const persistedState = (await stateFile.exists()) ? await stateFile.text() : undefined
+  const persistedFile = Bun.file(stateFile)
+  const persistedState = (await persistedFile.exists()) ? await persistedFile.text() : undefined
   return { npmCalls, persistedState }
 }
 
@@ -258,6 +264,32 @@ describe("RobinhoodIntegration", () => {
     expect(result.persistedState).toBeUndefined()
   })
 
+  test("keeps persisted installation metadata when a replacement profile is invalid", async () => {
+    const executablePath = "/managed/cache/node_modules/.bin/rhx"
+    const result = await fixture({
+      executablePath,
+      process: () => ({ stdout: envelope("doctor", doctorData()) }),
+      run: (service) =>
+        Effect.gen(function* () {
+          expect(yield* service.install()).toMatchObject({ status: "installed", source: "managed" })
+          expect(yield* service.install({ profile: "invalid profile" })).toMatchObject({
+            status: "error",
+            installed: true,
+            source: "managed",
+            executablePath,
+            profile: "default",
+          })
+        }),
+    })
+
+    expect(JSON.parse(result.persistedState ?? "null")).toMatchObject({
+      source: "managed",
+      executablePath,
+      profile: "default",
+      installedVersion: "0.4.8",
+    })
+  })
+
   test("rejects a manual executable whose passive doctor is not output_schema v4", async () => {
     const executablePath = "/opt/bin/rhx"
     const result = await fixture({
@@ -288,6 +320,74 @@ describe("RobinhoodIntegration", () => {
     })
 
     expect(result.persistedState).toBeUndefined()
+  })
+
+  test("preserves managed metadata for same-path verification and refreshes the doctor cache", async () => {
+    const executablePath = "/managed/cache/node_modules/.bin/rhx"
+    let doctorCalls = 0
+    const process = verificationProcess(() => "ready")
+    const result = await fixture({
+      executablePath,
+      process: (command, args) => {
+        if (args.at(-1) === "doctor") doctorCalls += 1
+        return process(command, args)
+      },
+      run: (service) =>
+        Effect.gen(function* () {
+          expect(yield* service.install()).toMatchObject({ status: "installed", source: "managed" })
+          expect(yield* service.status()).toMatchObject({ status: "installed" })
+          expect(yield* service.promptContext()).toMatchObject({ status: "installed" })
+          expect(doctorCalls).toBe(2)
+
+          expect(yield* service.verify({ executablePath })).toMatchObject({
+            status: "ready",
+            source: "managed",
+            executablePath,
+          })
+          expect(yield* service.status()).toMatchObject({ status: "ready" })
+          expect(yield* service.promptContext()).toMatchObject({ status: "ready" })
+          expect(doctorCalls).toBe(3)
+        }),
+    })
+
+    expect(JSON.parse(result.persistedState ?? "null")).toMatchObject({
+      source: "managed",
+      executablePath,
+      installedVersion: "0.4.8",
+    })
+  })
+
+  test("invalidates a cached ready doctor result before failed verification", async () => {
+    const executablePath = "/opt/bin/rhx"
+    let doctorReady = true
+    let scenario: VerificationScenario = "ready"
+    let doctorCalls = 0
+    const verifyProcess = verificationProcess(() => scenario)
+    await fixture({
+      executablePath,
+      process: (command, args) => {
+        if (args.at(-1) !== "doctor") return verifyProcess(command, args)
+        doctorCalls += 1
+        return { stdout: envelope("doctor", doctorData({ brokerage: doctorReady })) }
+      },
+      run: (service) =>
+        Effect.gen(function* () {
+          yield* service.install({ executablePath })
+          expect(yield* service.verify()).toMatchObject({ status: "ready", ready: true })
+          expect(yield* service.status()).toMatchObject({ status: "ready", ready: true })
+          expect(doctorCalls).toBe(2)
+
+          doctorReady = false
+          scenario = "invalid"
+          expect(yield* service.verify()).toMatchObject({ status: "error" })
+          expect(yield* service.status()).toMatchObject({
+            status: "installed",
+            ready: false,
+            brokerage: { state: "not_configured", ready: false },
+          })
+          expect(doctorCalls).toBe(3)
+        }),
+    })
   })
 
   test("maps MFA and expiry states without persisting rhx secrets", async () => {
@@ -370,5 +470,58 @@ describe("RobinhoodIntegration", () => {
     })
 
     expect(result.persistedState).toBeUndefined()
+  })
+
+  test("downgrades ready capabilities after the verification lease expires", async () => {
+    const executablePath = "/opt/bin/rhx"
+    const expiredAt = new Date(Date.now() - 6 * 60 * 1000).toISOString()
+    await fixture({
+      executablePath,
+      process: verificationProcess(() => "ready"),
+      run: (service, auth, stateFile) =>
+        Effect.gen(function* () {
+          yield* service.install({ executablePath, profile: "work" })
+          expect(yield* service.verify()).toMatchObject({
+            status: "ready",
+            brokerage: { state: "ready", ready: true },
+          })
+
+          const stored = yield* Effect.promise(() => Bun.file(stateFile).json())
+          yield* Effect.promise(() => Bun.write(stateFile, JSON.stringify({ ...stored, verifiedAt: expiredAt })))
+          const connector = auth[RobinhoodIntegration.connectorAuthID]
+          if (connector?.type === "api" && connector.metadata) {
+            auth[RobinhoodIntegration.connectorAuthID] = new Auth.Api({
+              type: "api",
+              key: connector.key,
+              metadata: { ...connector.metadata, verifiedAt: expiredAt },
+            })
+          }
+
+          expect(yield* service.status()).toMatchObject({
+            status: "installed",
+            ready: false,
+            brokerage: { configured: true, state: "configured", ready: false },
+          })
+          expect(yield* service.promptContext()).toMatchObject({
+            status: "installed",
+            ready: false,
+            capabilities: [],
+          })
+
+          yield* Effect.promise(async () => {
+            const previous = process.env.OPENCODE_AUTH_CONTENT
+            process.env.OPENCODE_AUTH_CONTENT = JSON.stringify(auth)
+            try {
+              const comparison = (await BrokerRegistry.compareForSymbol("AAPL")).find(
+                (row) => row.spec.kind === "robinhood",
+              )
+              expect(comparison?.accounts).toHaveLength(0)
+            } finally {
+              if (previous === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+              else process.env.OPENCODE_AUTH_CONTENT = previous
+            }
+          })
+        }),
+    })
   })
 })

@@ -86,6 +86,15 @@ describe("LiveRunner multi-market start target", () => {
       }),
     ).toThrow('Symbol "AAPL" is not compatible with Binance')
   })
+
+  test("rejects a market Robinhood cannot execute", () => {
+    expect(() =>
+      LiveRunner.resolveStartTarget({
+        symbol: "BTC/USDT",
+        accountProviderID: "robinhood-rhx-primary",
+      }),
+    ).toThrow("Robinhood")
+  })
 })
 
 describe("LiveRunner multi-market deployment key", () => {

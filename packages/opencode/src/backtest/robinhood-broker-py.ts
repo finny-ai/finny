@@ -1,11 +1,10 @@
-// Robinhood's live Python adapter is kept separate from the shared broker
-// declaration so changes do not make the already-large base module harder to maintain.
+// Keep Robinhood's live Python adapter separate from the already-large shared broker declaration.
 export const ROBINHOOD_BROKER_PY = String.raw`
+import re
 import subprocess
 import time
 import urllib.parse
 import urllib.request
-
 class RobinhoodBroker(Broker):
     """Robinhood adapter backed by the rhx CLI.
 
@@ -19,6 +18,8 @@ class RobinhoodBroker(Broker):
         "BTC", "ETH", "SOL", "DOGE", "AVAX", "MATIC", "LINK", "DOT",
         "ADA", "XRP", "LTC", "BCH", "UNI", "AAVE", "SHIB",
     }
+    _SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,10}(?:-USD)?$")
+    _SEARCH_MAX_DEPTH, _SEARCH_MAX_NODES = 8, 1024
 
     def __init__(self, profile: str = "default", command: str = "rhx", symbol: Optional[str] = None):
         self._profile = profile.strip() or "default"
@@ -59,40 +60,44 @@ class RobinhoodBroker(Broker):
             return None
 
     @classmethod
+    def _containers(cls, value):
+        stack = [(value, 0)]
+        visited = 0
+        while stack:
+            current, depth = stack.pop()
+            visited += 1
+            if visited > cls._SEARCH_MAX_NODES:
+                raise RuntimeError("rhx payload exceeds the supported size")
+            if isinstance(current, dict):
+                yield current
+                children = list(current.values())
+            elif isinstance(current, list):
+                children = current
+            else:
+                continue
+            nested = [child for child in children if isinstance(child, (dict, list))]
+            if nested and depth >= cls._SEARCH_MAX_DEPTH:
+                raise RuntimeError("rhx payload exceeds the supported nesting depth")
+            for child in reversed(nested):
+                stack.append((child, depth + 1))
+
+    @classmethod
     def _find_number(cls, value, *keys: str) -> Optional[float]:
-        if isinstance(value, dict):
+        for row in cls._containers(value):
             for key in keys:
-                if key in value:
-                    parsed = cls._number(value[key])
+                if key in row:
+                    parsed = cls._number(row[key])
                     if parsed is not None:
                         return parsed
-            for child in value.values():
-                parsed = cls._find_number(child, *keys)
-                if parsed is not None:
-                    return parsed
-        elif isinstance(value, list):
-            for child in value:
-                parsed = cls._find_number(child, *keys)
-                if parsed is not None:
-                    return parsed
         return None
 
-    @staticmethod
-    def _find_string(value, *keys: str) -> Optional[str]:
-        if isinstance(value, dict):
+    @classmethod
+    def _find_string(cls, value, *keys: str) -> Optional[str]:
+        for row in cls._containers(value):
             for key in keys:
-                item = value.get(key)
+                item = row.get(key)
                 if isinstance(item, str) and item.strip():
                     return item.strip()
-            for child in value.values():
-                found = RobinhoodBroker._find_string(child, *keys)
-                if found:
-                    return found
-        elif isinstance(value, list):
-            for child in value:
-                found = RobinhoodBroker._find_string(child, *keys)
-                if found:
-                    return found
         return None
 
     @staticmethod
@@ -113,7 +118,11 @@ class RobinhoodBroker(Broker):
         ) or (
             len(args) == 2 and args[0] == "positions" and args[1] == "list"
         ) or (
-            len(args) == 3 and args[0] == "quote" and args[1] == "get" and bool(args[2])
+            len(args) == 3
+            and args[0] == "quote"
+            and args[1] == "get"
+            and isinstance(args[2], str)
+            and bool(self._SYMBOL_RE.fullmatch(args[2]))
         )
         if not allowed:
             raise RuntimeError("Robinhood RHX command is not available in the shadow-only strategy worker")
@@ -130,15 +139,17 @@ class RobinhoodBroker(Broker):
         except subprocess.TimeoutExpired as exc:
             raise RuntimeError("rhx command timed out after 30 seconds") from exc
 
-        candidates = [*completed.stdout.splitlines(), *completed.stderr.splitlines()]
         envelope = None
-        for line in reversed(candidates):
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict) and "ok" in parsed:
-                envelope = parsed
+        for output in (completed.stdout, completed.stderr):
+            for line in reversed(output.splitlines()):
+                try:
+                    parsed = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and "ok" in parsed:
+                    envelope = parsed
+                    break
+            if envelope is not None:
                 break
         if envelope is None:
             raise RuntimeError(f"rhx returned no JSON envelope (exit {completed.returncode})")
@@ -146,31 +157,82 @@ class RobinhoodBroker(Broker):
         if schema != "v4":
             raise RuntimeError(f"Unsupported rhx JSON schema {schema!r}; Finny requires v4")
         if not envelope.get("ok") or completed.returncode != 0:
-            error = envelope.get("error") or {}
-            code = error.get("code") or "RHX_ERROR"
-            message = error.get("message") or error.get("detail") or "rhx command failed"
-            raise RuntimeError(f"{code}: {message}")
+            error = envelope.get("error")
+            code = error.get("code") if isinstance(error, dict) else "RHX_ERROR"
+            if not isinstance(code, str) or not re.fullmatch(r"[A-Z0-9_]{1,64}", code):
+                code = "RHX_ERROR"
+            raise RuntimeError(f"{code}: rhx command failed")
         return envelope.get("data")
 
     def _provider(self, symbol: Optional[str] = None) -> str:
         return "crypto" if self.is_crypto(symbol or self._active_symbol) else "brokerage"
 
+    @classmethod
+    def _quote_row(cls, data, symbol: str):
+        if not isinstance(data, dict):
+            raise RuntimeError(f"rhx returned an invalid quote payload for {symbol}")
+        wrapped_symbol = data.get("symbol")
+        if isinstance(wrapped_symbol, str) and cls.normalize_symbol(wrapped_symbol) != symbol:
+            raise RuntimeError(f"rhx returned a quote for an unexpected symbol instead of {symbol}")
+
+        quote = data.get("quote")
+        root = quote if isinstance(quote, (dict, list)) else data
+        if isinstance(root, list):
+            results = root
+        elif isinstance(root, dict) and "results" in root:
+            results = root["results"]
+        elif isinstance(root, dict):
+            return root
+        else:
+            raise RuntimeError(f"rhx returned an invalid quote payload for {symbol}")
+        if not isinstance(results, list):
+            raise RuntimeError(f"rhx returned invalid quote results for {symbol}")
+
+        rows = [row for row in results if isinstance(row, dict)]
+        matches = [
+            row for row in rows
+            if isinstance(row.get("symbol"), str) and cls.normalize_symbol(row["symbol"]) == symbol
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise RuntimeError(f"rhx returned duplicate quote results for {symbol}")
+        if len(rows) == 1 and (wrapped_symbol is None or cls.normalize_symbol(str(wrapped_symbol)) == symbol):
+            return rows[0]
+        raise RuntimeError(f"rhx returned no unambiguous quote result for {symbol}")
+
+    @classmethod
+    def _quote_number(cls, row, *keys: str) -> Optional[float]:
+        if isinstance(row, dict):
+            for key in keys:
+                if key in row:
+                    parsed = cls._number(row[key])
+                    if parsed is not None:
+                        return parsed
+        return cls._find_number(row, *keys)
+
     def _quote(self, symbol: str, provider: Optional[str] = None) -> Dict[str, float]:
         normalized = self.normalize_symbol(symbol)
         selected = provider or self._provider(normalized)
         data = self._run(["quote", "get", normalized], provider=selected)
-        bid = self._find_number(data, "bid_price", "bid")
-        ask = self._find_number(data, "ask_price", "ask")
-        last = self._find_number(data, "last_trade_price", "mark_price", "price", "mark")
+        row = self._quote_row(data, normalized)
+        if selected == "crypto":
+            bid = self._quote_number(row, "bid_inclusive_of_sell_spread", "bid_price", "bid")
+            ask = self._quote_number(row, "ask_inclusive_of_buy_spread", "ask_price", "ask")
+        else:
+            bid = self._quote_number(row, "bid_price", "bid")
+            ask = self._quote_number(row, "ask_price", "ask")
+        last = self._quote_number(row, "last_trade_price", "mark_price", "price", "mark")
         if last is None and bid is not None and ask is not None:
             last = (bid + ask) / 2.0
         if last is None:
             last = ask if ask is not None else bid
         if last is None or last <= 0:
             raise RuntimeError(f"rhx returned no usable price for {normalized}")
-        instrument = self._find_string(data, "instrument")
+        instrument = self._find_string(row, "instrument")
         if instrument:
-            self._instrument_symbols[instrument] = normalized
+            canonical = self._validated_instrument_url(instrument)
+            self._instrument_symbols.update({instrument: normalized, canonical: normalized})
         self._last_price[normalized] = float(last)
         return {"bid": float(bid or last), "ask": float(ask or last), "last": float(last)}
 
@@ -190,13 +252,13 @@ class RobinhoodBroker(Broker):
             or not valid_id
         ):
             raise RuntimeError("rhx returned an invalid Robinhood instrument URL")
-        return instrument
+        return f"https://api.robinhood.com/{parts[0]}/{parts[1]}/"
 
     def _resolve_instrument_symbol(self, instrument: str) -> str:
-        cached = self._instrument_symbols.get(instrument)
+        url = self._validated_instrument_url(instrument)
+        cached = self._instrument_symbols.get(instrument) or self._instrument_symbols.get(url)
         if cached:
             return cached
-        url = self._validated_instrument_url(instrument)
         request = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "Finny/Robinhood"})
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
@@ -207,7 +269,7 @@ class RobinhoodBroker(Broker):
         if not isinstance(raw, str) or not raw.strip():
             raise RuntimeError("Robinhood instrument response omitted its symbol")
         symbol = self.normalize_symbol(raw)
-        self._instrument_symbols[instrument] = symbol
+        self._instrument_symbols.update({instrument: symbol, url: symbol})
         return symbol
 
     def _row_symbol(self, row: Dict[str, Any]) -> Optional[str]:
@@ -229,28 +291,58 @@ class RobinhoodBroker(Broker):
     def _row_quantity(cls, row: Dict[str, Any]) -> float:
         return float(cls._find_number(row, "total_quantity", "quantity", "quantity_available_for_trading") or 0)
 
-    def _account_values(self) -> Tuple[float, float]:
-        provider = self._provider()
-        data = self._run(["account", "summary"], provider=provider)
+    def _snapshot_price(self, symbol: str, provider: str, resolved: set) -> float:
+        normalized = self.normalize_symbol(symbol)
+        if normalized in resolved:
+            cached = self._last_price.get(normalized)
+            if cached is None:
+                raise RuntimeError(f"rhx quote cache is missing {normalized}")
+            return cached
+        price = self._quote(normalized, provider=provider)["last"]
+        resolved.add(normalized)
+        return price
+
+    def _account_values(
+        self,
+        summary=None,
+        rows: Optional[list] = None,
+        provider: Optional[str] = None,
+        resolved: Optional[set] = None,
+    ) -> Tuple[float, float]:
+        provider = provider or self._provider()
+        data = summary if summary is not None else self._run(["account", "summary"], provider=provider)
         if provider == "crypto":
-            cash = self._find_number(data, "buying_power")
+            cash = self._number(data.get("buying_power")) if isinstance(data, dict) else None
+            if cash is None:
+                cash = self._find_number(data, "buying_power")
             if cash is None:
                 raise RuntimeError("rhx crypto account response omitted buying_power")
             equity = float(cash)
-            for row in self._rows(self._run(["positions", "list"], provider="crypto")):
+            positions = rows if rows is not None else self._rows(self._run(["positions", "list"], provider="crypto"))
+            refreshed = resolved if resolved is not None else set()
+            for row in positions:
                 qty = self._row_quantity(row)
                 if qty == 0:
                     continue
                 symbol = self._row_symbol({**row, "asset_type": "crypto"})
                 if not symbol:
                     raise RuntimeError("rhx returned a crypto holding without an asset code")
-                equity += qty * self._quote(symbol, provider="crypto")["last"]
+                equity += qty * self._snapshot_price(symbol, "crypto", refreshed)
             return float(cash), float(equity)
 
-        cash = self._find_number(data, "cash")
+        account = data.get("account_profile") if isinstance(data, dict) else None
+        portfolio = data.get("portfolio_profile") if isinstance(data, dict) else None
+        cash = self._number(account.get("cash")) if isinstance(account, dict) else None
         if cash is None:
-            cash = self._find_number(data, "buying_power")
-        equity = self._find_number(data, "equity", "portfolio_value", "extended_hours_equity")
+            cash = self._find_number(data, "cash", "buying_power")
+        equity = None
+        if isinstance(portfolio, dict):
+            for key in ("equity", "portfolio_value", "extended_hours_equity"):
+                equity = self._number(portfolio.get(key))
+                if equity is not None:
+                    break
+        if equity is None:
+            equity = self._find_number(data, "equity", "portfolio_value", "extended_hours_equity")
         if cash is None or equity is None:
             raise RuntimeError("rhx brokerage account response omitted cash or equity")
         return float(cash), float(equity)
@@ -306,10 +398,12 @@ class RobinhoodBroker(Broker):
     def execution_snapshot(self, symbol: str) -> Dict[str, Any]:
         self._active_symbol = self.normalize_symbol(symbol)
         provider = self._provider()
+        resolved = set()
         if provider == "brokerage":
-            self._quote(self._active_symbol, provider=provider)
-        cash, equity = self._account_values()
+            self._snapshot_price(self._active_symbol, provider, resolved)
+        summary = self._run(["account", "summary"], provider=provider)
         rows = self._rows(self._run(["positions", "list"], provider=provider))
+        cash, equity = self._account_values(summary, rows, provider, resolved)
         positions: Dict[str, Dict[str, float]] = {}
         for row in rows:
             qty = self._row_quantity(row)
@@ -323,7 +417,7 @@ class RobinhoodBroker(Broker):
             if not position_symbol:
                 raise RuntimeError("rhx returned a nonzero position without a symbol")
             quote_provider = "crypto" if asset_type == "crypto" and provider == "crypto" else "brokerage"
-            mark = self._quote(position_symbol, provider=quote_provider)["last"]
+            mark = self._snapshot_price(position_symbol, quote_provider, resolved)
             positions[position_symbol] = {"qty": qty, "mark": mark}
         return {"cash": cash, "equity": equity, "positions": positions}
 
@@ -331,10 +425,6 @@ class RobinhoodBroker(Broker):
         return self._submit(symbol, "buy", qty, notional, reason=reason, features=features)
 
     def sell(self, symbol, qty=None, notional=None, reason=None, features=None):
-        if qty is None and notional is None:
-            qty = self.position(symbol)
-            if qty <= 0:
-                return self._reject(symbol, "sell", "no open position", reason=reason, features=features)
         return self._submit(symbol, "sell", qty, notional, reason=reason, features=features)
 
     def _submit(self, symbol, side, qty, notional, reason=None, features=None):

@@ -1,9 +1,11 @@
 import fs from "fs/promises"
 import nodePath from "path"
+import { randomUUID } from "crypto"
 import { sql } from "drizzle-orm"
 import { Effect } from "effect"
 import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { Flag } from "../flag/flag"
+import { Flock } from "../util/flock"
 
 type Database = EffectDrizzleSqlite.EffectSQLiteDatabase
 type Column = { name: string; notnull: number; dflt_value: unknown; pk: number }
@@ -200,7 +202,7 @@ function mergeTable(db: Database, table: string) {
 
 function ensureBackup(db: Database, input: { schema: "main" | "legacy"; path: string }) {
   return Effect.gen(function* () {
-    const path = (yield* fileExists(input.path)) ? `${input.path}.retry-${Date.now()}` : input.path
+    const path = (yield* fileExists(input.path)) ? `${input.path}.retry-${Date.now()}-${randomUUID()}` : input.path
     yield* db.run(sql.raw(`VACUUM ${input.schema} INTO ${literal(path)}`))
     return path
   })
@@ -310,9 +312,7 @@ export function prepareTarget(db: Database, target: string) {
 
 function taskLegacyTableExists(db: Database, table: string) {
   return db.get<{ found: number }>(
-    sql.raw(
-      `SELECT 1 AS found FROM task_legacy.sqlite_master WHERE type = 'table' AND name = ${literal(table)}`,
-    ),
+    sql.raw(`SELECT 1 AS found FROM task_legacy.sqlite_master WHERE type = 'table' AND name = ${literal(table)}`),
   )
 }
 
@@ -361,11 +361,13 @@ function mergeTaskOnlyBackup(db: Database, target: string) {
           yield* mergeOneTaskLegacyTable(db, "watcher_state")
           if (yield* tableExists(db, { schema: "main", table: "task_run" })) {
             // Drop rows that cannot satisfy session FKs after the unified schema.
-            yield* db.run(sql.raw(`
+            yield* db.run(
+              sql.raw(`
               DELETE FROM task_run
               WHERE id NOT IN (SELECT id FROM session)
                  OR parent_session_id NOT IN (SELECT id FROM session)
-            `))
+            `),
+            )
           }
         }),
       ),
@@ -388,6 +390,16 @@ export function reconcile(db: Database, target: string) {
     yield* reconcileLegacySource(db, migrationPaths(target))
     yield* mergeTaskOnlyBackup(db, target)
   })
+}
+
+export function withLock<A, E, R>(target: string, effect: Effect.Effect<A, E, R>) {
+  if (target === ":memory:") return effect
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* Flock.effect(`storage-root-reconcile:${nodePath.resolve(target)}`)
+      return yield* effect
+    }),
+  )
 }
 
 export * as StorageRoot from "./storage-root"

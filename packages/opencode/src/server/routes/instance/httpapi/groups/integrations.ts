@@ -1,4 +1,5 @@
 import { RobinhoodIntegration } from "@/integration/robinhood"
+import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { described } from "./metadata"
 
@@ -8,11 +9,23 @@ export const IntegrationPaths = {
   robinhoodVerify: "/global/integrations/robinhood/verify",
 } as const
 
+export class RobinhoodIntegrationApiError extends Schema.ErrorClass<RobinhoodIntegrationApiError>(
+  "RobinhoodIntegrationApiError",
+)(
+  {
+    ...RobinhoodIntegration.Status.fields,
+    status: Schema.Literal("error"),
+    message: Schema.String,
+  },
+  { httpApiStatus: 400 },
+) {}
+
 export const IntegrationsApi = HttpApi.make("integrations").add(
   HttpApiGroup.make("integrations")
     .add(
       HttpApiEndpoint.get("robinhoodStatus", IntegrationPaths.robinhood, {
         success: described(RobinhoodIntegration.Status, "Robinhood rhx integration status"),
+        error: RobinhoodIntegrationApiError,
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "integrations.robinhood.status",
@@ -21,9 +34,12 @@ export const IntegrationsApi = HttpApi.make("integrations").add(
         }),
       ),
       HttpApiEndpoint.post("robinhoodInstall", IntegrationPaths.robinhoodInstall, {
+        // The raw handler is the sole runtime body decoder; this payload keeps
+        // the optional request shape documented for generated clients.
+        disableCodecs: true,
         payload: [HttpApiSchema.NoContent, RobinhoodIntegration.ConfigureInput],
         success: described(RobinhoodIntegration.Status, "Robinhood rhx installation status"),
-        error: HttpApiError.BadRequest,
+        error: [RobinhoodIntegrationApiError, HttpApiError.BadRequest],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "integrations.robinhood.install",
@@ -32,9 +48,11 @@ export const IntegrationsApi = HttpApi.make("integrations").add(
         }),
       ),
       HttpApiEndpoint.post("robinhoodVerify", IntegrationPaths.robinhoodVerify, {
+        // See robinhoodInstall: raw decoding avoids two competing runtime paths.
+        disableCodecs: true,
         payload: [HttpApiSchema.NoContent, RobinhoodIntegration.ConfigureInput],
         success: described(RobinhoodIntegration.Status, "Robinhood rhx verification status"),
-        error: HttpApiError.BadRequest,
+        error: [RobinhoodIntegrationApiError, HttpApiError.BadRequest],
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "integrations.robinhood.verify",
@@ -44,6 +62,7 @@ export const IntegrationsApi = HttpApi.make("integrations").add(
       ),
       HttpApiEndpoint.delete("robinhoodDetach", IntegrationPaths.robinhood, {
         success: described(RobinhoodIntegration.Status, "Detached Robinhood rhx integration status"),
+        error: RobinhoodIntegrationApiError,
       }).annotateMerge(
         OpenApi.annotations({
           identifier: "integrations.robinhood.detach",

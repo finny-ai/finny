@@ -762,10 +762,14 @@ if __name__ == "__main__":
     }
     const accountLabel = account?.label
     const accountMode = account?.mode ?? creds.mode ?? spec.mode
+    const submissionMode = params.activationReceipt ? "paper" : "shadow"
+    if (brokerKind === "robinhood" && submissionMode !== "shadow") {
+      throw new StartRejectedError("Robinhood is shadow-only; order submission cannot be activated.")
+    }
     // Robinhood consumes live account data through a structurally read-only,
     // shadow-only adapter. Its promotion gate therefore remains paper-risk;
     // every other live-money route stays prohibited by the public v1 contract.
-    const promotionMode: BrokerMode = brokerKind === "robinhood" ? "paper" : accountMode
+    const promotionMode: BrokerMode = brokerKind === "robinhood" && submissionMode === "shadow" ? "paper" : accountMode
     if (accountMode === "live" && brokerKind !== "robinhood") {
       throw new StartRejectedError("Live-money trading is not shipped in the Finny Hedge Fund v1 contract.")
     }
@@ -829,7 +833,6 @@ if __name__ == "__main__":
       brokerMode: accountMode,
       accountScopeHash: scopeHash,
     }
-    const submissionMode = params.activationReceipt ? "paper" : "shadow"
     if (submissionMode === "paper") {
       if (brokerKind !== "alpaca" || accountMode !== "paper") {
         throw new StartRejectedError("v1 paper submission supports Alpaca Paper only.")

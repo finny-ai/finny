@@ -488,7 +488,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
         .catch(() => undefined)
         .finally(() => {
           setBrokerageStore("ready", true)
-          if (pending) void save()
+          if (pending) void save().catch(() => undefined)
         })
 
       return {

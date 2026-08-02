@@ -78,10 +78,13 @@ describe("util.process", () => {
   })
 
   test("can disable host environment inheritance", async () => {
+    const previous = process.env.OPENCODE_HOST_ONLY_TEST
     process.env.OPENCODE_HOST_ONLY_TEST = "must-not-leak"
     try {
       const out = await Process.run(
-        node('process.stdout.write(`${process.env.OPENCODE_HOST_ONLY_TEST ?? ""}:${process.env.OPENCODE_EXPLICIT_TEST ?? ""}`)'),
+        node(
+          'process.stdout.write(`${process.env.OPENCODE_HOST_ONLY_TEST ?? ""}:${process.env.OPENCODE_EXPLICIT_TEST ?? ""}`)',
+        ),
         {
           inheritEnv: false,
           env: { OPENCODE_EXPLICIT_TEST: "allowed" },
@@ -89,7 +92,8 @@ describe("util.process", () => {
       )
       expect(out.stdout.toString()).toBe(":allowed")
     } finally {
-      delete process.env.OPENCODE_HOST_ONLY_TEST
+      if (previous === undefined) delete process.env.OPENCODE_HOST_ONLY_TEST
+      else process.env.OPENCODE_HOST_ONLY_TEST = previous
     }
   })
 
