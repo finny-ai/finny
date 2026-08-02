@@ -1,4 +1,5 @@
 import crypto from "node:crypto"
+import type { Stats } from "node:fs"
 import fs from "node:fs/promises"
 import path from "node:path"
 import {
@@ -143,23 +144,31 @@ function isMissingFileError(error: unknown): boolean {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT"
 }
 
+async function canonicalFileStat(input: { file: string; filename: VersionFileName }): Promise<Stats | undefined> {
+  return fs.lstat(input.file).catch((error: unknown) => {
+    if (!isMissingFileError(error)) throw error
+    if (REQUIRED_FILES.has(input.filename)) throw new Error(`Canonical version is missing ${input.filename}`)
+    return undefined
+  })
+}
+
+function assertCanonicalFileStat(input: { filename: VersionFileName; stat: Stats }): void {
+  if (input.stat.isSymbolicLink() || !input.stat.isFile()) {
+    throw new Error(`Canonical version entry must be a regular file: ${input.filename}`)
+  }
+  if (input.stat.size > VERSION_MAX_ENTRY_BYTES) {
+    throw new Error(`Canonical version entry is too large: ${input.filename}`)
+  }
+}
+
 async function inspectCanonicalFile(input: {
   directory: string
   filename: VersionFileName
 }): Promise<CanonicalFile | undefined> {
   const file = path.join(input.directory, input.filename)
-  const stat = await fs.lstat(file).catch((error: unknown) => {
-    if (!isMissingFileError(error)) throw error
-    if (REQUIRED_FILES.has(input.filename)) throw new Error(`Canonical version is missing ${input.filename}`)
-    return undefined
-  })
+  const stat = await canonicalFileStat({ file, filename: input.filename })
   if (!stat) return undefined
-  if (stat.isSymbolicLink() || !stat.isFile()) {
-    throw new Error(`Canonical version entry must be a regular file: ${input.filename}`)
-  }
-  if (stat.size > VERSION_MAX_ENTRY_BYTES) {
-    throw new Error(`Canonical version entry is too large: ${input.filename}`)
-  }
+  assertCanonicalFileStat({ filename: input.filename, stat })
   return { filename: input.filename, file, bytes: stat.size }
 }
 
@@ -250,11 +259,15 @@ function assertSafeEntryName(filename: string): void {
   if (!safe) throw new Error(`Unsafe package entry path: ${filename}`)
 }
 
+function isValidEntrySize(size: unknown): size is number {
+  if (typeof size !== "number") return false
+  if (!Number.isSafeInteger(size)) return false
+  return size >= 0
+}
+
 function entrySize(entry: ZipEntryLike): number {
   const size = entry.uncompressedSize
-  if (typeof size !== "number" || !Number.isSafeInteger(size) || size < 0) {
-    throw new Error(`Invalid package entry size: ${entry.filename}`)
-  }
+  if (!isValidEntrySize(size)) throw new Error(`Invalid package entry size: ${entry.filename}`)
   return size
 }
 
