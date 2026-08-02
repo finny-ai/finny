@@ -36,6 +36,7 @@ import { errorMessage } from "./util/error"
 import { PluginCommand } from "./cli/cmd/plug"
 import { Heap } from "./cli/heap"
 import { CliError } from "./cli/effect-cmd"
+import { CentralSync } from "./algorithm/central-sync"
 
 const args = hideBin(process.argv)
 const cliName = "finny"
@@ -83,6 +84,7 @@ const cli = yargs(args)
     process.env.AGENT = "1"
     process.env.OPENCODE = "1"
     process.env.OPENCODE_PID = String(process.pid)
+    CentralSync.startOutboxReplay()
   })
   .usage("")
   .completion("completion", "generate shell completion script")

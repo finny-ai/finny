@@ -6,12 +6,16 @@ import z from "zod"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import type { Algorithm } from "."
 import type { BacktestStore } from "@/backtest/store"
-import { AlgorithmVersionPackage, type CatalogMetadata } from "./version-package"
+import { verifyStrictRunDir } from "@/backtest/run-integrity-verify"
+import { Log } from "@/util/log"
+import { AlgorithmVersionPackage, VERSION_MAX_TOTAL_BYTES, type CatalogMetadata } from "./version-package"
 
 export type Mode = "off" | "required"
 export type PublishStatus = "disabled" | "published"
 
 const DEFAULT_HTTP_TIMEOUT_MS = 30_000
+const DEFAULT_OUTBOX_RETRY_INTERVAL_MS = 60_000
+export const VERSION_BUNDLE_MAX_DOWNLOAD_BYTES = VERSION_MAX_TOTAL_BYTES + 1024 * 1024
 export const STRICT_EVIDENCE_MAX_ENTRIES = 4_096
 export const STRICT_EVIDENCE_MAX_ENTRY_BYTES = 256 * 1024 * 1024
 export const STRICT_EVIDENCE_DEFAULT_TOTAL_BYTES = 256 * 1024 * 1024
@@ -71,6 +75,7 @@ const OutboxItem = z.discriminatedUnion("kind", [
     kind: z.literal("version"),
     publication: VersionPublication,
     archiveBase64: z.string(),
+    outboxRevision: z.number().int().positive().optional(),
   }),
   z.object({
     kind: z.literal("backtest"),
@@ -166,6 +171,10 @@ export class PublishError extends CentralSyncError {
 }
 
 let testTransport: Transport | undefined
+let outboxRetryTimer: ReturnType<typeof setInterval> | undefined
+let outboxRetryInFlight: Promise<void> | undefined
+let lastOutboxRevision = 0
+const log = Log.create({ service: "algorithm.central-sync" })
 
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value)
@@ -233,6 +242,48 @@ async function persistOutbox(item: OutboxItem): Promise<{ file: string; item: Ou
   return { file, item: OutboxItem.parse(JSON.parse(await fs.readFile(file, "utf8"))) }
 }
 
+function sameVersionPackage(left: VersionPublication, right: VersionPublication): boolean {
+  return (
+    left.algorithm.algorithmId === right.algorithm.algorithmId &&
+    left.algorithm.version === right.algorithm.version &&
+    left.package.payloadHash === right.package.payloadHash &&
+    left.package.archiveSha256 === right.package.archiveSha256
+  )
+}
+
+function nextOutboxRevision(): number {
+  const wallClockRevision = Date.now() * 1_000
+  lastOutboxRevision = Math.max(wallClockRevision, lastOutboxRevision + 1)
+  return lastOutboxRevision
+}
+
+function newerVersionPublication(left: QueuedOutboxItem, right: QueuedOutboxItem): QueuedOutboxItem {
+  if (left.item.kind !== "version") return right
+  if (right.item.kind !== "version") return left
+  if (left.item.publication.algorithm.timeUpdated !== right.item.publication.algorithm.timeUpdated) {
+    return left.item.publication.algorithm.timeUpdated > right.item.publication.algorithm.timeUpdated ? left : right
+  }
+  const leftRevision = left.item.outboxRevision ?? 0
+  const rightRevision = right.item.outboxRevision ?? 0
+  if (leftRevision !== rightRevision) return leftRevision > rightRevision ? left : right
+  return left.item.publication.idempotencyKey >= right.item.publication.idempotencyKey ? left : right
+}
+
+async function currentVersionOutboxItem(persisted: QueuedOutboxItem): Promise<QueuedOutboxItem> {
+  if (persisted.item.kind !== "version") return persisted
+  const queue = await readOutboxQueue(await outboxEntryNames())
+  const siblings = queue.queued.filter(
+    (queued) =>
+      queued.item.kind === "version" && sameVersionPackage(queued.item.publication, persisted.item.publication),
+  )
+  const current = siblings.reduce(newerVersionPublication, persisted)
+  for (const sibling of siblings) {
+    if (sibling.file === current.file) continue
+    await fs.rm(sibling.file, { force: true })
+  }
+  return current
+}
+
 function positiveIntegerEnv(name: string, fallback: number): number {
   const raw = process.env[name]?.trim()
   if (!raw) return fallback
@@ -243,6 +294,10 @@ function positiveIntegerEnv(name: string, fallback: number): number {
 
 function httpTimeoutMs(): number {
   return positiveIntegerEnv("FINNY_PLATFORM_HTTP_TIMEOUT_MS", DEFAULT_HTTP_TIMEOUT_MS)
+}
+
+function versionBundleMaxDownloadBytes(): number {
+  return positiveIntegerEnv("FINNY_PLATFORM_VERSION_BUNDLE_MAX_BYTES", VERSION_BUNDLE_MAX_DOWNLOAD_BYTES)
 }
 
 function linkAbortSignal(input: { source?: AbortSignal | null; target: AbortController }): () => void {
@@ -327,6 +382,44 @@ async function expectSuccess(response: Response): Promise<void> {
   throw new Error(`Finny Platform publication failed (${response.status})${detail ? `: ${detail}` : ""}`)
 }
 
+async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Uint8Array> {
+  const declaredLength = response.headers.get("content-length")
+  if (declaredLength !== null) {
+    const bytes = Number(declaredLength)
+    if (Number.isFinite(bytes) && bytes > maximumBytes) {
+      await response.body?.cancel().catch(() => undefined)
+      throw new PreflightError(`Downloaded algorithm version bundle exceeds ${maximumBytes} bytes`)
+    }
+  }
+  if (!response.body) return new Uint8Array()
+
+  const reader = response.body.getReader()
+  const chunks: Uint8Array[] = []
+  let totalBytes = 0
+  try {
+    while (true) {
+      const next = await reader.read()
+      if (next.done) break
+      totalBytes += next.value.byteLength
+      if (totalBytes > maximumBytes) {
+        await reader.cancel().catch(() => undefined)
+        throw new PreflightError(`Downloaded algorithm version bundle exceeds ${maximumBytes} bytes`)
+      }
+      chunks.push(next.value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+
+  const result = new Uint8Array(totalBytes)
+  let offset = 0
+  for (const chunk of chunks) {
+    result.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return result
+}
+
 function defaultTransport(): Transport {
   const { baseUrl, token } = platformConfig()
   return {
@@ -389,7 +482,7 @@ function defaultTransport(): Transport {
         init: { headers },
         consume: async (response) => {
           await expectSuccess(response)
-          return new Uint8Array(await response.arrayBuffer())
+          return readBoundedResponseBytes(response, versionBundleMaxDownloadBytes())
         },
       })
       return {
@@ -418,12 +511,14 @@ async function enqueueAndDeliver(item: OutboxItem): Promise<PublishStatus> {
   const syncMode = mode()
   if (syncMode === "off") return "disabled"
   const persisted = await persistOutbox(item)
+  let current = persisted
   try {
-    await deliver(persisted.item, testTransport ?? defaultTransport())
-    await fs.rm(persisted.file, { force: true })
+    current = await currentVersionOutboxItem(persisted)
+    await deliver(current.item, testTransport ?? defaultTransport())
+    await fs.rm(current.file, { force: true })
     return "published"
   } catch (error) {
-    throw new PublishError("Required central publication failed", persisted.file, { cause: error })
+    throw new PublishError("Required central publication failed", current.file, { cause: error })
   }
 }
 
@@ -436,34 +531,38 @@ export async function publishAlgorithmVersion(
     algorithmId: algorithm.algorithmId,
     version: algorithm.version,
   })
+  const algorithmPublication: VersionPublication["algorithm"] = {
+    algorithmId: algorithm.algorithmId,
+    name: algorithm.name,
+    version: algorithm.version,
+    status: algorithm.status,
+    language: algorithm.language,
+    description: algorithm.description,
+    brokerKind: algorithm.brokerKind,
+    targetBrokerage: algorithm.targetBrokerage,
+    timeCreated: algorithm.time_created,
+    timeUpdated: algorithm.time_updated,
+  }
+  const packagePublication: VersionPublication["package"] = {
+    payloadHash: packaged.manifest.payloadHash,
+    archiveSha256: packaged.archiveSha256,
+    bytes: packaged.archive.length,
+    files: packaged.manifest.files,
+  }
+  const publicationIdentity = sha256(stableStringify({ algorithm: algorithmPublication, package: packagePublication }))
   const publication: VersionPublication = {
     schema: "finny.algorithm_version_publication",
     schemaVersion: 1,
-    idempotencyKey: `${algorithm.algorithmId}:v${algorithm.version}:${packaged.manifest.payloadHash}`,
+    idempotencyKey: `algorithm-version:${publicationIdentity}`,
     sourceSessionId: resolvedSourceSessionId(options.sourceSessionId),
-    algorithm: {
-      algorithmId: algorithm.algorithmId,
-      name: algorithm.name,
-      version: algorithm.version,
-      status: algorithm.status,
-      language: algorithm.language,
-      description: algorithm.description,
-      brokerKind: algorithm.brokerKind,
-      targetBrokerage: algorithm.targetBrokerage,
-      timeCreated: algorithm.time_created,
-      timeUpdated: algorithm.time_updated,
-    },
-    package: {
-      payloadHash: packaged.manifest.payloadHash,
-      archiveSha256: packaged.archiveSha256,
-      bytes: packaged.archive.length,
-      files: packaged.manifest.files,
-    },
+    algorithm: algorithmPublication,
+    package: packagePublication,
   }
   return enqueueAndDeliver({
     kind: "version",
     publication: VersionPublication.parse(publication),
     archiveBase64: Buffer.from(packaged.archive).toString("base64"),
+    outboxRevision: nextOutboxRevision(),
   })
 }
 
@@ -606,11 +705,36 @@ async function packageStrictEvidence(input: {
   }
 }
 
-async function strictEvidenceArchive(input: { directory: string }): Promise<Uint8Array> {
+async function strictEvidenceArchive(input: {
+  directory: string
+  manifest: BacktestStore.Manifest
+}): Promise<Uint8Array> {
   const limits = strictEvidenceLimits()
   const entries = await scanStrictEvidence({ root: input.directory, limits })
   assertRequiredStrictEvidence(entries)
+  await assertStrictEvidenceIntegrity(input)
   return packageStrictEvidence({ entries, totalLimit: limits.totalBytes })
+}
+
+async function assertStrictEvidenceIntegrity(input: {
+  directory: string
+  manifest: BacktestStore.Manifest
+}): Promise<void> {
+  const verified = await verifyStrictRunDir(input.directory)
+  if (!verified.ok || !verified.run) {
+    const detail = verified.errors.slice(0, 10).join("; ") || "unknown integrity failure"
+    throw new PreflightError(`Strict-run evidence integrity verification failed: ${detail}`)
+  }
+
+  const identity = verified.run.identity
+  const mismatches = [
+    verified.run.runId === input.manifest.id ? undefined : "runId",
+    identity.algorithmId === input.manifest.algorithmId ? undefined : "algorithmId",
+    identity.algorithmVersion === input.manifest.algorithmVersion ? undefined : "algorithmVersion",
+  ].filter((field): field is string => field !== undefined)
+  if (mismatches.length > 0) {
+    throw new PreflightError(`Strict-run evidence does not match the backtest manifest: ${mismatches.join(", ")}`)
+  }
 }
 
 export async function publishStrictRun(input: {
@@ -621,7 +745,7 @@ export async function publishStrictRun(input: {
   sourceSessionId?: string
 }): Promise<PublishStatus> {
   if (mode() === "off") return "disabled"
-  const evidence = await strictEvidenceArchive({ directory: input.dir })
+  const evidence = await strictEvidenceArchive({ directory: input.dir, manifest: input.manifest })
   const base = summaryPublication(input.manifest, input.sourceSessionId)
   const publication: BacktestPublication = BacktestPublication.parse({
     ...base,
@@ -659,6 +783,43 @@ function outboxRetryOrder(left: QueuedOutboxItem, right: QueuedOutboxItem): numb
   return left.item.publication.idempotencyKey.localeCompare(right.item.publication.idempotencyKey)
 }
 
+async function collapseSupersededVersions(
+  queued: QueuedOutboxItem[],
+): Promise<{ queued: QueuedOutboxItem[]; failed: number }> {
+  const retained: QueuedOutboxItem[] = []
+  const groups = new Map<string, QueuedOutboxItem[]>()
+  for (const item of queued) {
+    if (item.item.kind !== "version") {
+      retained.push(item)
+      continue
+    }
+    const key = stableStringify({
+      algorithmId: item.item.publication.algorithm.algorithmId,
+      version: item.item.publication.algorithm.version,
+      payloadHash: item.item.publication.package.payloadHash,
+      archiveSha256: item.item.publication.package.archiveSha256,
+    })
+    const group = groups.get(key) ?? []
+    group.push(item)
+    groups.set(key, group)
+  }
+
+  let failed = 0
+  for (const group of groups.values()) {
+    const current = group.slice(1).reduce(newerVersionPublication, group[0])
+    try {
+      for (const stale of group) {
+        if (stale.file === current.file) continue
+        await fs.rm(stale.file, { force: true })
+      }
+      retained.push(current)
+    } catch {
+      failed++
+    }
+  }
+  return { queued: retained, failed }
+}
+
 async function retryQueuedOutboxItem(input: { queued: QueuedOutboxItem; transport: Transport }): Promise<boolean> {
   try {
     await deliver(input.queued.item, input.transport)
@@ -679,14 +840,44 @@ async function outboxEntryNames(): Promise<string[]> {
 export async function retryOutbox(): Promise<{ published: number; failed: number }> {
   if (mode() === "off") return { published: 0, failed: 0 }
   const result = await readOutboxQueue(await outboxEntryNames())
-  result.queued.sort(outboxRetryOrder)
+  const collapsed = await collapseSupersededVersions(result.queued)
+  result.failed += collapsed.failed
+  collapsed.queued.sort(outboxRetryOrder)
+  if (collapsed.queued.length === 0) return { published: 0, failed: result.failed }
   const transport = testTransport ?? defaultTransport()
   let published = 0
-  for (const queued of result.queued) {
+  for (const queued of collapsed.queued) {
     if (await retryQueuedOutboxItem({ queued, transport })) published++
     else result.failed++
   }
   return { published, failed: result.failed }
+}
+
+function runScheduledOutboxRetry(): void {
+  if (outboxRetryInFlight) return
+  outboxRetryInFlight = retryOutbox()
+    .then((result) => {
+      if (result.published > 0 || result.failed > 0) log.info("outbox replay completed", result)
+    })
+    .catch((error) => log.warn("outbox replay failed", { error }))
+    .finally(() => {
+      outboxRetryInFlight = undefined
+    })
+}
+
+export function startOutboxReplay(): void {
+  if (outboxRetryTimer || mode() === "off") return
+  runScheduledOutboxRetry()
+  outboxRetryTimer = setInterval(
+    runScheduledOutboxRetry,
+    positiveIntegerEnv("FINNY_PLATFORM_OUTBOX_RETRY_INTERVAL_MS", DEFAULT_OUTBOX_RETRY_INTERVAL_MS),
+  )
+  outboxRetryTimer.unref?.()
+}
+
+export function stopOutboxReplay(): void {
+  if (outboxRetryTimer) clearInterval(outboxRetryTimer)
+  outboxRetryTimer = undefined
 }
 
 export async function pendingOutbox(): Promise<string[]> {

@@ -244,7 +244,7 @@ describe.serial("canonical algorithm version package", () => {
         timeUpdated: v2.time_updated,
       },
     })
-    await AlgorithmVersionPackage.materialize({
+    const older = await AlgorithmVersionPackage.materialize({
       archive: packageV1.archive,
       catalog: {
         algorithmId: v1.algorithmId,
@@ -269,6 +269,18 @@ describe.serial("canonical algorithm version package", () => {
       brokerKind: "ibkr",
       targetBrokerage: "binance",
       time_updated: 200,
+    })
+    expect(older).toMatchObject({
+      version: 1,
+      language: "legacy-python",
+      status: "legacy",
+      description: "older metadata",
+    })
+    expect(await LocalAlgorithmStore.getByIdAndVersion(v1.algorithmId, 1)).toMatchObject({
+      version: 1,
+      language: "legacy-python",
+      status: "legacy",
+      description: "older metadata",
     })
     expect((await LocalAlgorithmStore.listVersions(v1.algorithmId)).map((version) => version.version)).toEqual([2, 1])
     expect(await fs.readFile(path.join(LocalAlgorithmStore.directoryFor(v1.algorithmId), "CURRENT"), "utf8")).toBe(
