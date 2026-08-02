@@ -94,6 +94,8 @@ import { cliErrorMessage, errorFormat } from "./util/error"
 import { AlgorithmsProvider } from "./context/algorithms"
 import { BacktestHistoryProvider } from "./context/backtest-history"
 import { LiveRunsProvider } from "./context/live-runs"
+import { DialogRobinhood } from "./component/dialog-robinhood"
+import { ROBINHOOD_MANAGE_COMMAND } from "./util/robinhood-integration"
 
 const appGlobalBindingCommands = [
   "session.list",
@@ -203,6 +205,10 @@ export const run = Effect.fn("Tui.run")(function* (input: TuiInput) {
             externalOutputMode: "passthrough",
             targetFps: 60,
             gatherStats: false,
+            // Bun 1.3.14 can corrupt off-thread FFI callback handles used by
+            // OpenTUI's render worker. Keep rendering on the CLI event loop
+            // until the post-1.3.14 Bun callback fix reaches a stable release.
+            useThread: false,
             exitOnCtrlC: false,
             useKittyKeyboard: {},
             autoFocus: false,
@@ -854,6 +860,15 @@ function App(props: {
           dialog.replace(() => <DialogProviderList />)
         },
         category: "Provider",
+      },
+      {
+        name: ROBINHOOD_MANAGE_COMMAND,
+        title: "Manage Robinhood",
+        category: "Brokerage",
+        slashName: "robinhood",
+        run: () => {
+          void DialogRobinhood.show(dialog)
+        },
       },
       ...(sync.data.console_state.switchableOrgCount > 1
         ? [

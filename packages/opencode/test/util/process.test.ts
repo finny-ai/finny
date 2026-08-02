@@ -77,6 +77,26 @@ describe("util.process", () => {
     expect(out.stdout.toString()).toBe("set")
   })
 
+  test("can disable host environment inheritance", async () => {
+    const previous = process.env.OPENCODE_HOST_ONLY_TEST
+    process.env.OPENCODE_HOST_ONLY_TEST = "must-not-leak"
+    try {
+      const out = await Process.run(
+        node(
+          'process.stdout.write(`${process.env.OPENCODE_HOST_ONLY_TEST ?? ""}:${process.env.OPENCODE_EXPLICIT_TEST ?? ""}`)',
+        ),
+        {
+          inheritEnv: false,
+          env: { OPENCODE_EXPLICIT_TEST: "allowed" },
+        },
+      )
+      expect(out.stdout.toString()).toBe(":allowed")
+    } finally {
+      if (previous === undefined) delete process.env.OPENCODE_HOST_ONLY_TEST
+      else process.env.OPENCODE_HOST_ONLY_TEST = previous
+    }
+  })
+
   test("uses shell in run on Windows", async () => {
     if (process.platform !== "win32") return
 

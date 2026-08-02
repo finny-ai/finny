@@ -27,6 +27,7 @@ import { Api } from "@opencode-ai/server/api"
 // GlobalEventSchema snapshots the registry after event-producing groups register their variants.
 import { GlobalApi } from "./groups/global"
 import { HealthApi } from "./groups/health"
+import { IntegrationsApi } from "./groups/integrations"
 import { Authorization } from "./middleware/authorization"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -48,6 +49,11 @@ export const RootHttpApi = HttpApi.make("opencode-root")
   .addHttpApi(ControlApi)
   .addHttpApi(ControlPlaneApi)
   .addHttpApi(GlobalApi)
+  .middleware(SchemaErrorMiddleware)
+  .middleware(Authorization)
+
+export const IntegrationsHttpApi = HttpApi.make("opencode-integrations")
+  .addHttpApi(IntegrationsApi)
   .middleware(SchemaErrorMiddleware)
   .middleware(Authorization)
 
@@ -74,6 +80,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
 export const OpenCodeHttpApi = HttpApi.make("opencode")
   .addHttpApi(HealthApi)
   .addHttpApi(RootHttpApi)
+  .addHttpApi(IntegrationsHttpApi)
   .addHttpApi(EventApi)
   .addHttpApi(InstanceHttpApi)
   .addHttpApi(Api)

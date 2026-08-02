@@ -7,8 +7,10 @@ import { PluginV2 } from "../plugin"
 import { AbsolutePath } from "../schema"
 import { SkillV2 } from "../skill"
 import customizeOpencodeContent from "./skill/customize-opencode.md" with { type: "text" }
+import finnyRobinhoodContent from "./skill/finny-robinhood.md" with { type: "text" }
 
 export const CustomizeOpencodeContent = customizeOpencodeContent
+export const FinnyRobinhoodContent = finnyRobinhoodContent
 
 export const Plugin = PluginV2.define({
   id: PluginV2.ID.make("skill"),
@@ -26,6 +28,18 @@ export const Plugin = PluginV2.define({
               "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself.",
             location: AbsolutePath.make("/builtin/customize-opencode.md"),
             content: CustomizeOpencodeContent,
+          }),
+        }),
+      )
+      editor.source(
+        new SkillV2.EmbeddedSource({
+          type: "embedded",
+          skill: new SkillV2.Info({
+            name: "finny-robinhood",
+            description:
+              "Use when the user wants to install, connect, verify, recover, or use Robinhood through Finny, including RHX stock and ETF brokerage or the official Robinhood Crypto API. Enforces credential isolation, capability checks, and fail-closed live-trading policy.",
+            location: AbsolutePath.make("/builtin/finny-robinhood.md"),
+            content: FinnyRobinhoodContent,
           }),
         }),
       )
