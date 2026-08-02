@@ -67,12 +67,14 @@ export const BacktestHistoryTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_backtest_history",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_backtest_history",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const entries = await BacktestStore.list({
           algorithmName: params.algorithmName,

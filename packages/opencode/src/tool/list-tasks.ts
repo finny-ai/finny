@@ -20,12 +20,14 @@ export const ListTasksTool = Tool.define<typeof parameters, Metadata, Database.S
       parameters,
       execute: (_params: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.promise(async () => {
-          await ctx.ask({
-            permission: "list_tasks",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "list_tasks",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const tasks = (await TaskState.listByParent(ctx.sessionID, database)).map((task) => ({
             id: task.id,

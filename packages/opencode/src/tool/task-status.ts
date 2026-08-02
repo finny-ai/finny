@@ -23,12 +23,14 @@ export const TaskStatusTool = Tool.define<typeof parameters, Metadata, Database.
       parameters,
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.promise(async () => {
-          await ctx.ask({
-            permission: "task_status",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "task_status",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const task = await TaskState.get(params.task_id, database)
           if (!task || task.parentSessionID !== ctx.sessionID) {

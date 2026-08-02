@@ -39,12 +39,14 @@ export const MonitorSnapshotTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_monitor_snapshot",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_monitor_snapshot",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const algorithm = params.algorithm ? await Algorithm.resolve(params.algorithm) : null
         const config = parseConfig(algorithm?.config)

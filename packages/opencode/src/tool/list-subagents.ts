@@ -13,12 +13,14 @@ export const ListSubagentsTool = Tool.define(
     parameters,
     execute: (_params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "list_subagents",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "list_subagents",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const jobs = (await CronStorage.list())
           .filter((job) => job.parentSessionID === ctx.sessionID)

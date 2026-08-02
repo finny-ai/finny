@@ -183,12 +183,14 @@ export const DiscordReadTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
-        await ctx.ask({
-          permission: "finny_discord_read",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: { channel: params.channel, limit: params.limit ?? 5 },
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_discord_read",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: { channel: params.channel, limit: params.limit ?? 5 },
+          }),
+        )
 
         try {
           const posts = await fetchPosts(params.channel, params.limit ?? 5, ctx.abort)

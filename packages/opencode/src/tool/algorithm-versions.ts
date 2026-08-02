@@ -36,12 +36,14 @@ export const AlgorithmVersionsTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<Tool.ExecuteResult> => {
-        await ctx.ask({
-          permission: "finny_algorithm_versions",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_algorithm_versions",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         // Resolve algorithmId from name if not provided.
         let algorithmId = params.algorithmId

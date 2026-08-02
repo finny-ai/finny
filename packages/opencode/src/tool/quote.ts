@@ -76,12 +76,14 @@ export const QuoteTool = Tool.define(
               )
             : undefined
         if (contextBlock) return contextBlock
-        await ctx.ask({
-          permission: "finny_get_quote",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: { symbol: params.symbol },
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_get_quote",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: { symbol: params.symbol },
+          }),
+        )
 
         const resolved = resolveSymbol(params.symbol)
         if (!resolved) {

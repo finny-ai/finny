@@ -203,6 +203,12 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        // `research_brief_approve` is a permission id, not a tool, so it is absent
+        // from the tool bundles and would otherwise fall through to their `"*": "deny"`.
+        // The Research→Build handoff is a user decision, so it must prompt.
+        const finnyResearchBriefApprovalPrompt = Permission.fromConfig({
+          research_brief_approve: "ask",
+        })
 
         const finnyBuildTools = [
           "question",
@@ -535,6 +541,7 @@ export const layer = Layer.effect(
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,
@@ -563,6 +570,7 @@ export const layer = Layer.effect(
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,
@@ -580,6 +588,7 @@ export const layer = Layer.effect(
               finnyFileSystemSandbox,
               finnyToolBundle(finnyResearchTools, ["data_extractor", "news_agent", "researcher"]),
               user,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,

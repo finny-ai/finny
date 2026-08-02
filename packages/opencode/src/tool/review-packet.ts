@@ -91,7 +91,7 @@ export const ReviewPacketTool = Tool.define<typeof parameters, ReviewPacketMetad
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
         Effect.promise(async () => {
         const permissionPattern = params.experimentId ?? params.algorithmName
-        await ctx.ask({ permission: "finny_review_packet", patterns: [permissionPattern], always: [permissionPattern], metadata: {} })
+        await Effect.runPromise(ctx.ask({ permission: "finny_review_packet", patterns: [permissionPattern], always: [permissionPattern], metadata: {} }))
         const algorithm = await Algorithm.get(params.algorithmName)
         if (!algorithm) return { title: "Review packet failed", output: `Algorithm "${params.algorithmName}" not found.`, metadata: { created: false } satisfies ReviewPacketMetadata }
         if (!params.experimentId) {

@@ -26,12 +26,14 @@ export const StopTaskTool = Tool.define<typeof parameters, Metadata, Database.Se
       parameters,
       execute: (params: z.infer<typeof parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.promise(async () => {
-          await ctx.ask({
-            permission: "stop_task",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "stop_task",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const task = await TaskState.get(params.task_id, database)
           if (!task || task.parentSessionID !== ctx.sessionID) {
