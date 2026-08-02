@@ -34,6 +34,19 @@ export async function withForegroundSignalGuard<T>(
   return ProcessSignal.withOwnership(signal, run)
 }
 
+export function foregroundCommandExitError(code: number | null, signal: NodeJS.Signals | null, interrupted: boolean) {
+  const cancelled = interrupted || signal === "SIGINT" || code === 130
+  if (code === 0 && !cancelled) return
+  return new ForegroundCommandError(
+    cancelled
+      ? "Interactive command cancelled"
+      : `Interactive command exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
+    code ?? undefined,
+    signal ?? undefined,
+    cancelled,
+  )
+}
+
 /**
  * Temporarily gives a foreground child process full ownership of the user's
  * terminal. Output is inherited rather than captured, so interactive secrets
@@ -72,18 +85,9 @@ export async function runForegroundInteractiveCommand(input: {
           })
           child.once("error", reject)
           child.once("exit", (code, signal) => {
-            if (code === 0) return resolve()
-            const cancelled = interrupted() || signal === "SIGINT" || code === 130
-            reject(
-              new ForegroundCommandError(
-                cancelled
-                  ? "Interactive command cancelled"
-                  : `Interactive command exited with ${signal ? `signal ${signal}` : `code ${code ?? "unknown"}`}`,
-                code ?? undefined,
-                signal ?? undefined,
-                cancelled,
-              ),
-            )
+            const error = foregroundCommandExitError(code, signal, interrupted())
+            if (!error) return resolve()
+            reject(error)
           })
         })
       } finally {
