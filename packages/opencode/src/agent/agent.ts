@@ -203,6 +203,12 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        // A mechanical clamp inside finny_workspace_edit applies silently; only a
+        // window/interval change the user has to own reaches this permission, and
+        // the tool bundle's blanket deny would otherwise turn that into a dead end.
+        const finnyWorkspaceEditPrompt = Permission.fromConfig({
+          finny_workspace_edit_identity: "ask",
+        })
 
         const finnyBuildTools = [
           "question",
@@ -237,6 +243,7 @@ export const layer = Layer.effect(
           "edit",
           "todowrite",
           "finny_workspace_prepare",
+          "finny_workspace_edit",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
           "finny_algorithm_get",
@@ -535,6 +542,7 @@ export const layer = Layer.effect(
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
+              finnyWorkspaceEditPrompt,
             ),
             mode: "primary",
             native: true,
