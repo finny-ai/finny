@@ -10,7 +10,7 @@ import { useSDK } from "../context/sdk"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "../ui/dialog"
 import { useToast } from "../ui/toast"
-import { runForegroundInteractiveCommand } from "../util/foreground-command"
+import { ForegroundCommandError, runForegroundInteractiveCommand } from "../util/foreground-command"
 import {
   canRunRobinhoodLoginLocally,
   createRobinhoodIntegrationClient,
@@ -179,6 +179,7 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
           args,
         })
       } catch (cause) {
+        if (cause instanceof ForegroundCommandError && cause.cancelled) throw cause
         loginError = cause
       }
 
@@ -192,6 +193,10 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
         verified.message || (loginError instanceof Error ? loginError.message : "RHX login was not verified"),
       )
     } catch (cause) {
+      if (cause instanceof ForegroundCommandError && cause.cancelled) {
+        toast.show({ message: "Robinhood login cancelled", variant: "info", duration: 3000 })
+        return
+      }
       showError("Robinhood connection failed", cause)
     } finally {
       setBusy(undefined)
@@ -416,7 +421,8 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
                 </box>
                 <Show when={!canRunLogin()}>
                   <text fg={theme.warning}>
-                    Remote server attached: Finny will not execute a server-provided RHX path on this computer. Run RHX login on the server, then Verify here.
+                    Remote server attached: Finny will not execute a server-provided RHX path on this computer. Run RHX
+                    login on the server, then Verify here.
                   </text>
                 </Show>
               </box>
