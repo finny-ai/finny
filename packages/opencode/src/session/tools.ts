@@ -33,10 +33,16 @@ const robinhoodMcpPermission = Permission.fromConfig(McpRobinhood.permissionConf
 export function mcpInvocationPermission(
   toolID: string,
   effectivePermission: PermissionV1.Ruleset,
-): "inherit" | "ask" | "deny" {
-  if (!McpRobinhood.isServerToolID(toolID)) return "inherit"
-  if (!McpRobinhood.isToolID(toolID)) return "deny"
-  return Permission.evaluate(toolID, "*", effectivePermission).action === "deny" ? "deny" : "ask"
+):
+  | { readonly action: "inherit"; readonly ruleset: PermissionV1.Ruleset }
+  | { readonly action: "ask"; readonly ruleset: PermissionV1.Ruleset }
+  | { readonly action: "deny"; readonly ruleset: PermissionV1.Ruleset } {
+  if (!McpRobinhood.isServerToolID(toolID)) return { action: "inherit", ruleset: effectivePermission }
+  if (!McpRobinhood.isToolID(toolID)) return { action: "deny", ruleset: robinhoodMcpPermission }
+  if (Permission.evaluate(toolID, "*", effectivePermission).action === "deny") {
+    return { action: "deny", ruleset: effectivePermission }
+  }
+  return { action: "ask", ruleset: robinhoodMcpPermission }
 }
 
 export function requestMcpPermission(input: {
@@ -47,19 +53,19 @@ export function requestMcpPermission(input: {
   readonly messageID: MessageID
   readonly callID: string
 }) {
-  const action = mcpInvocationPermission(input.toolID, input.effectivePermission)
-  if (action === "deny") {
-    return Effect.fail(new PermissionV1.DeniedError({ ruleset: robinhoodMcpPermission })).pipe(Effect.orDie)
+  const decision = mcpInvocationPermission(input.toolID, input.effectivePermission)
+  if (decision.action === "deny") {
+    return Effect.die(new PermissionV1.DeniedError({ ruleset: decision.ruleset }))
   }
   return input.permission
     .ask({
       permission: input.toolID,
       metadata: {},
-      patterns: ["*"],
-      always: action === "ask" ? [] : ["*"],
+      patterns: [input.toolID],
+      always: decision.action === "ask" ? [] : [input.toolID],
       sessionID: input.sessionID,
       tool: { messageID: input.messageID, callID: input.callID },
-      ruleset: action === "ask" ? robinhoodMcpPermission : input.effectivePermission,
+      ruleset: decision.ruleset,
     })
     .pipe(Effect.orDie)
 }

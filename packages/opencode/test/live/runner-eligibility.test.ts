@@ -62,10 +62,10 @@ describe("LiveRunner multi-market start target", () => {
 
     expect(
       LiveRunner.resolveStartTarget({
-        symbol: "BTC/USD",
-        accountProviderID: "robinhood-rhx-primary",
+        symbol: "aapl",
+        accountProviderID: "robinhood-official-agentic",
       }),
-    ).toEqual({ brokerKind: "robinhood", symbol: "BTC-USD" })
+    ).toEqual({ brokerKind: "robinhood", symbol: "AAPL" })
   })
 
   test("rejects a broker/account mismatch before reading credentials", () => {
@@ -91,7 +91,7 @@ describe("LiveRunner multi-market start target", () => {
     expect(() =>
       LiveRunner.resolveStartTarget({
         symbol: "BTC/USDT",
-        accountProviderID: "robinhood-rhx-primary",
+        accountProviderID: "robinhood-official-agentic",
       }),
     ).toThrow("Robinhood")
   })

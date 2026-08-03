@@ -205,6 +205,9 @@ export const layer = Layer.effect(
           finny_paper_approve: "ask",
         })
         const finnyRobinhoodMcpPolicy = Permission.fromConfig(McpRobinhood.permissionConfig())
+        const finnyRobinhoodUserDenials = user.filter(
+          (rule) => rule.action === "deny" && McpRobinhood.isServerToolID(rule.permission),
+        )
 
         const finnyBuildTools = [
           "question",
@@ -527,11 +530,12 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyToolBundle(finnyModeTools, ["data_extractor", "news_agent", "sec_agent", "sentiment_agent"]),
-              finnyRobinhoodMcpPolicy,
               Permission.fromConfig({
                 question: "allow",
               }),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               finnyStrategySandbox,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
@@ -559,11 +563,12 @@ export const layer = Layer.effect(
                 "sec_agent",
                 "sentiment_agent",
               ]),
-              finnyRobinhoodMcpPolicy,
               Permission.fromConfig({
                 question: "allow",
               }),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
               finnyPaperApprovalPrompt,
@@ -583,8 +588,9 @@ export const layer = Layer.effect(
               defaults,
               finnyFileSystemSandbox,
               finnyToolBundle(finnyResearchTools, ["data_extractor", "news_agent", "researcher"]),
-              finnyRobinhoodMcpPolicy,
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
             ),
             mode: "primary",
             native: true,
@@ -600,8 +606,9 @@ export const layer = Layer.effect(
               defaults,
               finnyFileSystemSandbox,
               finnyToolBundle(finnyChatTools, ["news_agent", "researcher"]),
-              finnyRobinhoodMcpPolicy,
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
             ),
             mode: "primary",
             native: true,
@@ -617,8 +624,9 @@ export const layer = Layer.effect(
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
-              finnyRobinhoodMcpPolicy,
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               Permission.fromConfig({
                 question: "allow",
                 edit: "deny",

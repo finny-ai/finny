@@ -14,6 +14,8 @@ import { BrokerRegistry, type BrokerAccount, type BrokerKind } from "@/live/brok
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
 import { DialogRobinhood } from "../component/dialog-robinhood"
+import { useSDK } from "../context/sdk"
+import { createRobinhoodIntegrationClient } from "../util/robinhood-integration"
 
 function formatCurrency(value?: number): string {
   if (value === undefined || value === null || !isFinite(value)) return "—"
@@ -25,10 +27,13 @@ export function Portfolio() {
   const route = useRoute()
   const liveRuns = useLiveRuns()
   const dialog = useDialog()
+  const sdk = useSDK()
+  const robinhood = createRobinhoodIntegrationClient(sdk)
 
   const allSpecs = BrokerRegistry.specs()
   const [accounts, setAccounts] = createSignal<BrokerAccount[]>([])
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(allSpecs[0]?.kind ?? "alpaca")
+  const [robinhoodConnected, setRobinhoodConnected] = createSignal(false)
 
   const refreshAccounts = async () => {
     try {
@@ -38,20 +43,27 @@ export function Portfolio() {
     }
   }
 
+  const refreshRobinhood = async () => {
+    try {
+      setRobinhoodConnected((await robinhood.status()).connected)
+    } catch {
+      setRobinhoodConnected(false)
+    }
+  }
+
   onMount(async () => {
-    await refreshAccounts()
+    await Promise.all([refreshAccounts(), refreshRobinhood()])
     // Prefer the first broker that has accounts.
     const first = allSpecs.find((s) => accounts().some((a) => a.brokerKind === s.kind))
     if (first) setActiveKind(first.kind)
   })
 
-  const activeRuns = createMemo(() =>
-    liveRuns.runs().filter((r) => r.status === "running" || r.status === "starting"),
-  )
+  const activeRuns = createMemo(() => liveRuns.runs().filter((r) => r.status === "running" || r.status === "starting"))
 
   const accountsForKind = (kind: BrokerKind) => accounts().filter((a) => a.brokerKind === kind)
   const activeSpec = () => BrokerRegistry.getSpec(activeKind())
-  const connected = () => accountsForKind(activeKind()).length > 0
+  const connected = () =>
+    activeKind() === "robinhood" ? robinhoodConnected() : accountsForKind(activeKind()).length > 0
 
   const tabOptions = (): SegmentedOption<BrokerKind>[] =>
     allSpecs.map((s) => {
@@ -67,8 +79,8 @@ export function Portfolio() {
 
   const openAddDialog = async () => {
     if (activeKind() === "robinhood") {
-      await DialogRobinhood.show(dialog, { onChanged: () => void refreshAccounts() })
-      await refreshAccounts()
+      await DialogRobinhood.show(dialog, { onChanged: () => void Promise.all([refreshAccounts(), refreshRobinhood()]) })
+      await Promise.all([refreshAccounts(), refreshRobinhood()])
       return
     }
     const saved = await DialogAddAccount.show(dialog, { initialKind: activeKind() })
@@ -98,11 +110,9 @@ export function Portfolio() {
               Not investment advice
             </text>
             <text fg={theme.textMuted}>
-              API keys are saved locally (0600). Robinhood credentials stay in RHX / the OS keychain.
+              API keys are saved locally (0600). Robinhood uses the official OAuth connection.
             </text>
-            <text fg={theme.textMuted}>
-              Paper / testnet uses virtual money. Strategies are not financial advice.
-            </text>
+            <text fg={theme.textMuted}>Paper / testnet uses virtual money. Strategies are not financial advice.</text>
           </box>
         }
       />
@@ -132,8 +142,7 @@ export function Portfolio() {
                     // matching connected account for runs started before the
                     // field existed.
                     const runMode = () =>
-                      run.mode ??
-                      accounts().find((a) => a.providerID === run.accountProviderID)?.mode
+                      run.mode ?? accounts().find((a) => a.providerID === run.accountProviderID)?.mode
                     return (
                       <box
                         flexDirection="row"
@@ -158,8 +167,7 @@ export function Portfolio() {
                         </box>
                         <box width={22} flexShrink={0}>
                           <text fg={theme.text}>
-                            <span style={{ fg: theme.textMuted }}>equity</span>{" "}
-                            {formatCurrency(run.equity)}
+                            <span style={{ fg: theme.textMuted }}>equity</span> {formatCurrency(run.equity)}
                           </text>
                         </box>
                         <box width={18} flexShrink={0}>
@@ -181,11 +189,7 @@ export function Portfolio() {
         </Show>
 
         {/* Brokerage tabs */}
-        <SegmentedControl
-          options={tabOptions()}
-          value={activeKind()}
-          onChange={setActiveKind}
-        />
+        <SegmentedControl options={tabOptions()} value={activeKind()} onChange={setActiveKind} />
 
         <Show when={totalAccounts() > 0}>
           <text fg={theme.textMuted}>
@@ -204,9 +208,7 @@ export function Portfolio() {
                   <text fg={theme.text} attributes={TextAttributes.BOLD}>
                     {activeSpec().displayName} not connected
                   </text>
-                  <text fg={theme.textMuted}>
-                    Connect a {activeSpec().displayName} account to see live positions.
-                  </text>
+                  <text fg={theme.textMuted}>Connect a {activeSpec().displayName} account to see live positions.</text>
                   <Show when={activeSpec().docsUrl && activeKind() !== "robinhood"}>
                     <box flexDirection="row" flexShrink={0}>
                       <text fg={theme.textMuted}>Get keys at </text>
@@ -215,12 +217,7 @@ export function Portfolio() {
                       </Link>
                     </box>
                   </Show>
-                  <box
-                    paddingLeft={2}
-                    paddingRight={2}
-                    backgroundColor={theme.primary}
-                    onMouseUp={openAddDialog}
-                  >
+                  <box paddingLeft={2} paddingRight={2} backgroundColor={theme.primary} onMouseUp={openAddDialog}>
                     <text fg={theme.background} attributes={TextAttributes.BOLD}>
                       → {activeKind() === "robinhood" ? "Set up Robinhood" : `Connect ${activeSpec().displayName}`}
                     </text>
@@ -229,15 +226,14 @@ export function Portfolio() {
               }
             >
               <box flexDirection="column" gap={1} flexShrink={0}>
+                <Show when={activeKind() === "robinhood" && accountsForKind("robinhood").length === 0}>
+                  <text fg={theme.textMuted}>
+                    Official OAuth connected · the dedicated Agentic account is verified before live execution.
+                  </text>
+                </Show>
                 <For each={accountsForKind(activeKind())}>
                   {(account) => (
-                    <box
-                      flexDirection="row"
-                      gap={2}
-                      paddingLeft={1}
-                      paddingRight={1}
-                      flexShrink={0}
-                    >
+                    <box flexDirection="row" gap={2} paddingLeft={1} paddingRight={1} flexShrink={0}>
                       <text fg={theme.success} attributes={TextAttributes.BOLD}>
                         ✓
                       </text>
@@ -249,7 +245,7 @@ export function Portfolio() {
                       <ModeBadge mode={account.mode} />
                       <text fg={theme.textMuted}>
                         {account.brokerKind === "robinhood"
-                          ? `RHX profile: ${account.keyId}`
+                          ? "Dedicated Agentic account"
                           : `Key: ${maskKey(account.keyId)}`}
                       </text>
                     </box>
@@ -267,12 +263,7 @@ export function Portfolio() {
                   </box>
                 </Show>
                 <box flexDirection="row" gap={2} flexShrink={0} paddingTop={1}>
-                  <box
-                    paddingLeft={2}
-                    paddingRight={2}
-                    backgroundColor={theme.success}
-                    onMouseUp={openAddDialog}
-                  >
+                  <box paddingLeft={2} paddingRight={2} backgroundColor={theme.success} onMouseUp={openAddDialog}>
                     <text fg={theme.background} attributes={TextAttributes.BOLD}>
                       {activeKind() === "robinhood" ? "Manage Robinhood" : `+ Add ${activeSpec().displayName} account`}
                     </text>
@@ -290,7 +281,6 @@ export function Portfolio() {
             </Show>
           </Card>
         </box>
-
       </box>
     </box>
   )

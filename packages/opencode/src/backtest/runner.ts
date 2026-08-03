@@ -3201,7 +3201,11 @@ if __name__ == "__main__":
           })
           await fs.writeFile(path.join(tmpDir, "results.json"), JSON.stringify(results.v2, null, 2))
         }
-        if ((promotableVerified || publishableProviderRun) && hasProductRiskContract(config) && dataQualityMode === "strict") {
+        if (
+          (promotableVerified || publishableProviderRun) &&
+          hasProductRiskContract(config) &&
+          dataQualityMode === "strict"
+        ) {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -3218,9 +3222,7 @@ if __name__ == "__main__":
             dataQualityMode,
             qualification,
             datasetSnapshotId:
-              preparedData.provenance.mode === "provider_fetch"
-                ? preparedData.provenance.snapshot_id
-                : undefined,
+              preparedData.provenance.mode === "provider_fetch" ? preparedData.provenance.snapshot_id : undefined,
           })
         } else {
           // Qualification evidence and the schema-v4 risk contract remain

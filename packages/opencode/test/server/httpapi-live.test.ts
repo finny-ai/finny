@@ -73,6 +73,7 @@ describe("live HttpApi", () => {
             interval: "1min",
             accountProviderID: "alpaca-paper-missing",
             brokerKind: "alpaca",
+            executionMode: "shadow",
           }),
         })
         expect(res.status).toBe(400)
@@ -81,6 +82,39 @@ describe("live HttpApi", () => {
           message: expect.stringContaining("no longer exists"),
         })
       }
+    }),
+  )
+
+  it.live("accepts legacy non-Robinhood start payloads without executionMode", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped({ git: true })
+      const res = yield* requestInDirectory("/live/start", dir, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          algorithm: {
+            algorithmId: "algo_legacy_start_failure",
+            userId: "user_test",
+            name: "Legacy live start failure",
+            code: "class Strategy:\n    pass\n",
+            language: "python",
+            version: 1,
+            status: "draft",
+            time_created: Date.now(),
+            time_updated: Date.now(),
+          },
+          runId: "strict-run-legacy",
+          symbol: "AAPL",
+          interval: "1min",
+          accountProviderID: "alpaca-paper-missing",
+          brokerKind: "alpaca",
+        }),
+      })
+      expect(res.status).toBe(400)
+      expect(yield* res.json).toMatchObject({
+        _tag: "LiveRunStartError",
+        message: expect.stringContaining("no longer exists"),
+      })
     }),
   )
 })

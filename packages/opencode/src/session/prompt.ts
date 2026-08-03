@@ -1658,6 +1658,8 @@ export const layer = Layer.effect(
                 ? StrategyContext.unlaunchedRequiredContextRoles(activeTurnWorkflow, contextTasks)
                 : []
             const contextLaunchRequired = unlaunchedRequiredRoles.length > 0
+            const includeMcpTools =
+              !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired
             const contextDefinitions = StrategyContext.filterContextPhaseTools(capabilityDefinitions, {
               pendingCount: pendingContext.length,
               launchRequired: contextLaunchRequired,
@@ -1674,7 +1676,7 @@ export const layer = Layer.effect(
               messages: msgs,
               promptOps,
               definitions: turnDefinitions,
-              includeMcpTools: !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired,
+              includeMcpTools,
               strategyContextGate: {
                 unlaunchedRequiredRoles,
                 pendingTasks: pendingContext,
@@ -1764,7 +1766,7 @@ export const layer = Layer.effect(
                 if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
               }
             }
-            if (!protectedFundRuntime) {
+            if (includeMcpTools) {
               const robinhood = yield* mcp.robinhood()
               if (robinhood) system.push(McpRobinhood.renderContext(robinhood))
             }

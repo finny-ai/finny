@@ -29,7 +29,8 @@ export class UnsupportedOAuthError extends Schema.ErrorClass<UnsupportedOAuthErr
   { error: Schema.String },
   { httpApiStatus: 400 },
 ) {}
-export class ManagedMcpLifecycleError extends Schema.ErrorClass<ManagedMcpLifecycleError>("McpManagedLifecycleError")(
+export class ManagedMcpLifecycleError extends Schema.TaggedErrorClass<ManagedMcpLifecycleError>()(
+  "McpManagedLifecycleError",
   { error: Schema.String },
   { httpApiStatus: 403 },
 ) {}

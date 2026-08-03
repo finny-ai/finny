@@ -103,14 +103,22 @@ it.instance(
 )
 
 it.instance(
-  "non-Robinhood MCP asks preserve persistable approval patterns",
+  "non-Robinhood MCP asks persist approval against the exact tool ID",
   () =>
     Effect.gen(function* () {
       const fiber = yield* request("docs_search", Permission.fromConfig({ "*": "ask" })).pipe(Effect.forkScoped)
       const pending = yield* waitForRequest
-      expect(pending).toMatchObject({ permission: "docs_search", always: ["*"] })
-      yield* (yield* Permission.Service).reply({ requestID: pending.id, reply: "once" })
+      expect(pending).toMatchObject({
+        permission: "docs_search",
+        patterns: ["docs_search"],
+        always: ["docs_search"],
+      })
+      const permission = yield* Permission.Service
+      yield* permission.reply({ requestID: pending.id, reply: "always" })
       yield* Fiber.join(fiber)
+
+      yield* request("docs_search", Permission.fromConfig({ "*": "ask" }))
+      expect(yield* permission.list()).toEqual([])
     }),
   { git: true },
 )
@@ -134,7 +142,13 @@ it.instance(
           Effect.exit,
         )
         expect(Exit.isFailure(exit)).toBe(true)
-        if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(PermissionV1.DeniedError)
+        if (Exit.isFailure(exit)) {
+          const denial = Cause.squash(exit.cause)
+          expect(denial).toBeInstanceOf(PermissionV1.DeniedError)
+          if (denial instanceof PermissionV1.DeniedError && toolID === "robinhood_get_accounts") {
+            expect(denial.ruleset).toBe(ruleset)
+          }
+        }
         expect(invoked).toBe(false)
       }
       expect(yield* (yield* Permission.Service).list()).toEqual([])

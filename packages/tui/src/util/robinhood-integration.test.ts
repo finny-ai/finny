@@ -1,172 +1,85 @@
 import { expect, test } from "bun:test"
 import {
-  canRunRobinhoodLoginLocally,
-  canSelectRobinhood,
   createRobinhoodIntegrationClient,
-  managedRobinhoodLoginCommand,
-  ROBINHOOD_INTEGRATION_PATH,
-  type RobinhoodIntegrationStatus,
+  robinhoodConnection,
+  ROBINHOOD_OFFICIAL_MCP_URL,
 } from "./robinhood-integration"
 
-test("Robinhood foreground login accepts trusted local Finny transports", () => {
-  expect(canRunRobinhoodLoginLocally("http://opencode.internal")).toBe(true)
-  expect(canRunRobinhoodLoginLocally("http://localhost:4096")).toBe(true)
-  expect(canRunRobinhoodLoginLocally("http://127.0.0.1:4096")).toBe(true)
-  expect(canRunRobinhoodLoginLocally("http://[::1]:4096")).toBe(true)
-  expect(canRunRobinhoodLoginLocally("https://opencode.internal")).toBe(false)
-  expect(canRunRobinhoodLoginLocally("http://opencode.internal:4096")).toBe(false)
-  expect(canRunRobinhoodLoginLocally("https://finny.example.com")).toBe(false)
-  expect(canRunRobinhoodLoginLocally("not a url")).toBe(false)
-})
-
-test("managed login launches the local pinned entrypoint cross-platform without a shell shim", () => {
-  expect(
-    managedRobinhoodLoginCommand({
-      packageDirectory: "C:\\finny\\packages\\rhx\\node_modules\\rhx",
-      profile: "work",
-      runtimePath: "C:\\finny\\bun.exe",
-      platform: "win32",
-    }),
-  ).toEqual({
-    command: "C:\\finny\\bun.exe",
-    args: ["C:\\finny\\packages\\rhx\\node_modules\\rhx\\bin\\rhx.cjs", "--profile", "work", "auth", "login"],
-    entrypoint: "C:\\finny\\packages\\rhx\\node_modules\\rhx\\bin\\rhx.cjs",
+test("Robinhood status exposes only Connected or Not connected semantics", () => {
+  expect(robinhoodConnection({ robinhood: { status: "connected" } })).toEqual({
+    connected: true,
+    status: "connected",
+  })
+  expect(robinhoodConnection({ robinhood: { status: "needs_auth" } })).toEqual({
+    connected: false,
+    status: "needs_auth",
+  })
+  expect(robinhoodConnection({})).toEqual({ connected: false, status: "not_configured" })
+  expect(robinhoodConnection({ robinhood: { status: "failed", error: "OAuth expired" } })).toEqual({
+    connected: false,
+    status: "failed",
+    message: "OAuth expired",
   })
 })
 
-test("managed login launches the POSIX pinned entrypoint without a shell shim", () => {
-  expect(
-    managedRobinhoodLoginCommand({
-      packageDirectory: "/var/lib/finny/packages/rhx/node_modules/rhx",
-      profile: "work",
-      runtimePath: "/usr/local/bin/bun",
-      platform: "linux",
-    }),
-  ).toEqual({
-    command: "/usr/local/bin/bun",
-    args: ["/var/lib/finny/packages/rhx/node_modules/rhx/bin/rhx.cjs", "--profile", "work", "auth", "login"],
-    entrypoint: "/var/lib/finny/packages/rhx/node_modules/rhx/bin/rhx.cjs",
-  })
-})
-
-const ready: RobinhoodIntegrationStatus = {
-  provider: "robinhood",
-  package: "rhx",
-  pinnedVersion: "0.4.8",
-  status: "ready",
-  supported: true,
-  installed: true,
-  ready: true,
-  source: "managed",
-  executablePath: "/tmp/rhx",
-  profile: "default",
-  loginArgs: ["--profile", "default", "auth", "login"],
-  brokerage: { configured: true, ready: true, state: "ready" },
-  crypto: { configured: false, ready: false, state: "not_configured" },
-}
-
-test("Robinhood selection accepts either independently verified capability", () => {
-  expect(canSelectRobinhood(ready)).toBe(true)
-  expect(
-    canSelectRobinhood({
-      brokerage: { configured: false, ready: false, state: "not_configured" },
-      crypto: { configured: true, ready: true, state: "ready" },
-    }),
-  ).toBe(true)
-  expect(
-    canSelectRobinhood({
-      brokerage: { configured: true, ready: false, state: "configured" },
-      crypto: { configured: false, ready: false, state: "not_configured" },
-    }),
-  ).toBe(false)
-})
-
-test("Robinhood integration client uses the global endpoint contract", async () => {
-  const calls: { path: string; method: string; body?: unknown }[] = []
-  const mockFetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(input instanceof Request ? input.url : input)
+test("Robinhood connect configures the reserved official MCP then starts OAuth", async () => {
+  const calls: Array<{ url: string; method: string; body?: unknown }> = []
+  const mockFetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
     calls.push({
-      path: url.pathname,
+      url,
       method: init?.method ?? "GET",
-      body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
     })
-    return Response.json(ready)
-  }) as typeof fetch
-  const client = createRobinhoodIntegrationClient({ url: "http://localhost:4096", fetch: mockFetch })
+    if (url.endsWith("/mcp")) {
+      return new Response(JSON.stringify({ robinhood: { status: "needs_auth" } }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ status: "connected" }), { status: 200 })
+  }
+  const client = createRobinhoodIntegrationClient({ url: "http://localhost:4096", fetch: mockFetch as typeof fetch })
 
-  await client.status()
-  await client.install({ executablePath: "/opt/rhx", profile: "work" })
-  await client.verify({ profile: "work" })
-  await client.disconnect()
-
+  await expect(client.connect()).resolves.toEqual({ connected: true, status: "connected" })
   expect(calls).toEqual([
-    { path: ROBINHOOD_INTEGRATION_PATH, method: "GET", body: undefined },
     {
-      path: `${ROBINHOOD_INTEGRATION_PATH}/install`,
+      url: "http://localhost:4096/mcp",
       method: "POST",
-      body: { executablePath: "/opt/rhx", profile: "work" },
+      body: {
+        name: "robinhood",
+        config: { type: "remote", url: ROBINHOOD_OFFICIAL_MCP_URL, enabled: true },
+      },
     },
-    { path: `${ROBINHOOD_INTEGRATION_PATH}/verify`, method: "POST", body: { profile: "work" } },
-    { path: ROBINHOOD_INTEGRATION_PATH, method: "DELETE", body: undefined },
+    {
+      url: "http://localhost:4096/mcp/robinhood/auth/authenticate",
+      method: "POST",
+      body: undefined,
+    },
   ])
 })
 
-test("Robinhood integration client normalizes nullable optional fields from Effect HttpApi", async () => {
-  const wireStatus = {
-    ...ready,
-    source: null,
-    executablePath: null,
-    profile: null,
-    loginArgs: null,
-    message: null,
-    checkedAt: null,
+test("Robinhood disconnect stops the MCP, removes OAuth, then refreshes status", async () => {
+  const calls: string[] = []
+  const mockFetch = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input)
+    calls.push(`${init?.method ?? "GET"} ${new URL(url).pathname}`)
+    if ((init?.method ?? "GET") === "GET") {
+      return new Response(JSON.stringify({ robinhood: { status: "disabled" } }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ success: true }), { status: 200 })
   }
-  const client = createRobinhoodIntegrationClient({
-    url: "http://localhost:4096",
-    fetch: (async () => Response.json(wireStatus)) as unknown as typeof fetch,
-  })
+  const client = createRobinhoodIntegrationClient({ url: "http://localhost:4096", fetch: mockFetch as typeof fetch })
 
-  expect(await client.status()).toEqual({
-    provider: "robinhood",
-    package: "rhx",
-    pinnedVersion: "0.4.8",
-    status: "ready",
-    supported: true,
-    installed: true,
-    ready: true,
-    brokerage: { configured: true, ready: true, state: "ready" },
-    crypto: { configured: false, ready: false, state: "not_configured" },
-  })
+  await expect(client.disconnect()).resolves.toEqual({ connected: false, status: "disabled" })
+  expect(calls).toEqual(["POST /mcp/robinhood/disconnect", "DELETE /mcp/robinhood/auth", "GET /mcp"])
 })
 
-test("Robinhood integration client rejects malformed success payloads", async () => {
-  const malformed = {
-    ...ready,
-    loginArgs: ["auth", { password: "must never be accepted" }],
-    brokerage: { configured: "yes", ready: true, state: "ready" },
-  }
-  const client = createRobinhoodIntegrationClient({
-    url: "http://localhost:4096",
-    fetch: (async () => Response.json(malformed)) as unknown as typeof fetch,
-  })
-
-  await expect(client.status()).rejects.toThrow("Unexpected response from GET /global/integrations/robinhood")
-
-  const malformedTimestamp = createRobinhoodIntegrationClient({
-    url: "http://localhost:4096",
-    fetch: (async () => Response.json({ ...ready, checkedAt: 123 })) as unknown as typeof fetch,
-  })
-  await expect(malformedTimestamp.status()).rejects.toThrow(
-    "Unexpected response from GET /global/integrations/robinhood",
-  )
-})
-
-test("Robinhood integration client surfaces backend error messages", async () => {
+test("Robinhood client surfaces lifecycle errors", async () => {
   const client = createRobinhoodIntegrationClient({
     url: "http://localhost:4096",
     fetch: (async () =>
-      Response.json({ message: "manual executable must be absolute" }, { status: 400 })) as unknown as typeof fetch,
+      new Response(JSON.stringify({ error: "Runner-managed Robinhood MCP lifecycle is Platform-owned." }), {
+        status: 403,
+      })) as unknown as typeof fetch,
   })
 
-  await expect(client.install({ executablePath: "rhx" })).rejects.toThrow("manual executable must be absolute")
+  await expect(client.connect()).rejects.toThrow("Runner-managed Robinhood MCP lifecycle is Platform-owned.")
 })

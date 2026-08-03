@@ -25,10 +25,12 @@ import {
   executionLedgerPath,
   type ExecutionPolicyV1,
   type PaperActivationReceiptV1,
-  type PaperExecutionContractV2,
+  type ExecutionContractV3,
   verifyPaperActivationReceipt,
 } from "./execution-risk-gateway"
 import { workerRuntimeEnv } from "@/security/worker-shell"
+import { RobinhoodExecution, type ExecutionMode } from "./robinhood-execution"
+import { RobinhoodBridge } from "./robinhood-bridge"
 
 const log = Log.create({ service: "live" })
 
@@ -107,7 +109,7 @@ export namespace LiveRunner {
     accountProviderID: string
     accountLabel?: string
     mode?: BrokerMode
-    executionMode?: "shadow" | "paper"
+    executionMode?: ExecutionMode
     /** Project directory this run belongs to (for multi-project isolation in the daemon). */
     directory?: string
     status: RunStatus
@@ -142,6 +144,9 @@ export namespace LiveRunner {
     controllerApproval?: ControllerPaperApproval
     /** Signed by the integration control plane after a clean shadow session. */
     activationReceipt?: PaperActivationReceiptV1
+    executionMode?: ExecutionMode
+    challengeId?: string
+    realMoneyAcknowledgement?: boolean
     /** Project directory the run is scoped to. Set by the HTTP handler. */
     directory?: string
   }
@@ -159,6 +164,16 @@ export namespace LiveRunner {
       super(message)
       this.name = "LiveRunnerStartRejectedError"
     }
+  }
+
+  export function resolveExecutionMode(
+    brokerKind: BrokerKind,
+    requested: ExecutionMode | undefined,
+    hasActivationReceipt = false,
+  ): ExecutionMode {
+    if (requested) return requested
+    if (brokerKind === "robinhood") throw new StartRejectedError("Robinhood start requires an explicit execution mode.")
+    return hasActivationReceipt ? "paper" : "shadow"
   }
 
   export interface StartTarget {
@@ -223,13 +238,22 @@ export namespace LiveRunner {
     ledgerSeq: number
     listeners: Set<(run: Run) => void>
     nativeStopRecorded?: boolean
+    brokerBridge?: RobinhoodBridge.Bridge
   }
 
   const runs = new Map<string, RunState>()
   const globalListeners = new Set<(runs: Run[]) => void>()
 
   function snapshot(state: RunState): Run {
-    const { proc: _p, tmpDir: _t, ledgerSeq: _s, listeners: _l, nativeStopRecorded: _n, ...rest } = state
+    const {
+      proc: _p,
+      tmpDir: _t,
+      ledgerSeq: _s,
+      listeners: _l,
+      nativeStopRecorded: _n,
+      brokerBridge: _b,
+      ...rest
+    } = state
     return { ...rest, positions: { ...rest.positions }, orders: [...rest.orders], logs: [...rest.logs] }
   }
 
@@ -476,7 +500,7 @@ def _default_ibkr_client_id(run_id: str) -> int:
     return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
 
 
-def make_broker(kind: str, run_id: str, symbol: str):
+def make_broker(kind: str, run_id: str, symbol: str, config):
     if kind == "alpaca":
         from finny_broker import AlpacaBroker
         key_id = os.environ.get("ALPACA_API_KEY_ID")
@@ -532,15 +556,9 @@ def make_broker(kind: str, run_id: str, symbol: str):
         connection_label = "IB Gateway" if connection_app == "gateway" else "TWS"
         return broker, f"IBKR {connection_label} {'paper' if mode != 'live' else 'LIVE'}"
     if kind == "robinhood":
-        from finny_broker import RobinhoodBroker
-        profile = os.environ.get("RHX_PROFILE", "default")
-        command = os.environ.get("RHX_BIN", "rhx")
-        broker = RobinhoodBroker(
-            profile=profile,
-            command=command,
-            symbol=symbol,
-        )
-        return broker, f"Robinhood rhx profile {profile} (LIVE, shadow-gated)"
+        from finny_broker import RobinhoodBridgeBroker
+        bridge_url = config.get("robinhood_bridge_url")
+        return RobinhoodBridgeBroker(bridge_url=bridge_url, symbol=symbol), "Robinhood official Trading MCP"
     raise RuntimeError(f"Unknown broker kind: {kind}")
 
 
@@ -563,7 +581,7 @@ def main():
     poll_seconds = max(30, min(900, interval_seconds.get(interval, 60)))
 
     try:
-        broker, broker_label = make_broker(broker_kind, run_id, symbol)
+        broker, broker_label = make_broker(broker_kind, run_id, symbol, config)
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
@@ -594,7 +612,7 @@ def main():
     emit({"type": "log", "level": "info",
           "message": "Connected to {}. Cash: {:,.2f} Equity: {:,.2f}".format(broker_label, cash_start, eq_start)})
     emit({"type": "log", "level": "warn" if execution_mode == "shadow" else "info",
-          "message": "ExecutionRiskGateway shadow mode: broker submission is disabled" if execution_mode == "shadow" else "ExecutionRiskGateway Alpaca Paper submission is enabled by a signed activation receipt"})
+          "message": "ExecutionRiskGateway shadow mode: broker submission is disabled" if execution_mode == "shadow" else "ExecutionRiskGateway submission is enabled by a server-derived activation receipt"})
 
     strategy_path = Path(__file__).parent / "strategy.py"
     try:
@@ -739,8 +757,30 @@ if __name__ == "__main__":
       )
     }
 
-    // Fast pre-check: credentials must be present before we promise a run.
-    const creds = await BrokerRegistry.readCredentials(params.accountProviderID)
+    const submissionMode = resolveExecutionMode(
+      brokerKind,
+      params.executionMode,
+      params.activationReceipt !== undefined,
+    )
+    const robinhoodPrepared =
+      brokerKind === "robinhood"
+        ? RobinhoodExecution.consumeChallenge({
+            challengeId: params.challengeId,
+            executionMode: submissionMode,
+            realMoneyAcknowledgement: params.realMoneyAcknowledgement,
+            algorithmId: params.algorithm.algorithmId,
+            runId: params.runId,
+            symbol,
+            interval: params.interval,
+            accountProviderID: params.accountProviderID,
+          })
+        : undefined
+
+    // OAuth stays in the MCP client. Robinhood workers receive only a local
+    // bridge capability, never credentials or upstream bearer tokens.
+    const creds = robinhoodPrepared
+      ? { keyId: "", secret: "", endpoint: "", mode: "live" as const }
+      : await BrokerRegistry.readCredentials(params.accountProviderID)
     if (!creds) {
       throw new StartRejectedError(
         `${spec.displayName} credentials not found. Open Settings → Paper Trading and connect your ${spec.displayName} account first.`,
@@ -752,7 +792,7 @@ if __name__ == "__main__":
     const id = crypto.randomUUID()
 
     // Resolve account label and mode (paper/testnet/live) for display.
-    const accounts = await BrokerRegistry.listAccounts(brokerKind)
+    const accounts = robinhoodPrepared ? [] : await BrokerRegistry.listAccounts(brokerKind)
     const account = accounts.find((a) => a.providerID === params.accountProviderID)
     const assetClass = spec.detectAssetClass(symbol)
     if (account?.assetClasses && assetClass && !account.assetClasses.includes(assetClass)) {
@@ -760,15 +800,11 @@ if __name__ == "__main__":
         `${spec.displayName} ${assetClass} authentication is not ready for this account. Reconnect it in Settings → Brokerages.`,
       )
     }
-    const accountLabel = account?.label
-    const accountMode = account?.mode ?? creds.mode ?? spec.mode
-    const submissionMode = params.activationReceipt ? "paper" : "shadow"
-    if (brokerKind === "robinhood" && submissionMode !== "shadow") {
-      throw new StartRejectedError("Robinhood is shadow-only; order submission cannot be activated.")
+    const accountLabel = robinhoodPrepared?.accountLabel ?? account?.label
+    const accountMode = robinhoodPrepared ? "live" : (account?.mode ?? creds.mode ?? spec.mode)
+    if (brokerKind === "robinhood" && submissionMode === "paper") {
+      throw new StartRejectedError("Robinhood paper trading is unsupported.")
     }
-    // Robinhood consumes live account data through a structurally read-only,
-    // shadow-only adapter. Its promotion gate therefore remains paper-risk;
-    // every other live-money route stays prohibited by the public v1 contract.
     const promotionMode: BrokerMode = brokerKind === "robinhood" && submissionMode === "shadow" ? "paper" : accountMode
     if (accountMode === "live" && brokerKind !== "robinhood") {
       throw new StartRejectedError("Live-money trading is not shipped in the Finny Hedge Fund v1 contract.")
@@ -783,55 +819,62 @@ if __name__ == "__main__":
     // Promotion is bound to one explicit immutable run and its matching
     // approval sidecar. Historical/legacy runs stay readable, but cannot pass
     // this hash-complete gate.
-    const promotion = await verifyPromotion({
-      algorithm: params.algorithm,
-      runId: params.runId,
-      symbol,
-      mode: promotionMode,
-      controllerApproval: params.controllerApproval,
-    })
-    const eligibility = promotion.status
-    const isLiveMoney = promotionMode === "live"
-    if (!promotion.ok || !canStartForMode(eligibility, promotionMode)) {
-      const need = isLiveMoney ? "a separate live_eligible record" : "a matching paper approval record"
-      throw new StartRejectedError(
-        `Paper trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
-      )
-    }
-
-    const effectiveConfig = await readJson<Record<string, unknown>>({
-      file: path.join(strictRunDir(params.algorithm, params.runId), "effective_config.json"),
-    })
-    const parsedRisk = Mission.RiskContractSchema.safeParse(effectiveConfig.risk_contract)
-    if (!parsedRisk.success || !promotion.run) {
-      throw new StartRejectedError("Paper execution requires the exact schema-v4 risk contract from the verified run.")
-    }
-    const executionPolicy: ExecutionPolicyV1 = {
-      schema: EXECUTION_POLICY_SCHEMA,
-      version: 1,
-      riskContract: parsedRisk.data,
-      // Compatibility seam for #177. Its eventual signed limits can be copied
-      // here only after they are part of the immutable effective config.
-      ...(isExecutionLimits(effectiveConfig.execution_limits) ? { limits: effectiveConfig.execution_limits } : {}),
-      ...(isBrokerCapabilities(effectiveConfig.broker_capabilities)
-        ? { capabilities: effectiveConfig.broker_capabilities }
-        : {}),
-    }
-    const scopeHash = accountScopeHash({ brokerKind, accountProviderID: params.accountProviderID })
-    const binding = {
-      runId: params.runId,
-      runIdentityHash: promotion.run.identityHash,
-      algorithmId: params.algorithm.algorithmId,
-      algorithmVersion: params.algorithm.version,
-      strategyHash: promotion.run.identity.strategyHash,
-      riskPolicyHash: promotion.run.identity.riskContractHash,
-      executionPolicyHash: sha256Text(stableStringify(executionPolicy)),
-      effectiveConfigHash: promotion.run.identity.effectiveConfigHash,
-      symbol,
-      interval: params.interval,
-      brokerKind,
-      brokerMode: accountMode,
-      accountScopeHash: scopeHash,
+    let executionPolicy: ExecutionPolicyV1
+    let binding
+    let activationReceipt = robinhoodPrepared?.activationReceipt ?? params.activationReceipt
+    if (robinhoodPrepared) {
+      executionPolicy = robinhoodPrepared.policy
+      binding = robinhoodPrepared.binding
+    } else {
+      const promotion = await verifyPromotion({
+        algorithm: params.algorithm,
+        runId: params.runId,
+        symbol,
+        mode: promotionMode,
+        controllerApproval: params.controllerApproval,
+      })
+      const eligibility = promotion.status
+      const isLiveMoney = promotionMode === "live"
+      if (!promotion.ok || !canStartForMode(eligibility, promotionMode)) {
+        const need = isLiveMoney ? "a separate live_eligible record" : "a matching paper approval record"
+        throw new StartRejectedError(
+          `Paper trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
+        )
+      }
+      const effectiveConfig = await readJson<Record<string, unknown>>({
+        file: path.join(strictRunDir(params.algorithm, params.runId), "effective_config.json"),
+      })
+      const parsedRisk = Mission.RiskContractSchema.safeParse(effectiveConfig.risk_contract)
+      if (!parsedRisk.success || !promotion.run) {
+        throw new StartRejectedError(
+          "Paper execution requires the exact schema-v4 risk contract from the verified run.",
+        )
+      }
+      executionPolicy = {
+        schema: EXECUTION_POLICY_SCHEMA,
+        version: 1,
+        riskContract: parsedRisk.data,
+        ...(isExecutionLimits(effectiveConfig.execution_limits) ? { limits: effectiveConfig.execution_limits } : {}),
+        ...(isBrokerCapabilities(effectiveConfig.broker_capabilities)
+          ? { capabilities: effectiveConfig.broker_capabilities }
+          : {}),
+      }
+      const scopeHash = accountScopeHash({ brokerKind, accountProviderID: params.accountProviderID })
+      binding = {
+        runId: params.runId,
+        runIdentityHash: promotion.run.identityHash,
+        algorithmId: params.algorithm.algorithmId,
+        algorithmVersion: params.algorithm.version,
+        strategyHash: promotion.run.identity.strategyHash,
+        riskPolicyHash: promotion.run.identity.riskContractHash,
+        executionPolicyHash: sha256Text(stableStringify(executionPolicy)),
+        effectiveConfigHash: promotion.run.identity.effectiveConfigHash,
+        symbol,
+        interval: params.interval,
+        brokerKind,
+        brokerMode: accountMode,
+        accountScopeHash: scopeHash,
+      }
     }
     if (submissionMode === "paper") {
       if (brokerKind !== "alpaca" || accountMode !== "paper") {
@@ -846,19 +889,19 @@ if __name__ == "__main__":
         throw new StartRejectedError(`Paper activation rejected: ${activationErrors.join("; ")}`)
       }
     }
-    const executionContract: PaperExecutionContractV2 = {
-      schema: "finny.paper_execution_contract",
-      version: 2,
+    const executionContract: ExecutionContractV3 = {
+      schema: "finny.execution_contract",
+      version: 3,
       binding,
       policy: executionPolicy,
       ledgerPath: executionLedgerPath({
         algorithmId: params.algorithm.algorithmId,
         algorithmVersion: params.algorithm.version,
-        accountScopeHash: scopeHash,
+        accountScopeHash: binding.accountScopeHash,
         symbol,
       }),
       submissionMode,
-      ...(params.activationReceipt ? { activationReceipt: params.activationReceipt } : {}),
+      ...(activationReceipt ? { activationReceipt } : {}),
     }
 
     // Create an initial "starting" run state IMMEDIATELY so the caller can open
@@ -935,9 +978,18 @@ if __name__ == "__main__":
         pushLog(preState, "info", `Using python at ${env.python}`)
         notify(preState)
 
-        await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_LIVE_BROKER_PY)
+        await fs.writeFile(
+          path.join(tmpDir, "finny_broker.py"),
+          brokerKind === "robinhood"
+            ? `${FINNY_LIVE_BROKER_PY}\n${RobinhoodBridge.ROBINHOOD_BRIDGE_BROKER_PY}`
+            : FINNY_LIVE_BROKER_PY,
+        )
         await fs.writeFile(path.join(tmpDir, "execution_risk_gateway.py"), EXECUTION_RISK_GATEWAY_PY)
         await fs.writeFile(path.join(tmpDir, "strategy.py"), params.algorithm.code)
+        const brokerBridge = robinhoodPrepared
+          ? RobinhoodBridge.start(robinhoodPrepared.adapter, robinhoodPrepared.accountProviderID)
+          : undefined
+        preState.brokerBridge = brokerBridge
         await fs.writeFile(
           path.join(tmpDir, "config.json"),
           JSON.stringify(
@@ -947,6 +999,7 @@ if __name__ == "__main__":
               run_id: id,
               broker_kind: brokerKind,
               execution_contract: executionContract,
+              ...(brokerBridge ? { robinhood_bridge_url: brokerBridge.url } : {}),
             },
             null,
             2,
@@ -960,7 +1013,7 @@ if __name__ == "__main__":
           env: {
             ...workerRuntimeEnv(process.env),
             FINNY_BROKER_KIND: brokerKind,
-            ...spec.envVars(creds),
+            ...(brokerKind === "robinhood" ? {} : spec.envVars(creds)),
           },
           stdout: "pipe",
           stderr: "pipe",
@@ -981,6 +1034,7 @@ if __name__ == "__main__":
         if (preState.tmpDir) {
           await fs.rm(preState.tmpDir, { recursive: true, force: true }).catch(() => {})
         }
+        await preState.brokerBridge?.close().catch(() => {})
       }
     })()
 
@@ -1025,6 +1079,7 @@ if __name__ == "__main__":
 
     proc.exited
       .then(async (code) => {
+        await state.brokerBridge?.close().catch(() => {})
         state.status = code === 0 ? "stopped" : "error"
         state.stoppedAt = Date.now()
         if (code !== 0) state.error = state.error ?? `Process exited with code ${code}`
@@ -1048,6 +1103,7 @@ if __name__ == "__main__":
         notify(state)
       })
       .catch(async (err) => {
+        await state.brokerBridge?.close().catch(() => {})
         state.status = "error"
         state.stoppedAt = Date.now()
         state.error = String(err?.message ?? err)
@@ -1084,7 +1140,8 @@ if __name__ == "__main__":
         state.status = "running"
         if (typeof msg.cash === "number") state.cash = msg.cash
         if (typeof msg.equity === "number") state.equity = msg.equity
-        state.executionMode = msg.execution_mode === "paper" ? "paper" : "shadow"
+        state.executionMode =
+          msg.execution_mode === "live" ? "live" : msg.execution_mode === "paper" ? "paper" : "shadow"
         pushLog(state, "info", `Init: ${msg.symbol} · ${msg.interval} · ${state.executionMode} execution`)
         emit({
           eventType: "live.started",
@@ -1234,16 +1291,26 @@ if __name__ == "__main__":
     if (!state) return
     pushLog(state, "info", "Stopping…")
     notify(state)
+    const proc = state.proc
+    if (!proc) {
+      await state.brokerBridge?.close().catch(() => {})
+      state.status = "stopped"
+      state.stoppedAt = Date.now()
+      if (state.tmpDir) await fs.rm(state.tmpDir, { recursive: true, force: true }).catch(() => {})
+      notify(state)
+      return
+    }
     try {
-      await Process.stop(state.proc)
+      await Process.stop(proc)
     } catch (e) {
       log.warn("stop failed", { id, error: e })
     } finally {
       await drainNativeLedger()
     }
     // Clean up temp dir after process exits
-    state.proc.exited
+    proc.exited
       .finally(async () => {
+        await state.brokerBridge?.close().catch(() => {})
         await fs.rm(state.tmpDir, { recursive: true, force: true }).catch(() => {})
       })
       .catch(() => {})
@@ -1297,6 +1364,7 @@ if __name__ == "__main__":
     const state = runs.get(id)
     if (!state || !canRemoveStatus(state.status)) return false
     const removed = runs.delete(id)
+    if (removed) void state.brokerBridge?.close().catch(() => {})
     if (removed) notifyAll()
     return removed
   }

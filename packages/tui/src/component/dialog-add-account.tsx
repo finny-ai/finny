@@ -5,7 +5,13 @@ import { useTheme } from "../context/theme"
 import { useSDK } from "../context/sdk"
 import { useToast } from "../ui/toast"
 import { useDialog, type DialogContext } from "../ui/dialog"
-import { BrokerRegistry, type BrokerConnection, type BrokerKind, type BrokerMode, type BrokerSpec } from "@/live/brokers"
+import {
+  BrokerRegistry,
+  type BrokerConnection,
+  type BrokerKind,
+  type BrokerMode,
+  type BrokerSpec,
+} from "@/live/brokers"
 import { SegmentedControl, type SegmentedOption } from "../ui/segmented-control"
 import { Link } from "../ui/link"
 
@@ -26,7 +32,8 @@ function initialFields(spec: BrokerSpec): Fields {
   // the default mode so the value visible in the form matches the mode the
   // user is about to save under.
   if (spec.endpointForMode && out.mode) {
-    out.endpoint = spec.endpointForMode(out.mode as BrokerMode, { connection: out.connection as BrokerConnection }) || out.endpoint
+    out.endpoint =
+      spec.endpointForMode(out.mode as BrokerMode, { connection: out.connection as BrokerConnection }) || out.endpoint
   }
   return out
 }
@@ -45,11 +52,11 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
 
-  // Robinhood authentication is interactive and owned by RHX. Keep it out of
-  // this generic API-key form; all Robinhood entry points open its manager.
+  // Robinhood authentication uses the official OAuth flow. Keep it out of this
+  // generic API-key form; all Robinhood entry points open its manager.
   const allSpecs = BrokerRegistry.specs().filter((spec) => spec.kind !== "robinhood")
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(
-    props.initialKind && props.initialKind !== "robinhood" ? props.initialKind : allSpecs[0]?.kind ?? "alpaca",
+    props.initialKind && props.initialKind !== "robinhood" ? props.initialKind : (allSpecs[0]?.kind ?? "alpaca"),
   )
   const activeSpec = () => BrokerRegistry.getSpec(activeKind())
 
@@ -194,13 +201,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
 
   const Label = (p: { text: string }) => <text fg={theme.textMuted}>{p.text}</text>
   const InputBox = (p: { value: string; onInput: (v: string) => void }) => (
-    <box
-      backgroundColor={theme.backgroundElement}
-      paddingLeft={1}
-      paddingRight={1}
-      height={1}
-      flexShrink={0}
-    >
+    <box backgroundColor={theme.backgroundElement} paddingLeft={1} paddingRight={1} height={1} flexShrink={0}>
       <input
         ref={(r: any) => inputRefs.add(r)}
         value={p.value}
@@ -213,8 +214,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
     </box>
   )
 
-  const tabOptions = (): SegmentedOption<BrokerKind>[] =>
-    allSpecs.map((s) => ({ value: s.kind, label: s.displayName }))
+  const tabOptions = (): SegmentedOption<BrokerKind>[] => allSpecs.map((s) => ({ value: s.kind, label: s.displayName }))
 
   return (
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
@@ -235,11 +235,7 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
       <SegmentedControl options={tabOptions()} value={activeKind()} onChange={switchBroker} />
 
       {/* Scrollable form body — credential fields plus docs link */}
-      <scrollbox
-        ref={(r: any) => (scrollRef = r)}
-        maxHeight={scrollMaxHeight()}
-        scrollbarOptions={{ visible: true }}
-      >
+      <scrollbox ref={(r: any) => (scrollRef = r)} maxHeight={scrollMaxHeight()} scrollbarOptions={{ visible: true }}>
         <box flexDirection="column" gap={1}>
           <box paddingTop={1} flexDirection="row" gap={1}>
             <text fg={theme.textMuted}>Get keys at</text>

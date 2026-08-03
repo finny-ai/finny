@@ -10,16 +10,7 @@ const root = "/live"
 
 // Effect-Schema mirrors of the LiveRunner namespace TS interfaces. These must
 // stay in sync with packages/opencode/src/live/runner.ts.
-const BrokerKind = Schema.Literals([
-  "alpaca",
-  "binance",
-  "ibkr",
-  "zerodha",
-  "saxo",
-  "questrade",
-  "futu",
-  "robinhood",
-])
+const BrokerKind = Schema.Literals(["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu", "robinhood"])
 const BrokerMode = Schema.Literals(["paper", "testnet", "live"])
 const RunStatus = Schema.Literals(["starting", "running", "stopped", "error"])
 
@@ -74,7 +65,7 @@ export const Run = Schema.Struct({
   accountProviderID: Schema.String,
   accountLabel: Schema.optional(Schema.String),
   mode: Schema.optional(BrokerMode),
-  executionMode: Schema.optional(Schema.Literals(["shadow", "paper"])),
+  executionMode: Schema.optional(Schema.Literals(["shadow", "paper", "live"])),
   directory: Schema.optional(Schema.String),
   status: RunStatus,
   startedAt: Schema.Number,
@@ -115,6 +106,9 @@ export const StartPayload = Schema.Struct({
   interval: Schema.String,
   accountProviderID: Schema.String,
   brokerKind: Schema.optional(BrokerKind),
+  executionMode: Schema.optional(Schema.Literals(["shadow", "paper", "live"])),
+  challengeId: Schema.optional(Schema.String),
+  realMoneyAcknowledgement: Schema.optional(Schema.Boolean),
   activationReceipt: Schema.optional(
     Schema.Struct({
       schema: Schema.Literal("finny.paper_activation_receipt"),
@@ -133,10 +127,92 @@ export const StartPayload = Schema.Struct({
   ),
 }).annotate({ identifier: "LiveStartPayload" })
 
+export const RobinhoodPreflightPayload = Schema.Struct({
+  algorithmId: Schema.String,
+  runId: Schema.String,
+  symbol: Schema.String,
+  interval: Schema.String,
+  executionMode: Schema.Literals(["shadow", "paper", "live"]),
+  accountProviderID: Schema.optional(Schema.String),
+}).annotate({ identifier: "RobinhoodLivePreflightPayload" })
+
+const PreflightCheck = Schema.Struct({
+  code: Schema.String,
+  status: Schema.Literals(["pass", "fail"]),
+  message: Schema.String,
+})
+
+const PreflightAccount = Schema.Struct({
+  accountProviderID: Schema.String,
+  label: Schema.optional(Schema.String),
+  accountRole: Schema.Literal("agentic"),
+  accountScopeHash: Schema.String,
+  cash: Schema.Number,
+  equity: Schema.Number,
+  observedAt: Schema.String,
+  fractionalEquities: Schema.Boolean,
+})
+
+const PreflightPosition = Schema.Struct({
+  symbol: Schema.String,
+  qty: Schema.Number,
+  mark: Schema.Number,
+  marketValue: Schema.Number,
+})
+
+const PreflightOrder = Schema.Struct({
+  orderId: Schema.String,
+  intentId: Schema.optional(Schema.String),
+  symbol: Schema.String,
+  side: Schema.Literals(["buy", "sell"]),
+  qty: Schema.Number,
+  status: Schema.String,
+})
+
+const PreflightRisk = Schema.Struct({
+  maxPositions: Schema.Number,
+  drawdownLimitPct: Schema.Number,
+  sizingStopDistancePct: Schema.Number,
+  protectiveStopMode: Schema.String,
+  maxGrossExposurePct: Schema.optional(Schema.Number),
+  maxNetExposurePct: Schema.optional(Schema.Number),
+  maxSymbolExposurePct: Schema.optional(Schema.Number),
+  flattenOnStop: Schema.optional(Schema.Boolean),
+})
+
+export const RobinhoodPreflight = Schema.Struct({
+  schema: Schema.Literal("finny.robinhood_live_preflight"),
+  version: Schema.Literal(1),
+  eligible: Schema.Boolean,
+  executionMode: Schema.Literals(["shadow", "paper", "live"]),
+  brokerKind: Schema.Literal("robinhood"),
+  paperSupported: Schema.Literal(false),
+  checks: Schema.Array(PreflightCheck),
+  account: Schema.optional(PreflightAccount),
+  positions: Schema.Array(PreflightPosition),
+  openOrders: Schema.Array(PreflightOrder),
+  risk: Schema.optional(PreflightRisk),
+  challengeId: Schema.optional(Schema.String),
+  expiresAt: Schema.optional(Schema.String),
+}).annotate({ identifier: "RobinhoodLivePreflight" })
+
 export const LiveApi = HttpApi.make("live")
   .add(
     HttpApiGroup.make("live")
       .add(
+        HttpApiEndpoint.post("robinhoodPreflight", `${root}/robinhood/preflight`, {
+          query: WorkspaceRoutingQuery,
+          payload: RobinhoodPreflightPayload,
+          success: described(RobinhoodPreflight, "Robinhood live execution preflight challenge"),
+          error: [LiveRunStartError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "live.robinhood.preflight",
+            summary: "Preflight Robinhood execution",
+            description:
+              "Discover the explicit Agentic account and issue a short-lived, server-bound execution challenge.",
+          }),
+        ),
         HttpApiEndpoint.get("list", root, {
           query: WorkspaceRoutingQuery,
           success: described(Schema.Array(Run), "Live runs for the current project"),

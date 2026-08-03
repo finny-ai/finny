@@ -148,6 +148,7 @@ describe("Robinhood Trading MCP tool policy", () => {
       "get_equity_quotes",
       "get_equity_orders",
       "get_equity_tradability",
+      "get_equity_historicals",
       "search",
       "get_popular_watchlists",
       "get_watchlists",
@@ -183,14 +184,14 @@ describe("Robinhood Trading MCP context", () => {
     expect(info).toMatchObject({
       id: "robinhood",
       official: true,
-      access: "read_only",
+      access: "analysis_and_trusted_execution",
       source: "runner_local_broker",
       credentialCustody: "platform",
       status: "connected",
       assetClasses: ["equity"],
     })
-    expect(context).toContain("official, read-only")
-    expect(context).toContain("omits every mutation and unknown Robinhood MCP tool")
+    expect(context).toContain("official")
+    expect(context).toContain("Model-facing tools remain an exact analysis allowlist")
     expect(context).toContain("maximum 90-second lifespan")
     expect(context).toContain("managed Finny receives no upstream Robinhood or Platform capability tokens")
     expect(context).not.toContain("local OpenCode auth storage")

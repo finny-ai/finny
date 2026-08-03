@@ -6,6 +6,7 @@ import { createSimpleContext } from "./helper"
 // Type-only: erased at compile time, so the runner implementation never loads
 // in the TUI render process. The live runs themselves are owned by the daemon.
 import type { LiveRunner } from "@/live/runner"
+import { liveStartRequest } from "../util/live-start-request"
 
 export type Run = LiveRunner.Run
 export type StartParams = LiveRunner.StartParams
@@ -159,14 +160,7 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
       async start(params: StartParams) {
         const run = await api<Run>("/live/start", {
           method: "POST",
-          body: JSON.stringify({
-            algorithm: params.algorithm,
-            runId: params.runId,
-            symbol: params.symbol,
-            interval: params.interval,
-            accountProviderID: params.accountProviderID,
-            brokerKind: params.brokerKind,
-          }),
+          body: JSON.stringify(liveStartRequest(params)),
         })
         upsert(run) // optimistic; the SSE stream keeps it fresh
         return run

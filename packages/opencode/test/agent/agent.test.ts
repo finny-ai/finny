@@ -103,17 +103,24 @@ it.instance("Finny user-facing agents ask for exact Robinhood reads and deny eve
 )
 
 it.instance(
-  "explicit user Robinhood denies override the built-in read prompt",
+  "Robinhood policy rejects user widening while preserving explicit user denies",
   () =>
     Effect.gen(function* () {
-      const agent = yield* Agent.Service.pipe(Effect.flatMap((service) => service.get("finny")))
-      expect(Permission.evaluate("robinhood_get_accounts", "*", agent.permission).action).toBe("deny")
-      expect(Permission.evaluate("robinhood_get_portfolio", "*", agent.permission).action).toBe("ask")
+      const service = yield* Agent.Service
+      for (const name of ["finny", "build", "research", "chat", "portfolio_builder"]) {
+        const agent = yield* service.get(name)
+        expect(Permission.evaluate("robinhood_get_accounts", "*", agent.permission).action).toBe("deny")
+        expect(Permission.evaluate("robinhood_get_portfolio", "*", agent.permission).action).toBe("ask")
+        expect(Permission.evaluate("robinhood_place_equity_order", "*", agent.permission).action).toBe("deny")
+        expect(Permission.evaluate("robinhood_future_read_tool", "*", agent.permission).action).toBe("deny")
+      }
     }),
   {
     config: {
       permission: {
         robinhood_get_accounts: "deny",
+        robinhood_place_equity_order: "allow",
+        robinhood_future_read_tool: "allow",
       },
     },
   },
