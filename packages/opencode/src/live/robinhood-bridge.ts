@@ -1,5 +1,8 @@
 import crypto from "node:crypto"
 import { McpRobinhood } from "@/mcp/robinhood"
+import { Log } from "@/util/log"
+
+const log = Log.create({ service: "live.robinhood-bridge" })
 
 export interface Bridge {
   readonly url: string
@@ -72,7 +75,8 @@ export function start(adapter: McpRobinhood.ExecutionAdapter, accountId: string)
           default:
             return json({ error: "not_found" }, 404)
         }
-      } catch {
+      } catch (error) {
+        log.error("broker operation failed", { error })
         return json({ error: "broker_operation_failed" }, 409)
       }
     },

@@ -1,10 +1,13 @@
 import { expect, test } from "bun:test"
 import {
+  brokerSelectableForRunMode,
+  brokerVisibleForRunMode,
   committedRobinhoodSymbol,
   createRobinhoodLiveClient,
   parseRobinhoodLivePreflight,
   robinhoodAgenticAccountLabel,
   robinhoodLiveBlocker,
+  robinhoodPreflightStartBlocker,
   robinhoodTradeLiveAvailability,
 } from "./robinhood-live"
 
@@ -46,7 +49,7 @@ test("parses the exact Robinhood live challenge contract", () => {
 test("fails closed on malformed or ineligible Robinhood preflight", () => {
   expect(() =>
     parseRobinhoodLivePreflight({ ...eligible, account: { ...eligible.account, accountRole: "default" } }),
-  ).toThrow("Unexpected Robinhood live preflight response")
+  ).toThrow("invalid account")
   expect(
     robinhoodLiveBlocker({
       ...eligible,
@@ -59,6 +62,44 @@ test("fails closed on malformed or ineligible Robinhood preflight", () => {
       expiresAt: undefined,
     }),
   ).toBe("Verified tool schema unavailable")
+})
+
+test("Robinhood is absent from paper brokerage choices", () => {
+  expect(brokerVisibleForRunMode("robinhood", "paper")).toBe(false)
+  expect(brokerVisibleForRunMode("robinhood", "live")).toBe(true)
+  expect(brokerVisibleForRunMode("alpaca", "paper")).toBe(true)
+})
+
+test("Robinhood is selectable only for connected, execution-compatible live runs", () => {
+  const input = {
+    kind: "robinhood",
+    runMode: "live" as const,
+    supports: true,
+    robinhoodConnected: true,
+    robinhoodExecutionCompatible: true,
+  }
+  expect(brokerSelectableForRunMode(input)).toBe(true)
+  expect(brokerSelectableForRunMode({ ...input, runMode: "paper" })).toBe(false)
+  expect(brokerSelectableForRunMode({ ...input, robinhoodConnected: false })).toBe(false)
+  expect(brokerSelectableForRunMode({ ...input, robinhoodExecutionCompatible: false })).toBe(false)
+  expect(brokerSelectableForRunMode({ ...input, supports: false })).toBe(false)
+  expect(brokerSelectableForRunMode({ ...input, kind: "alpaca", runMode: "paper" })).toBe(true)
+})
+
+test("live confirmation fails closed when its challenge is missing or expired", () => {
+  expect(robinhoodPreflightStartBlocker(undefined, 0)).toContain("checked again")
+  expect(robinhoodPreflightStartBlocker(eligible, Date.parse(eligible.expiresAt) - 1)).toBeUndefined()
+  expect(robinhoodPreflightStartBlocker(eligible, Date.parse(eligible.expiresAt))).toContain("expired")
+})
+
+test("optional risk fields are validated independently", () => {
+  expect(parseRobinhoodLivePreflight({ ...eligible, risk: { ...eligible.risk, flattenOnStop: true } }).risk).toEqual({
+    ...eligible.risk,
+    flattenOnStop: true,
+  })
+  expect(() =>
+    parseRobinhoodLivePreflight({ ...eligible, risk: { ...eligible.risk, maxNetExposurePct: "100" } }),
+  ).toThrow("invalid risk")
 })
 
 test("preflight discovery omits accountProviderID and preserves headers", async () => {
@@ -95,6 +136,50 @@ test("preflight discovery omits accountProviderID and preserves headers", async 
     auth: "Bearer local",
     directory: "/tmp/finny workspace",
   })
+})
+
+test("preflight surfaces non-JSON server errors and applies a default abort signal", async () => {
+  let signal: AbortSignal | undefined
+  const client = createRobinhoodLiveClient({
+    url: "http://localhost:4096/base",
+    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
+      expect(String(input)).toBe("http://localhost:4096/base/live/robinhood/preflight")
+      signal = init?.signal as AbortSignal
+      return new Response("gateway unavailable", { status: 502 })
+    }) as typeof fetch,
+  })
+  await expect(
+    client.preflight({
+      algorithmId: "algo-1",
+      runId: "run-1",
+      symbol: "AAPL",
+      interval: "1min",
+      executionMode: "live",
+    }),
+  ).rejects.toThrow("gateway unavailable")
+  expect(signal).toBeInstanceOf(AbortSignal)
+})
+
+test("preflight aborts when its timeout elapses", async () => {
+  const client = createRobinhoodLiveClient({
+    url: "http://localhost:4096",
+    fetch: ((_: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true })
+      })) as typeof fetch,
+  })
+  await expect(
+    client.preflight(
+      {
+        algorithmId: "algo-1",
+        runId: "run-1",
+        symbol: "AAPL",
+        interval: "1min",
+        executionMode: "live",
+      },
+      { timeoutMs: 5 },
+    ),
+  ).rejects.toThrow("timed out")
 })
 
 test("an immediate symbol edit becomes the exact preflight, confirmation, and start-bound symbol", () => {

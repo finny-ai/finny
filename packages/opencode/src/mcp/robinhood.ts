@@ -1,5 +1,6 @@
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import crypto from "node:crypto"
+import { stableStringify } from "@/backtest/run-integrity-core"
 
 export const SERVER_NAME = "robinhood"
 export const OFFICIAL_URL = "https://agent.robinhood.com/mcp/trading"
@@ -125,25 +126,18 @@ export class OfficialSchemaUnavailableError extends Error {
   }
 }
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  const record = value as Record<string, unknown>
-  return `{${Object.keys(record)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonical(record[key])}`)
-    .join(",")}}`
-}
-
 export function schemaFingerprint(schema: unknown): string {
-  return crypto.createHash("sha256").update(canonical(schema)).digest("hex")
+  return crypto.createHash("sha256").update(stableStringify(schema)).digest("hex")
 }
 
 function finiteNonNegative(value: number, label: string) {
   if (!Number.isFinite(value) || value < 0) throw new Error(`Robinhood ${label} is invalid.`)
 }
 
-function assertMapping(definitions: readonly ToolDefinition[], mapping: ExecutionSchemaMappingV1 | undefined) {
+function assertMapping(
+  definitions: readonly ToolDefinition[],
+  mapping: ExecutionSchemaMappingV1 | undefined,
+): asserts mapping is ExecutionSchemaMappingV1 {
   if (!mapping) throw new OfficialSchemaUnavailableError()
   const byName = new Map(definitions.map((definition) => [definition.name, definition]))
   for (const name of EXECUTION_TOOLS) {
@@ -160,7 +154,7 @@ function assertMapping(definitions: readonly ToolDefinition[], mapping: Executio
 /** Trusted daemon adapter. It is never exposed through model MCP tools. */
 export function executionAdapter(access: BrokerAccess, mapping?: ExecutionSchemaMappingV1) {
   assertMapping(access.definitions, mapping)
-  const schema = mapping!
+  const schema = mapping
   const invoke = <Args, Result>(name: ExecutionTool, contract: ToolContract<Args, Result>, args: Args) =>
     access.callTool(name, contract.args(args)).then(contract.result)
 
@@ -228,6 +222,12 @@ export function executionAdapter(access: BrokerAccess, mapping?: ExecutionSchema
         ) {
           throw new Error("Robinhood historical bar metadata is invalid or non-final.")
         }
+        if (Date.parse(bar.barEnd) <= Date.parse(bar.barStart)) {
+          throw new Error("Robinhood historical bar interval is invalid.")
+        }
+        if (bar.high < Math.max(bar.open, bar.close, bar.low) || bar.low > Math.min(bar.open, bar.close, bar.high)) {
+          throw new Error("Robinhood historical OHLC values are inconsistent.")
+        }
       }
       return [...bars].sort((left, right) => Date.parse(left.barEnd) - Date.parse(right.barEnd))
     },
@@ -235,7 +235,7 @@ export function executionAdapter(access: BrokerAccess, mapping?: ExecutionSchema
       const reviewed = await invoke("review_equity_order", schema.review, intent)
       try {
         return await invoke("place_equity_order", schema.place, { intent, review: reviewed })
-      } catch {
+      } catch (cause) {
         // A failed acknowledgement is ambiguous. Reconcile exactly once by the
         // deterministic intent id; never retry place_equity_order.
         const matches = await invoke("get_equity_orders", schema.orders, {
@@ -244,7 +244,9 @@ export function executionAdapter(access: BrokerAccess, mapping?: ExecutionSchema
         }).catch(() => [])
         const exact = matches.filter((order) => order.intentId === intent.intentId)
         if (exact.length === 1) return exact[0]!
-        throw new Error("Robinhood order acknowledgement is ambiguous; execution halted pending reconciliation.")
+        throw new Error("Robinhood order acknowledgement is ambiguous; execution halted pending reconciliation.", {
+          cause,
+        })
       }
     },
     async orderByIntentId(accountId: string, intentId: string) {

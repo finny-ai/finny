@@ -8,10 +8,15 @@ import { maskKey } from "@/live/alpaca-accounts"
 import { BrokerRegistry, type BrokerAccount, type BrokerKind, type BrokerMode } from "@/live/brokers"
 import { createRobinhoodIntegrationClient } from "../util/robinhood-integration"
 import {
+  brokerSelectableForRunMode,
+  brokerVisibleForRunMode,
   committedRobinhoodSymbol,
   createRobinhoodLiveClient,
   robinhoodAgenticAccountLabel,
   robinhoodLiveBlocker,
+  robinhoodPreflightExpiryLabel,
+  robinhoodPreflightStartBlocker,
+  robinhoodTradeLiveAvailability,
   type RobinhoodLivePreflight,
 } from "../util/robinhood-live"
 
@@ -105,10 +110,27 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
   const [step, setStep] = createSignal<"pick" | "disclaimer">("pick")
   const [robinhoodConnected, setRobinhoodConnected] = createSignal(false)
   const [preflight, setPreflight] = createSignal<RobinhoodLivePreflight>()
+  const [preflightSymbol, setPreflightSymbol] = createSignal<string>()
   const [preflightBusy, setPreflightBusy] = createSignal(false)
   const [preflightError, setPreflightError] = createSignal<string>()
+  const [robinhoodAvailability, setRobinhoodAvailability] = createSignal(
+    robinhoodTradeLiveAvailability({ connected: false, hasStrictRun: true }),
+  )
+  let preflightRequest = 0
+  let preflightController: AbortController | undefined
   const accountsForRow = (row: BrokerRegistry.BrokerComparison) =>
     row.accounts.filter((account) => accountMatchesRunMode(account, props.runMode))
+  const visibleComparison = createMemo(() =>
+    comparison().filter((row) => brokerVisibleForRunMode(row.spec.kind, props.runMode)),
+  )
+  const brokerSelectable = (row: BrokerRegistry.BrokerComparison) =>
+    brokerSelectableForRunMode({
+      kind: row.spec.kind,
+      runMode: props.runMode,
+      supports: row.supports,
+      robinhoodConnected: robinhoodConnected(),
+      robinhoodExecutionCompatible: robinhoodAvailability().available,
+    })
 
   const refresh = async (sym: string) => {
     const c = await BrokerRegistry.compareForSymbol(sym)
@@ -117,13 +139,14 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     // the chat-supplied default if it supports the symbol, then fall back to
     // the first broker that supports it (preferring one with accounts).
     const cur = selectedKind()
-    const curRow = cur ? c.find((r) => r.spec.kind === cur) : null
-    if (!curRow || !curRow.supports) {
+    const visible = c.filter((row) => brokerVisibleForRunMode(row.spec.kind, props.runMode))
+    const curRow = cur ? visible.find((r) => r.spec.kind === cur) : null
+    if (!curRow || !brokerSelectable(curRow)) {
       const fromChat = props.defaultBrokerKind
-        ? c.find((row) => row.spec.kind === props.defaultBrokerKind && row.supports)
+        ? visible.find((row) => row.spec.kind === props.defaultBrokerKind && brokerSelectable(row))
         : null
-      const eligible = c.find((row) => row.supports && accountsForRow(row).length > 0)
-      const fallback = c.find((row) => row.supports) ?? c[0]
+      const eligible = visible.find((row) => brokerSelectable(row) && accountsForRow(row).length > 0)
+      const fallback = visible.find(brokerSelectable)
       setSelectedKind((fromChat ?? eligible ?? fallback)?.spec.kind ?? null)
     }
     const acctMap: Record<string, string> = { ...accountByKind() }
@@ -146,7 +169,7 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
   // native pair (BTC/USD ↔ BTC/USDT) so the run goes against a tradable pair.
   const pickBroker = (kind: BrokerKind) => {
     const row = comparison().find((r) => r.spec.kind === kind)
-    if (!row || !row.supports) return
+    if (!row || !brokerSelectable(row)) return
     setSelectedKind(kind)
     if (!symbolTextarea || symbolTextarea.isDestroyed) return
     const current = (symbolTextarea.plainText ?? "").trim().toUpperCase()
@@ -158,13 +181,95 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     void refresh(target)
   }
 
+  const activateBroker = (row: BrokerRegistry.BrokerComparison) => {
+    if (row.spec.kind === "robinhood" && !brokerSelectable(row)) {
+      if (props.runMode === "live" && robinhoodConnected() && !preflightBusy()) {
+        void checkRobinhood(symbolInput()).then(() => {
+          const current = comparison().find((candidate) => candidate.spec.kind === "robinhood")
+          if (current && brokerSelectable(current)) pickBroker("robinhood")
+        })
+      }
+      return
+    }
+    pickBroker(row.spec.kind)
+  }
+
+  const checkRobinhood = async (sym: string) => {
+    if (props.runMode !== "live") return
+    const request = ++preflightRequest
+    preflightController?.abort()
+    const controller = new AbortController()
+    preflightController = controller
+    setPreflightBusy(true)
+    setPreflight(undefined)
+    setPreflightSymbol(undefined)
+    setPreflightError(undefined)
+    setRobinhoodAvailability({
+      available: false,
+      state: "pending",
+      description: "Unavailable · checking execution compatibility",
+    })
+    try {
+      const connected = await robinhood
+        .status({ signal: AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]) })
+        .then((status) => status.connected)
+      if (request !== preflightRequest) return
+      setRobinhoodConnected(connected)
+      if (!connected) {
+        setRobinhoodAvailability(robinhoodTradeLiveAvailability({ connected: false, hasStrictRun: true }))
+        return
+      }
+      const result = await robinhoodLive.preflight(
+        {
+          algorithmId: props.algorithm.algorithmId,
+          runId: props.runId,
+          symbol: committedRobinhoodSymbol(sym, props.defaultSymbol),
+          interval,
+          executionMode: "live",
+        },
+        { signal: controller.signal },
+      )
+      if (request !== preflightRequest) return
+      const availability = robinhoodTradeLiveAvailability({ connected: true, hasStrictRun: true, preflight: result })
+      setPreflight(result)
+      setPreflightSymbol(committedRobinhoodSymbol(sym, props.defaultSymbol))
+      setRobinhoodAvailability(availability)
+      if (availability.available && props.defaultBrokerKind === "robinhood") setSelectedKind("robinhood")
+      if (!availability.available && selectedKind() === "robinhood") setSelectedKind(null)
+    } catch (cause) {
+      if (request !== preflightRequest || controller.signal.aborted) return
+      setRobinhoodAvailability(
+        robinhoodTradeLiveAvailability({ connected: true, hasStrictRun: true, checkFailed: true }),
+      )
+      setPreflightError(cause instanceof Error ? cause.message : String(cause))
+      if (selectedKind() === "robinhood") setSelectedKind(null)
+    } finally {
+      if (request === preflightRequest) setPreflightBusy(false)
+    }
+  }
+
   onMount(() => {
     dialog.setSize("large")
     void refresh(props.defaultSymbol.trim().toUpperCase())
-    void robinhood
-      .status()
-      .then((status) => setRobinhoodConnected(status.connected))
-      .catch(() => setRobinhoodConnected(false))
+    if (props.runMode === "live" && props.defaultBrokerKind === "robinhood") {
+      void checkRobinhood(props.defaultSymbol)
+    } else if (props.runMode === "live") {
+      void robinhood
+        .status({ signal: AbortSignal.timeout(5_000) })
+        .then((status) => {
+          setRobinhoodConnected(status.connected)
+          setRobinhoodAvailability(
+            status.connected
+              ? {
+                  available: false,
+                  state: "pending",
+                  description: "Select Robinhood to check live execution compatibility",
+                }
+              : robinhoodTradeLiveAvailability({ connected: false, hasStrictRun: true }),
+          )
+        })
+        .catch(() => setRobinhoodConnected(false))
+    }
     setTimeout(() => {
       if (symbolTextarea && !symbolTextarea.isDestroyed) {
         symbolTextarea.focus()
@@ -179,9 +284,24 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     if (norm === lastSeen) return
     lastSeen = norm
     setSymbolInput(norm)
-    if (norm) void refresh(norm)
+    if (norm) {
+      void refresh(norm)
+      if (selectedKind() === "robinhood") void checkRobinhood(norm)
+      else if (preflight()) {
+        setPreflight(undefined)
+        setPreflightSymbol(undefined)
+        setRobinhoodAvailability({
+          available: false,
+          state: "pending",
+          description: "Select Robinhood to check live execution compatibility",
+        })
+      }
+    }
   }, 250)
-  onCleanup(() => clearInterval(poll))
+  onCleanup(() => {
+    clearInterval(poll)
+    preflightController?.abort()
+  })
 
   const selectedRow = createMemo(() => {
     const k = selectedKind()
@@ -193,7 +313,7 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     const row = selectedRow()
     if (!row || !row.supports) return false
     if (row.spec.kind === "robinhood") {
-      return props.runMode === "live" && robinhoodConnected() && !preflightBusy()
+      return brokerSelectable(row) && !preflightBusy()
     }
     const acctId = accountByKind()[row.spec.kind]
     return Boolean(acctId && accountsForRow(row).some((account) => account.providerID === acctId))
@@ -207,17 +327,29 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     const sym = committedRobinhoodSymbol(symbolTextarea?.plainText ?? symbolInput(), props.defaultSymbol)
     setPendingSymbol(sym)
     if (selectedKind() === "robinhood") {
+      const existingBlocker =
+        preflightSymbol() === sym
+          ? robinhoodPreflightStartBlocker(preflight())
+          : "The Robinhood symbol changed. Check eligibility again."
+      if (!existingBlocker) {
+        setStep("disclaimer")
+        return
+      }
       setPreflightBusy(true)
       setPreflightError(undefined)
       try {
-        const result = await robinhoodLive.preflight({
-          algorithmId: props.algorithm.algorithmId,
-          runId: props.runId,
-          symbol: sym,
-          interval,
-          executionMode: "live",
-        })
+        const result = await robinhoodLive.preflight(
+          {
+            algorithmId: props.algorithm.algorithmId,
+            runId: props.runId,
+            symbol: sym,
+            interval,
+            executionMode: "live",
+          },
+          { signal: preflightController?.signal },
+        )
         setPreflight(result)
+        setPreflightSymbol(sym)
         const blocker = robinhoodLiveBlocker(result)
         if (blocker) {
           setPreflightError(blocker)
@@ -242,7 +374,19 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     if (!row) return
     if (row.spec.kind === "robinhood") {
       const ready = preflight()
-      if (!ready?.eligible || !ready.account || !ready.challengeId) return
+      const blocker = robinhoodPreflightStartBlocker(ready)
+      if (blocker || !ready?.account || !ready.challengeId) {
+        setPreflightError(blocker ?? "Robinhood live confirmation is no longer valid.")
+        setStep("pick")
+        setPreflight(undefined)
+        setPreflightSymbol(undefined)
+        setRobinhoodAvailability({
+          available: false,
+          state: "pending",
+          description: "Select Robinhood to check live execution compatibility again",
+        })
+        return
+      }
       props.onConfirm({
         symbol: pendingSymbol(),
         interval,
@@ -323,7 +467,7 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
           <text fg={theme.textMuted}>Pick brokerage</text>
         </box>
         <box flexDirection="column" gap={1}>
-          <For each={comparison()}>
+          <For each={visibleComparison()}>
             {(row) => {
               const isActive = () => selectedKind() === row.spec.kind
               const accounts = () => accountsForRow(row)
@@ -340,11 +484,11 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
                   borderColor={theme.primary}
                   flexDirection="column"
                   gap={0}
-                  onMouseUp={() => row.supports && pickBroker(row.spec.kind)}
+                  onMouseUp={() => activateBroker(row)}
                 >
                   <box flexDirection="row" gap={2} flexShrink={0}>
                     <text
-                      fg={isActive() ? theme.primary : row.supports ? theme.text : theme.textMuted}
+                      fg={isActive() ? theme.primary : brokerSelectable(row) ? theme.text : theme.textMuted}
                       attributes={TextAttributes.BOLD}
                     >
                       {isActive() ? "●" : "○"} {row.spec.displayName}
@@ -357,24 +501,24 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
                       <text fg={theme.textMuted}>fee {formatFee(row.takerFee)}</text>
                     </Show>
                   </box>
-                  <Show when={row.supports && accounts().length === 0}>
+                  <Show when={row.supports && row.spec.kind === "robinhood"}>
                     <text fg={theme.warning}>
-                      {row.spec.kind === "robinhood"
-                        ? props.runMode === "paper"
-                          ? "Paper trading is not supported by Robinhood."
-                          : robinhoodConnected()
-                            ? "Connected · dedicated Agentic account is verified by live preflight."
-                            : "Not connected · Settings → Brokerages."
-                        : `No ${props.runMode === "live" ? "live" : "paper/testnet"} ${row.spec.displayName} accounts. Settings → Brokerages.`}
+                      {preflightBusy() ? "Checking live execution compatibility…" : robinhoodAvailability().description}
                     </text>
                   </Show>
-                  <Show when={row.supports && accounts().length === 1}>
+                  <Show when={row.supports && row.spec.kind !== "robinhood" && accounts().length === 0}>
+                    <text fg={theme.warning}>
+                      No {props.runMode === "live" ? "live" : "paper/testnet"} {row.spec.displayName} accounts. Settings
+                      → Brokerages.
+                    </text>
+                  </Show>
+                  <Show when={row.supports && row.spec.kind !== "robinhood" && accounts().length === 1}>
                     <text fg={theme.textMuted}>
                       Account: {accounts()[0].label} ({maskKey(accounts()[0].keyId)}) ·{" "}
                       {accountModeLabel(accounts()[0].mode)}
                     </text>
                   </Show>
-                  <Show when={row.supports && accounts().length >= 2}>
+                  <Show when={row.supports && row.spec.kind !== "robinhood" && accounts().length >= 2}>
                     <box flexDirection="row" gap={1} paddingTop={0}>
                       <For each={accounts()}>
                         {(acct) => {
@@ -457,11 +601,15 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
               {interval}
             </text>
             <Show when={preflight()?.account}>
-              <text fg={theme.textMuted}>·</text>
-              <text fg={theme.textMuted}>account</text>
-              <text fg={theme.text} attributes={TextAttributes.BOLD}>
-                {robinhoodAgenticAccountLabel(preflight()!.account!)}
-              </text>
+              {(account) => (
+                <>
+                  <text fg={theme.textMuted}>·</text>
+                  <text fg={theme.textMuted}>account</text>
+                  <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                    {robinhoodAgenticAccountLabel(account())}
+                  </text>
+                </>
+              )}
             </Show>
             <Show
               when={preflight()?.account}
@@ -526,7 +674,9 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
                       .openOrders.map((order) => `${order.side} ${order.qty} ${order.symbol} (${order.status})`)
                       .join(" · ")}
               </text>
-              <text fg={theme.textMuted}>Challenge expires: {result().expiresAt}</text>
+              <text fg={theme.textMuted}>
+                Challenge expires: {result().expiresAt ? robinhoodPreflightExpiryLabel(result().expiresAt!) : "Unknown"}
+              </text>
             </box>
           )}
         </Show>

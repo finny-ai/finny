@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import path from "node:path"
 import { resolveFinnyHome } from "@finny-ai/core/prefs"
 import type { Mission } from "@/algorithm/mission"
+import { stableStringify } from "@/backtest/run-integrity-core"
 import type { BrokerKind, BrokerMode } from "./brokers"
 
 export const ORDER_INTENT_SCHEMA = "finny.order_intent" as const
@@ -140,16 +141,6 @@ export interface ExecutionContractV3 {
 
 export type PaperExecutionContract = PaperExecutionContractV1 | PaperExecutionContractV2 | ExecutionContractV3
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  const object = value as Record<string, unknown>
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`)
-    .join(",")}}`
-}
-
 export function createLiveActivationReceipt(input: {
   challengeId: string
   binding: ExecutionBindingV1
@@ -178,7 +169,7 @@ export function createLiveActivationReceipt(input: {
     issuedAt: now.toISOString(),
     expiresAt: new Date(now.getTime() + (input.ttlMs ?? 90_000)).toISOString(),
   }
-  const receiptHash = crypto.createHash("sha256").update(canonical(body)).digest("hex")
+  const receiptHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
   const signature = crypto.createHmac("sha256", input.secret).update(receiptHash).digest("hex")
   return { ...body, receiptHash, signature }
 }
@@ -195,7 +186,7 @@ export function verifyLiveActivationReceipt(input: {
     return ["live activation receipt schema is invalid"]
   }
   const { receiptHash, signature, ...body } = receipt
-  const expectedHash = crypto.createHash("sha256").update(canonical(body)).digest("hex")
+  const expectedHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
   const expectedSignature = secret ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex") : undefined
   const errors: string[] = []
   if (!secret) errors.push("FINNY_LIVE_ACTIVATION_KEY is not configured")
@@ -225,6 +216,8 @@ export function verifyLiveActivationReceipt(input: {
   }
   if (binding.brokerKind !== "robinhood" || binding.brokerMode !== "live")
     errors.push("live activation broker mismatch")
+  if (receipt.brokerKind !== "robinhood" || receipt.brokerMode !== "live")
+    errors.push("live activation receipt broker mismatch")
   const now = (input.now ?? new Date()).getTime()
   const issuedAt = Date.parse(receipt.issuedAt)
   const expiresAt = Date.parse(receipt.expiresAt)
@@ -245,7 +238,7 @@ export function verifyPaperActivationReceipt(input: {
     return ["paper activation receipt schema is invalid"]
   }
   const { receiptHash, signature, ...body } = receipt
-  const expectedHash = crypto.createHash("sha256").update(canonical(body)).digest("hex")
+  const expectedHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
   const expectedSignature = secret ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex") : undefined
   const errors: string[] = []
   if (!secret) errors.push("FINNY_PAPER_ACTIVATION_KEY is not configured")
@@ -290,6 +283,7 @@ export const EXECUTION_RISK_GATEWAY_PY = String.raw`"""Fail-closed paper executi
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -387,7 +381,7 @@ class IntentRecord:
 
 
 class ExecutionRiskGateway:
-    def __init__(self, contract, broker, emit):
+    def __init__(self, contract, broker, emit, activation_key=None):
         self.contract = contract
         self.binding = contract["binding"]
         self.policy = contract["policy"]
@@ -419,11 +413,20 @@ class ExecutionRiskGateway:
                 "accountScopeHash": "accountScopeHash",
             }
             expires = _parse_time(receipt.get("expiresAt"))
+            receipt_body = {key: value for key, value in receipt.items() if key not in ("receiptHash", "signature")}
+            expected_hash = _hash(receipt_body)
+            expected_signature = (
+                hmac.new(activation_key.encode("utf-8"), expected_hash.encode("utf-8"), hashlib.sha256).hexdigest()
+                if isinstance(activation_key, str) and activation_key else None
+            )
             receipt_valid = (
                 receipt.get("schema") == "finny.live_activation_receipt"
                 and receipt.get("brokerKind") == "robinhood"
                 and receipt.get("brokerMode") == "live"
-                and expires is not None and expires > _utc_now()
+                and expires is not None and expires.tzinfo is not None and expires > _utc_now()
+                and hmac.compare_digest(str(receipt.get("receiptHash", "")), expected_hash)
+                and expected_signature is not None
+                and hmac.compare_digest(str(receipt.get("signature", "")), expected_signature)
                 and all(receipt.get(left) == self.binding.get(right) for left, right in binding_fields.items())
             )
             self.halted = self.halted or not receipt_valid
@@ -755,6 +758,10 @@ class ExecutionRiskGateway:
         flatten = bool((self.policy.get("limits") or {}).get("flattenOnStop"))
         open_positions = self._position_quantities(snapshot["positions"])
         capabilities = self.policy.get("capabilities") or {}
+        if self.submission_mode == "live" and flatten:
+            self.halted = True
+            self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "broker_capability", "positions": open_positions})
+            return False
         if flatten and not capabilities.get("cancelAll"):
             self.halted = True
             self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "policy_incomplete", "positions": open_positions})

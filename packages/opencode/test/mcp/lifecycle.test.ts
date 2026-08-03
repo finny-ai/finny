@@ -361,8 +361,11 @@ it.instance(
       yield* MCP.Service.use((mcp: MCPNS.Interface) =>
         Effect.gen(function* () {
           const expected = McpRobinhood.READ_TOOLS.map(McpRobinhood.toolID)
+          const robinhoodBroker = mcp.robinhoodBroker
+          expect(robinhoodBroker).toBeDefined()
+          if (!robinhoodBroker) throw new Error("Expected managed Robinhood broker access")
           expect(Object.keys(yield* mcp.tools())).toEqual(expected)
-          const initialBroker = yield* mcp.robinhoodBroker!()
+          const initialBroker = yield* robinhoodBroker()
           expect(initialBroker?.definitions.map((definition) => definition.name)).toEqual(
             expect.arrayContaining(["get_equity_historicals", "place_equity_order", "cancel_equity_order"]),
           )
@@ -390,7 +393,7 @@ it.instance(
           expect(handler).toBeDefined()
           yield* Effect.promise(() => handler?.())
           expect(Object.keys(yield* mcp.tools())).toEqual(expected)
-          const refreshedBroker = yield* mcp.robinhoodBroker!()
+          const refreshedBroker = yield* robinhoodBroker()
           expect(refreshedBroker?.definitions.map((definition) => definition.name)).toEqual(
             expect.arrayContaining(["get_equity_historicals", "place_equity_order", "replace_equity_order"]),
           )

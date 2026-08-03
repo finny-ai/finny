@@ -227,20 +227,16 @@ describe("paper execution risk gateway", () => {
       effectiveConfigHash: "d".repeat(64),
       symbol: "AAPL",
       interval: "1min",
-      brokerKind: "robinhood",
-      brokerMode: "live",
+      brokerKind: "robinhood" as const,
+      brokerMode: "live" as const,
       accountScopeHash: "e".repeat(64),
     }
-    const receipt = {
-      schema: "finny.live_activation_receipt",
-      version: 1,
+    const activationKey = "worker-scoped-activation-key"
+    const receipt = createLiveActivationReceipt({
       challengeId: "challenge",
-      ...binding,
-      issuedAt: "2026-01-01T00:00:00Z",
-      expiresAt: "2099-01-01T00:00:00Z",
-      receiptHash: "f".repeat(64),
-      signature: "0".repeat(64),
-    }
+      binding,
+      secret: activationKey,
+    })
     const contract = {
       schema: "finny.execution_contract",
       version: 3,
@@ -258,7 +254,7 @@ class Broker:
     def execution_snapshot(self, symbol):
         return {"cash": 10000, "equity": 10000, "positions": {}}
 contract=json.loads(sys.argv[1])
-gateway=ExecutionRiskGateway(contract, Broker(), lambda event: None)
+gateway=ExecutionRiskGateway(contract, Broker(), lambda event: None, sys.argv[2])
 assert gateway.reconcile_start()
 now=datetime.now(timezone.utc)
 bar={"bar_start":(now-timedelta(minutes=1)).isoformat(),"bar_end":now.isoformat(),"is_final":True,"session_id":"regular","source_timestamp":now.isoformat(),"open":100}
@@ -266,7 +262,7 @@ assert gateway.begin_bar(bar)
 result=gateway.submit_intent("sell", "AAPL", qty=1, reason="must not short", features={})
 print(json.dumps(result.decision))
 `
-    const proc = Bun.spawn(["python3", "-c", script, JSON.stringify(contract)], {
+    const proc = Bun.spawn(["python3", "-c", script, JSON.stringify(contract), activationKey], {
       cwd: temp,
       env: { ...process.env, PYTHONPATH: temp },
       stdout: "pipe",
@@ -280,6 +276,22 @@ print(json.dumps(result.decision))
     expect(stderr).toBe("")
     expect(code).toBe(0)
     expect(JSON.parse(stdout)).toMatchObject({ accepted: false, reason_code: "long_only" })
+
+    const expired = { ...contract, activationReceipt: { ...receipt, expiresAt: "2026-01-01T00:00:00Z" } }
+    const rejectScript = String.raw`
+import json,sys
+from execution_risk_gateway import ExecutionRiskGateway
+class Broker: pass
+gateway=ExecutionRiskGateway(json.loads(sys.argv[1]), Broker(), lambda event: None, sys.argv[2])
+assert gateway.halted
+`
+    const rejected = Bun.spawn(["python3", "-c", rejectScript, JSON.stringify(expired), activationKey], {
+      cwd: temp,
+      env: { ...process.env, PYTHONPATH: temp },
+      stderr: "pipe",
+    })
+    expect(await rejected.exited).toBe(0)
+    expect(await new Response(rejected.stderr).text()).toBe("")
   })
 
   test("passes closed-bar, risk parity, idempotency, crash, timeout, and safe-stop corpus", async () => {

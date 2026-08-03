@@ -15,7 +15,6 @@ const SAFE_CAPABILITIES = new Set(["stocks", "etfs"])
 export function renderRobinhoodIntegrationContext(input: {
   status: string
   ready: boolean
-  pinnedVersion: string
   capabilities: readonly string[]
 }): string {
   const status = SAFE_INTEGRATION_STATUSES.has(input.status) ? input.status : "error"

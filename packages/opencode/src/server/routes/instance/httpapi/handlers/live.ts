@@ -120,7 +120,12 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
             },
           )
         },
-        catch: (error) => new LiveRunStartError({ message: error instanceof Error ? error.message : String(error) }),
+        catch: (error) => {
+          if (error instanceof LiveRunner.StartRejectedError) {
+            return new LiveRunStartError({ message: error.message })
+          }
+          throw error
+        },
       })
     })
 

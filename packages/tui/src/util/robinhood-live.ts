@@ -1,3 +1,5 @@
+import { robinhoodEndpointUrl } from "./robinhood-integration"
+
 export type RobinhoodExecutionMode = "shadow" | "paper" | "live"
 
 export type RobinhoodPreflightCheck = {
@@ -56,12 +58,49 @@ export type RobinhoodLivePreflightRequest = {
   accountProviderID?: string
 }
 
+export type RobinhoodPreflightOptions = {
+  signal?: AbortSignal
+  timeoutMs?: number
+}
+
 export function committedRobinhoodSymbol(value: string | undefined, fallback: string): string {
   return (value ?? "").trim().toUpperCase() || fallback.trim().toUpperCase()
 }
 
 export function robinhoodAgenticAccountLabel(account: NonNullable<RobinhoodLivePreflight["account"]>): string {
   return account.label?.trim() || "Agentic account"
+}
+
+export function robinhoodPreflightExpiryLabel(expiresAt: string, locale?: string): string {
+  const expiry = new Date(expiresAt)
+  return Number.isNaN(expiry.getTime()) ? "Unknown" : expiry.toLocaleString(locale)
+}
+
+export function robinhoodPreflightStartBlocker(
+  preflight: RobinhoodLivePreflight | undefined,
+  now = Date.now(),
+): string | undefined {
+  const blocker = preflight ? robinhoodLiveBlocker(preflight) : "Robinhood live compatibility must be checked again."
+  if (blocker) return blocker
+  const expiresAt = Date.parse(preflight!.expiresAt!)
+  if (!Number.isFinite(expiresAt) || expiresAt <= now)
+    return "Robinhood live confirmation expired. Check eligibility again."
+}
+
+export function brokerVisibleForRunMode(kind: string, runMode: "paper" | "live"): boolean {
+  return runMode === "live" || kind !== "robinhood"
+}
+
+export function brokerSelectableForRunMode(input: {
+  kind: string
+  runMode: "paper" | "live"
+  supports: boolean
+  robinhoodConnected: boolean
+  robinhoodExecutionCompatible: boolean
+}): boolean {
+  if (!input.supports) return false
+  if (input.kind !== "robinhood") return true
+  return input.runMode === "live" && input.robinhoodConnected && input.robinhoodExecutionCompatible
 }
 
 export type RobinhoodTradeLiveAvailability = {
@@ -181,7 +220,7 @@ function isRisk(value: unknown): value is NonNullable<RobinhoodLivePreflight["ri
 }
 
 export function parseRobinhoodLivePreflight(value: unknown): RobinhoodLivePreflight {
-  if (!isRecord(value)) throw new Error("Unexpected Robinhood live preflight response")
+  if (!isRecord(value)) throw new Error("Robinhood live preflight response must be an object")
   const mode = value.executionMode
   const valid = [
     value.schema === "finny.robinhood_live_preflight",
@@ -198,7 +237,24 @@ export function parseRobinhoodLivePreflight(value: unknown): RobinhoodLivePrefli
     optionalString(value.challengeId),
     optionalString(value.expiresAt),
   ].every(Boolean)
-  if (!valid) throw new Error("Unexpected Robinhood live preflight response")
+  if (!valid) {
+    const invalid = [
+      ["schema", value.schema === "finny.robinhood_live_preflight"],
+      ["version", value.version === 1],
+      ["eligible", typeof value.eligible === "boolean"],
+      ["executionMode", mode === "shadow" || mode === "paper" || mode === "live"],
+      ["brokerKind", value.brokerKind === "robinhood"],
+      ["paperSupported", value.paperSupported === false],
+      ["checks", Array.isArray(value.checks) && value.checks.every(isCheck)],
+      ["account", value.account === undefined || isAccount(value.account)],
+      ["positions", Array.isArray(value.positions) && value.positions.every(isPosition)],
+      ["openOrders", Array.isArray(value.openOrders) && value.openOrders.every(isOpenOrder)],
+      ["risk", value.risk === undefined || isRisk(value.risk)],
+      ["challengeId", optionalString(value.challengeId)],
+      ["expiresAt", optionalString(value.expiresAt)],
+    ].find((entry) => !entry[1])?.[0]
+    throw new Error(`Unexpected Robinhood live preflight response: invalid ${invalid ?? "payload"}`)
+  }
   return value as RobinhoodLivePreflight
 }
 
@@ -211,16 +267,31 @@ function responseMessage(value: unknown, fallback: string) {
 
 export function createRobinhoodLiveClient(input: ClientInput) {
   return {
-    async preflight(payload: RobinhoodLivePreflightRequest) {
+    async preflight(payload: RobinhoodLivePreflightRequest, options: RobinhoodPreflightOptions = {}) {
       const headers = new Headers(input.headers)
       headers.set("accept", "application/json")
       headers.set("content-type", "application/json")
       if (input.directory) headers.set("x-opencode-directory", input.directory)
-      const response = await input.fetch(new URL("/live/robinhood/preflight", input.url), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(payload),
-      })
+      const controller = new AbortController()
+      const timeout = setTimeout(
+        () => controller.abort(new Error("Robinhood preflight timed out")),
+        options.timeoutMs ?? 10_000,
+      )
+      const abort = () => controller.abort(options.signal?.reason)
+      if (options.signal?.aborted) abort()
+      else options.signal?.addEventListener("abort", abort, { once: true })
+      let response: Response
+      try {
+        response = await input.fetch(robinhoodEndpointUrl(input.url, "/live/robinhood/preflight"), {
+          method: "POST",
+          headers,
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+      } finally {
+        clearTimeout(timeout)
+        options.signal?.removeEventListener("abort", abort)
+      }
       const text = await response.text()
       let body: unknown
       try {

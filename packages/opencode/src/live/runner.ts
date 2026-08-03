@@ -239,6 +239,7 @@ export namespace LiveRunner {
     listeners: Set<(run: Run) => void>
     nativeStopRecorded?: boolean
     brokerBridge?: RobinhoodBridge.Bridge
+    stopRequested?: boolean
   }
 
   const runs = new Map<string, RunState>()
@@ -252,6 +253,7 @@ export namespace LiveRunner {
       listeners: _l,
       nativeStopRecorded: _n,
       brokerBridge: _b,
+      stopRequested: _r,
       ...rest
     } = state
     return { ...rest, positions: { ...rest.positions }, orders: [...rest.orders], logs: [...rest.logs] }
@@ -597,7 +599,7 @@ def main():
     if not isinstance(execution_contract, dict):
         emit({"type": "error", "message": "Execution contract missing; paper worker fails closed"})
         sys.exit(5)
-    gateway = ExecutionRiskGateway(execution_contract, broker, emit)
+    gateway = ExecutionRiskGateway(execution_contract, broker, emit, config.get("activation_receipt_key"))
     if not gateway.reconcile_start():
         emit({"type": "error", "message": "Broker/ledger reconciliation failed; worker halted"})
         sys.exit(6)
@@ -999,6 +1001,9 @@ if __name__ == "__main__":
               run_id: id,
               broker_kind: brokerKind,
               execution_contract: executionContract,
+              ...(robinhoodPrepared?.activationVerificationKey
+                ? { activation_receipt_key: robinhoodPrepared.activationVerificationKey }
+                : {}),
               ...(brokerBridge ? { robinhood_bridge_url: brokerBridge.url } : {}),
             },
             null,
@@ -1020,8 +1025,19 @@ if __name__ == "__main__":
         })
 
         preState.proc = proc
+        if (preState.stopRequested) {
+          proc.kill("SIGTERM")
+          await preState.brokerBridge?.close().catch(() => {})
+          await fs.rm(preState.tmpDir, { recursive: true, force: true }).catch(() => {})
+          return
+        }
         attachProcess(preState)
       } catch (e: any) {
+        if (preState.stopRequested) {
+          if (preState.tmpDir) await fs.rm(preState.tmpDir, { recursive: true, force: true }).catch(() => {})
+          await preState.brokerBridge?.close().catch(() => {})
+          return
+        }
         const msg = e?.message ?? "Failed to start live run"
         preState.status = "error"
         preState.error = msg
@@ -1293,9 +1309,13 @@ if __name__ == "__main__":
     notify(state)
     const proc = state.proc
     if (!proc) {
+      state.stopRequested = true
       await state.brokerBridge?.close().catch(() => {})
       state.status = "stopped"
       state.stoppedAt = Date.now()
+      emitLedger(state, { kind: "status", workerType: "stop", status: "stopped", reason: "stopped_during_setup" })
+      recordNativeStop(state, "stopped_during_setup", { reason: "stopped_during_setup" })
+      await drainNativeLedger()
       if (state.tmpDir) await fs.rm(state.tmpDir, { recursive: true, force: true }).catch(() => {})
       notify(state)
       return

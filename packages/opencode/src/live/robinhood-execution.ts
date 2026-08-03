@@ -82,9 +82,11 @@ export interface PreparedExecution {
   accountLabel?: string
   fractionalEquities: boolean
   activationReceipt?: LiveActivationReceiptV1
+  /** One-run verifier shared only with the worker; never an OAuth or broker credential. */
+  activationVerificationKey?: string
 }
 
-interface Challenge extends Omit<PreparedExecution, "activationReceipt"> {
+interface Challenge extends Omit<PreparedExecution, "activationReceipt" | "activationVerificationKey"> {
   id: string
   executionMode: "shadow" | "live"
   expiresAt: number
@@ -92,7 +94,6 @@ interface Challenge extends Omit<PreparedExecution, "activationReceipt"> {
 
 const challenges = new Map<string, Challenge>()
 const CHALLENGE_TTL_MS = 90_000
-const PROCESS_ACTIVATION_SECRET = crypto.randomBytes(32).toString("hex")
 
 function purgeExpired(now: number) {
   for (const [id, challenge] of challenges) if (challenge.expiresAt <= now) challenges.delete(id)
@@ -369,12 +370,14 @@ export function consumeChallenge(input: {
   if (input.executionMode === "live") {
     if (input.realMoneyAcknowledgement !== true)
       throw new Error("Robinhood live start requires explicit real-money acknowledgement.")
+    const activationVerificationKey = crypto.randomBytes(32).toString("hex")
     return {
       ...challenge,
+      activationVerificationKey,
       activationReceipt: createLiveActivationReceipt({
         challengeId: challenge.id,
         binding: challenge.binding,
-        secret: PROCESS_ACTIVATION_SECRET,
+        secret: activationVerificationKey,
         now,
       }),
     }

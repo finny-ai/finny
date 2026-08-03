@@ -22,6 +22,13 @@ type ClientInput = {
   directory?: string
 }
 
+export function robinhoodEndpointUrl(base: string, pathname: string): URL {
+  const root = new URL(base)
+  const prefix = root.pathname.endsWith("/") ? root.pathname : `${root.pathname}/`
+  root.pathname = `${prefix}${pathname.replace(/^\/+/, "")}`
+  return root
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value)
 }
@@ -64,7 +71,7 @@ function requestHeaders(input: ClientInput, json = false) {
 }
 
 async function request(input: ClientInput, pathname: string, init: RequestInit = {}) {
-  const response = await input.fetch(new URL(pathname, input.url), {
+  const response = await input.fetch(robinhoodEndpointUrl(input.url, pathname), {
     ...init,
     headers: requestHeaders(input, init.body !== undefined),
   })
@@ -80,7 +87,7 @@ async function request(input: ClientInput, pathname: string, init: RequestInit =
 }
 
 export function createRobinhoodIntegrationClient(input: ClientInput) {
-  const status = async () => robinhoodConnection(await request(input, "/mcp"))
+  const status = async (init: RequestInit = {}) => robinhoodConnection(await request(input, "/mcp", init))
 
   return {
     status,

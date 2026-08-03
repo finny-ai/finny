@@ -110,6 +110,8 @@ describe("live HttpApi", () => {
           brokerKind: "alpaca",
         }),
       })
+      // The legacy payload still passes schema validation and defaults to shadow;
+      // this 400 is the expected missing-Alpaca-account start rejection.
       expect(res.status).toBe(400)
       expect(yield* res.json).toMatchObject({
         _tag: "LiveRunStartError",

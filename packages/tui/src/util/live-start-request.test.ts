@@ -60,3 +60,21 @@ test("non-Robinhood starts still send an explicit execution mode without activat
     executionMode: "paper",
   })
 })
+
+test("Robinhood starts fail closed without exact live activation intent", () => {
+  const base = {
+    algorithm,
+    runId: "strict-run-1",
+    symbol: "AAPL",
+    interval: "1min",
+    brokerKind: "robinhood" as const,
+    accountProviderID: "robinhood-agentic-1",
+  }
+  expect(() => liveStartRequest({ ...base, executionMode: "paper" })).toThrow("only supports live")
+  expect(() => liveStartRequest({ ...base, executionMode: "live", realMoneyAcknowledgement: true })).toThrow(
+    "preflight challenge",
+  )
+  expect(() => liveStartRequest({ ...base, executionMode: "live", challengeId: "challenge-1" })).toThrow(
+    "real-money acknowledgement",
+  )
+})

@@ -171,6 +171,10 @@ describe("official Robinhood execution adapter", () => {
       })
       expect(JSON.stringify(review)).not.toContain("must-not-cross-boundary")
 
+      const origin = new URL(bridge.url).origin
+      expect((await fetch(`${origin}/wrong/order`, { method: "POST", body: "{}" })).status).toBe(404)
+      expect((await fetch(`${bridge.url}/order`)).status).toBe(405)
+
       const oversized = await fetch(`${bridge.url}/snapshot`, {
         method: "POST",
         headers: { "content-type": "application/json" },

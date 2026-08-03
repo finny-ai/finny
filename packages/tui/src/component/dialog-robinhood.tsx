@@ -73,7 +73,13 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
     try {
       const next = await client.connect()
       setConnection(next)
-      await local.brokerage.set("robinhood")
+      await local.brokerage.set("robinhood").catch(() => {
+        toast.show({
+          message: "Robinhood connected, but the local brokerage preference could not be saved",
+          variant: "warning",
+          duration: 5000,
+        })
+      })
       props.onChanged?.()
       toast.show({ message: "Robinhood connected", variant: "success", duration: 3500 })
     } catch (cause) {
@@ -89,7 +95,13 @@ export function RobinhoodManager(props: { onChanged?: () => void } = {}) {
     setError(undefined)
     try {
       setConnection(await client.disconnect())
-      await local.brokerage.clear("robinhood")
+      await local.brokerage.clear("robinhood").catch(() => {
+        toast.show({
+          message: "Robinhood disconnected, but the local brokerage preference could not be cleared",
+          variant: "warning",
+          duration: 5000,
+        })
+      })
       props.onChanged?.()
       toast.show({ message: "Robinhood disconnected", variant: "info", duration: 3500 })
     } catch (cause) {

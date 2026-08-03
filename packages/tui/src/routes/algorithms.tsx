@@ -37,8 +37,6 @@ import {
   fileManagerName,
   supportsNativeZipPicker,
 } from "../util/file-manager"
-import { createRobinhoodIntegrationClient } from "../util/robinhood-integration"
-import { createRobinhoodLiveClient, robinhoodTradeLiveAvailability } from "../util/robinhood-live"
 
 type RunMode = "paper" | "live"
 
@@ -54,8 +52,6 @@ export function Algorithms() {
   const routeData = useRouteData("algorithms")
   const [selectedId, setSelectedId] = createSignal<string | undefined>(routeData.algorithmId)
   const showLiveRun = liveTradingEnabled()
-  const robinhood = createRobinhoodIntegrationClient(sdk)
-  const robinhoodLive = createRobinhoodLiveClient(sdk)
 
   // Always refetch on route mount so newly-built algos show up.
   onMount(async () => {
@@ -310,39 +306,6 @@ export function Algorithms() {
   }
 
   const openRunMode = async (algo: Algorithm.Info) => {
-    const config = parseConfig(algo.config)
-    const targetsRobinhood = config.brokerage === "robinhood"
-    const runId = strictRunId(algo)
-    let robinhoodLiveStatus: ReturnType<typeof robinhoodTradeLiveAvailability> | undefined
-
-    if (targetsRobinhood && showLiveRun) {
-      const connected = await robinhood
-        .status()
-        .then((status) => status.connected)
-        .catch(() => false)
-      let preflight
-      let checkFailed = false
-      if (connected && runId) {
-        try {
-          preflight = await robinhoodLive.preflight({
-            algorithmId: algo.algorithmId,
-            runId,
-            symbol: guessSymbolForAlgo(algo),
-            interval: guessIntervalForAlgo(algo),
-            executionMode: "live",
-          })
-        } catch {
-          checkFailed = true
-        }
-      }
-      robinhoodLiveStatus = robinhoodTradeLiveAvailability({
-        connected,
-        hasStrictRun: !!runId,
-        preflight,
-        checkFailed,
-      })
-    }
-
     dialog.replace(() => (
       <DialogSelect
         title={`Run ${algo.name}`}
@@ -356,19 +319,12 @@ export function Algorithms() {
               void startRun(algo, "paper")
             },
           },
-          {
-            title: "Robinhood Paper Trading",
-            value: "robinhood-paper-unsupported" as const,
-            description: "Not supported by Robinhood",
-            unavailable: true,
-          },
           ...(showLiveRun
             ? [
                 {
                   title: "Trade Live",
                   value: "live" as const,
-                  description: robinhoodLiveStatus?.description ?? "Use a live brokerage account",
-                  unavailable: robinhoodLiveStatus ? !robinhoodLiveStatus.available : false,
+                  description: "Use a compatible live brokerage account",
                   onSelect: () => {
                     void startRun(algo, "live")
                   },

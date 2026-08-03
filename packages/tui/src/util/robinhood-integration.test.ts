@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test"
 import {
   createRobinhoodIntegrationClient,
+  robinhoodEndpointUrl,
   robinhoodConnection,
   ROBINHOOD_OFFICIAL_MCP_URL,
 } from "./robinhood-integration"
+
+test("Robinhood endpoints preserve a configured daemon base path", () => {
+  expect(robinhoodEndpointUrl("https://finny.test/api/v1", "/mcp").toString()).toBe("https://finny.test/api/v1/mcp")
+  expect(robinhoodEndpointUrl("https://finny.test/", "mcp").toString()).toBe("https://finny.test/mcp")
+})
 
 test("Robinhood status exposes only Connected or Not connected semantics", () => {
   expect(robinhoodConnection({ robinhood: { status: "connected" } })).toEqual({
