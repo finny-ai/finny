@@ -7,7 +7,7 @@ import { Effect } from "effect"
 import { createBundleWriter, hashTree, publishBundle, sha256Bytes, sha256File, writeBundleText } from "./artifacts"
 import { startFixtureMarketDataProvider, type FixtureMarketDataProvider } from "./fixture-market-data"
 import { startScriptedModelServer, type ScriptedModelServer } from "./fixture-model"
-import { configureCollector, configureTelemetryIdentity, createIsolation } from "./isolation"
+import { configureCollector, configureLeanExecution, configureTelemetryIdentity, createIsolation } from "./isolation"
 import { runCommand } from "./process"
 import { inspectLockedPythonRuntime, prepareLockedPythonRuntime, type LockedPythonRuntime } from "./python-runtime"
 import { fetchSpans, gradeSessions, parseArgs as parsePhoenixArgs, validateGrade } from "../phoenix-trace-grader"
@@ -428,6 +428,7 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
     if (resolve.exitCode !== 0) throw new Error(`could not resolve ref ${options.ref}: ${resolve.stderr.trim()}`)
     commit = resolve.stdout.trim()
     isolation.env.FINNY_GIT_COMMIT = commit
+    configureLeanExecution(isolation.env)
     configureTelemetryIdentity(isolation.env)
     const targetTree = await runCommand({
       command: "git",

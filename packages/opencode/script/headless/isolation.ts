@@ -146,3 +146,15 @@ export function configureTelemetryIdentity(env: Record<string, string>): void {
     .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`)
     .join(",")
 }
+
+/**
+ * Forward the LEAN execution feature flags into the harness child so a
+ * lean_python candidate can run the pinned engine container end-to-end.
+ * Absent from the parent, the child sees them disabled and fails closed.
+ */
+export function configureLeanExecution(env: Record<string, string>): void {
+  for (const key of ["FINNY_LEAN_ENABLED", "FINNY_LEAN_ADAPTER_CERT"] as const) {
+    const value = process.env[key]
+    if (value) env[key] = value
+  }
+}
