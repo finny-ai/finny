@@ -6,6 +6,7 @@ import type { BacktestRunner } from "../runner"
 import type { EngineV2 } from "../results"
 import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST, leanExecutionProfileV1, runtimeProfileV1, strategySourceV1 } from "./contracts"
 import { materializeLeanDataBundle } from "./materialize"
+import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
 import { parseLeanResultJson } from "./lean-result-parse"
 import { buildCanonicalMetrics } from "./metrics"
 import { LeanAdapter } from "./adapter"
@@ -78,6 +79,20 @@ export async function runLeanEngineInRunner(input: {
     timestamps = await csvTimestamps(input.csvPath)
   } catch (error) {
     return { ok: false, kind: "data_bundle_invalid", error: String(error) }
+  }
+  let rows
+  try {
+    rows = parseFinnyOhlcv(await fs.readFile(input.csvPath, "utf8"))
+    const dataDir = path.join(scratchDir, "data")
+    await writeLeanMarketData({
+      rows,
+      symbol,
+      assetClass,
+      interval: input.interval,
+      dataDir,
+    })
+  } catch (error) {
+    return { ok: false, kind: "data_bundle_invalid", error: `LEAN data materialization failed: ${String(error)}` }
   }
   const symbol = String(input.config.symbol ?? "SPY")
   const schedule: LeanBarScheduleV1 = {
@@ -188,6 +203,10 @@ export async function runLeanEngineInRunner(input: {
     ohlcvRows: timestamps.length,
     engineVersion: `lean-${LEAN_PINNED_COMMIT.slice(0, 8)}`,
   })
+  const statsFees = Number(parsed.statistics?.["Total Fees"] ?? 0)
+  if (Number.isFinite(statsFees) && statsFees > 0) {
+    v2.exposure.total_fees = statsFees
+  }
 
   // Canonical artifact set consumed by the strict run publisher.
   const writeCsv = async (name: string, rows: Array<Record<string, unknown>>) => {

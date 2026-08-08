@@ -8,8 +8,13 @@ export const LEAN_RUNTIME_IDS: readonly FinnyRuntimeId[] = ["lean_python", "lean
 export const LEAN_IMAGE_REF = "ghcr.io/finny-ai/lean-engine"
 export const LEAN_PINNED_COMMIT = "c6cc3b743ed7b65d5e0b9fa2bfc18b7d3ac2aea0"
 
-/** Placeholder pinned digest; replaced when the Finny engine image is published. */
-export const LEAN_PINNED_IMAGE_DIGEST = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+/**
+ * Pinned digest of the Finny lean-engine overlay (ghcr.io/finny-ai/lean-engine:
+ * dev) built over the official QuantConnect daily build 17992 (2026-08-07),
+ * the image closest to the pinned LEAN commit. The production image built from
+ * pinned source replaces this digest and is signed/attested.
+ */
+export const LEAN_PINNED_IMAGE_DIGEST = "sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652"
 
 /** Runtime profile bound to one saved algorithm version. */
 export interface RuntimeProfileV1 {
