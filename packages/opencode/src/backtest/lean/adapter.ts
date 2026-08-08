@@ -9,6 +9,8 @@ import {
 import { materializeLeanDataBundle } from "./materialize"
 import type { LeanAdapterContextV1, LeanAdapterResultV1, LeanAdapterV1 } from "./runner"
 import type { LeanAdapterFailureV1 } from "./types"
+import { buildLeanLauncherConfig } from "./engine-config"
+import fs from "node:fs/promises"
 
 const ADAPTER_CERT_ENV = "FINNY_LEAN_ADAPTER_CERT"
 const ADAPTER_CERT_VALUE = "finny-lean-adapter-cert-v1"
@@ -69,6 +71,16 @@ export class LeanAdapter implements LeanAdapterV1 {
     if (docker.code !== 0) {
       return failure("docker_unavailable", `docker daemon is unavailable: ${docker.stderr.toString().trim()}`)
     }
+    const inspect = await Process.run(
+      ["docker", "image", "inspect", LEAN_PINNED_IMAGE_DIGEST, "--format", "{{json .RepoDigests}}"],
+      { nothrow: true, timeout: 15_000, env: null, inheritEnv: false },
+    )
+    if (inspect.code !== 0) {
+      return failure(
+        "image_unavailable",
+        `pinned image ${LEAN_PINNED_IMAGE_DIGEST} is not present; run the Finny lean-engine pull step first`,
+      )
+    }
 
     // Materialize the phase-scoped data bundle into the scratch directory.
     let bundle
@@ -97,8 +109,21 @@ export class LeanAdapter implements LeanAdapterV1 {
 
     // Offline, read-only, capability-dropped execution with controller-owned
     // limits. The pinned image runs the LEAN launcher directly; never the CLI.
-    const mountData = `${input.scratchDir}:/Lean/Data:ro`
-    const mountResults = `${input.resultsDir}:/Results`
+    const launcher = buildLeanLauncherConfig({
+      profile: input.bundle.executionProfile,
+      assetFamily: input.dataBundle.assetFamily,
+      startDate: input.window.start,
+      endDate: input.window.end,
+      cash: 10000,
+      algorithmTypeName: "Main",
+      algorithmLanguage: input.bundle.profile.profileId === "lean_csharp" ? "CSharp" : "Python",
+      algorithmLocation: input.bundle.profile.profileId === "lean_csharp" ? "Algorithm.dll" : "main.py",
+      dataFolder: "/Lean/Data",
+      resultsFolder: "/Results",
+      seed: input.seed,
+      dataFeedWorkers: input.bundle.executionProfile.dataFeedWorkers,
+    })
+    await fs.writeFile(`${input.scratchDir}/lean-config.json`, launcher.json, "utf8")
     const cmd = [
       "docker",
       "run",
@@ -119,11 +144,13 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--cpus",
       "2",
       "--mount",
-      `type=bind,source=${mountData}`,
+      `type=bind,source=${input.scratchDir},target=/Lean/Data,readonly`,
       "--mount",
-      `type=bind,source=${mountResults}`,
+      `type=bind,source=${input.resultsDir},target=/Results`,
       "--mount",
       "type=tmpfs,destination=/tmp",
+      "--mount",
+      `type=bind,source=${input.scratchDir}/lean-config.json,target=/Lean/Launcher/bin/Debug/config.json,readonly`,
       "--env",
       `FINNY_SEED=${input.seed}`,
       "--env",
@@ -131,8 +158,6 @@ export class LeanAdapter implements LeanAdapterV1 {
       LEAN_PINNED_IMAGE_DIGEST,
       "dotnet",
       "QuantConnect.Lean.Launcher.dll",
-      "--config",
-      "/Lean/Launcher/bin/Debug/config.json",
     ]
 
     const result = await Process.run(cmd, {
@@ -149,8 +174,25 @@ export class LeanAdapter implements LeanAdapterV1 {
     // Artifact parsing is performed by the canonical result mapper; the
     // adapter only asserts the expected files exist.
     try {
-      const { readFile } = await import("node:fs/promises")
-      const summary = await readFile(`${input.resultsDir}/summary.json`, "utf8").catch(() => "{}")
+      const summaryCandidates = ["summary.json", "Main-summary.json"]
+      let summaryPath = ""
+      let summary = "{}"
+      for (const candidate of summaryCandidates) {
+        try {
+          summary = await fs.readFile(`${input.resultsDir}/${candidate}`, "utf8")
+          summaryPath = candidate
+          break
+        } catch {}
+      }
+      const resultCandidates = ["result.json", "Main.json"]
+      let resultPath = ""
+      for (const candidate of resultCandidates) {
+        try {
+          await fs.access(`${input.resultsDir}/${candidate}`)
+          resultPath = candidate
+          break
+        } catch {}
+      }
       return {
         ok: true,
         artifacts: {
@@ -161,8 +203,8 @@ export class LeanAdapter implements LeanAdapterV1 {
           rejections: [],
           equityCurve: [],
           rawStatistics: JSON.parse(summary || "{}"),
-          leanResultPath: `${input.resultsDir}/result.json`,
-          leanSummaryPath: `${input.resultsDir}/summary.json`,
+          leanResultPath: resultPath ? `${input.resultsDir}/${resultPath}` : "",
+          leanSummaryPath: summaryPath ? `${input.resultsDir}/${summaryPath}` : "",
         },
         container: {
           imageDigest: LEAN_PINNED_IMAGE_DIGEST,

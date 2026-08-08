@@ -123,6 +123,8 @@ export interface CompileExperimentPlanV2Input {
   qualificationPolicy: QualificationPolicyV1
   validationFraction?: number
   confirmatoryFraction?: number
+  /** Optional derived phase windows; computed deterministically by the caller. */
+  windows?: ExperimentPlanV2["windows"]
 }
 
 export class ExperimentPlanV2CompileError extends Error {
@@ -193,12 +195,13 @@ export function compileExperimentPlanV2(input: CompileExperimentPlanV2Input): Ex
     qualificationPolicyId: input.qualificationPolicy.policyId,
     qualificationPolicyHash: input.qualificationPolicy.policyHash,
     sealedHoldoutPolicy: "single_approved_event",
-    windows: {
-      warmup: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-      exploratory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-      validation: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-      confirmatory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-    },
+    windows:
+      input.windows ?? {
+        warmup: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+        exploratory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+        validation: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+        confirmatory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+      },
   }
   const hash = planHash(draft)
   return { ...draft, planId: `plan-${hash.slice(0, 24)}`, planHash: hash }
