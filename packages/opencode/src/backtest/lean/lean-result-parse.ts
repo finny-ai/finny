@@ -8,6 +8,7 @@ export interface LeanOrderRecord {
   symbol: string
   type: string
   status: string
+  direction: string
   quantity: number
   price: number | null
   tag: string
@@ -34,34 +35,69 @@ export interface LeanParsedResult {
   raw: unknown
 }
 
+// OrderStatus enum values in the result packet.
+const ORDER_STATUS = {
+  New: 0,
+  Submitted: 1,
+  PartiallyFilled: 2,
+  Filled: 3,
+  Canceled: 4,
+  None: 5,
+  Invalid: 6,
+  CancelPending: 7,
+  UpdateSubmitted: 8,
+} as const
+
 export function parseLeanResultJson(input: { text: string; summaryText?: string }): LeanParsedResult {
   const raw = JSON.parse(input.text) as Record<string, any>
   const ordersMap = (raw?.orders ?? {}) as Record<string, any>
   const events = (raw?.orderEvents ?? []) as Array<Record<string, any>>
   const orders: LeanOrderRecord[] = []
   const rejections: LeanOrderRecord[] = []
+  const filledOrders: LeanOrderRecord[] = []
 
   for (const [id, order] of Object.entries(ordersMap)) {
     const symbol = order?.symbol?.value ?? order?.symbol?.Value ?? String(order?.symbol ?? "")
-    const status = String(order?.status ?? "Unknown")
+    const statusCode = Number(order?.status ?? ORDER_STATUS.None)
+    const direction = Number(order?.direction ?? 0)
+    const status = String(statusCode)
     const record: LeanOrderRecord = {
       orderId: String(order?.orderId ?? id),
       symbol,
       type: String(order?.type ?? "Unknown"),
       status,
+      direction: direction === 1 ? "Sell" : "Buy",
       quantity: Number(order?.quantity ?? 0),
       price: order?.price === undefined || order?.price === null ? null : Number(order.price),
       tag: String(order?.tag ?? ""),
       time: String(order?.time ?? ""),
     }
-    if (status.toLowerCase().includes("invalid") || status.toLowerCase().includes("cancel")) {
+    if (statusCode === ORDER_STATUS.Invalid || statusCode === ORDER_STATUS.Canceled || statusCode === ORDER_STATUS.CancelPending) {
       rejections.push(record)
     } else {
       orders.push(record)
+      if (statusCode === ORDER_STATUS.Filled || statusCode === ORDER_STATUS.PartiallyFilled) {
+        filledOrders.push(record)
+      }
     }
   }
 
   const fills: LeanFillRecord[] = []
+  for (const order of filledOrders) {
+    const quantity = Math.abs(order.quantity)
+    const price = order.price
+    if (quantity <= 0 || price === null || price <= 0) continue
+    fills.push({
+      orderId: order.orderId,
+      symbol: order.symbol,
+      direction: order.direction,
+      quantity,
+      price,
+      fee: 0,
+      time: order.time,
+      status: "Filled",
+    })
+  }
   for (const event of events) {
     const status = String(event?.status ?? "")
     if (!/filled/i.test(status)) continue
@@ -83,7 +119,10 @@ export function parseLeanResultJson(input: { text: string; summaryText?: string 
   }
 
   const equityCurve: Array<{ timestamp: string; equity: number }> = []
-  const equitySeries = raw?.charts?.Equity?.series?.Equity?.values ?? []
+  const equitySeries =
+    raw?.charts?.["Strategy Equity"]?.series?.Equity?.values ??
+    raw?.charts?.Equity?.series?.Equity?.values ??
+    []
   for (const point of equitySeries as Array<{ x: number; y: number }>) {
     const x = Number(point?.x)
     const y = Number(point?.y)
