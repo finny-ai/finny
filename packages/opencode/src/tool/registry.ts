@@ -25,6 +25,7 @@ import { AlgorithmVersionsTool } from "./algorithm-versions"
 import { AlgorithmExportTool } from "./algorithm-export"
 import { BrokerageSwitchTool } from "./brokerage-switch"
 import { WorkspacePrepareTool } from "./workspace-prepare"
+import { WorkspaceEditTool } from "./workspace-edit"
 import { BacktestTool } from "./backtest"
 import { QualifyCandidateTool } from "./qualify-candidate"
 import { BacktestHistoryTool } from "./backtest-history"
@@ -159,6 +160,7 @@ export const layer = Layer.effect(
     const algorithmExport = yield* AlgorithmExportTool
     const brokerageSwitch = yield* BrokerageSwitchTool
     const workspacePrepare = yield* WorkspacePrepareTool
+    const workspaceEdit = yield* WorkspaceEditTool
     const backtest = yield* BacktestTool
     const qualifyCandidate = yield* QualifyCandidateTool
     const backtestHistory = yield* BacktestHistoryTool
@@ -309,6 +311,7 @@ export const layer = Layer.effect(
           algorithmExport: Tool.init(algorithmExport),
           brokerageSwitch: Tool.init(brokerageSwitch),
           workspacePrepare: Tool.init(workspacePrepare),
+          workspaceEdit: Tool.init(workspaceEdit),
           backtest: Tool.init(backtest),
           qualifyCandidate: Tool.init(qualifyCandidate),
           backtestHistory: Tool.init(backtestHistory),
@@ -363,6 +366,7 @@ export const layer = Layer.effect(
             tool.algorithmExport,
             tool.brokerageSwitch,
             tool.workspacePrepare,
+            tool.workspaceEdit,
             tool.backtest,
             tool.qualifyCandidate,
             tool.backtestHistory,
