@@ -153,7 +153,7 @@ export function configureTelemetryIdentity(env: Record<string, string>): void {
  * Absent from the parent, the child sees them disabled and fails closed.
  */
 export function configureLeanExecution(env: Record<string, string>): void {
-  for (const key of ["FINNY_LEAN_ENABLED", "FINNY_LEAN_ADAPTER_CERT", "DOCKER_HOST"] as const) {
+  for (const key of ["FINNY_LEAN_ENABLED", "FINNY_LEAN_ADAPTER_CERT", "DOCKER_HOST", "USER", "LOGNAME"] as const) {
     const value = process.env[key]
     if (value) env[key] = value
   }
