@@ -14,6 +14,36 @@ export const StrategyParams = z.object({
   required_history_bars: z.number().int().nonnegative().optional(),
   equity_usd: z.number().positive().optional(),
   brokerage: z.enum(BROKER_KINDS).optional(),
+  runtime: z
+    .object({
+      profile: z
+        .object({
+          schema: z.literal("finny.runtime_profile"),
+          version: z.literal(1),
+          profileId: z.enum(["finny_python", "lean_python", "lean_csharp"]),
+          profileHash: z.string().regex(/^[a-f0-9]{64}$/i),
+        })
+        .optional(),
+      source: z
+        .object({
+          schema: z.literal("finny.strategy_source"),
+          version: z.literal(1),
+          profileId: z.enum(["lean_python", "lean_csharp"]),
+          files: z
+            .array(
+              z.object({
+                path: z.string(),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+                bytes: z.number().int().nonnegative(),
+              }),
+            )
+            .min(1),
+          sourceTreeHash: z.string().regex(/^[a-f0-9]{64}$/i),
+        })
+        .optional(),
+    })
+    .passthrough()
+    .optional(),
   execution: z
     .object({
       max_leverage: z.number().positive().optional(),
@@ -57,6 +87,7 @@ const EXECUTION_KEYS = new Set([
   "required_history_bars",
   "equity_usd",
   "brokerage",
+  "runtime",
   "execution",
   "asset_spec",
   "backtest",

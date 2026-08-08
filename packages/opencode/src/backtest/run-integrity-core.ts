@@ -67,6 +67,21 @@ export interface RunIdentityV1 {
     end: string
     interval: string
   }
+  /**
+   * Additive LEAN runtime binding. Absent on engine_v2 runs so legacy identity
+   * hashes remain byte-identical. Present only on certified LEAN executions.
+   */
+  runtimeIdentity?: {
+    profileId: "lean_python" | "lean_csharp"
+    profileHash: Sha256
+    sourceTreeHash: Sha256
+    adapterHash: Sha256
+    executionProfileHash: Sha256
+    imageDigest: string
+    leanCommit: string
+    leanConfigHash: Sha256
+    architecture: "linux/amd64" | "linux/arm64"
+  }
 }
 
 export type RunIdentityInputV1 = Omit<RunIdentityV1, "schema" | "version">

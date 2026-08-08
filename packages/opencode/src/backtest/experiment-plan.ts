@@ -58,6 +58,178 @@ export interface ExperimentWindowV1 {
   lastSessionId: string
 }
 
+/** Engine-neutral per-symbol schedule binding used by ExperimentPlanV2. */
+export interface PlanSymbolBindingV2 {
+  canonicalSymbol: string
+  assetClass: "equity" | "crypto_spot"
+  datasetEvidenceId: string
+  datasetHash: string
+  manifestHash: string
+  scheduleHash: string
+  actualStart: string
+  actualEnd: string
+}
+
+/**
+ * V2 plan for a LEAN runtime. Binds the exact runtime, strategy source tree,
+ * adapter, execution profile, container image, and per-symbol evidence so a
+ * plan can never be replayed against a different engine or data set.
+ */
+export interface ExperimentPlanV2 {
+  schema: typeof EXPERIMENT_PLAN_SCHEMA
+  version: 2
+  planId: string
+  planHash: string
+  request: ExperimentPlanRequestV1
+  candidate: ExperimentPlanCandidateV1
+  runtime: {
+    profileId: "lean_python" | "lean_csharp"
+    profileHash: string
+    sourceTreeHash: string
+    adapterHash: string
+    executionProfileHash: string
+    imageDigest: string
+    leanCommit: string
+    leanConfigHash: string
+  }
+  datasets: PlanSymbolBindingV2[]
+  datasetCompositeHash: string
+  interval: string
+  warmupBars: number
+  declaredSearchBudget: number
+  orderPolicyVersion: 1
+  calendarPolicyVersion: string
+  canonicalMetricsVersion: 1
+  qualificationPolicyId: string
+  qualificationPolicyHash: string
+  sealedHoldoutPolicy: "single_approved_event"
+  windows: {
+    warmup: ExperimentWindowV1
+    exploratory: ExperimentWindowV1
+    validation: ExperimentWindowV1
+    confirmatory: ExperimentWindowV1
+  }
+}
+
+export interface CompileExperimentPlanV2Input {
+  request: ExperimentPlanRequestV1
+  candidate: ExperimentPlanCandidateV1
+  runtime: ExperimentPlanV2["runtime"]
+  datasets: PlanSymbolBindingV2[]
+  interval: string
+  warmupBars: number
+  declaredSearchBudget: number
+  calendarPolicyVersion: string
+  qualificationPolicy: QualificationPolicyV1
+  validationFraction?: number
+  confirmatoryFraction?: number
+}
+
+export class ExperimentPlanV2CompileError extends Error {
+  constructor(
+    readonly code: "invalid_input" | "unsupported_runtime" | "empty_universe" | "mixed_asset_classes" | "insufficient_bars",
+    message: string,
+  ) {
+    super(message)
+  }
+}
+
+export function planDatasetCompositeHash(datasets: readonly PlanSymbolBindingV2[]): string {
+  return crypto
+    .createHash("sha256")
+    .update(
+      stablePlanJson(
+        datasets.map((d) => ({ symbol: d.canonicalSymbol, dataset: d.datasetHash, manifest: d.manifestHash })),
+      ),
+    )
+    .digest("hex")
+}
+
+/**
+ * Compile and verify a V2 plan. Mirrors the V1 invariant style: every hash is
+ * recomputed from the canonical inputs so stored plans stay self-verifying.
+ * Window placement is derived by the qualification runtime from the
+ * authoritative per-symbol schedules and injected before persistence.
+ */
+export function compileExperimentPlanV2(input: CompileExperimentPlanV2Input): ExperimentPlanV2 {
+  if (input.runtime.profileId !== "lean_python" && input.runtime.profileId !== "lean_csharp") {
+    throw new ExperimentPlanV2CompileError(
+      "unsupported_runtime",
+      `runtime profile ${input.runtime.profileId} is not a LEAN runtime`,
+    )
+  }
+  if (input.datasets.length === 0) {
+    throw new ExperimentPlanV2CompileError("empty_universe", "a LEAN plan requires at least one strict dataset binding")
+  }
+  if (input.datasets.length > 20) {
+    throw new ExperimentPlanV2CompileError(
+      "invalid_input",
+      `LEAN v1 universes are fixed at up to 20 symbols; received ${input.datasets.length}`,
+    )
+  }
+  const firstClass = input.datasets[0]!.assetClass
+  if (input.datasets.some((d) => d.assetClass !== firstClass)) {
+    throw new ExperimentPlanV2CompileError(
+      "mixed_asset_classes",
+      "LEAN v1 plans may not mix equity and crypto portfolios",
+    )
+  }
+
+  const datasetCompositeHash = planDatasetCompositeHash(input.datasets)
+  const draft: Omit<ExperimentPlanV2, "planId" | "planHash"> = {
+    schema: EXPERIMENT_PLAN_SCHEMA,
+    version: 2,
+    request: input.request,
+    candidate: input.candidate,
+    runtime: input.runtime,
+    datasets: input.datasets,
+    datasetCompositeHash,
+    interval: input.interval,
+    warmupBars: input.warmupBars,
+    declaredSearchBudget: input.declaredSearchBudget,
+    orderPolicyVersion: 1,
+    calendarPolicyVersion: input.calendarPolicyVersion,
+    canonicalMetricsVersion: 1,
+    qualificationPolicyId: input.qualificationPolicy.policyId,
+    qualificationPolicyHash: input.qualificationPolicy.policyHash,
+    sealedHoldoutPolicy: "single_approved_event",
+    windows: {
+      warmup: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+      exploratory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+      validation: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+      confirmatory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
+    },
+  }
+  const hash = planHash(draft)
+  return { ...draft, planId: `plan-${hash.slice(0, 24)}`, planHash: hash }
+}
+
+export function verifyExperimentPlanV2(plan: ExperimentPlanV2): string[] {
+  const errors: string[] = []
+  if (plan.schema !== EXPERIMENT_PLAN_SCHEMA || plan.version !== 2) return ["unsupported experiment plan schema"]
+  if (plan.datasets.length === 0 || plan.datasets.length > 20) errors.push("universe must contain 1-20 symbols")
+  const firstClass = plan.datasets[0]?.assetClass
+  if (firstClass && plan.datasets.some((d) => d.assetClass !== firstClass)) errors.push("mixed asset classes are unsupported")
+  if (plan.runtime.profileId !== "lean_python" && plan.runtime.profileId !== "lean_csharp") {
+    errors.push("runtime profile must be lean_python or lean_csharp")
+  }
+  if (!/^[a-f0-9]{64}$/i.test(plan.datasetCompositeHash)) errors.push("dataset composite hash is invalid")
+  if (!/^[a-f0-9]{64}$/i.test(plan.runtime.profileHash)) errors.push("runtime profile hash is invalid")
+  if (!/^[a-f0-9]{64}$/i.test(plan.runtime.sourceTreeHash)) errors.push("source tree hash is invalid")
+  if (!/^[a-f0-9]{64}$/i.test(plan.runtime.adapterHash)) errors.push("adapter hash is invalid")
+  if (!/^[a-f0-9]{64}$/i.test(plan.runtime.executionProfileHash)) errors.push("execution profile hash is invalid")
+  if (!/^[a-f0-9]{64}$/i.test(plan.runtime.leanConfigHash)) errors.push("lean config hash is invalid")
+  if (!/^sha256:[a-f0-9]{64}$/i.test(plan.runtime.imageDigest)) errors.push("image digest must be a pinned sha256 digest")
+  if (!/^[0-9a-f]{40}$/i.test(plan.runtime.leanCommit)) errors.push("lean commit must be a full 40-char SHA")
+  if (plan.orderPolicyVersion !== 1) errors.push("order policy version must be 1")
+  if (plan.canonicalMetricsVersion !== 1) errors.push("canonical metrics version must be 1")
+  if (plan.warmupBars < 0 || !Number.isInteger(plan.warmupBars)) errors.push("warmupBars must be a non-negative integer")
+  if (plan.declaredSearchBudget <= 0 || !Number.isInteger(plan.declaredSearchBudget)) {
+    errors.push("declaredSearchBudget must be a positive integer")
+  }
+  return errors
+}
+
 export interface ExperimentPlanV1 {
   schema: typeof EXPERIMENT_PLAN_SCHEMA
   version: 1

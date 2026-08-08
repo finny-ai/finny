@@ -44,6 +44,9 @@ import { beginTrial, completeTrial, ExperimentContractError, type ExperimentInpu
 import { qualificationInputForResearch } from "../backtest/qualification-policy"
 import { readRequestSpecForSession } from "@/agent/request-spec"
 import { normalizeInterval } from "@/agent/request-identity"
+import { LeanAdapter } from "@/backtest/lean/adapter"
+import { isLeanProfile } from "@/backtest/lean/contracts"
+import { runtimeForCandidate, validateLeanSourceManifest } from "@/backtest/lean/select"
 
 export function backtestAttemptFingerprint(input: {
   params: unknown
@@ -537,6 +540,36 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
             title: "Backtest failed",
             output: `Algorithm "${params.algorithmName}" not found. Use finny_algorithm_list to see available algorithms.`,
             metadata: { algorithmName: undefined, params: undefined, results: undefined },
+          }
+        }
+        const candidateRuntime = runtimeForCandidate(algo)
+        if (isLeanProfile(candidateRuntime.profile)) {
+          const sourceIssues = validateLeanSourceManifest(candidateRuntime.source, candidateRuntime.profile.profileId)
+          if (sourceIssues.length > 0) {
+            return {
+              title: "Backtest blocked — LEAN source manifest invalid",
+              output: `BLOCKED: ${sourceIssues.join("; ")}. Repair the strategy source manifest before running a LEAN backtest.`,
+              metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
+            }
+          }
+          const probe = new LeanAdapter().probeReady()
+          if (!probe.ready) {
+            return {
+              title: "Backtest blocked — LEAN runtime unavailable",
+              output: [
+                `BLOCKED: algorithm "${params.algorithmName}" uses runtime ${candidateRuntime.profile.profileId}, but the LEAN execution backend is not ready.`,
+                ...probe.reasons.map((reason) => `  - ${reason}`),
+                "No engine fallback occurs: LEAN runs fail closed with a typed blocker until the pinned engine image and adapter certificate are active.",
+              ].join("\n"),
+              metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
+            }
+          }
+          return {
+            title: "Backtest blocked — LEAN qualification wiring pending",
+            output:
+              `BLOCKED: the LEAN adapter certificate and pinned image are active, but Crucible qualification wiring for runtime ` +
+              `${candidateRuntime.profile.profileId} is not complete. A V2 experiment plan with per-symbol strict evidence is required.`,
+            metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
           }
         }
         const fingerprint = backtestAttemptFingerprint({
