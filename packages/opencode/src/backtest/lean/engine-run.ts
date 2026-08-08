@@ -76,13 +76,13 @@ export async function runLeanEngineInRunner(input: {
 
   let timestamps: string[]
   try {
-    timestamps = await csvTimestamps(input.csvPath)
+    timestamps = await csvTimestamps(path.join(input.tmpDir, input.csvPath))
   } catch (error) {
     return { ok: false, kind: "data_bundle_invalid", error: String(error) }
   }
   let rows
   try {
-    rows = parseFinnyOhlcv(await fs.readFile(input.csvPath, "utf8"))
+    rows = parseFinnyOhlcv(await fs.readFile(path.join(input.tmpDir, input.csvPath), "utf8"))
     const dataDir = path.join(scratchDir, "data")
     await writeLeanMarketData({
       rows,
