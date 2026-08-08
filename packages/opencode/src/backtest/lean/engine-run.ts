@@ -53,6 +53,7 @@ export async function runLeanEngineInRunner(input: {
   const assetClass = String(input.config.asset_class ?? "equity").toLowerCase().includes("crypto")
     ? "crypto_spot"
     : "equity"
+  const symbol = String(input.config.symbol ?? "SPY")
   const sourceDir = path.join(input.tmpDir, "lean-source")
   const resultsDir = path.join(input.tmpDir, "lean-results")
   const scratchDir = path.join(input.tmpDir, "lean-scratch")
@@ -94,7 +95,6 @@ export async function runLeanEngineInRunner(input: {
   } catch (error) {
     return { ok: false, kind: "data_bundle_invalid", error: `LEAN data materialization failed: ${String(error)}` }
   }
-  const symbol = String(input.config.symbol ?? "SPY")
   const schedule: LeanBarScheduleV1 = {
     symbol,
     assetClass,

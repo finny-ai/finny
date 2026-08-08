@@ -8,9 +8,13 @@ export const LEAN_BUNDLE_VERSION = 1
 
 const INTERVAL_RESOLUTION: Record<string, "Minute" | "Hour" | "Daily"> = {
   "1min": "Minute",
+  "1m": "Minute",
   "5min": "Minute",
+  "5m": "Minute",
   "15min": "Minute",
+  "15m": "Minute",
   "30min": "Minute",
+  "30m": "Minute",
   "1h": "Hour",
   "4h": "Hour",
   "1d": "Daily",
