@@ -564,13 +564,6 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
               metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
             }
           }
-          return {
-            title: "Backtest blocked — LEAN qualification wiring pending",
-            output:
-              `BLOCKED: the LEAN adapter certificate and pinned image are active, but Crucible qualification wiring for runtime ` +
-              `${candidateRuntime.profile.profileId} is not complete. A V2 experiment plan with per-symbol strict evidence is required.`,
-            metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
-          }
         }
         const fingerprint = backtestAttemptFingerprint({
           params: { ...params, startDate: boundStartDate, endDate: boundEndDate },
