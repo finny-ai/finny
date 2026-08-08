@@ -13,9 +13,32 @@ import fs from "node:fs/promises"
 
 const ADAPTER_CERT_ENV = "FINNY_LEAN_ADAPTER_CERT"
 const ADAPTER_CERT_VALUE = "finny-lean-adapter-cert-v1"
-const DOCKER_ENV = {
+const DOCKER_BASE_ENV = {
   PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
   HOME: process.env.HOME ?? "/tmp",
+}
+
+let dockerHostPromise: Promise<string | undefined> | undefined
+async function resolveDockerHost(): Promise<string | undefined> {
+  dockerHostPromise ??= (async () => {
+    const probe = await Process.run(
+      ["docker", "context", "ls", "--format", "{{.Name}}|{{.Current}}|{{.DockerEndpoint}}"],
+      { nothrow: true, timeout: 15_000, env: DOCKER_BASE_ENV, inheritEnv: false },
+    )
+    if (probe.code !== 0) return undefined
+    const current = probe.stdout
+      .toString()
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.split("|")[1] === "true")
+    return current?.split("|")[2]
+  })()
+  return dockerHostPromise
+}
+
+async function dockerEnv(): Promise<Record<string, string>> {
+  const host = await resolveDockerHost()
+  return host ? { ...DOCKER_BASE_ENV, DOCKER_HOST: host } : DOCKER_BASE_ENV
 }
 
 function truthy(value: string | undefined): boolean {
@@ -65,10 +88,11 @@ export class LeanAdapter implements LeanAdapterV1 {
       return failure("image_digest_mismatch", `bundle LEAN commit does not match the pinned commit`)
     }
 
+    const env = await dockerEnv()
     const docker = await Process.run(["docker", "version", "--format", "{{.Server.Version}}"], {
       nothrow: true,
       timeout: 15_000,
-      env: DOCKER_ENV,
+      env,
       inheritEnv: false,
     })
     if (docker.code !== 0) {
@@ -76,7 +100,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     }
     const inspect = await Process.run(
       ["docker", "image", "inspect", LEAN_PINNED_IMAGE_DIGEST, "--format", "{{json .RepoDigests}}"],
-      { nothrow: true, timeout: 15_000, env: DOCKER_ENV, inheritEnv: false },
+      { nothrow: true, timeout: 15_000, env, inheritEnv: false },
     )
     if (inspect.code !== 0) {
       return failure(
@@ -160,7 +184,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     const result = await Process.run(cmd, {
       nothrow: true,
       timeout: 20 * 60_000,
-      env: DOCKER_ENV,
+      env,
       inheritEnv: false,
     })
     if (result.code !== 0) {
