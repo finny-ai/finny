@@ -5,7 +5,9 @@ import path from "node:path"
 import {
   EXECUTION_RISK_GATEWAY_PY,
   accountScopeHash,
+  createLiveActivationReceipt,
   executionLedgerPath,
+  verifyLiveActivationReceipt,
   verifyPaperActivationReceipt,
 } from "../../src/live/execution-risk-gateway"
 import crypto from "node:crypto"
@@ -27,6 +29,48 @@ afterAll(async () => {
 })
 
 describe("paper execution risk gateway", () => {
+  test("binds a short-lived live receipt to the complete immutable Robinhood identity", () => {
+    const binding = {
+      runId: "strict-run",
+      runIdentityHash: "a".repeat(64),
+      algorithmId: "algo",
+      algorithmVersion: 3,
+      strategyHash: "b".repeat(64),
+      riskPolicyHash: "c".repeat(64),
+      executionPolicyHash: "d".repeat(64),
+      effectiveConfigHash: "e".repeat(64),
+      symbol: "AAPL",
+      interval: "1min",
+      brokerKind: "robinhood" as const,
+      brokerMode: "live" as const,
+      accountScopeHash: "f".repeat(64),
+    }
+    const now = new Date("2026-08-03T12:00:00Z")
+    const receipt = createLiveActivationReceipt({
+      challengeId: "challenge-1",
+      binding,
+      secret: "daemon-process-secret",
+      now,
+    })
+    expect(verifyLiveActivationReceipt({ receipt, binding, secret: "daemon-process-secret", now })).toEqual([])
+    expect(
+      verifyLiveActivationReceipt({
+        receipt,
+        binding: { ...binding, symbol: "MSFT" },
+        secret: "daemon-process-secret",
+        now,
+      }),
+    ).toContain("live activation binding mismatch")
+    expect(
+      verifyLiveActivationReceipt({
+        receipt,
+        binding,
+        secret: "daemon-process-secret",
+        now: new Date(receipt.expiresAt),
+      }),
+    ).toContain("live activation receipt is expired or invalid")
+  })
+
   test("requires an HMAC-signed activation receipt bound to the exact strict run", () => {
     const binding = {
       runId: "strict-run",
@@ -63,9 +107,9 @@ describe("paper execution risk gateway", () => {
       signature: crypto.createHmac("sha256", secret).update(receiptHash).digest("hex"),
     }
     expect(verifyPaperActivationReceipt({ receipt, binding, secret })).toEqual([])
-    expect(verifyPaperActivationReceipt({ receipt: { ...receipt, strategyHash: "0".repeat(64) }, binding, secret })).toContain(
-      "paper activation receipt hash mismatch",
-    )
+    expect(
+      verifyPaperActivationReceipt({ receipt: { ...receipt, strategyHash: "0".repeat(64) }, binding, secret }),
+    ).toContain("paper activation receipt hash mismatch")
     expect(verifyPaperActivationReceipt({ receipt, binding, secret: "wrong" })).toContain(
       "paper activation receipt signature mismatch",
     )
@@ -150,6 +194,104 @@ describe("paper execution risk gateway", () => {
     expect(stderr).toBe("")
     expect(code).toBe(0)
     expect(stdout.trim()).toBe(sha256Text(stableStringify(policy)))
+  })
+
+  test("Robinhood live gateway refuses an intent that would create a short position", async () => {
+    const policy = {
+      schema: "finny.execution_policy",
+      version: 1,
+      riskContract: {
+        sizing_stop_distance_pct: 2,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 5 },
+        max_positions: 2,
+      },
+      limits: {
+        maxGrossExposurePct: 100,
+        maxNetExposurePct: 100,
+        maxSymbolExposurePct: 50,
+        maxAccountSnapshotAgeMs: 60_000,
+        maxMarketDataAgeMs: 60_000,
+        flattenOnStop: false,
+      },
+      capabilities: { marketOrders: true, fractionalQty: true, cancelAll: true, positionSnapshot: true },
+    }
+    const binding = {
+      runId: "run",
+      runIdentityHash: "a".repeat(64),
+      algorithmId: "algo",
+      algorithmVersion: 1,
+      strategyHash: "b".repeat(64),
+      riskPolicyHash: "c".repeat(64),
+      executionPolicyHash: sha256Text(stableStringify(policy)),
+      effectiveConfigHash: "d".repeat(64),
+      symbol: "AAPL",
+      interval: "1min",
+      brokerKind: "robinhood" as const,
+      brokerMode: "live" as const,
+      accountScopeHash: "e".repeat(64),
+    }
+    const activationKey = "worker-scoped-activation-key"
+    const receipt = createLiveActivationReceipt({
+      challengeId: "challenge",
+      binding,
+      secret: activationKey,
+    })
+    const contract = {
+      schema: "finny.execution_contract",
+      version: 3,
+      binding,
+      policy,
+      ledgerPath: path.join(temp, `long-only-${crypto.randomUUID()}.jsonl`),
+      submissionMode: "live",
+      activationReceipt: receipt,
+    }
+    const script = String.raw`
+import json,sys
+from datetime import datetime, timezone, timedelta
+from execution_risk_gateway import ExecutionRiskGateway
+class Broker:
+    def execution_snapshot(self, symbol):
+        return {"cash": 10000, "equity": 10000, "positions": {}}
+contract=json.loads(sys.argv[1])
+gateway=ExecutionRiskGateway(contract, Broker(), lambda event: None, sys.argv[2])
+assert gateway.reconcile_start()
+now=datetime.now(timezone.utc)
+bar={"bar_start":(now-timedelta(minutes=1)).isoformat(),"bar_end":now.isoformat(),"is_final":True,"session_id":"regular","source_timestamp":now.isoformat(),"open":100}
+assert gateway.begin_bar(bar)
+result=gateway.submit_intent("sell", "AAPL", qty=1, reason="must not short", features={})
+print(json.dumps(result.decision))
+`
+    const proc = Bun.spawn(["python3", "-c", script, JSON.stringify(contract), activationKey], {
+      cwd: temp,
+      env: { ...process.env, PYTHONPATH: temp },
+      stdout: "pipe",
+      stderr: "pipe",
+    })
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+    ])
+    expect(stderr).toBe("")
+    expect(code).toBe(0)
+    expect(JSON.parse(stdout)).toMatchObject({ accepted: false, reason_code: "long_only" })
+
+    const expired = { ...contract, activationReceipt: { ...receipt, expiresAt: "2026-01-01T00:00:00Z" } }
+    const rejectScript = String.raw`
+import json,sys
+from execution_risk_gateway import ExecutionRiskGateway
+class Broker: pass
+gateway=ExecutionRiskGateway(json.loads(sys.argv[1]), Broker(), lambda event: None, sys.argv[2])
+assert gateway.halted
+`
+    const rejected = Bun.spawn(["python3", "-c", rejectScript, JSON.stringify(expired), activationKey], {
+      cwd: temp,
+      env: { ...process.env, PYTHONPATH: temp },
+      stderr: "pipe",
+    })
+    expect(await rejected.exited).toBe(0)
+    expect(await new Response(rejected.stderr).text()).toBe("")
   })
 
   test("passes closed-bar, risk parity, idempotency, crash, timeout, and safe-stop corpus", async () => {

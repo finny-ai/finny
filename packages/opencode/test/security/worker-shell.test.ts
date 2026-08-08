@@ -2,11 +2,13 @@ import { describe, expect, test } from "bun:test"
 import {
   assertNoWorkerEnvironmentEnumeration,
   DATA_PROVIDER_CREDENTIALS,
+  MODEL_CHILD_SECRET_ENV_KEYS,
   WORKER_SHELL_POLICY_VERSION,
   dataCredentialKeysForAsset,
   listWorkerDataCredentialKeys,
   listWorkerRuntimeKeys,
   redactSensitiveOutput,
+  stripModelChildSecrets,
   workerRuntimeEnv,
   workerShellEnv,
 } from "../../src/security/worker-shell"
@@ -45,10 +47,44 @@ describe("worker shell environment policy", () => {
       workerRuntimeEnv({
         PATH: "/safe/bin",
         HOME: "/safe/home",
+        FINNY_ROBINHOOD_MCP_URL: "http://127.0.0.1:7777/private",
+        FINNY_SERVER_PASSWORD: "finny-password",
+        OPENCODE_SERVER_PASSWORD: "opencode-password",
         RHX_LIVE_CONFIRM_TOKEN: "must-not-leak",
         RH_CRYPTO_PRIVATE_KEY_B64: "must-not-leak-either",
       }),
     ).toEqual({ PATH: "/safe/bin", HOME: "/safe/home" })
+  })
+
+  test("scrubs runner broker and server credentials from every model child", () => {
+    const host = {
+      PATH: "/safe/bin",
+      FINNY_ROBINHOOD_MCP_URL: "http://127.0.0.1:7777/private",
+      FINNY_SERVER_PASSWORD: "finny-password",
+      OPENCODE_SERVER_PASSWORD: "opencode-password",
+      BENIGN_PRIMARY_VALUE: "kept-for-primary-agent",
+    }
+
+    expect(MODEL_CHILD_SECRET_ENV_KEYS).toEqual([
+      "FINNY_ROBINHOOD_MCP_URL",
+      "FINNY_SERVER_PASSWORD",
+      "OPENCODE_SERVER_PASSWORD",
+    ])
+    expect(stripModelChildSecrets({ ...host, finny_server_password: "case-variant" })).toEqual({
+      PATH: "/safe/bin",
+      BENIGN_PRIMARY_VALUE: "kept-for-primary-agent",
+    })
+
+    const primary = workerShellEnv({ agent: "build", env: host })
+    expect(primary.PATH).toBe("/safe/bin")
+    expect(primary.BENIGN_PRIMARY_VALUE).toBe("kept-for-primary-agent")
+    for (const key of MODEL_CHILD_SECRET_ENV_KEYS) expect(primary[key]).toBeUndefined()
+
+    for (const agent of workers) {
+      const worker = workerShellEnv({ agent, env: host })
+      expect(worker.PATH).toBe("/safe/bin")
+      for (const key of MODEL_CHILD_SECRET_ENV_KEYS) expect(worker[key]).toBeUndefined()
+    }
   })
 
   test("every Finny worker filters host and plugin secrets", () => {
@@ -62,6 +98,9 @@ describe("worker shell environment policy", () => {
           ANTHROPIC_API_KEY: "anthropic-canary",
           PLUGIN_INJECTED_SECRET: "plugin-canary-secret",
           FINNY_TELEMETRY_SECRET: "telemetry-canary-secret",
+          FINNY_ROBINHOOD_MCP_URL: "http://127.0.0.1:7777/private",
+          FINNY_SERVER_PASSWORD: "finny-password",
+          OPENCODE_SERVER_PASSWORD: "opencode-password",
           FINNY_HARNESS_MARKET_DATA_URL: "http://127.0.0.1:9/fixture",
           FINNY_HARNESS_MODE: "1",
         },
@@ -72,6 +111,9 @@ describe("worker shell environment policy", () => {
       expect(result.ANTHROPIC_API_KEY).toBeUndefined()
       expect(result.PLUGIN_INJECTED_SECRET).toBeUndefined()
       expect(result.FINNY_TELEMETRY_SECRET).toBeUndefined()
+      expect(result.FINNY_ROBINHOOD_MCP_URL).toBeUndefined()
+      expect(result.FINNY_SERVER_PASSWORD).toBeUndefined()
+      expect(result.OPENCODE_SERVER_PASSWORD).toBeUndefined()
       // Non-secret harness fixture plumbing must remain available (Data Agent curl).
       expect(result.FINNY_HARNESS_MARKET_DATA_URL).toBe("http://127.0.0.1:9/fixture")
       expect(result.FINNY_HARNESS_MODE).toBe("1")

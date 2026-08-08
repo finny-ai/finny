@@ -3,6 +3,7 @@ import fs from "fs"
 import os from "os"
 import { Process } from "../util/process"
 import { resolveAssetSpec } from "../backtest/asset-spec"
+import { stripModelChildSecrets } from "../security/worker-shell"
 
 declare const OPENCODE_VALIDATOR_SCRIPTS: Record<string, string> | undefined
 
@@ -97,23 +98,65 @@ export namespace Validate {
   }
 
   const FORBIDDEN_MODULES = [
-    "asyncio", "importlib", "io", "os", "pathlib", "pickle", "random", "requests",
-    "shutil", "socket", "statistics", "subprocess", "sys", "tempfile", "threading",
+    "asyncio",
+    "importlib",
+    "io",
+    "os",
+    "pathlib",
+    "pickle",
+    "random",
+    "requests",
+    "shutil",
+    "socket",
+    "statistics",
+    "subprocess",
+    "sys",
+    "tempfile",
+    "threading",
   ]
   const DANGEROUS_CALLS = ["exec(", "eval(", "__import__(", "compile(", "open("]
 
   // Config keys that are legitimately metadata (not expected to appear in strategy code).
   const CONFIG_META_KEYS = new Set([
     // Strategy-level metadata
-    "symbol", "interval", "required_history_bars", "risk", "starting_equity_usd",
+    "symbol",
+    "interval",
+    "required_history_bars",
+    "risk",
+    "starting_equity_usd",
     // Platform-level metadata (injected by runner / used by backtest harness, not by strategy code)
-    "asset_class", "asset_type", "asset_spec", "assetClass", "venue", "currency",
-    "calendar", "tickSize", "lotSize", "multiplier", "feeModel", "marginModel",
-    "dataProvider", "productionEligible", "blockingReason", "execution",
-    "max_leverage", "initial_margin_pct", "maintenance_margin_pct", "funding_rate_bps",
-    "funding_interval_hours", "spread_enabled", "maker_fee_bps", "taker_fee_bps", "commission_per_contract",
-    "slippage_bps", "participation_pct", "k_atr", "k_vol",
-    "start_date", "end_date", "duration",
+    "asset_class",
+    "asset_type",
+    "asset_spec",
+    "assetClass",
+    "venue",
+    "currency",
+    "calendar",
+    "tickSize",
+    "lotSize",
+    "multiplier",
+    "feeModel",
+    "marginModel",
+    "dataProvider",
+    "productionEligible",
+    "blockingReason",
+    "execution",
+    "max_leverage",
+    "initial_margin_pct",
+    "maintenance_margin_pct",
+    "funding_rate_bps",
+    "funding_interval_hours",
+    "spread_enabled",
+    "maker_fee_bps",
+    "taker_fee_bps",
+    "commission_per_contract",
+    "slippage_bps",
+    "participation_pct",
+    "k_atr",
+    "k_vol",
+    "start_date",
+    "end_date",
+    "duration",
     "max_risk_per_trade_pct",
     "_generated",
   ])
@@ -203,7 +246,11 @@ export namespace Validate {
     return { body: bodyLines.join("\n"), startLine: classStart + 1 }
   }
 
-  function extractMethodBody(classBody: string, methodName: string, classStartLine: number): { body: string; startLine: number } | null {
+  function extractMethodBody(
+    classBody: string,
+    methodName: string,
+    classStartLine: number,
+  ): { body: string; startLine: number } | null {
     const lines = classBody.split("\n")
     const methodPattern = new RegExp(`^\\s+def\\s+${methodName}\\s*\\(`)
     let methodStart = -1
@@ -243,10 +290,14 @@ export namespace Validate {
   ): Promise<Diagnostic[]> {
     let timeoutHandle: ReturnType<typeof setTimeout> | undefined
     try {
-      const proc = Process.spawn(
-        ["python3", scriptPath, ...extraArgs],
-        { stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: timeoutMs },
-      )
+      const proc = Process.spawn(["python3", scriptPath, ...extraArgs], {
+        env: stripModelChildSecrets(process.env),
+        inheritEnv: false,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: timeoutMs,
+      })
       proc.stdin!.write(code)
       proc.stdin!.end()
 
@@ -256,7 +307,9 @@ export namespace Validate {
       const timeout = new Promise<number>((resolve) => {
         timeoutHandle = setTimeout(() => {
           timedOut = true
-          try { proc.kill("SIGKILL") } catch {}
+          try {
+            proc.kill("SIGKILL")
+          } catch {}
           resolve(124)
         }, timeoutMs)
       })
@@ -275,37 +328,48 @@ export namespace Validate {
       })
 
       const exitCode = await Promise.race([proc.exited, timeout])
-      if (timeoutHandle) { clearTimeout(timeoutHandle); timeoutHandle = undefined }
+      if (timeoutHandle) {
+        clearTimeout(timeoutHandle)
+        timeoutHandle = undefined
+      }
       const [stdout, stderr] = await Promise.all([stdoutP, stderrP])
 
       if (exitCode !== 0) {
         const reason = timedOut ? `timed out after ${timeoutMs}ms` : `exited ${exitCode}`
         const detail = stderr.trim() ? `: ${stderr.trim().slice(0, 500)}` : ""
-        return [{
-          code: "VALIDATOR_RUNTIME_ERROR",
-          severity: "error",
-          message: `${path.basename(scriptPath)} ${reason}${detail}`,
-          fix: "Fix the validator runtime before trusting validation or backtests.",
-        }]
+        return [
+          {
+            code: "VALIDATOR_RUNTIME_ERROR",
+            severity: "error",
+            message: `${path.basename(scriptPath)} ${reason}${detail}`,
+            fix: "Fix the validator runtime before trusting validation or backtests.",
+          },
+        ]
       }
       const raw = stdout.trim()
       if (!raw) return []
       let parsed: unknown
-      try { parsed = JSON.parse(raw) } catch {
-        return [{
-          code: "VALIDATOR_RUNTIME_ERROR",
-          severity: "error",
-          message: `${path.basename(scriptPath)} produced non-JSON output`,
-          fix: "Fix the validator runtime before trusting validation or backtests.",
-        }]
+      try {
+        parsed = JSON.parse(raw)
+      } catch {
+        return [
+          {
+            code: "VALIDATOR_RUNTIME_ERROR",
+            severity: "error",
+            message: `${path.basename(scriptPath)} produced non-JSON output`,
+            fix: "Fix the validator runtime before trusting validation or backtests.",
+          },
+        ]
       }
       if (!Array.isArray(parsed)) {
-        return [{
-          code: "VALIDATOR_RUNTIME_ERROR",
-          severity: "error",
-          message: `${path.basename(scriptPath)} produced an invalid diagnostics payload`,
-          fix: "Fix the validator runtime before trusting validation or backtests.",
-        }]
+        return [
+          {
+            code: "VALIDATOR_RUNTIME_ERROR",
+            severity: "error",
+            message: `${path.basename(scriptPath)} produced an invalid diagnostics payload`,
+            fix: "Fix the validator runtime before trusting validation or backtests.",
+          },
+        ]
       }
 
       const diags: Diagnostic[] = []
@@ -326,12 +390,14 @@ export namespace Validate {
       }
       return diags
     } catch (e: any) {
-      return [{
-        code: "VALIDATOR_RUNTIME_ERROR",
-        severity: "error",
-        message: `${path.basename(scriptPath)} failed to run: ${e?.message ?? String(e)}`,
-        fix: "Fix the validator runtime before trusting validation or backtests.",
-      }]
+      return [
+        {
+          code: "VALIDATOR_RUNTIME_ERROR",
+          severity: "error",
+          message: `${path.basename(scriptPath)} failed to run: ${e?.message ?? String(e)}`,
+          fix: "Fix the validator runtime before trusting validation or backtests.",
+        },
+      ]
     } finally {
       if (timeoutHandle) clearTimeout(timeoutHandle)
     }
@@ -345,9 +411,10 @@ export namespace Validate {
     // The Python scripts are co-located.
     // Fall back to process.cwd() if import.meta.dir is not available (e.g. Jest).
     // @ts-ignore import.meta
-    const dir = typeof import.meta !== "undefined" && (import.meta as any).dir
-      ? (import.meta as any).dir
-      : path.join(process.cwd(), "packages/opencode/src/algorithm")
+    const dir =
+      typeof import.meta !== "undefined" && (import.meta as any).dir
+        ? (import.meta as any).dir
+        : path.join(process.cwd(), "packages/opencode/src/algorithm")
     return path.join(dir, name)
   }
 
@@ -391,10 +458,13 @@ export namespace Validate {
 
   async function checkSyntax(code: string): Promise<Diagnostic | null> {
     try {
-      const proc = Process.spawn(
-        ["python3", "-c", "import ast,sys; ast.parse(sys.stdin.read())"],
-        { stdin: "pipe", stdout: "pipe", stderr: "pipe" },
-      )
+      const proc = Process.spawn(["python3", "-c", "import ast,sys; ast.parse(sys.stdin.read())"], {
+        env: stripModelChildSecrets(process.env),
+        inheritEnv: false,
+        stdin: "pipe",
+        stdout: "pipe",
+        stderr: "pipe",
+      })
       proc.stdin!.write(code)
       proc.stdin!.end()
 
@@ -623,7 +693,11 @@ export namespace Validate {
   function parseConfig(config: Options["config"]): Record<string, unknown> | null {
     if (!config) return null
     if (typeof config === "string") {
-      try { return JSON.parse(config) as Record<string, unknown> } catch { return null }
+      try {
+        return JSON.parse(config) as Record<string, unknown>
+      } catch {
+        return null
+      }
     }
     return config as Record<string, unknown>
   }
@@ -729,11 +803,10 @@ export namespace Validate {
           diagnostics.push({
             code: "CONFIG_KEY_VALUE_MATCH",
             severity: "warning",
-            message: (
+            message:
               `Config key \`${key}\` is not referenced by name, but its value (${valueLiteral}) appears ` +
               "as a literal in the code. Rename the attribute to match the config key, or read the value " +
-              "from config at init time."
-            ),
+              "from config at init time.",
             fix: `Use \`self.${key}\` in __init__ (load from config) so the key is self-documenting.`,
           })
           continue
@@ -743,10 +816,9 @@ export namespace Validate {
       diagnostics.push({
         code: "CONFIG_KEY_UNUSED",
         severity: "warning",
-        message: (
+        message:
           `Config key \`${key}\` is declared but never referenced in the strategy code. ` +
-          `Either remove it from config.json or use it (e.g. self.${key} = config["${key}"]).`
-        ),
+          `Either remove it from config.json or use it (e.g. self.${key} = config["${key}"]).`,
         fix: `Reference \`${key}\` in the Strategy class, or drop the key from config.json.`,
       })
     }
@@ -765,10 +837,7 @@ export namespace Validate {
     const configErrors = checkConfig(normalized, options.config)
 
     const hardFailed =
-      syntaxError !== null ||
-      structureErrors.length > 0 ||
-      importErrors.length > 0 ||
-      callErrors.length > 0
+      syntaxError !== null || structureErrors.length > 0 || importErrors.length > 0 || callErrors.length > 0
 
     let astDiagnostics: Diagnostic[] = []
     let smokeDiagnostics: Diagnostic[] = []
@@ -797,11 +866,12 @@ export namespace Validate {
     const warnings = allDiagnostics.filter((d) => d.severity === "warning")
     const blocking = allDiagnostics.filter((d) => diagnosticDisposition(d) === "blocking")
     const protectiveStopMode = extractProtectiveStopMode(options.config)
-    const protectiveStopAstVerified = protectiveStopMode === "strategy_next_open"
-      ? !errors.some((diagnostic) => diagnostic.code === "PROTECTIVE_STOP_CAPABILITY_MISSING")
-      : protectiveStopMode === "engine_stop"
-        ? false
-        : null
+    const protectiveStopAstVerified =
+      protectiveStopMode === "strategy_next_open"
+        ? !errors.some((diagnostic) => diagnostic.code === "PROTECTIVE_STOP_CAPABILITY_MISSING")
+        : protectiveStopMode === "engine_stop"
+          ? false
+          : null
 
     return {
       valid: blocking.length === 0,
@@ -841,7 +911,7 @@ export namespace Validate {
    * backtest can use this to decide whether to prepend a [!] RISK block.
    */
   export function hasRiskWarnings(result: Result): boolean {
-    return result.warnings.some(w => RISK_HARD_CODES.has(w.code))
+    return result.warnings.some((w) => RISK_HARD_CODES.has(w.code))
   }
 
   /** Formatted risk-warning banner — empty string when none. */
@@ -857,9 +927,11 @@ export namespace Validate {
   }
 
   export function formatRiskBanner(result: Result): string {
-    const risky = [...result.errors, ...result.warnings].filter(w => RISK_HARD_CODES.has(w.code))
+    const risky = [...result.errors, ...result.warnings].filter((w) => RISK_HARD_CODES.has(w.code))
     if (risky.length === 0) return ""
-    const lines: string[] = [`[!] RISK DIAGNOSTICS (${risky.length}) — backtest results may overstate edge or understate drawdown:`]
+    const lines: string[] = [
+      `[!] RISK DIAGNOSTICS (${risky.length}) — backtest results may overstate edge or understate drawdown:`,
+    ]
     for (const w of risky) {
       const loc = w.line ? ` (line ${w.line})` : ""
       lines.push(`  - ${displayCode(w.code)}${loc}: ${w.message}`)
@@ -897,7 +969,7 @@ export namespace Validate {
     }
 
     // Separate non-risk warnings to avoid duplicating the risk banner content.
-    const nonRiskWarnings = result.warnings.filter(w => !RISK_HARD_CODES.has(w.code))
+    const nonRiskWarnings = result.warnings.filter((w) => !RISK_HARD_CODES.has(w.code))
     if (nonRiskWarnings.length > 0) {
       if (parts.length > 0) parts.push("")
       parts.push(`${nonRiskWarnings.length} warning(s):\n`)

@@ -17,6 +17,7 @@ import { Skill } from "../../src/skill"
 import { Truncate } from "../../src/tool/truncate"
 import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { algosRoot } from "@finny-ai/core/algo"
+import { McpRobinhood } from "@/mcp/robinhood"
 
 const agentLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   Agent.layer.pipe(
@@ -85,6 +86,44 @@ it.instance("build agent has correct default properties", () =>
     expect(Permission.evaluate("task", "data_extractor", build!.permission).action).toBe("allow")
     expect(Permission.evaluate("task", "general", build!.permission).action).toBe("deny")
   }),
+)
+
+it.instance("Finny user-facing agents ask for exact Robinhood reads and deny every other Robinhood tool", () =>
+  Effect.gen(function* () {
+    const service = yield* Agent.Service
+    for (const name of ["finny", "build", "research", "chat", "portfolio_builder"]) {
+      const agent = yield* service.get(name)
+      for (const tool of McpRobinhood.READ_TOOLS) {
+        expect(Permission.evaluate(McpRobinhood.toolID(tool), "*", agent.permission).action).toBe("ask")
+      }
+      expect(Permission.evaluate("robinhood_place_equity_order", "*", agent.permission).action).toBe("deny")
+      expect(Permission.evaluate("robinhood_future_read_tool", "*", agent.permission).action).toBe("deny")
+    }
+  }),
+)
+
+it.instance(
+  "Robinhood policy rejects user widening while preserving explicit user denies",
+  () =>
+    Effect.gen(function* () {
+      const service = yield* Agent.Service
+      for (const name of ["finny", "build", "research", "chat", "portfolio_builder"]) {
+        const agent = yield* service.get(name)
+        expect(Permission.evaluate("robinhood_get_accounts", "*", agent.permission).action).toBe("deny")
+        expect(Permission.evaluate("robinhood_get_portfolio", "*", agent.permission).action).toBe("ask")
+        expect(Permission.evaluate("robinhood_place_equity_order", "*", agent.permission).action).toBe("deny")
+        expect(Permission.evaluate("robinhood_future_read_tool", "*", agent.permission).action).toBe("deny")
+      }
+    }),
+  {
+    config: {
+      permission: {
+        robinhood_get_accounts: "deny",
+        robinhood_place_equity_order: "allow",
+        robinhood_future_read_tool: "allow",
+      },
+    },
+  },
 )
 
 it.instance("versioned Finny CLI aliases resolve to their canonical compatibility modes", () =>
