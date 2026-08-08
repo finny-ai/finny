@@ -83,15 +83,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           },
         }
       }),
+    // `Tool.Context.ask` is typed `Effect.Effect<void>`, so tool bodies are entitled
+    // to run it standalone. Promise-shaped tools do exactly that via
+    // `Effect.runPromise`, which starts a fresh root fiber with an empty context —
+    // `permission.ask` then dies with "InstanceRef not provided". Routing through
+    // the bridge re-provides the captured instance/workspace refs so the effect is
+    // genuinely self-contained for both `yield*` and `Effect.runPromise` callers.
     ask: (req) =>
-      permission
-        .ask({
-          ...req,
-          sessionID: input.session.id,
-          tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: effectivePermission,
-        })
-        .pipe(Effect.orDie),
+      run.run(
+        permission
+          .ask({
+            ...req,
+            sessionID: input.session.id,
+            tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+            ruleset: effectivePermission,
+          })
+          .pipe(Effect.orDie),
+      ),
   })
 
   const definitions =
