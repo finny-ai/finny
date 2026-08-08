@@ -29,6 +29,11 @@ export class UnsupportedOAuthError extends Schema.ErrorClass<UnsupportedOAuthErr
   { error: Schema.String },
   { httpApiStatus: 400 },
 ) {}
+export class ManagedMcpLifecycleError extends Schema.TaggedErrorClass<ManagedMcpLifecycleError>()(
+  "McpManagedLifecycleError",
+  { error: Schema.String },
+  { httpApiStatus: 403 },
+) {}
 
 export const McpPaths = {
   status: "/mcp",
@@ -69,7 +74,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: WorkspaceRoutingQuery,
           success: described(AuthStartResponse, "OAuth flow started"),
-          error: [UnsupportedOAuthError, McpServerNotFoundError],
+          error: [UnsupportedOAuthError, ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.auth.start",
@@ -82,7 +87,7 @@ export const McpApi = HttpApi.make("mcp")
           query: WorkspaceRoutingQuery,
           payload: AuthCallbackPayload,
           success: described(MCP.Status, "OAuth authentication completed"),
-          error: [HttpApiError.BadRequest, McpServerNotFoundError],
+          error: [HttpApiError.BadRequest, ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.auth.callback",
@@ -95,7 +100,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: WorkspaceRoutingQuery,
           success: described(MCP.Status, "OAuth authentication completed"),
-          error: [UnsupportedOAuthError, McpServerNotFoundError],
+          error: [UnsupportedOAuthError, ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.auth.authenticate",
@@ -107,7 +112,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: WorkspaceRoutingQuery,
           success: described(AuthRemoveResponse, "OAuth credentials removed"),
-          error: McpServerNotFoundError,
+          error: [ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.auth.remove",
@@ -119,7 +124,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Boolean, "MCP server connected successfully"),
-          error: McpServerNotFoundError,
+          error: [ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.connect",
@@ -130,7 +135,7 @@ export const McpApi = HttpApi.make("mcp")
           params: { name: Schema.String },
           query: WorkspaceRoutingQuery,
           success: described(Schema.Boolean, "MCP server disconnected successfully"),
-          error: McpServerNotFoundError,
+          error: [ManagedMcpLifecycleError, McpServerNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "mcp.disconnect",

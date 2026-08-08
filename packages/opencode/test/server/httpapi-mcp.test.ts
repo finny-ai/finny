@@ -6,6 +6,7 @@ import { Server } from "../../src/server/server"
 import { resetDatabase } from "../fixture/db"
 import { TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
+import { McpRobinhood } from "@/mcp/robinhood"
 
 const context = Context.empty() as Context.Context<unknown>
 const testStateLayer = Layer.effectDiscard(
@@ -15,6 +16,29 @@ const testStateLayer = Layer.effectDiscard(
   }),
 )
 const it = testEffect(testStateLayer)
+
+const managedRobinhoodEnvLayer = Layer.effectDiscard(
+  Effect.acquireRelease(
+    Effect.sync(() => {
+      const previous = {
+        managed: process.env[McpRobinhood.MANAGED_ENV],
+        url: process.env[McpRobinhood.URL_ENV],
+      }
+      process.env[McpRobinhood.MANAGED_ENV] = "1"
+      // Port 1 cannot reach a real upstream; lifecycle guards must produce the 403 before transport is attempted.
+      process.env[McpRobinhood.URL_ENV] = "http://127.0.0.1:1/mcp/opaque-runner-route"
+      return previous
+    }),
+    (previous) =>
+      Effect.sync(() => {
+        if (previous.managed === undefined) delete process.env[McpRobinhood.MANAGED_ENV]
+        else process.env[McpRobinhood.MANAGED_ENV] = previous.managed
+        if (previous.url === undefined) delete process.env[McpRobinhood.URL_ENV]
+        else process.env[McpRobinhood.URL_ENV] = previous.url
+      }),
+  ),
+)
+const managedRobinhoodIt = testEffect(Layer.mergeAll(testStateLayer, managedRobinhoodEnvLayer))
 
 function app() {
   return Server.Default().app
@@ -153,6 +177,41 @@ describe("mcp HttpApi", () => {
         },
       },
     },
+  )
+
+  managedRobinhoodIt.instance(
+    "rejects authenticated lifecycle and auth mutations for runner-managed Robinhood",
+    () =>
+      Effect.gen(function* () {
+        const tmp = yield* TestInstance
+        const handler = HttpApiApp.webHandler()
+        const attempts = [
+          { method: "POST", route: "/mcp/robinhood/connect" },
+          { method: "POST", route: "/mcp/robinhood/disconnect" },
+          { method: "POST", route: "/mcp/robinhood/auth" },
+          { method: "POST", route: "/mcp/robinhood/auth/authenticate" },
+          {
+            method: "POST",
+            route: "/mcp/robinhood/auth/callback",
+            body: JSON.stringify({ code: "attacker-code" }),
+          },
+          { method: "DELETE", route: "/mcp/robinhood/auth" },
+        ]
+
+        for (const attempt of attempts) {
+          const response = yield* request(handler, attempt.route, tmp.directory, {
+            method: attempt.method,
+            headers: attempt.body ? { "content-type": "application/json" } : undefined,
+            body: attempt.body,
+          })
+          expect(response.status, `${attempt.method} ${attempt.route}`).toBe(403)
+          expect(yield* json(response)).toEqual({
+            _tag: "McpManagedLifecycleError",
+            error: "Runner-managed Robinhood MCP lifecycle is Platform-owned.",
+          })
+        }
+      }),
+    { config: { mcp: {} } },
   )
 
   it.instance(

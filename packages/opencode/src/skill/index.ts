@@ -35,7 +35,7 @@ const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION =
 const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
 const FINNY_ROBINHOOD_SKILL_NAME = "finny-robinhood"
 const FINNY_ROBINHOOD_SKILL_DESCRIPTION =
-  "Use when the user wants to install, connect, verify, recover, or use Robinhood through Finny, including RHX stock and ETF brokerage or the official Robinhood Crypto API. Enforces credential isolation, capability checks, and fail-closed live-trading policy."
+  "Use when the user wants to connect, verify, recover, or use Robinhood through Finny, including the official read-only Robinhood Trading MCP or the separate legacy RHX connector. Enforces mode-specific credential custody, exact MCP tool allowlisting, capability checks, and fail-closed execution policy."
 const FINNY_ROBINHOOD_SKILL_BODY = SkillPlugin.FinnyRobinhoodContent
 const RESERVED_BUILT_IN_SKILL_NAMES = new Set([FINNY_ROBINHOOD_SKILL_NAME])
 

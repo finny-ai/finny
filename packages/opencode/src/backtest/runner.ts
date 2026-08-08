@@ -28,6 +28,7 @@ import * as RunIntegrity from "./run-integrity"
 import { qualifyCandidateV1 } from "./qualification"
 import { qualificationInputForResearch, type QualificationInputV1 } from "./qualification-policy"
 import { CentralSync } from "@/algorithm/central-sync"
+import { stripModelChildSecrets } from "@/security/worker-shell"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
@@ -3044,7 +3045,10 @@ if __name__ == "__main__":
         await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(config, null, 2))
       }
 
-      const childEnv = { FINNY_SEED: String(effectiveSeed) }
+      const childEnv = {
+        ...stripModelChildSecrets(process.env),
+        FINNY_SEED: String(effectiveSeed),
+      }
       if (engineMode === "strict_v2") {
         const engineArgs = [
           pythonCmd,
@@ -3093,6 +3097,7 @@ if __name__ == "__main__":
           nothrow: true,
           timeout: 300_000,
           env: childEnv,
+          inheritEnv: false,
         })
 
         const OUTPUT_CAP = 10 * 1024 * 1024
@@ -3196,7 +3201,11 @@ if __name__ == "__main__":
           })
           await fs.writeFile(path.join(tmpDir, "results.json"), JSON.stringify(results.v2, null, 2))
         }
-        if ((promotableVerified || publishableProviderRun) && hasProductRiskContract(config) && dataQualityMode === "strict") {
+        if (
+          (promotableVerified || publishableProviderRun) &&
+          hasProductRiskContract(config) &&
+          dataQualityMode === "strict"
+        ) {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -3213,9 +3222,7 @@ if __name__ == "__main__":
             dataQualityMode,
             qualification,
             datasetSnapshotId:
-              preparedData.provenance.mode === "provider_fetch"
-                ? preparedData.provenance.snapshot_id
-                : undefined,
+              preparedData.provenance.mode === "provider_fetch" ? preparedData.provenance.snapshot_id : undefined,
           })
         } else {
           // Qualification evidence and the schema-v4 risk contract remain
@@ -3301,7 +3308,7 @@ if __name__ == "__main__":
           capital,
           "--scan-only",
         ],
-        { cwd: tmpDir, nothrow: true, timeout: 60_000, env: childEnv },
+        { cwd: tmpDir, nothrow: true, timeout: 60_000, env: childEnv, inheritEnv: false },
       )
       if (scanResult.code === 0) {
         const scanOut = scanResult.stdout.toString()
@@ -3388,6 +3395,7 @@ if __name__ == "__main__":
           nothrow: true,
           timeout: 300_000,
           env: childEnv,
+          inheritEnv: false,
         },
       )
 

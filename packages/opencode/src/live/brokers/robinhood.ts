@@ -1,80 +1,33 @@
 import crypto from "crypto"
-import { Auth } from "@/auth"
 import type { BrokerAccount, BrokerCredentials, BrokerSpec } from "./types"
 
-export const ROBINHOOD_PROVIDER_PREFIX = "robinhood-rhx"
+export const ROBINHOOD_PROVIDER_PREFIX = "robinhood-official"
+/** @deprecated Compatibility only for the detached legacy integration route. */
 export const ROBINHOOD_CONNECTOR_MARKER = "finny-rhx-integration"
+/** @deprecated Compatibility only for the detached legacy integration route. */
 export const ROBINHOOD_CONNECTOR_DUMMY_KEY = "finny-rhx-managed-no-secret"
 
-const DEFAULT_COMMAND = "rhx"
-const DEFAULT_PROFILE = "default"
-const PINNED_RHX_VERSION = "0.4.8"
-const VERIFICATION_TTL_MS = 5 * 60 * 1000
+const DEFAULT_COMMAND = "official-mcp"
 
-const SAFE_INTEGRATION_STATUSES = new Set([
-  "unsupported",
-  "not_installed",
-  "installing",
-  "installed",
-  "authenticating",
-  "ready",
-  "mfa_required",
-  "expired",
-  "error",
-])
-const SAFE_CAPABILITIES = new Set(["stocks", "etfs", "crypto-usd"])
+const SAFE_INTEGRATION_STATUSES = new Set(["connected", "needs_auth", "failed", "disabled"])
+const SAFE_CAPABILITIES = new Set(["stocks", "etfs"])
 
 export function renderRobinhoodIntegrationContext(input: {
   status: string
   ready: boolean
-  pinnedVersion: string
   capabilities: readonly string[]
 }): string {
   const status = SAFE_INTEGRATION_STATUSES.has(input.status) ? input.status : "error"
-  const version = input.pinnedVersion === PINNED_RHX_VERSION ? PINNED_RHX_VERSION : "unverified"
   const capabilities = input.capabilities.filter((capability) => SAFE_CAPABILITIES.has(capability))
 
   return [
-    "## Robinhood connector state (redacted)",
-    `- Managed RHX version: ${version}`,
-    `- Connector status: ${status}`,
-    `- Ready for broker operations: ${input.ready ? "yes" : "no"}`,
-    `- Supported capability labels: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
-    "- This state intentionally excludes profiles, executable paths, usernames, account identifiers, balances, tokens, and credentials.",
-    "- If setup needs attention, direct the user to `/robinhood`; never ask for Robinhood secrets in chat.",
+    "## Robinhood official Trading MCP state (redacted)",
+    `- Connection status: ${status}`,
+    `- Ready for analysis: ${input.ready ? "yes" : "no"}`,
+    `- Supported asset labels: ${capabilities.length > 0 ? capabilities.join(", ") : "none"}`,
+    "- Model tools are analysis-only. Trusted execution is a separate server-side preflight and risk-gateway path.",
+    "- This state excludes endpoints, usernames, account identifiers, balances, OAuth tokens, and credentials.",
   ].join("\n")
-}
-
-const CRYPTO_BASES = new Set([
-  "BTC",
-  "ETH",
-  "SOL",
-  "DOGE",
-  "AVAX",
-  "MATIC",
-  "LINK",
-  "DOT",
-  "ADA",
-  "XRP",
-  "LTC",
-  "BCH",
-  "UNI",
-  "AAVE",
-  "SHIB",
-])
-
-function splitCryptoPair(canonical: string): { base: string; quote: "USD" } | null {
-  const normalized = canonical.toUpperCase().trim().replace("/", "-")
-  if (normalized.includes("-")) {
-    const [base, quote, extra] = normalized.split("-")
-    if (!base || quote !== "USD" || extra) return null
-    return { base, quote: "USD" }
-  }
-  if (normalized.endsWith("USD") && normalized.length > 3) {
-    return { base: normalized.slice(0, -3), quote: "USD" }
-  }
-  if (CRYPTO_BASES.has(normalized)) return { base: normalized, quote: "USD" }
-  return null
 }
 
 export const robinhoodSpec: BrokerSpec = {
@@ -84,46 +37,26 @@ export const robinhoodSpec: BrokerSpec = {
   providerPrefix: ROBINHOOD_PROVIDER_PREFIX,
   pythonClass: "RobinhoodBroker",
   pythonDeps: [{ spec: "yfinance>=0.2.40", importCheck: "yfinance" }],
-  assetClasses: ["equity", "crypto"],
-  // Equity commissions are zero, while crypto pricing/fees vary by route and
-  // tier. Keep comparison deterministic and let the broker response remain the
-  // source of truth for execution costs.
+  assetClasses: ["equity"],
   staticTakerFee: 0,
   defaultEndpoint: DEFAULT_COMMAND,
-  docsUrl: "https://github.com/finlayi/robinhood-cli",
-  credentialFields: [
-    { name: "label", label: "Label" },
-    {
-      name: "keyId",
-      label: "rhx profile",
-      placeholder: "Profile created by `rhx auth login`",
-      default: DEFAULT_PROFILE,
-    },
-    {
-      name: "endpoint",
-      label: "rhx executable",
-      placeholder: "rhx or an absolute path",
-      default: DEFAULT_COMMAND,
-    },
-  ],
+  docsUrl: "https://agent.robinhood.com",
+  credentialFields: [],
   promptFragment: [
-    "## Active brokerage: Robinhood (rhx CLI)",
+    "## Active brokerage: Robinhood (official Trading MCP)",
     "",
-    "The user's algorithm runs through a `RobinhoodBroker` adapter backed by the `rhx` CLI. Credentials, MFA, sessions, and Robinhood API details stay inside rhx; strategy code must remain broker-agnostic and use `self.broker.buy/sell/position/equity/cash/price`.",
+    "The user's algorithm runs through a daemon-owned official Robinhood Trading MCP adapter. OAuth tokens remain in the MCP client and never enter the strategy worker; strategy code must remain broker-agnostic and use `self.broker.buy/sell/position/equity/cash/price`.",
     "",
     "**Asset classes (refuse mismatches):**",
-    "- US equities and ETFs through rhx's brokerage provider.",
-    "- Crypto through Robinhood's official Crypto Trading API. Use USD pairs only.",
-    "- Refuse options, futures, FX, mutual funds, and non-US securities for automated strategy deployment.",
+    "- Long-only US equities and ETFs in the explicit dedicated Agentic account.",
+    "- Refuse options, crypto, shorts, futures, FX, mutual funds, and non-US securities.",
     "",
     "**Operational requirements:**",
-    "- The configured rhx profile must already be authenticated. Never request or embed a Robinhood password in strategy code.",
-    "- Stock brokerage endpoints used by rhx are unofficial and can change. Crypto uses the official API credential path.",
-    "- This Finny release is shadow-only: the execution risk gateway does not submit Robinhood orders. A future live-enabled release would still require both Finny approval and a current `RHX_LIVE_CONFIRM_TOKEN`; missing or expired tokens fail closed.",
+    "- OAuth must be connected through the canonical Robinhood MCP server. Never request or embed credentials in strategy code.",
+    "- Live execution requires a fresh server-side preflight challenge, explicit real-money acknowledgement, review before place, and reconciliation after ambiguous acknowledgement.",
     "",
     "**`config.symbol` format:**",
     '- Equity / ETF: bare ticker — `"AAPL"`, `"SPY"`.',
-    '- Crypto: `"BASE-USD"` — `"BTC-USD"`, `"ETH-USD"`.',
     "",
     "**Required first line of the saved `code`:**",
     "```python",
@@ -134,67 +67,17 @@ export const robinhoodSpec: BrokerSpec = {
     return robinhoodSpec.resolvePair(canonical)
   },
   resolvePair(canonical) {
-    const crypto = splitCryptoPair(canonical)
-    return crypto ? `${crypto.base}-USD` : canonical.toUpperCase().trim()
+    return canonical.toUpperCase().trim()
   },
   detectAssetClass(canonical) {
-    if (splitCryptoPair(canonical)) return "crypto"
     return /^[A-Z]{1,5}$/.test(canonical.toUpperCase().trim()) ? "equity" : null
   },
-  envVars(creds) {
-    return {
-      RHX_PROFILE: creds.keyId || DEFAULT_PROFILE,
-      RHX_BIN: creds.endpoint || DEFAULT_COMMAND,
-      ROBINHOOD_MODE: "live",
-    }
+  envVars() {
+    return {}
   },
   endpointForMode() {
     return DEFAULT_COMMAND
   },
-}
-
-function isRobinhoodKey(key: string): boolean {
-  return key === ROBINHOOD_PROVIDER_PREFIX || key.startsWith(`${ROBINHOOD_PROVIDER_PREFIX}-`)
-}
-
-function verificationIsFresh(metadata: Record<string, string>, now = Date.now()): boolean {
-  const verifiedAt = Date.parse(metadata.verifiedAt ?? "")
-  return Number.isFinite(verifiedAt) && now >= verifiedAt && now - verifiedAt <= VERIFICATION_TTL_MS
-}
-
-function isReadinessFlag(value: string | undefined): value is "true" | "false" {
-  return value === "true" || value === "false"
-}
-
-function connectorRecord(providerID: string, info: Auth.Info) {
-  if (!isRobinhoodKey(providerID) || info.type !== "api" || info.key !== ROBINHOOD_CONNECTOR_DUMMY_KEY) return
-  const metadata = info.metadata
-  if (!metadata || metadata.connector !== ROBINHOOD_CONNECTOR_MARKER || !verificationIsFresh(metadata)) return
-  if (!isReadinessFlag(metadata.brokerageReady) || !isReadinessFlag(metadata.cryptoReady)) return
-  const keyId = metadata.keyId?.trim()
-  const endpoint = metadata.endpoint?.trim()
-  if (!keyId || !endpoint) return
-  const readiness = [
-    ["equity", metadata.brokerageReady],
-    ["crypto", metadata.cryptoReady],
-  ] as const
-  const assetClasses = readiness.filter(([, ready]) => ready === "true").map(([assetClass]) => assetClass)
-  if (assetClasses.length === 0) return
-  return { metadata, keyId, endpoint, assetClasses }
-}
-
-function robinhoodAccount(providerID: string, info: Auth.Info): BrokerAccount | undefined {
-  const record = connectorRecord(providerID, info)
-  if (!record) return undefined
-  return {
-    providerID,
-    brokerKind: "robinhood",
-    label: record.metadata.label ?? "Default",
-    keyId: record.keyId,
-    endpoint: record.endpoint,
-    mode: "live",
-    assetClasses: record.assetClasses,
-  }
 }
 
 export function generateRobinhoodProviderID(): string {
@@ -202,22 +85,11 @@ export function generateRobinhoodProviderID(): string {
 }
 
 export async function listRobinhoodAccounts(): Promise<BrokerAccount[]> {
-  const all = await Auth.all()
-  return Object.entries(all).flatMap(([providerID, info]) => {
-    const account = robinhoodAccount(providerID, info)
-    return account ? [account] : []
-  })
+  // Official accounts are discovered from authenticated MCP data during
+  // preflight, never synthesized from generic Auth records.
+  return []
 }
 
-export async function readRobinhoodCredentials(providerID: string): Promise<BrokerCredentials | null> {
-  const info = await Auth.get(providerID)
-  if (!info) return null
-  const record = connectorRecord(providerID, info)
-  if (!record) return null
-  return {
-    keyId: record.keyId,
-    secret: "",
-    endpoint: record.endpoint,
-    mode: "live",
-  }
+export async function readRobinhoodCredentials(_providerID: string): Promise<BrokerCredentials | null> {
+  return null
 }

@@ -2,6 +2,7 @@ import crypto from "node:crypto"
 import path from "node:path"
 import { resolveFinnyHome } from "@finny-ai/core/prefs"
 import type { Mission } from "@/algorithm/mission"
+import { stableStringify } from "@/backtest/run-integrity-core"
 import type { BrokerKind, BrokerMode } from "./brokers"
 
 export const ORDER_INTENT_SCHEMA = "finny.order_intent" as const
@@ -95,6 +96,29 @@ export interface PaperActivationReceiptV1 {
   signature: string
 }
 
+export interface LiveActivationReceiptV1 {
+  schema: "finny.live_activation_receipt"
+  version: 1
+  challengeId: string
+  runId: string
+  runIdentityHash: string
+  algorithmId: string
+  algorithmVersion: number
+  strategyHash: string
+  riskPolicyHash: string
+  executionPolicyHash: string
+  effectiveConfigHash: string
+  symbol: string
+  interval: string
+  brokerKind: "robinhood"
+  brokerMode: "live"
+  accountScopeHash: string
+  issuedAt: string
+  expiresAt: string
+  receiptHash: string
+  signature: string
+}
+
 export interface PaperExecutionContractV2 {
   schema: "finny.paper_execution_contract"
   version: 2
@@ -105,16 +129,102 @@ export interface PaperExecutionContractV2 {
   activationReceipt?: PaperActivationReceiptV1
 }
 
-export type PaperExecutionContract = PaperExecutionContractV1 | PaperExecutionContractV2
+export interface ExecutionContractV3 {
+  schema: "finny.execution_contract"
+  version: 3
+  binding: ExecutionBindingV1
+  policy: ExecutionPolicyV1
+  ledgerPath: string
+  submissionMode: "shadow" | "paper" | "live"
+  activationReceipt?: PaperActivationReceiptV1 | LiveActivationReceiptV1
+}
 
-function canonical(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`
-  const object = value as Record<string, unknown>
-  return `{${Object.keys(object)
-    .sort()
-    .map((key) => `${JSON.stringify(key)}:${canonical(object[key])}`)
-    .join(",")}}`
+export type PaperExecutionContract = PaperExecutionContractV1 | PaperExecutionContractV2 | ExecutionContractV3
+
+export function createLiveActivationReceipt(input: {
+  challengeId: string
+  binding: ExecutionBindingV1
+  secret: string
+  now?: Date
+  ttlMs?: number
+}): LiveActivationReceiptV1 {
+  const now = input.now ?? new Date()
+  const body = {
+    schema: "finny.live_activation_receipt" as const,
+    version: 1 as const,
+    challengeId: input.challengeId,
+    runId: input.binding.runId,
+    runIdentityHash: input.binding.runIdentityHash,
+    algorithmId: input.binding.algorithmId,
+    algorithmVersion: input.binding.algorithmVersion,
+    strategyHash: input.binding.strategyHash,
+    riskPolicyHash: input.binding.riskPolicyHash,
+    executionPolicyHash: input.binding.executionPolicyHash,
+    effectiveConfigHash: input.binding.effectiveConfigHash,
+    symbol: input.binding.symbol,
+    interval: input.binding.interval,
+    brokerKind: "robinhood" as const,
+    brokerMode: "live" as const,
+    accountScopeHash: input.binding.accountScopeHash,
+    issuedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + (input.ttlMs ?? 90_000)).toISOString(),
+  }
+  const receiptHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
+  const signature = crypto.createHmac("sha256", input.secret).update(receiptHash).digest("hex")
+  return { ...body, receiptHash, signature }
+}
+
+export function verifyLiveActivationReceipt(input: {
+  receipt: LiveActivationReceiptV1 | undefined
+  binding: ExecutionBindingV1
+  secret: string | undefined
+  now?: Date
+}): string[] {
+  const { receipt, binding, secret } = input
+  if (!receipt) return ["live activation receipt is missing"]
+  if (receipt.schema !== "finny.live_activation_receipt" || receipt.version !== 1) {
+    return ["live activation receipt schema is invalid"]
+  }
+  const { receiptHash, signature, ...body } = receipt
+  const expectedHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
+  const expectedSignature = secret ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex") : undefined
+  const errors: string[] = []
+  if (!secret) errors.push("FINNY_LIVE_ACTIVATION_KEY is not configured")
+  if (receiptHash !== expectedHash) errors.push("live activation receipt hash mismatch")
+  if (
+    !expectedSignature ||
+    signature.length !== expectedSignature.length ||
+    !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expectedSignature))
+  ) {
+    errors.push("live activation receipt signature mismatch")
+  }
+  const fields: Array<[keyof ExecutionBindingV1, keyof LiveActivationReceiptV1]> = [
+    ["runId", "runId"],
+    ["runIdentityHash", "runIdentityHash"],
+    ["algorithmId", "algorithmId"],
+    ["algorithmVersion", "algorithmVersion"],
+    ["strategyHash", "strategyHash"],
+    ["riskPolicyHash", "riskPolicyHash"],
+    ["executionPolicyHash", "executionPolicyHash"],
+    ["effectiveConfigHash", "effectiveConfigHash"],
+    ["symbol", "symbol"],
+    ["interval", "interval"],
+    ["accountScopeHash", "accountScopeHash"],
+  ]
+  if (fields.some(([bindingKey, receiptKey]) => binding[bindingKey] !== receipt[receiptKey])) {
+    errors.push("live activation binding mismatch")
+  }
+  if (binding.brokerKind !== "robinhood" || binding.brokerMode !== "live")
+    errors.push("live activation broker mismatch")
+  if (receipt.brokerKind !== "robinhood" || receipt.brokerMode !== "live")
+    errors.push("live activation receipt broker mismatch")
+  const now = (input.now ?? new Date()).getTime()
+  const issuedAt = Date.parse(receipt.issuedAt)
+  const expiresAt = Date.parse(receipt.expiresAt)
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt > now || expiresAt <= now) {
+    errors.push("live activation receipt is expired or invalid")
+  }
+  return errors
 }
 
 export function verifyPaperActivationReceipt(input: {
@@ -128,10 +238,8 @@ export function verifyPaperActivationReceipt(input: {
     return ["paper activation receipt schema is invalid"]
   }
   const { receiptHash, signature, ...body } = receipt
-  const expectedHash = crypto.createHash("sha256").update(canonical(body)).digest("hex")
-  const expectedSignature = secret
-    ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex")
-    : undefined
+  const expectedHash = crypto.createHash("sha256").update(stableStringify(body)).digest("hex")
+  const expectedSignature = secret ? crypto.createHmac("sha256", secret).update(expectedHash).digest("hex") : undefined
   const errors: string[] = []
   if (!secret) errors.push("FINNY_PAPER_ACTIVATION_KEY is not configured")
   if (receiptHash !== expectedHash) errors.push("paper activation receipt hash mismatch")
@@ -175,6 +283,7 @@ export const EXECUTION_RISK_GATEWAY_PY = String.raw`"""Fail-closed paper executi
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import math
 import os
@@ -182,11 +291,12 @@ from datetime import datetime, timezone
 
 
 DECISION_CODES = {
-    "accepted_shadow", "accepted_paper", "bar_not_final", "bar_out_of_order", "bar_stale",
+    "accepted_shadow", "accepted_paper", "accepted_live", "bar_not_final", "bar_out_of_order", "bar_stale",
     "binding_mismatch", "broker_capability", "duplicate_intent", "drawdown_halt",
     "account_currency_mismatch", "gross_exposure_limit", "net_exposure_limit", "symbol_exposure_limit",
     "invalid_intent", "max_positions", "policy_incomplete", "protective_stop_required",
     "risk_size_exceeded", "stale_account", "submission_disabled", "broker_rejected", "unresolved_divergence",
+    "long_only",
 }
 
 
@@ -255,7 +365,7 @@ class IntentRecord:
         self.decision = decision
 
     def to_dict(self):
-        paper = self.decision.get("reason_code") == "accepted_paper"
+        submitted = self.decision.get("reason_code") in ("accepted_paper", "accepted_live")
         return {
             "order_id": self.decision.get("broker_order_id") or self.intent["intent_id"],
             "intent_id": self.intent["intent_id"],
@@ -263,7 +373,7 @@ class IntentRecord:
             "side": self.intent["side"],
             "qty": self.intent.get("requested_qty") or 0,
             "price": 0,
-            "status": "submitted" if paper else ("shadow" if self.decision["accepted"] else "rejected: " + self.decision["reason_code"]),
+            "status": "submitted" if submitted else ("shadow" if self.decision["accepted"] else "rejected: " + self.decision["reason_code"]),
             "ts": self.decision["decided_at"],
             "reason": self.intent.get("reason"),
             "features": None,
@@ -271,7 +381,7 @@ class IntentRecord:
 
 
 class ExecutionRiskGateway:
-    def __init__(self, contract, broker, emit):
+    def __init__(self, contract, broker, emit, activation_key=None):
         self.contract = contract
         self.binding = contract["binding"]
         self.policy = contract["policy"]
@@ -293,6 +403,33 @@ class ExecutionRiskGateway:
             if event.get("event_type") == "intent" and event.get("intent_id")
         } - self.known_outcomes
         self.submission_mode = contract.get("submissionMode", "shadow")
+        if self.submission_mode == "live":
+            receipt = contract.get("activationReceipt") or {}
+            binding_fields = {
+                "runId": "runId", "runIdentityHash": "runIdentityHash", "algorithmId": "algorithmId",
+                "algorithmVersion": "algorithmVersion", "strategyHash": "strategyHash",
+                "riskPolicyHash": "riskPolicyHash", "executionPolicyHash": "executionPolicyHash",
+                "effectiveConfigHash": "effectiveConfigHash", "symbol": "symbol", "interval": "interval",
+                "accountScopeHash": "accountScopeHash",
+            }
+            expires = _parse_time(receipt.get("expiresAt"))
+            receipt_body = {key: value for key, value in receipt.items() if key not in ("receiptHash", "signature")}
+            expected_hash = _hash(receipt_body)
+            expected_signature = (
+                hmac.new(activation_key.encode("utf-8"), expected_hash.encode("utf-8"), hashlib.sha256).hexdigest()
+                if isinstance(activation_key, str) and activation_key else None
+            )
+            receipt_valid = (
+                receipt.get("schema") == "finny.live_activation_receipt"
+                and receipt.get("brokerKind") == "robinhood"
+                and receipt.get("brokerMode") == "live"
+                and expires is not None and expires.tzinfo is not None and expires > _utc_now()
+                and hmac.compare_digest(str(receipt.get("receiptHash", "")), expected_hash)
+                and expected_signature is not None
+                and hmac.compare_digest(str(receipt.get("signature", "")), expected_signature)
+                and all(receipt.get(left) == self.binding.get(right) for left, right in binding_fields.items())
+            )
+            self.halted = self.halted or not receipt_valid
         self.pending_intents = sorted(item for item in pending if isinstance(item, str))
         # Shadow mode has no broker side effect between intent and decision.
         if not self.ledger.torn and self.submission_mode == "shadow":
@@ -375,7 +512,7 @@ class ExecutionRiskGateway:
         self.high_water_equity = max(self.historical_high_water_equity or current["equity"], current["equity"])
         self._append_emit({"event_type": "reconciliation", "status": "matched", "positions": current["positions"]})
         self._append_emit({"event_type": "broker_snapshot", **current})
-        if self.submission_mode == "paper":
+        if self.submission_mode in ("paper", "live"):
             for intent_id in self.pending_intents:
                 try:
                     order = self.broker.get_order_by_client_id(intent_id)
@@ -387,8 +524,14 @@ class ExecutionRiskGateway:
                     self.halted = True
                     self._append_emit({"event_type": "reconciliation", "status": "halted", "reason_code": "unresolved_divergence", "intent_id": intent_id})
                     return False
-                self._append_emit({"event_type": "order_ack", "intent_id": intent_id, "broker_order_id": str(order.id), "status": str(order.status), "recovered": True})
-                self._append_emit({"event_type": "decision", "intent_id": intent_id, "accepted": True, "reason_code": "accepted_paper", "broker_order_id": str(order.id), "recovered": True})
+                broker_order_id = getattr(order, "id", getattr(order, "order_id", None))
+                if not broker_order_id:
+                    self.halted = True
+                    self._append_emit({"event_type": "reconciliation", "status": "halted", "reason_code": "unresolved_divergence", "intent_id": intent_id})
+                    return False
+                self._append_emit({"event_type": "order_ack", "intent_id": intent_id, "broker_order_id": str(broker_order_id), "status": str(order.status), "recovered": True})
+                accepted_code = "accepted_live" if self.submission_mode == "live" else "accepted_paper"
+                self._append_emit({"event_type": "decision", "intent_id": intent_id, "accepted": True, "reason_code": accepted_code, "broker_order_id": str(broker_order_id), "recovered": True})
                 self.known_outcomes.add(intent_id)
         return True
 
@@ -489,7 +632,7 @@ class ExecutionRiskGateway:
             **decision,
         })
         record = IntentRecord(intent, decision)
-        if decision.get("reason_code") == "accepted_paper":
+        if decision.get("reason_code") in ("accepted_paper", "accepted_live"):
             self.emit({"type": "order", **record.to_dict()})
         return record
 
@@ -540,6 +683,8 @@ class ExecutionRiskGateway:
         position = float((self.account["positions"].get(intent["symbol"]) or {}).get("qty", 0))
         position += float(self.reservations.get(intent["symbol"], 0))
         after = position + (float(qty) if intent["side"] == "buy" else -float(qty))
+        if self.binding.get("brokerKind") == "robinhood" and after < -1e-12:
+            return self._reject("long_only")
         side_flip = position * after < 0
         increases_exposure = side_flip or abs(after) > abs(position) + 1e-12
         if increases_exposure and risk["protective_stop"]["mode"] == "strategy_next_open" and not _finite_positive(intent.get("stop_reference")):
@@ -574,7 +719,9 @@ class ExecutionRiskGateway:
             signed_qty = float(qty) if intent["side"] == "buy" else -float(qty)
             self.reservations[intent["symbol"]] = float(self.reservations.get(intent["symbol"], 0)) + signed_qty
             return {"accepted": True, "reason_code": "accepted_shadow", "decided_at": _utc_now().isoformat(), "max_qty": max_qty}
-        if self.submission_mode != "paper" or self.binding.get("brokerMode") != "paper" or self.binding.get("brokerKind") != "alpaca":
+        paper_enabled = self.submission_mode == "paper" and self.binding.get("brokerMode") == "paper" and self.binding.get("brokerKind") == "alpaca"
+        live_enabled = self.submission_mode == "live" and self.binding.get("brokerMode") == "live" and self.binding.get("brokerKind") == "robinhood"
+        if not paper_enabled and not live_enabled:
             return self._reject("submission_disabled")
         self._append_emit({"event_type": "submission_started", "intent_id": intent["intent_id"]})
         kwargs = {"reason": intent.get("reason"), "features": {"intent_id": intent["intent_id"]}, "client_order_id": intent["intent_id"]}
@@ -598,7 +745,8 @@ class ExecutionRiskGateway:
         self._append_emit({"event_type": "order_ack", "intent_id": intent["intent_id"], "broker_order_id": str(order.order_id), "status": str(order.status)})
         signed_qty = float(qty) if intent["side"] == "buy" else -float(qty)
         self.reservations[intent["symbol"]] = float(self.reservations.get(intent["symbol"], 0)) + signed_qty
-        return {"accepted": True, "reason_code": "accepted_paper", "decided_at": _utc_now().isoformat(), "max_qty": max_qty, "broker_order_id": str(order.order_id)}
+        accepted_code = "accepted_live" if live_enabled else "accepted_paper"
+        return {"accepted": True, "reason_code": accepted_code, "decided_at": _utc_now().isoformat(), "max_qty": max_qty, "broker_order_id": str(order.order_id)}
 
     def safe_stop(self):
         try:
@@ -610,14 +758,18 @@ class ExecutionRiskGateway:
         flatten = bool((self.policy.get("limits") or {}).get("flattenOnStop"))
         open_positions = self._position_quantities(snapshot["positions"])
         capabilities = self.policy.get("capabilities") or {}
+        if self.submission_mode == "live" and flatten:
+            self.halted = True
+            self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "broker_capability", "positions": open_positions})
+            return False
         if flatten and not capabilities.get("cancelAll"):
             self.halted = True
             self._append_emit({"event_type": "safe_stop", "status": "halted", "reason_code": "policy_incomplete", "positions": open_positions})
             return False
-        if self.submission_mode == "paper":
+        if self.submission_mode in ("paper", "live"):
             try:
                 self.broker.cancel_all_orders()
-                if flatten and open_positions:
+                if self.submission_mode == "paper" and flatten and open_positions:
                     self.broker.close_all_positions()
                 snapshot = self._snapshot()
                 open_positions = self._position_quantities(snapshot["positions"])
