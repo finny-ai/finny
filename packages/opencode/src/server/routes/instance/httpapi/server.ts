@@ -1,4 +1,5 @@
-import { Config as EffectConfig, Context, Effect, Layer } from "effect"
+import { Config as EffectConfig, Context, Effect, Layer, Option } from "effect"
+import { createHash } from "node:crypto"
 import { HttpApiBuilder, OpenApi } from "effect/unstable/httpapi"
 import { HttpClient, HttpMiddleware, HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http"
 import * as Socket from "effect/unstable/socket/Socket"
@@ -64,7 +65,7 @@ import { lazy } from "@/util/lazy"
 import { CorsConfig, isAllowedCorsOrigin, type CorsOptions } from "@/server/cors"
 import { serveUIEffect } from "@/server/shared/ui"
 import { ServerAuth } from "@/server/auth"
-import { InstanceHttpApi, RootHttpApi } from "./api"
+import { InstanceHttpApi, IntegrationsHttpApi, RootHttpApi } from "./api"
 import { Api } from "@opencode-ai/server/api"
 import { PublicApi } from "./public"
 import {
@@ -74,14 +75,21 @@ import {
   serverAuthorizationLayer,
 } from "./middleware/authorization"
 import { EventApi } from "./groups/event"
+import { HealthApi } from "./groups/health"
 import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
+import { campaignHandlers } from "./handlers/campaign"
+import { CampaignController } from "@/control-plane/campaign"
+import { MessageID, SessionID } from "@/session/schema"
 import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
 import { experimentalHandlers } from "./handlers/experimental"
 import { fileHandlers } from "./handlers/file"
+import { fundQualificationHandlers } from "./handlers/fund-qualification"
 import { globalHandlers } from "./handlers/global"
+import { healthHandlers } from "./handlers/health"
+import { integrationHandlers } from "./handlers/integrations"
 import { instanceHandlers } from "./handlers/instance"
 import { liveHandlers } from "./handlers/live"
 import { mcpHandlers } from "./handlers/mcp"
@@ -106,6 +114,7 @@ import { corsVaryFix } from "./middleware/cors-vary"
 import { errorLayer } from "./middleware/error"
 import { fenceLayer } from "./middleware/fence"
 import { schemaErrorLayer } from "./middleware/schema-error"
+import { RobinhoodIntegration } from "@/integration/robinhood"
 
 export const context = Context.makeUnsafe<unknown>(new Map())
 
@@ -119,6 +128,7 @@ const cors = (corsOptions?: CorsOptions) =>
   )
 
 // Route tree:
+// - healthApiRoutes: typed unauthenticated process probes for private platform health checks.
 // - rootApiRoutes: typed /global/* and control routes; auth is declared by RootHttpApi.
 // - eventApiRoutes: typed SSE route with instance routing context and its existing API contract.
 // - ptyConnectApiRoutes: typed WebSocket upgrade route with ticket-aware auth.
@@ -129,8 +139,14 @@ const httpApiAuthLayer = authorizationLayer.pipe(Layer.provide(ServerAuth.Config
 const ptyConnectHttpApiAuthLayer = ptyConnectAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const serverHttpApiAuthLayer = serverAuthorizationLayer.pipe(Layer.provide(ServerAuth.Config.defaultLayer))
 const workspaceRoutingLive = workspaceRoutingLayer.pipe(Layer.provide(Socket.layerWebSocketConstructorGlobal))
+const healthApiRoutes = HttpApiBuilder.layer(HealthApi).pipe(Layer.provide(healthHandlers))
 const rootApiRoutes = HttpApiBuilder.layer(RootHttpApi).pipe(
   Layer.provide([controlHandlers, controlPlaneHandlers, globalHandlers]),
+  Layer.provide(schemaErrorLayer),
+  Layer.provide(httpApiAuthLayer),
+)
+const integrationApiRoutes = HttpApiBuilder.layer(IntegrationsHttpApi).pipe(
+  Layer.provide(integrationHandlers),
   Layer.provide(schemaErrorLayer),
   Layer.provide(httpApiAuthLayer),
 )
@@ -142,11 +158,74 @@ const ptyConnectApiRoutes = HttpApiBuilder.layer(PtyConnectApi).pipe(
   Layer.provide(ptyConnectHandlers),
   Layer.provide([ptyConnectHttpApiAuthLayer, workspaceRoutingLive, instanceContextLayer]),
 )
+
+function campaignTokenCount(info: Session.Info) {
+  if (!info.tokens) return 0
+  return (
+    info.tokens.input + info.tokens.output + info.tokens.reasoning + info.tokens.cache.read + info.tokens.cache.write
+  )
+}
+
+const campaignRuntimeLayer = Layer.effect(
+  CampaignController.RuntimeService,
+  Effect.gen(function* () {
+    const sessions = yield* Session.Service
+    const prompts = yield* SessionPrompt.Service
+    const statuses = yield* SessionStatus.Service
+    return CampaignController.RuntimeService.of({
+      listRoots: (limit) =>
+        sessions.list({ roots: true, limit }).pipe(
+          Effect.map((items) =>
+            items.map((item) => ({
+              id: item.id,
+              metadata: item.metadata,
+              cost: item.cost ?? 0,
+              tokens: campaignTokenCount(item),
+            })),
+          ),
+        ),
+      createRoot: (input) =>
+        sessions.create(input).pipe(
+          Effect.map((item) => ({
+            id: item.id,
+            metadata: item.metadata,
+            cost: item.cost ?? 0,
+            tokens: campaignTokenCount(item),
+          })),
+        ),
+      getUsage: (sessionID) =>
+        sessions.get(SessionID.make(sessionID)).pipe(
+          Effect.map((item) => ({ cost: item.cost ?? 0, tokens: campaignTokenCount(item) })),
+          Effect.orElseSucceed(() => ({ cost: 0, tokens: 0 })),
+        ),
+      status: (sessionID) => statuses.get(SessionID.make(sessionID)).pipe(Effect.map((status) => status.type)),
+      prompt: (sessionID, operationID, agent, text) =>
+        Effect.gen(function* () {
+          const messageID = MessageID.make(
+            `msg_cmp_${createHash("sha256").update(`${sessionID}:${operationID}`).digest("hex").slice(0, 20)}`,
+          )
+          const existing = yield* sessions
+            .findMessage(SessionID.make(sessionID), (message) => message.info.id === messageID)
+            .pipe(
+              Effect.map(Option.isSome),
+              Effect.orElseSucceed(() => false),
+            )
+          if (existing) return
+          yield* prompts
+            .prompt({ sessionID: SessionID.make(sessionID), messageID, agent, parts: [{ type: "text", text }] })
+            .pipe(Effect.asVoid, Effect.forkDetach)
+        }),
+      abort: (sessionID) => prompts.cancel(SessionID.make(sessionID)),
+    })
+  }),
+)
 const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
   Layer.provide([
     configHandlers,
+    campaignHandlers,
     experimentalHandlers,
     fileHandlers,
+    fundQualificationHandlers(InstanceHttpApi),
     instanceHandlers,
     liveHandlers,
     mcpHandlers,
@@ -164,7 +243,18 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
 )
 
 const instanceRoutes = instanceApiRoutes.pipe(
-  Layer.provide([httpApiAuthLayer, workspaceRoutingLive, instanceContextLayer, schemaErrorLayer]),
+  Layer.provide([
+    Layer.suspend(() =>
+      CampaignController.layer.pipe(
+        Layer.provide(CampaignController.artifactLayer),
+        Layer.provide(campaignRuntimeLayer),
+      ),
+    ),
+    httpApiAuthLayer,
+    workspaceRoutingLive,
+    instanceContextLayer,
+    schemaErrorLayer,
+  ]),
 )
 const serverRoutes = HttpApiBuilder.layer(Api).pipe(
   Layer.provide(handlers),
@@ -207,6 +297,7 @@ const lazyNode = <T extends LayerNode.Node<unknown, unknown>>(get: () => T) =>
   ) as T
 
 const app = LayerNode.group([
+  RobinhoodIntegration.node,
   Npm.node,
   FSUtil.node,
   Database.node,
@@ -269,7 +360,9 @@ export function createRoutes(
 ): Layer.Layer<never, EffectConfig.ConfigError, RouteRequirements> {
   return Layer.suspend(() =>
     Layer.mergeAll(
+      healthApiRoutes,
       rootApiRoutes,
+      integrationApiRoutes,
       eventApiRoutes,
       ptyConnectApiRoutes,
       instanceRoutes,

@@ -2056,23 +2056,24 @@ describe("validateDataExtractorTaskText", () => {
 describe("data_extractor analysis summary contract", () => {
   const promptPath = path.join(import.meta.dir, "../../src/agent/prompt/finny-data-extractor.txt")
   const cookbookPath = path.join(import.meta.dir, "../../../../data-agent/instructions.md")
+  const finalizerPath = path.join(import.meta.dir, "../../src/data/dataset-evidence-finalizer.ts")
 
-  test("prompt declares the optional analysis digest fields", async () => {
+  test("compact prompt delegates optional analysis digest fields to the runtime finalizer", async () => {
     const prompt = await fs.readFile(promptPath, "utf8")
-    expect(prompt).toContain("analysis_summary_path:")
-    expect(prompt).toContain("analysis_regime:")
-    expect(prompt).toContain("analysis_hypotheses:")
+    const finalizer = await fs.readFile(finalizerPath, "utf8")
+    expect(prompt).toContain("concise analysis covering data quality, coverage, market regime, and possible hypotheses")
+    expect(finalizer).toContain("analysis_summary_path:")
+    expect(finalizer).toContain("analysis_regime:")
+    expect(finalizer).toContain("analysis_hypotheses:")
   })
 
-  test("prompt and cookbook require candidate / requires-backtest wording, not confirmed edge", async () => {
+  test("compact guidance requests hypotheses without asserting a confirmed edge", async () => {
     const prompt = await fs.readFile(promptPath, "utf8")
     const cookbook = await fs.readFile(cookbookPath, "utf8")
-    expect(prompt.toLowerCase()).toContain("candidate")
-    expect(prompt.toLowerCase()).toContain("requires backtest")
-    expect(cookbook).toContain("requires backtest")
-    const hypotheses = Array.from(cookbook.matchAll(/"(Candidate [^"]*?requires backtest\.)"/g), (m) => m[1])
-    expect(hypotheses.length).toBeGreaterThan(0)
-    for (const h of hypotheses) expect(h.toLowerCase().startsWith("candidate ")).toBe(true)
+    expect(prompt.toLowerCase()).toContain("possible hypotheses")
+    expect(prompt.toLowerCase()).toContain("do not create strategies or run backtests")
+    expect(cookbook.toLowerCase()).toContain("regime analysis")
+    expect(`${prompt}\n${cookbook}`.toLowerCase()).not.toContain("confirmed edge")
   })
 
   test("cookbook recipe never asserts confirmed edge in generated hypotheses", async () => {

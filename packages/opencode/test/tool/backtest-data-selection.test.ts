@@ -3,13 +3,26 @@ import { BacktestRunner } from "../../src/backtest/runner"
 import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
 import {
   authoritativeBacktestInputIssue,
+  BacktestParameters,
   backtestAttemptFingerprint,
   backtestDataSourceSummary,
   experimentInputForBacktest,
   resolveBoundBacktestDates,
 } from "../../src/tool/backtest"
+import { BacktestSweepParameters } from "../../src/tool/backtest-sweep"
 
 describe("backtest data selection", () => {
+  test("requires exact sweep dates as a pair", () => {
+    const base = {
+      algorithmName: "spy-sma",
+      paramGrid: { fast: [8, 10] },
+    }
+    expect(BacktestSweepParameters.safeParse(base).success).toBe(true)
+    expect(BacktestSweepParameters.safeParse({ ...base, startDate: "2026-01-09" }).success).toBe(false)
+    expect(
+      BacktestSweepParameters.safeParse({ ...base, startDate: "2026-01-09", endDate: "2026-07-08" }).success,
+    ).toBe(true)
+  })
   test("changes the durable retry fingerprint when request or evidence changes", () => {
     const params = { algorithmName: "xrp-1d-strategy", interval: "1d", duration: "1y" }
     const provider = backtestAttemptFingerprint({ params, requestVersion: 1 })
@@ -35,7 +48,7 @@ describe("backtest data selection", () => {
     expect(v1).not.toBe(v2)
   })
 
-  test("keeps provider fetch research-only and rejects it for qualification", () => {
+  test("uses provider fetch as the normal Crucible source while keeping promotion qualification separate", () => {
     expect(
       BacktestRunner.qualificationDataSourceIssue({
         engineMode: "strict_v2",
@@ -50,7 +63,16 @@ describe("backtest data selection", () => {
         dataSource: { kind: "provider_fetch" },
         qualification: qualificationInputForResearch(),
       }),
-    ).toContain("research-only")
+    ).toContain("Qualification requires")
+    expect(backtestDataSourceSummary({ kind: "provider_fetch" })).toBe(
+      "Data source: Crucible-managed provider pipeline (strict collection and quality validation)",
+    )
+  })
+
+  test("exposes no repaired-data mode in the user-facing backtest schema", () => {
+    expect(Object.keys(BacktestParameters.shape)).not.toContain("dataQualityMode")
+    expect(Object.keys(BacktestParameters.shape)).not.toContain("repairOutliersApproved")
+    expect(JSON.stringify(BacktestParameters)).not.toContain("repair_outliers")
   })
 
   test("does not label research-only verified evidence as qualification eligible", () => {
@@ -113,7 +135,7 @@ describe("backtest data selection", () => {
     ).toBeUndefined()
   })
 
-  test("isolates provider-fetched research from unrelated experiment snapshots", () => {
+  test("isolates provider-fetched Crucible runs from unrelated experiment snapshots", () => {
     const left = experimentInputForBacktest({
       dataSourceKind: "provider_fetch",
       sessionId: "ses_left",

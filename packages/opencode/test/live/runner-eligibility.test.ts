@@ -31,7 +31,7 @@ describe("LiveRunner eligibility gate", () => {
 })
 
 describe("LiveRunner multi-market start target", () => {
-  test("normalizes supported markets for Alpaca, Binance, and IBKR", () => {
+  test("normalizes supported markets for Alpaca, Binance, IBKR, and Robinhood", () => {
     expect(
       LiveRunner.resolveStartTarget({
         symbol: "aapl",
@@ -59,6 +59,13 @@ describe("LiveRunner multi-market start target", () => {
         accountProviderID: "ibkr-options",
       }),
     ).toEqual({ brokerKind: "ibkr", symbol: "SPY/20260619/500C" })
+
+    expect(
+      LiveRunner.resolveStartTarget({
+        symbol: "BTC/USD",
+        accountProviderID: "robinhood-rhx-primary",
+      }),
+    ).toEqual({ brokerKind: "robinhood", symbol: "BTC-USD" })
   })
 
   test("rejects a broker/account mismatch before reading credentials", () => {
@@ -78,6 +85,15 @@ describe("LiveRunner multi-market start target", () => {
         accountProviderID: "binance-testnet-crypto",
       }),
     ).toThrow('Symbol "AAPL" is not compatible with Binance')
+  })
+
+  test("rejects a market Robinhood cannot execute", () => {
+    expect(() =>
+      LiveRunner.resolveStartTarget({
+        symbol: "BTC/USDT",
+        accountProviderID: "robinhood-rhx-primary",
+      }),
+    ).toThrow("Robinhood")
   })
 })
 

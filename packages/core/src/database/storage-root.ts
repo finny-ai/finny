@@ -1,9 +1,11 @@
 import fs from "fs/promises"
 import nodePath from "path"
+import { randomUUID } from "crypto"
 import { sql } from "drizzle-orm"
 import { Effect } from "effect"
 import type { EffectDrizzleSqlite } from "@opencode-ai/effect-drizzle-sqlite"
 import { Flag } from "../flag/flag"
+import { Flock } from "../util/flock"
 
 type Database = EffectDrizzleSqlite.EffectSQLiteDatabase
 type Column = { name: string; notnull: number; dflt_value: unknown; pk: number }
@@ -124,13 +126,38 @@ function buildMergePlan(input: { table: string; target: Column[]; source: Column
 }
 
 function collisionCount(db: Database, plan: MergePlan) {
-  const differs = plan.shared
+  // Project ids are derived from their worktree. Independent Finny/opencode
+  // processes routinely touch the same project row at different times, so the
+  // timestamps are replication metadata rather than a meaningful divergence.
+  // Every other shared field (including worktree and sandboxes) must still
+  // match exactly or migration stops with both backups retained.
+  const compared =
+    plan.name === identifier("project")
+      ? plan.shared.filter((column) => !["time_created", "time_updated"].includes(column.name))
+      : plan.shared
+  if (compared.length === 0) return Effect.succeed({ count: 0 })
+  const differs = compared
     .map((column) => `target.${identifier(column.name)} IS NOT source.${identifier(column.name)}`)
     .join(" OR ")
   return db.get<{ count: number }>(
     sql.raw(
       `SELECT COUNT(*) AS count FROM main.${plan.name} target JOIN legacy.${plan.name} source ON ${plan.join} WHERE ${differs}`,
     ),
+  )
+}
+
+function mergeProjectTimestamps(db: Database, plan: MergePlan) {
+  if (plan.name !== identifier("project")) return Effect.void
+  const names = new Set(plan.shared.map((column) => column.name))
+  if (!names.has("time_created") || !names.has("time_updated")) return Effect.void
+  return db.run(
+    sql.raw(`
+      UPDATE main.${plan.name} AS target
+      SET time_created = MIN(target.time_created, source.time_created),
+          time_updated = MAX(target.time_updated, source.time_updated)
+      FROM legacy.${plan.name} AS source
+      WHERE ${plan.join}
+    `),
   )
 }
 
@@ -168,14 +195,16 @@ function mergeTable(db: Database, table: string) {
     if (!plan) return
     const collision = yield* collisionCount(db, plan)
     yield* requireNoCollisions({ table, count: collision?.count ?? 0 })
+    yield* mergeProjectTimestamps(db, plan)
     yield* insertMissingRows(db, plan)
   })
 }
 
 function ensureBackup(db: Database, input: { schema: "main" | "legacy"; path: string }) {
   return Effect.gen(function* () {
-    if (yield* fileExists(input.path)) return
-    yield* db.run(sql.raw(`VACUUM ${input.schema} INTO ${literal(input.path)}`))
+    const path = (yield* fileExists(input.path)) ? `${input.path}.retry-${Date.now()}-${randomUUID()}` : input.path
+    yield* db.run(sql.raw(`VACUUM ${input.schema} INTO ${literal(path)}`))
+    return path
   })
 }
 
@@ -208,14 +237,18 @@ function recordMigration(db: Database, paths: MigrationPaths) {
 
 function mergeAttachedDatabase(db: Database, paths: MigrationPaths) {
   return Effect.gen(function* () {
-    yield* ensureBackup(db, { schema: "legacy", path: paths.sourceBackup })
-    yield* ensureBackup(db, { schema: "main", path: paths.targetBackup })
+    // A previous failed attempt may have already created the canonical backup
+    // names. Preserve those snapshots and take fresh retry backups so the
+    // migration record always points at the exact databases being merged now.
+    const sourceBackup = yield* ensureBackup(db, { schema: "legacy", path: paths.sourceBackup })
+    const targetBackup = yield* ensureBackup(db, { schema: "main", path: paths.targetBackup })
+    const attempt = { ...paths, sourceBackup, targetBackup }
     yield* db.transaction((tx) =>
       Effect.gen(function* () {
         yield* tx.run("PRAGMA defer_foreign_keys = ON")
         for (const table of tables) yield* mergeTable(tx, table)
         yield* requireTaskLinks(tx)
-        yield* recordMigration(tx, paths)
+        yield* recordMigration(tx, attempt)
       }),
     )
   })
@@ -279,9 +312,7 @@ export function prepareTarget(db: Database, target: string) {
 
 function taskLegacyTableExists(db: Database, table: string) {
   return db.get<{ found: number }>(
-    sql.raw(
-      `SELECT 1 AS found FROM task_legacy.sqlite_master WHERE type = 'table' AND name = ${literal(table)}`,
-    ),
+    sql.raw(`SELECT 1 AS found FROM task_legacy.sqlite_master WHERE type = 'table' AND name = ${literal(table)}`),
   )
 }
 
@@ -330,11 +361,13 @@ function mergeTaskOnlyBackup(db: Database, target: string) {
           yield* mergeOneTaskLegacyTable(db, "watcher_state")
           if (yield* tableExists(db, { schema: "main", table: "task_run" })) {
             // Drop rows that cannot satisfy session FKs after the unified schema.
-            yield* db.run(sql.raw(`
+            yield* db.run(
+              sql.raw(`
               DELETE FROM task_run
               WHERE id NOT IN (SELECT id FROM session)
                  OR parent_session_id NOT IN (SELECT id FROM session)
-            `))
+            `),
+            )
           }
         }),
       ),
@@ -357,6 +390,16 @@ export function reconcile(db: Database, target: string) {
     yield* reconcileLegacySource(db, migrationPaths(target))
     yield* mergeTaskOnlyBackup(db, target)
   })
+}
+
+export function withLock<A, E, R>(target: string, effect: Effect.Effect<A, E, R>) {
+  if (target === ":memory:") return effect
+  return Effect.scoped(
+    Effect.gen(function* () {
+      yield* Flock.effect(`storage-root-reconcile:${nodePath.resolve(target)}`)
+      return yield* effect
+    }),
+  )
 }
 
 export * as StorageRoot from "./storage-root"

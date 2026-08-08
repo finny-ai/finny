@@ -6,7 +6,7 @@ import { Process } from "@/util/process"
 import { Log } from "@/util/log"
 import type { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
-import { FINNY_BROKER_PY } from "@/backtest/broker-py"
+import { FINNY_LIVE_BROKER_PY } from "@/backtest/live-broker-py"
 import { PythonEnv } from "./python-env"
 import { BrokerRegistry, type BrokerKind, type BrokerMode } from "./brokers"
 import { validateSymbolForBroker } from "./brokers/policy"
@@ -28,6 +28,7 @@ import {
   type PaperExecutionContractV2,
   verifyPaperActivationReceipt,
 } from "./execution-risk-gateway"
+import { workerRuntimeEnv } from "@/security/worker-shell"
 
 const log = Log.create({ service: "live" })
 
@@ -475,7 +476,7 @@ def _default_ibkr_client_id(run_id: str) -> int:
     return 1000 + (zlib.crc32(run_id.encode("utf-8")) % 9000)
 
 
-def make_broker(kind: str, run_id: str):
+def make_broker(kind: str, run_id: str, symbol: str):
     if kind == "alpaca":
         from finny_broker import AlpacaBroker
         key_id = os.environ.get("ALPACA_API_KEY_ID")
@@ -530,6 +531,16 @@ def make_broker(kind: str, run_id: str):
         broker = IBKRBroker(account_id=account_id, host=host, port=port, client_id=client_id)
         connection_label = "IB Gateway" if connection_app == "gateway" else "TWS"
         return broker, f"IBKR {connection_label} {'paper' if mode != 'live' else 'LIVE'}"
+    if kind == "robinhood":
+        from finny_broker import RobinhoodBroker
+        profile = os.environ.get("RHX_PROFILE", "default")
+        command = os.environ.get("RHX_BIN", "rhx")
+        broker = RobinhoodBroker(
+            profile=profile,
+            command=command,
+            symbol=symbol,
+        )
+        return broker, f"Robinhood rhx profile {profile} (LIVE, shadow-gated)"
     raise RuntimeError(f"Unknown broker kind: {kind}")
 
 
@@ -552,7 +563,7 @@ def main():
     poll_seconds = max(30, min(900, interval_seconds.get(interval, 60)))
 
     try:
-        broker, broker_label = make_broker(broker_kind, run_id)
+        broker, broker_label = make_broker(broker_kind, run_id, symbol)
     except Exception as e:
         emit({"type": "error", "message": f"Connect to {broker_kind} failed: {e}"})
         sys.exit(2)
@@ -743,9 +754,23 @@ if __name__ == "__main__":
     // Resolve account label and mode (paper/testnet/live) for display.
     const accounts = await BrokerRegistry.listAccounts(brokerKind)
     const account = accounts.find((a) => a.providerID === params.accountProviderID)
+    const assetClass = spec.detectAssetClass(symbol)
+    if (account?.assetClasses && assetClass && !account.assetClasses.includes(assetClass)) {
+      throw new StartRejectedError(
+        `${spec.displayName} ${assetClass} authentication is not ready for this account. Reconnect it in Settings → Brokerages.`,
+      )
+    }
     const accountLabel = account?.label
     const accountMode = account?.mode ?? creds.mode ?? spec.mode
-    if (accountMode === "live") {
+    const submissionMode = params.activationReceipt ? "paper" : "shadow"
+    if (brokerKind === "robinhood" && submissionMode !== "shadow") {
+      throw new StartRejectedError("Robinhood is shadow-only; order submission cannot be activated.")
+    }
+    // Robinhood consumes live account data through a structurally read-only,
+    // shadow-only adapter. Its promotion gate therefore remains paper-risk;
+    // every other live-money route stays prohibited by the public v1 contract.
+    const promotionMode: BrokerMode = brokerKind === "robinhood" && submissionMode === "shadow" ? "paper" : accountMode
+    if (accountMode === "live" && brokerKind !== "robinhood") {
       throw new StartRejectedError("Live-money trading is not shipped in the Finny Hedge Fund v1 contract.")
     }
     if (
@@ -762,12 +787,13 @@ if __name__ == "__main__":
       algorithm: params.algorithm,
       runId: params.runId,
       symbol,
-      mode: accountMode,
+      mode: promotionMode,
       controllerApproval: params.controllerApproval,
     })
     const eligibility = promotion.status
-    if (!promotion.ok || !canStartForMode(eligibility, accountMode)) {
-      const need = "a matching paper approval record"
+    const isLiveMoney = promotionMode === "live"
+    if (!promotion.ok || !canStartForMode(eligibility, promotionMode)) {
+      const need = isLiveMoney ? "a separate live_eligible record" : "a matching paper approval record"
       throw new StartRejectedError(
         `Paper trading is blocked for run ${params.runId} until it has ${need}. ${promotion.errors.join("; ") || `Current eligibility: ${eligibility ?? "none"}`}.`,
       )
@@ -807,7 +833,6 @@ if __name__ == "__main__":
       brokerMode: accountMode,
       accountScopeHash: scopeHash,
     }
-    const submissionMode = params.activationReceipt ? "paper" : "shadow"
     if (submissionMode === "paper") {
       if (brokerKind !== "alpaca" || accountMode !== "paper") {
         throw new StartRejectedError("v1 paper submission supports Alpaca Paper only.")
@@ -910,7 +935,7 @@ if __name__ == "__main__":
         pushLog(preState, "info", `Using python at ${env.python}`)
         notify(preState)
 
-        await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_BROKER_PY)
+        await fs.writeFile(path.join(tmpDir, "finny_broker.py"), FINNY_LIVE_BROKER_PY)
         await fs.writeFile(path.join(tmpDir, "execution_risk_gateway.py"), EXECUTION_RISK_GATEWAY_PY)
         await fs.writeFile(path.join(tmpDir, "strategy.py"), params.algorithm.code)
         await fs.writeFile(
@@ -931,7 +956,9 @@ if __name__ == "__main__":
 
         const proc = Process.spawn([env.python, "live_worker.py"], {
           cwd: tmpDir,
+          inheritEnv: false,
           env: {
+            ...workerRuntimeEnv(process.env),
             FINNY_BROKER_KIND: brokerKind,
             ...spec.envVars(creds),
           },
@@ -1155,7 +1182,7 @@ if __name__ == "__main__":
         if (status === "halted" || ["stale_account", "unresolved_divergence"].includes(reason ?? "")) {
           state.shadowProof.fatalErrors += 1
         }
-        if (reason && (reason !== "accepted_shadow" && reason !== "accepted_paper" || status === "halted")) {
+        if (reason && ((reason !== "accepted_shadow" && reason !== "accepted_paper") || status === "halted")) {
           const level: LogEntry["level"] = status === "halted" ? "error" : "warn"
           pushLog(state, level, `Execution gateway: ${reason}`)
           emitLedger(state, {

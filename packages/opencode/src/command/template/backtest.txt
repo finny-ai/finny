@@ -43,6 +43,9 @@ Ask the user to choose:
 Calculate the start and end dates based on the user's selection (end date defaults to today).
 
 Call `finny_backtest`; the runtime generates the trusted strict-v2 engine shim.
+Crucible collects and validates the requested market data through its own
+provider pipeline. Do not launch a Data Agent to unlock this command, and do not
+offer a repaired-data mode if collection or strict quality validation blocks.
 If `finny_algorithm_get` reports `legacyUnsafeCustomRunner: true`, explain that
 the imported runner is quarantined and the strategy must be migrated to the
 strict `Strategy(broker, params=None)` contract before product backtesting.
@@ -62,4 +65,5 @@ Parse the output and present results in a clear format:
 | Total Trades | N |
 | Profit Factor | X.XX |
 
-If the backtest fails, show the error and suggest possible fixes.
+If data collection fails, show the exact blocker and keep the confirmed symbol,
+interval, and date window unchanged.

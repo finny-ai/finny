@@ -38,7 +38,7 @@ GROWTH_METHODS = {"append", "add", "update", "extend", "appendleft", "push"}
 # get checked. Strategies may define either one or, rarely, both.
 ENTRY_METHOD_NAMES = ("on_bar", "on_tick", "handle_bar", "step", "next", "process_bar")
 PRIVATE_STRATEGY_ATTRS = {"_broker", "_market", "_account", "account", "market"}
-REFLECTION_CALLS = {"getattr", "setattr", "delattr", "vars", "dir", "globals", "locals"}
+REFLECTION_CALLS = {"getattr", "setattr", "delattr", "vars", "dir", "globals", "locals", "type"}
 DISALLOWED_CALLS = {"eval", "exec", "compile", "__import__", "open", "input"}
 FORBIDDEN_IMPORT_ROOTS = {
     "asyncio", "importlib", "io", "os", "pathlib", "pickle", "random", "requests",
@@ -159,6 +159,15 @@ def check_strict_security(tree, cls):
                 })
                 return diagnostics
         if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__") and node.attr.endswith("__"):
+                diagnostics.append({
+                    "code": "FORBIDDEN_REFLECTION",
+                    "severity": "error",
+                    "message": f"Dunder attribute access `.{node.attr}` is not allowed in strict strategy code.",
+                    "line": node.lineno,
+                    "fix": "Use only the public broker API and ordinary strategy state.",
+                })
+                return diagnostics
             receiver_is_self_broker = (
                 isinstance(node.value, ast.Attribute)
                 and isinstance(node.value.value, ast.Name)

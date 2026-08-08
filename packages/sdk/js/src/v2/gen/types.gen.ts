@@ -5,16 +5,8 @@ export type ClientOptions = {
 }
 
 export type Event =
-  | EventModelsDevRefreshed
   | EventPluginAdded
   | EventCatalogModelUpdated
-  | EventSessionCreated
-  | EventSessionUpdated
-  | EventSessionDeleted
-  | EventMessageUpdated
-  | EventMessageRemoved
-  | EventMessagePartUpdated
-  | EventMessagePartRemoved
   | EventSessionNextAgentSwitched
   | EventSessionNextModelSwitched
   | EventSessionNextMoved
@@ -46,6 +38,16 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventPermissionAsked
+  | EventPermissionReplied
+  | EventModelsDevRefreshed
+  | EventSessionCreated
+  | EventSessionUpdated
+  | EventSessionDeleted
+  | EventMessageUpdated
+  | EventMessageRemoved
+  | EventMessagePartUpdated
+  | EventMessagePartRemoved
   | EventMessagePartDelta
   | EventSessionDiff
   | EventSessionError
@@ -67,8 +69,6 @@ export type Event =
   | EventQuestionV2Rejected
   | EventTodoUpdated
   | EventLspUpdated
-  | EventPermissionAsked
-  | EventPermissionReplied
   | EventTuiPromptAppend2
   | EventTuiCommandExecute2
   | EventTuiToastShow2
@@ -86,11 +86,11 @@ export type Event =
   | EventVcsBranchUpdated
   | EventWorktreeReady
   | EventWorktreeFailed
-  | EventServerConnected
-  | EventGlobalDisposed
   | EventWorkspaceReady
   | EventWorkspaceFailed
   | EventWorkspaceStatus
+  | EventServerConnected
+  | EventGlobalDisposed
   | EventServerInstanceDisposed
 
 export type QuestionReplied = {
@@ -145,6 +145,12 @@ export type MoveSessionError = {
   data: {
     message: string
   }
+}
+
+export type Prompt = {
+  text: string
+  files?: Array<PromptFileAttachment>
+  agents?: Array<PromptAgentAttachment>
 }
 
 export type SnapshotFileDiff = {
@@ -636,12 +642,6 @@ export type Part =
   | RetryPart
   | CompactionPart
 
-export type Prompt = {
-  text: string
-  files?: Array<PromptFileAttachment>
-  agents?: Array<PromptAgentAttachment>
-}
-
 export type Pty = {
   id: string
   title: string
@@ -690,7 +690,7 @@ export type SessionStatus =
     }
   | {
       type: "preflight"
-      phase: "workspace" | "python" | "install" | "ready"
+      phase: "provider" | "workspace" | "python" | "install" | "ready"
       message: string
       workspaceSlug?: string
       steps?: Array<string>
@@ -738,13 +738,6 @@ export type GlobalEvent = {
   payload:
     | {
         id: string
-        type: "models-dev.refreshed"
-        properties: {
-          [key: string]: unknown
-        }
-      }
-    | {
-        id: string
         type: "plugin.added"
         properties: {
           id: string
@@ -755,64 +748,6 @@ export type GlobalEvent = {
         type: "catalog.model.updated"
         properties: {
           model: ModelV2Info
-        }
-      }
-    | {
-        id: string
-        type: "session.created"
-        properties: {
-          sessionID: string
-          info: Session
-        }
-      }
-    | {
-        id: string
-        type: "session.updated"
-        properties: {
-          sessionID: string
-          info: Session
-        }
-      }
-    | {
-        id: string
-        type: "session.deleted"
-        properties: {
-          sessionID: string
-          info: Session
-        }
-      }
-    | {
-        id: string
-        type: "message.updated"
-        properties: {
-          sessionID: string
-          info: Message
-        }
-      }
-    | {
-        id: string
-        type: "message.removed"
-        properties: {
-          sessionID: string
-          messageID: string
-        }
-      }
-    | {
-        id: string
-        type: "message.part.updated"
-        properties: {
-          sessionID: string
-          part: Part
-          time: number
-        }
-      }
-    | {
-        id: string
-        type: "message.part.removed"
-        properties: {
-          sessionID: string
-          messageID: string
-          partID: string
         }
       }
     | {
@@ -1209,6 +1144,98 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "permission.asked"
+        properties: {
+          id: string
+          sessionID: string
+          permission: string
+          patterns: Array<string>
+          metadata: {
+            [key: string]: unknown
+          }
+          always: Array<string>
+          tool?: {
+            messageID: string
+            callID: string
+          }
+        }
+      }
+    | {
+        id: string
+        type: "permission.replied"
+        properties: {
+          sessionID: string
+          requestID: string
+          reply: "once" | "always" | "reject"
+        }
+      }
+    | {
+        id: string
+        type: "models-dev.refreshed"
+        properties: {
+          [key: string]: unknown
+        }
+      }
+    | {
+        id: string
+        type: "session.created"
+        properties: {
+          sessionID: string
+          info: Session
+        }
+      }
+    | {
+        id: string
+        type: "session.updated"
+        properties: {
+          sessionID: string
+          info: Session
+        }
+      }
+    | {
+        id: string
+        type: "session.deleted"
+        properties: {
+          sessionID: string
+          info: Session
+        }
+      }
+    | {
+        id: string
+        type: "message.updated"
+        properties: {
+          sessionID: string
+          info: Message
+        }
+      }
+    | {
+        id: string
+        type: "message.removed"
+        properties: {
+          sessionID: string
+          messageID: string
+        }
+      }
+    | {
+        id: string
+        type: "message.part.updated"
+        properties: {
+          sessionID: string
+          part: Part
+          time: number
+        }
+      }
+    | {
+        id: string
+        type: "message.part.removed"
+        properties: {
+          sessionID: string
+          messageID: string
+          partID: string
+        }
+      }
+    | {
+        id: string
         type: "message.part.delta"
         properties: {
           sessionID: string
@@ -1388,33 +1415,6 @@ export type GlobalEvent = {
         type: "lsp.updated"
         properties: {
           [key: string]: unknown
-        }
-      }
-    | {
-        id: string
-        type: "permission.asked"
-        properties: {
-          id: string
-          sessionID: string
-          permission: string
-          patterns: Array<string>
-          metadata: {
-            [key: string]: unknown
-          }
-          always: Array<string>
-          tool?: {
-            messageID: string
-            callID: string
-          }
-        }
-      }
-    | {
-        id: string
-        type: "permission.replied"
-        properties: {
-          sessionID: string
-          requestID: string
-          reply: "once" | "always" | "reject"
         }
       }
     | {
@@ -1631,13 +1631,6 @@ export type GlobalEvent = {
         }
       }
     | EventServerInstanceDisposed
-    | SyncEventSessionCreated
-    | SyncEventSessionUpdated
-    | SyncEventSessionDeleted
-    | SyncEventMessageUpdated
-    | SyncEventMessageRemoved
-    | SyncEventMessagePartUpdated
-    | SyncEventMessagePartRemoved
     | SyncEventSessionNextAgentSwitched
     | SyncEventSessionNextModelSwitched
     | SyncEventSessionNextMoved
@@ -1665,6 +1658,13 @@ export type GlobalEvent = {
     | SyncEventSessionNextRetried
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionEnded
+    | SyncEventSessionCreated
+    | SyncEventSessionUpdated
+    | SyncEventSessionDeleted
+    | SyncEventMessageUpdated
+    | SyncEventMessageRemoved
+    | SyncEventMessagePartUpdated
+    | SyncEventMessagePartRemoved
 }
 
 /**
@@ -2041,6 +2041,13 @@ export type Config = {
     tail_turns?: number
     preserve_recent_tokens?: number
     reserved?: number
+    /**
+     * Trigger compaction when context usage reaches this fraction of the model context window (0–1, default 0.6). Set to 1 (or any value >= 1) to disable early compaction and only compact near the hard limit. Applies per-model automatically via the model's reported context window.
+     */
+    ratio?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    ratio_overrides?: {
+      [key: string]: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    }
   }
   experimental?: {
     disable_paste_summary?: boolean
@@ -2327,6 +2334,20 @@ export type File = {
   status: "added" | "deleted" | "modified"
 }
 
+export type FundQualificationImportError = {
+  name: "FundQualificationImportError"
+  data: {
+    message: string
+  }
+}
+
+export type FundQualificationArtifactError = {
+  name: "FundQualificationArtifactError"
+  data: {
+    message: string
+  }
+}
+
 export type Path = {
   home: string
   state: string
@@ -2407,6 +2428,124 @@ export type FormatterStatus = {
   name: string
   extensions: Array<string>
   enabled: boolean
+}
+
+export type LiveRun = {
+  id: string
+  algorithmId: string
+  algorithmName: string
+  backtestRunId: string
+  symbol: string
+  interval: string
+  brokerKind: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  accountProviderID: string
+  accountLabel?: string
+  mode?: "paper" | "testnet" | "live"
+  executionMode?: "shadow" | "paper"
+  directory?: string
+  status: "starting" | "running" | "stopped" | "error"
+  startedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  stoppedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  error?: string
+  lastBar?: {
+    timestamp: string
+    bar_start?: string
+    bar_end?: string
+    is_final?: boolean
+    session_id?: string
+    source_timestamp?: string
+    open: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    high: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    low: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    close: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    volume: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  equity?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  cash?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  positions: {
+    [key: string]: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+  orders: Array<{
+    order_id: string
+    symbol: string
+    side: string
+    qty: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    price: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    status: string
+    ts: string
+  }>
+  logs: Array<{
+    ts: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    level: "info" | "warn" | "error"
+    message: string
+  }>
+  shadowProof: {
+    finalizedDecisionBars: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    firstBarStart?: string
+    firstBarEnd?: string
+    lastBarEnd?: string
+    sessionIds: Array<string>
+    reconciliationDivergences: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    fatalErrors: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }
+}
+
+export type LiveRunNotFoundError = {
+  _tag: "LiveRunNotFoundError"
+  runID: string
+  message: string
+}
+
+export type LiveAlgorithmInfo = {
+  algorithmId: string
+  userId: string
+  name: string
+  code: string
+  language: string
+  version: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  status: string
+  description?: string
+  config?: string
+  backtestCode?: string
+  reasoning?: string
+  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  targetBrokerage?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  time_created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  time_updated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type LiveStartPayload = {
+  algorithm: LiveAlgorithmInfo
+  runId: string
+  symbol: string
+  interval: string
+  accountProviderID: string
+  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  activationReceipt?: {
+    schema: "finny.paper_activation_receipt"
+    version: 1
+    runId: string
+    strictRunId: string
+    strategyHash: string
+    riskPolicyHash: string
+    accountScopeHash: string
+    approvedByDiscordUserId: string
+    shadowProofHash: string
+    activatedAt: string
+    receiptHash: string
+    signature: string
+  }
+}
+
+export type LiveRunStartError = {
+  _tag: "LiveRunStartError"
+  message: string
+}
+
+export type ConflictError = {
+  _tag: "ConflictError"
+  message: string
+  resource?: string
 }
 
 export type McpStatusConnected = {
@@ -2717,6 +2856,64 @@ export type WorkspaceWarpError = {
   }
 }
 
+export type Campaign = {
+  id: string
+  goal: string
+  agent: string
+  status: "active" | "stopped" | "aborted"
+  reason?: string
+  createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  budget: {
+    maxSessions: number
+    maxTurns: number
+    maxTokens: number
+    maxCost: number
+    maxWallClockMs: number
+  }
+  stop: {
+    maxRounds: number
+    targetSharpe?: number
+    maxDrawdown?: number
+  }
+  rounds: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  candidates: Array<{
+    id: string
+    prompt: string
+    parentCandidateID?: string
+    sessionID?: string
+    status: "queued" | "running" | "idle" | "aborted" | "failed"
+    turns: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    manifestIDs: Array<string>
+    lastOperationID?: string
+  }>
+  operations: {
+    [key: string]: {
+      kind: string
+      requestHash: string
+      result?: unknown
+    }
+  }
+  events: Array<{
+    cursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    time: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    type: string
+    candidateID?: string
+    sessionID?: string
+    data?: {
+      [key: string]: unknown
+    }
+  }>
+  nextCursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type CampaignError = {
+  name: "CampaignError"
+  data: {
+    message: string
+  }
+}
+
 export type UnauthorizedError = {
   _tag: "UnauthorizedError"
   message: string
@@ -2739,12 +2936,6 @@ export type SessionNotFoundError = {
   _tag: "SessionNotFoundError"
   sessionID: string
   message: string
-}
-
-export type ConflictError = {
-  _tag: "ConflictError"
-  message: string
-  resource?: string
 }
 
 export type ServiceUnavailableError = {
@@ -3042,113 +3233,6 @@ export type EventServerInstanceDisposed = {
   type: "server.instance.disposed"
   properties: {
     directory: string
-  }
-}
-
-export type SyncEventSessionCreated = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "session.created.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      info: Session
-    }
-  }
-}
-
-export type SyncEventSessionUpdated = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "session.updated.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      info: Session
-    }
-  }
-}
-
-export type SyncEventSessionDeleted = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "session.deleted.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      info: Session
-    }
-  }
-}
-
-export type SyncEventMessageUpdated = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "message.updated.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      info: Message
-    }
-  }
-}
-
-export type SyncEventMessageRemoved = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "message.removed.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      messageID: string
-    }
-  }
-}
-
-export type SyncEventMessagePartUpdated = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "message.part.updated.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      part: Part
-      time: number
-    }
-  }
-}
-
-export type SyncEventMessagePartRemoved = {
-  type: "sync"
-  id: string
-  syncEvent: {
-    type: "message.part.removed.1"
-    id: string
-    seq: number
-    aggregateID: string
-    data: {
-      sessionID: string
-      messageID: string
-      partID: string
-    }
   }
 }
 
@@ -3686,6 +3770,113 @@ export type SyncEventSessionNextCompactionEnded = {
       reason: "auto" | "manual"
       text: string
       recent: string
+    }
+  }
+}
+
+export type SyncEventSessionCreated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.created.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      info: Session
+    }
+  }
+}
+
+export type SyncEventSessionUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      info: Session
+    }
+  }
+}
+
+export type SyncEventSessionDeleted = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.deleted.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      info: Session
+    }
+  }
+}
+
+export type SyncEventMessageUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      info: Message
+    }
+  }
+}
+
+export type SyncEventMessageRemoved = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.removed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      messageID: string
+    }
+  }
+}
+
+export type SyncEventMessagePartUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.part.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      part: Part
+      time: number
+    }
+  }
+}
+
+export type SyncEventMessagePartRemoved = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "message.part.removed.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      sessionID: string
+      messageID: string
+      partID: string
     }
   }
 }
@@ -4240,14 +4431,6 @@ export type ProjectCopyCopy = {
   directory: string
 }
 
-export type EventModelsDevRefreshed = {
-  id: string
-  type: "models-dev.refreshed"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
 export type EventPluginAdded = {
   id: string
   type: "plugin.added"
@@ -4357,71 +4540,6 @@ export type EventCatalogModelUpdated = {
   type: "catalog.model.updated"
   properties: {
     model: ModelV2Info1
-  }
-}
-
-export type EventSessionCreated = {
-  id: string
-  type: "session.created"
-  properties: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type EventSessionUpdated = {
-  id: string
-  type: "session.updated"
-  properties: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type EventSessionDeleted = {
-  id: string
-  type: "session.deleted"
-  properties: {
-    sessionID: string
-    info: Session
-  }
-}
-
-export type EventMessageUpdated = {
-  id: string
-  type: "message.updated"
-  properties: {
-    sessionID: string
-    info: Message
-  }
-}
-
-export type EventMessageRemoved = {
-  id: string
-  type: "message.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-  }
-}
-
-export type EventMessagePartUpdated = {
-  id: string
-  type: "message.part.updated"
-  properties: {
-    sessionID: string
-    part: Part
-    time: number
-  }
-}
-
-export type EventMessagePartRemoved = {
-  id: string
-  type: "message.part.removed"
-  properties: {
-    sessionID: string
-    messageID: string
-    partID: string
   }
 }
 
@@ -4848,6 +4966,108 @@ export type EventSessionNextCompactionEnded = {
   }
 }
 
+export type EventPermissionAsked = {
+  id: string
+  type: "permission.asked"
+  properties: {
+    id: string
+    sessionID: string
+    permission: string
+    patterns: Array<string>
+    metadata: {
+      [key: string]: unknown
+    }
+    always: Array<string>
+    tool?: {
+      messageID: string
+      callID: string
+    }
+  }
+}
+
+export type EventPermissionReplied = {
+  id: string
+  type: "permission.replied"
+  properties: {
+    sessionID: string
+    requestID: string
+    reply: "once" | "always" | "reject"
+  }
+}
+
+export type EventModelsDevRefreshed = {
+  id: string
+  type: "models-dev.refreshed"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventSessionCreated = {
+  id: string
+  type: "session.created"
+  properties: {
+    sessionID: string
+    info: Session
+  }
+}
+
+export type EventSessionUpdated = {
+  id: string
+  type: "session.updated"
+  properties: {
+    sessionID: string
+    info: Session
+  }
+}
+
+export type EventSessionDeleted = {
+  id: string
+  type: "session.deleted"
+  properties: {
+    sessionID: string
+    info: Session
+  }
+}
+
+export type EventMessageUpdated = {
+  id: string
+  type: "message.updated"
+  properties: {
+    sessionID: string
+    info: Message
+  }
+}
+
+export type EventMessageRemoved = {
+  id: string
+  type: "message.removed"
+  properties: {
+    sessionID: string
+    messageID: string
+  }
+}
+
+export type EventMessagePartUpdated = {
+  id: string
+  type: "message.part.updated"
+  properties: {
+    sessionID: string
+    part: Part
+    time: number
+  }
+}
+
+export type EventMessagePartRemoved = {
+  id: string
+  type: "message.part.removed"
+  properties: {
+    sessionID: string
+    messageID: string
+    partID: string
+  }
+}
+
 export type EventMessagePartDelta = {
   id: string
   type: "message.part.delta"
@@ -5052,35 +5272,6 @@ export type EventLspUpdated = {
   }
 }
 
-export type EventPermissionAsked = {
-  id: string
-  type: "permission.asked"
-  properties: {
-    id: string
-    sessionID: string
-    permission: string
-    patterns: Array<string>
-    metadata: {
-      [key: string]: unknown
-    }
-    always: Array<string>
-    tool?: {
-      messageID: string
-      callID: string
-    }
-  }
-}
-
-export type EventPermissionReplied = {
-  id: string
-  type: "permission.replied"
-  properties: {
-    sessionID: string
-    requestID: string
-    reply: "once" | "always" | "reject"
-  }
-}
-
 export type EventMcpToolsChanged = {
   id: string
   type: "mcp.tools.changed"
@@ -5220,22 +5411,6 @@ export type EventWorktreeFailed = {
   }
 }
 
-export type EventServerConnected = {
-  id: string
-  type: "server.connected"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
-export type EventGlobalDisposed = {
-  id: string
-  type: "global.disposed"
-  properties: {
-    [key: string]: unknown
-  }
-}
-
 export type EventWorkspaceReady = {
   id: string
   type: "workspace.ready"
@@ -5261,6 +5436,22 @@ export type EventWorkspaceStatus = {
   }
 }
 
+export type EventServerConnected = {
+  id: string
+  type: "server.connected"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
+export type EventGlobalDisposed = {
+  id: string
+  type: "global.disposed"
+  properties: {
+    [key: string]: unknown
+  }
+}
+
 export type BadRequestError = {
   name: "BadRequest"
   data: {
@@ -5268,6 +5459,44 @@ export type BadRequestError = {
     kind?: "Params" | "Headers" | "Query" | "Body" | "Payload"
   }
 }
+
+export type HealthLiveData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/livez"
+}
+
+export type HealthLiveResponses = {
+  /**
+   * Success
+   */
+  200: {
+    status: "live" | "ready"
+    version: string
+  }
+}
+
+export type HealthLiveResponse = HealthLiveResponses[keyof HealthLiveResponses]
+
+export type HealthReadyData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/readyz"
+}
+
+export type HealthReadyResponses = {
+  /**
+   * Success
+   */
+  200: {
+    status: "live" | "ready"
+    version: string
+  }
+}
+
+export type HealthReadyResponse = HealthReadyResponses[keyof HealthReadyResponses]
 
 export type AuthRemoveData = {
   body?: never
@@ -6384,6 +6613,130 @@ export type FileStatusResponses = {
 
 export type FileStatusResponse = FileStatusResponses[keyof FileStatusResponses]
 
+export type FundQualificationDatasetImportData = {
+  body?: {
+    sessionId: string
+    algorithmName: string
+    symbol: string
+    assetClass: "equity" | "crypto"
+    interval: string
+    requestedStart: string
+    requestedEnd: string
+    csvBase64: string
+    csvSha256: string
+    providerId: "alpaca" | "binance"
+    providerFeed: string
+    providerVenue: string
+    providerSymbol: string
+    priceBasis: "raw" | "adjusted"
+    splitTreatment: string
+    dividendTreatment: string
+    corporateActionStatus: "resolved" | "not_applicable"
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/fund/qualification/dataset"
+}
+
+export type FundQualificationDatasetImportErrors = {
+  /**
+   * FundQualificationImportError | InvalidRequestError
+   */
+  400: FundQualificationImportError | InvalidRequestError
+}
+
+export type FundQualificationDatasetImportError =
+  FundQualificationDatasetImportErrors[keyof FundQualificationDatasetImportErrors]
+
+export type FundQualificationDatasetImportResponses = {
+  /**
+   * Imported authoritative qualification dataset
+   */
+  200: {
+    schemaVersion: 1
+    sessionId: string
+    workspaceSlug: string
+    requestId: string
+    requestVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    requestContentHash: string
+    evidenceId: string
+    qualification: string
+    csvSha256: string
+    manifestSha256: string
+    outputPath: string
+  }
+}
+
+export type FundQualificationDatasetImportResponse =
+  FundQualificationDatasetImportResponses[keyof FundQualificationDatasetImportResponses]
+
+export type FundQualificationArtifactExportData = {
+  body?: {
+    sessionId: string
+    algorithmId: string
+    experimentPlanId: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/fund/qualification/artifact"
+}
+
+export type FundQualificationArtifactExportErrors = {
+  /**
+   * FundQualificationArtifactError | InvalidRequestError
+   */
+  400: FundQualificationArtifactError | InvalidRequestError
+}
+
+export type FundQualificationArtifactExportError =
+  FundQualificationArtifactExportErrors[keyof FundQualificationArtifactExportErrors]
+
+export type FundQualificationArtifactExportResponses = {
+  /**
+   * Exact qualified artifact evidence
+   */
+  200: {
+    schemaVersion: 1
+    sessionId: string
+    algorithmId: string
+    algorithmVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    algorithmName: string
+    language: string
+    code: string
+    config: string
+    codeHash: string
+    configHash: string
+    experimentPlanId: string
+    experimentPlanHash: string
+    qualificationPolicyId: string
+    qualificationPolicyHash: string
+    datasetEvidenceId: string
+    datasetHash: string
+    datasetManifestHash: string
+    holdoutEventHash: string
+    confirmatoryAttemptId: string
+    confirmatoryResult: {
+      [key: string]: unknown
+    }
+    confirmatoryResultHash: string
+    completedPhases: ["exploratory", "validation", "confirmatory"]
+    qualificationDecision: {
+      [key: string]: unknown
+    }
+    qualificationDecisionHash: string
+    artifactEvidenceHash: string
+  }
+}
+
+export type FundQualificationArtifactExportResponse =
+  FundQualificationArtifactExportResponses[keyof FundQualificationArtifactExportResponses]
+
 export type InstanceDisposeData = {
   body?: never
   path?: never
@@ -6730,6 +7083,168 @@ export type FormatterStatusResponses = {
 }
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
+
+export type LiveListData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live"
+}
+
+export type LiveListErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type LiveListError = LiveListErrors[keyof LiveListErrors]
+
+export type LiveListResponses = {
+  /**
+   * Live runs for the current project
+   */
+  200: Array<LiveRun>
+}
+
+export type LiveListResponse = LiveListResponses[keyof LiveListResponses]
+
+export type LiveRemoveData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live/{id}"
+}
+
+export type LiveRemoveErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * LiveRunNotFoundError
+   */
+  404: LiveRunNotFoundError
+  /**
+   * ConflictError
+   */
+  409: ConflictError
+}
+
+export type LiveRemoveError = LiveRemoveErrors[keyof LiveRemoveErrors]
+
+export type LiveRemoveResponses = {
+  /**
+   * Whether the run was removed
+   */
+  200: boolean
+}
+
+export type LiveRemoveResponse = LiveRemoveResponses[keyof LiveRemoveResponses]
+
+export type LiveGetData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live/{id}"
+}
+
+export type LiveGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * LiveRunNotFoundError
+   */
+  404: LiveRunNotFoundError
+}
+
+export type LiveGetError = LiveGetErrors[keyof LiveGetErrors]
+
+export type LiveGetResponses = {
+  /**
+   * A live run
+   */
+  200: LiveRun
+}
+
+export type LiveGetResponse = LiveGetResponses[keyof LiveGetResponses]
+
+export type LiveStartData = {
+  body?: LiveStartPayload
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live/start"
+}
+
+export type LiveStartErrors = {
+  /**
+   * LiveRunStartError | InvalidRequestError
+   */
+  400: LiveRunStartError | InvalidRequestError
+}
+
+export type LiveStartError = LiveStartErrors[keyof LiveStartErrors]
+
+export type LiveStartResponses = {
+  /**
+   * The starting run snapshot
+   */
+  200: LiveRun
+}
+
+export type LiveStartResponse = LiveStartResponses[keyof LiveStartResponses]
+
+export type LiveStopData = {
+  body?: never
+  path: {
+    id: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live/{id}/stop"
+}
+
+export type LiveStopErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * LiveRunNotFoundError
+   */
+  404: LiveRunNotFoundError
+}
+
+export type LiveStopError = LiveStopErrors[keyof LiveStopErrors]
+
+export type LiveStopResponses = {
+  /**
+   * Whether the run was stopped
+   */
+  200: boolean
+}
+
+export type LiveStopResponse = LiveStopResponses[keyof LiveStopResponses]
 
 export type McpStatusData = {
   body?: never
@@ -8121,6 +8636,37 @@ export type SessionPromptData = {
     format?: OutputFormat
     system?: string
     variant?: string
+    fundCase?: {
+      eventType:
+        | "order_filled"
+        | "order_cancelled"
+        | "regime_changed"
+        | "strategy_health_changed"
+        | "risk_limit_changed"
+        | "deployment_result"
+        | "scheduled_review"
+        | "operator_request"
+      sourceEventRef: string
+      payloadSha256: string
+      occurredAt?: string
+      evidence: Array<{
+        kind:
+          | "fund_event"
+          | "market_snapshot"
+          | "portfolio_snapshot"
+          | "position_snapshot"
+          | "strategy_version"
+          | "regime_observation"
+          | "fill"
+          | "backtest_run"
+          | "review_packet"
+          | "specialist_report"
+          | "fund_policy"
+          | "news_context"
+        ref: string
+        sha256: string
+      }>
+    }
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -8468,6 +9014,37 @@ export type SessionPromptAsyncData = {
     format?: OutputFormat
     system?: string
     variant?: string
+    fundCase?: {
+      eventType:
+        | "order_filled"
+        | "order_cancelled"
+        | "regime_changed"
+        | "strategy_health_changed"
+        | "risk_limit_changed"
+        | "deployment_result"
+        | "scheduled_review"
+        | "operator_request"
+      sourceEventRef: string
+      payloadSha256: string
+      occurredAt?: string
+      evidence: Array<{
+        kind:
+          | "fund_event"
+          | "market_snapshot"
+          | "portfolio_snapshot"
+          | "position_snapshot"
+          | "strategy_version"
+          | "regime_observation"
+          | "fill"
+          | "backtest_run"
+          | "review_packet"
+          | "specialist_report"
+          | "fund_policy"
+          | "news_context"
+        ref: string
+        sha256: string
+      }>
+    }
     parts: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
   }
   path: {
@@ -9544,6 +10121,430 @@ export type ExperimentalWorkspaceWarpResponses = {
 
 export type ExperimentalWorkspaceWarpResponse =
   ExperimentalWorkspaceWarpResponses[keyof ExperimentalWorkspaceWarpResponses]
+
+export type CampaignCreateData = {
+  body?: {
+    operationID: string
+    goal: string
+    candidates: Array<{
+      id: string
+      prompt: string
+      parentCandidateID?: string
+    }>
+    budget: {
+      maxSessions: number
+      maxTurns: number
+      maxTokens: number
+      maxCost: number
+      maxWallClockMs: number
+    }
+    stop: {
+      maxRounds: number
+      targetSharpe?: number
+      maxDrawdown?: number
+    }
+    agent?: string
+  }
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign"
+}
+
+export type CampaignCreateErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignCreateError = CampaignCreateErrors[keyof CampaignCreateErrors]
+
+export type CampaignCreateResponses = {
+  /**
+   * Campaign created or recovered
+   */
+  200: Campaign
+}
+
+export type CampaignCreateResponse = CampaignCreateResponses[keyof CampaignCreateResponses]
+
+export type CampaignGetData = {
+  body?: never
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}"
+}
+
+export type CampaignGetErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignGetError = CampaignGetErrors[keyof CampaignGetErrors]
+
+export type CampaignGetResponses = {
+  /**
+   * Campaign state
+   */
+  200: Campaign
+}
+
+export type CampaignGetResponse = CampaignGetResponses[keyof CampaignGetResponses]
+
+export type CampaignStartData = {
+  body?: {
+    operationID: string
+  }
+  path: {
+    campaignID: string
+    candidateID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/candidate/{candidateID}/start"
+}
+
+export type CampaignStartErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignStartError = CampaignStartErrors[keyof CampaignStartErrors]
+
+export type CampaignStartResponses = {
+  /**
+   * Campaign
+   */
+  200: Campaign
+}
+
+export type CampaignStartResponse = CampaignStartResponses[keyof CampaignStartResponses]
+
+export type CampaignContinueData = {
+  body?: {
+    operationID: string
+    candidateID: string
+    prompt: string
+  }
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/continue"
+}
+
+export type CampaignContinueErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignContinueError = CampaignContinueErrors[keyof CampaignContinueErrors]
+
+export type CampaignContinueResponses = {
+  /**
+   * Campaign
+   */
+  200: Campaign
+}
+
+export type CampaignContinueResponse = CampaignContinueResponses[keyof CampaignContinueResponses]
+
+export type CampaignAbortData = {
+  body?: {
+    operationID: string
+    candidateID?: string
+  }
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/abort"
+}
+
+export type CampaignAbortErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignAbortError = CampaignAbortErrors[keyof CampaignAbortErrors]
+
+export type CampaignAbortResponses = {
+  /**
+   * Campaign
+   */
+  200: Campaign
+}
+
+export type CampaignAbortResponse = CampaignAbortResponses[keyof CampaignAbortResponses]
+
+export type CampaignRecordArtifactData = {
+  body?: {
+    operationID: string
+    candidateID: string
+    manifestID: string
+  }
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/artifact"
+}
+
+export type CampaignRecordArtifactErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignRecordArtifactError = CampaignRecordArtifactErrors[keyof CampaignRecordArtifactErrors]
+
+export type CampaignRecordArtifactResponses = {
+  /**
+   * Campaign
+   */
+  200: Campaign
+}
+
+export type CampaignRecordArtifactResponse = CampaignRecordArtifactResponses[keyof CampaignRecordArtifactResponses]
+
+export type CampaignEventsData = {
+  body?: never
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    after?: string
+  }
+  url: "/experimental/campaign/{campaignID}/event"
+}
+
+export type CampaignEventsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignEventsError = CampaignEventsErrors[keyof CampaignEventsErrors]
+
+export type CampaignEventsResponses = {
+  /**
+   * Success
+   */
+  200: Array<{
+    cursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    time: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    type: string
+    candidateID?: string
+    sessionID?: string
+    data?: {
+      [key: string]: unknown
+    }
+  }>
+}
+
+export type CampaignEventsResponse = CampaignEventsResponses[keyof CampaignEventsResponses]
+
+export type CampaignWaitData = {
+  body?: never
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    after?: string
+    timeoutMs?: string
+  }
+  url: "/experimental/campaign/{campaignID}/wait"
+}
+
+export type CampaignWaitErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignWaitError = CampaignWaitErrors[keyof CampaignWaitErrors]
+
+export type CampaignWaitResponses = {
+  /**
+   * Success
+   */
+  200: Array<{
+    cursor: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    time: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    type: string
+    candidateID?: string
+    sessionID?: string
+    data?: {
+      [key: string]: unknown
+    }
+  }>
+}
+
+export type CampaignWaitResponse = CampaignWaitResponses[keyof CampaignWaitResponses]
+
+export type CampaignCompareData = {
+  body?: never
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/comparison"
+}
+
+export type CampaignCompareErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignCompareError = CampaignCompareErrors[keyof CampaignCompareErrors]
+
+export type CampaignCompareResponses = {
+  /**
+   * Success
+   */
+  200: {
+    campaignID: string
+    assumptionsKey: string
+    comparable: boolean
+    excluded: Array<{
+      candidateID: string
+      manifestID: string
+      reason: string
+    }>
+    ranking: Array<{
+      rank: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+      candidateID: string
+      sessionID?: string
+      manifestID: string
+      algorithmID: string
+      algorithmName: string
+      assumptionsKey: string
+      sharpeRatio: number
+      maxDrawdown: number
+      totalReturn: number
+      eligibilityStatus?: string
+      artifactRefs: Array<string>
+    }>
+    promotion: {
+      allowed: false
+      reason: string
+    }
+  }
+}
+
+export type CampaignCompareResponse = CampaignCompareResponses[keyof CampaignCompareResponses]
+
+export type CampaignAdvanceData = {
+  body?: {
+    operationID: string
+    improvementPrompt?: string
+  }
+  path: {
+    campaignID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/experimental/campaign/{campaignID}/advance"
+}
+
+export type CampaignAdvanceErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * CampaignError
+   */
+  409: CampaignError
+}
+
+export type CampaignAdvanceError = CampaignAdvanceErrors[keyof CampaignAdvanceErrors]
+
+export type CampaignAdvanceResponses = {
+  /**
+   * Campaign
+   */
+  200: Campaign
+}
+
+export type CampaignAdvanceResponse = CampaignAdvanceResponses[keyof CampaignAdvanceResponses]
 
 export type V2HealthGetData = {
   body?: never

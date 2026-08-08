@@ -116,6 +116,16 @@ describe("active Build workflow continuation", () => {
     expect(reminder).toContain("User control wins")
   })
 
+  test("controller-managed qualification stops automatic build iteration", () => {
+    expect(
+      buildWorkflowContinuationReminder({
+        workflow: failedWorkflow(1),
+        pendingContextTasks: 0,
+        controllerManaged: true,
+      }),
+    ).toBeUndefined()
+  })
+
   test("a newly saved candidate requires backtest next rather than another save or a narrative", () => {
     const workflow = { ...failedWorkflow(4), backtest: undefined }
     const reminder = buildWorkflowContinuationReminder({ workflow, pendingContextTasks: 0 })
@@ -192,16 +202,9 @@ describe("active Build workflow continuation", () => {
     ).toBeUndefined()
   })
 
-  test("stops auto-iteration once a presentable research_only champion exists", () => {
+  test("does not treat a legacy research_only verdict as a presentable Crucible result", () => {
     const workflow = withVerdict(failedWorkflow(3), "research_only")
-    expect(hasPresentableResearchResult(workflow)).toBeTrue()
-    expect(
-      buildWorkflowContinuationReminder({
-        workflow,
-        pendingContextTasks: 0,
-        assistantText: "Hourly champion is ready for paper-trading watchlist deployment on IBKR.",
-      }),
-    ).toBeUndefined()
+    expect(hasPresentableResearchResult(workflow)).toBeFalse()
   })
 
   test("stops auto-iteration once a presentable candidate champion exists", () => {

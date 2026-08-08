@@ -6,6 +6,7 @@ import type { Tool } from "./tool"
 import { InstanceState } from "@/effect/instance-state"
 import { StrategyContext } from "@/task/strategy-context"
 import type { Database } from "@opencode-ai/core/database/database"
+import { isFundManagerAgent } from "@/agent/fund-policy"
 
 export type FinnyWorkspaceOperation = "read" | "write" | "edit"
 
@@ -145,6 +146,10 @@ function blocked(code: string, message: string): FinnyWorkspacePolicyResult {
   return { allowed: false, code, message }
 }
 
+export function isProtectedFinnyController(agent: string | undefined): boolean {
+  return agent === "finny" || isFundManagerAgent(agent)
+}
+
 async function evaluateDataAgentReadPolicy(
   input: FinnyWorkspacePolicyInput,
   filepath: string,
@@ -168,10 +173,16 @@ async function evaluateDataAgentReadPolicy(
   )
 }
 
-async function evaluateMainFinnyWritePolicy(
+async function evaluateProtectedControllerWritePolicy(
   input: FinnyWorkspacePolicyInput,
   filepath: string,
 ): Promise<FinnyWorkspacePolicyResult> {
+  if (isFundManagerAgent(input.agent)) {
+    return blocked(
+      "fund_manager_file_write_blocked",
+      `Fund Manager ${input.operation} blocked: ${filepath}. The Fund Manager is a protected controller and may only emit typed advisory proposals for an external policy gateway; it may not mutate files, strategy code, repositories, credentials, or infrastructure.`,
+    )
+  }
   const workspace = await getSessionWorkspace(input.sessionID).catch(() => null)
   if (!workspace) return { allowed: true }
   const workspaceRoot = algoDir(workspace)
@@ -262,8 +273,8 @@ export async function evaluateFinnyWorkspacePathPolicy(
   const isDataRead = input.agent === "data_extractor" && input.operation === "read"
   if (isDataRead) return evaluateDataAgentReadPolicy(input, filepath)
 
-  const isMainFinnyWrite = input.agent === "finny" && input.operation !== "read"
-  if (isMainFinnyWrite) return evaluateMainFinnyWritePolicy(input, filepath)
+  const isProtectedControllerWrite = isProtectedFinnyController(input.agent) && input.operation !== "read"
+  if (isProtectedControllerWrite) return evaluateProtectedControllerWritePolicy(input, filepath)
 
   const kind = ARTIFACT_KIND_BY_AGENT[input.agent ?? ""]
   if (!kind) return { allowed: true }
@@ -290,7 +301,11 @@ export const assertFinnyWorkspacePathPolicy = Effect.fn("FinnyWorkspaceGuard.ass
   )
   if (!result.allowed) return yield* Effect.die(new FinnyWorkspacePolicyError(result))
 
-  if (ctx.agent !== "finny" || operation === "read") return
+  if (!isProtectedFinnyController(ctx.agent) || operation === "read") return
+  // Fund Manager writes fail in evaluateProtectedControllerWritePolicy above.
+  // The remaining pending-context guard is specific to Finny's strategy
+  // synthesis workspace.
+  if (ctx.agent !== "finny") return
   const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
   if (!workspace || !isStrategySynthesisPath(algoDir(workspace), filepath)) return
 

@@ -45,9 +45,11 @@ export function DialogAddAccount(props: DialogAddAccountProps) {
   const dimensions = useTerminalDimensions()
   const renderer = useRenderer()
 
-  const allSpecs = BrokerRegistry.specs()
+  // Robinhood authentication is interactive and owned by RHX. Keep it out of
+  // this generic API-key form; all Robinhood entry points open its manager.
+  const allSpecs = BrokerRegistry.specs().filter((spec) => spec.kind !== "robinhood")
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(
-    props.initialKind ?? allSpecs[0]?.kind ?? "alpaca",
+    props.initialKind && props.initialKind !== "robinhood" ? props.initialKind : allSpecs[0]?.kind ?? "alpaca",
   )
   const activeSpec = () => BrokerRegistry.getSpec(activeKind())
 

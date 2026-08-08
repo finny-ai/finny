@@ -199,6 +199,49 @@ export function repairQuestionToolInput(input: unknown): string | undefined {
   return typeof input === "string" ? JSON.stringify(obj) : JSON.stringify(obj)
 }
 
+/**
+ * Gemini may preserve the semantic workspace identity while emitting legacy
+ * or snake_case argument names that the strict tool schema rejects. Normalize
+ * only the known aliases, and fail closed when an alias conflicts with its
+ * canonical field.
+ */
+export function repairWorkspacePrepareToolInput(input: unknown): string | undefined {
+  let obj: Record<string, unknown> | undefined
+  if (typeof input === "string") {
+    try {
+      const decoded = JSON.parse(input)
+      if (decoded && typeof decoded === "object" && !Array.isArray(decoded)) {
+        obj = decoded as Record<string, unknown>
+      }
+    } catch {
+      return undefined
+    }
+  } else if (input && typeof input === "object" && !Array.isArray(input)) {
+    obj = { ...(input as Record<string, unknown>) }
+  }
+  if (!obj) return undefined
+
+  const aliases = {
+    name: "algorithmName",
+    algorithm_name: "algorithmName",
+    request_summary: "requestSummary",
+    asset_class: "assetClass",
+    start_date: "startDate",
+    end_date: "endDate",
+    strategy_intent: "strategyIntent",
+    research_brief: "researchBrief",
+  } as const
+  let modified = false
+  for (const [alias, canonical] of Object.entries(aliases)) {
+    if (!(alias in obj)) continue
+    if (canonical in obj && obj[canonical] !== obj[alias]) return undefined
+    if (!(canonical in obj)) obj[canonical] = obj[alias]
+    delete obj[alias]
+    modified = true
+  }
+  return modified ? JSON.stringify(obj) : undefined
+}
+
 export function repairToolCallInput(input: unknown): string | undefined {
   const fromCharIndex = tryCharIndexedRepair(input)
   if (fromCharIndex !== undefined) return fromCharIndex

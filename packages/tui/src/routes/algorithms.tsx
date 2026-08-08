@@ -123,7 +123,12 @@ export function Algorithms() {
         brokerKind: params.brokerKind,
       })
       DialogLiveRun.show(dialog, run.id)
-      const label = runMode === "live" ? "Live run" : "Paper trading"
+      const label =
+        params.brokerKind === "robinhood"
+          ? "Robinhood shadow run"
+          : runMode === "live"
+            ? "Live run"
+            : "Paper trading"
       toast.show({
         message: `${label} starting: ${algo.name} · ${params.symbol}`,
         variant: "info",

@@ -5,6 +5,7 @@ import { Filesystem } from "../../util/filesystem"
 import { Log } from "../../util/log"
 import type { BrokerKind } from "@/live/brokers"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import type { CatalogMetadata, VerifiedPackage } from "@/algorithm/version-package"
 
 const log = Log.create({ service: "local-algorithm-store" })
 
@@ -38,11 +39,19 @@ export interface AlgorithmMeta {
   name: string
   language: string
   status: string
+  description?: string
+  versionMetadata?: Record<string, AlgorithmVersionMetadata>
   brokerKind?: BrokerKind
   targetBrokerage?: BrokerKind
   latestVersion: number
   time_created: number
   time_updated: number
+}
+
+interface AlgorithmVersionMetadata {
+  language: string
+  status: string
+  description?: string
 }
 
 function algoDir(algorithmId: string) {
@@ -277,6 +286,14 @@ function nameKey(userId: string, name: string): string {
   return `${userId}:${name}`
 }
 
+function knownBrokerKind(value: string | undefined): BrokerKind | undefined {
+  return value === "alpaca" || value === "binance" || value === "ibkr" ? value : undefined
+}
+
+function nextMetadataRevision(requested: number, existing: AlgorithmMeta | null): number {
+  return existing ? Math.max(requested, existing.time_updated + 1) : requested
+}
+
 async function rebuildNameIndex(): Promise<Record<string, string>> {
   const index: Record<string, string> = {}
   try {
@@ -339,15 +356,16 @@ async function readVersion(algorithmId: string, version: number, meta: Algorithm
       reasoning = await Filesystem.readText(reasoningPath(algorithmId, version))
     } catch {}
     const docs = await readVersionDocuments(algorithmId, version)
+    const versionMetadata = meta.versionMetadata?.[String(version)]
     return {
       algorithmId: meta.algorithmId,
       userId: meta.userId,
       name: meta.name,
       code,
-      language: meta.language ?? "python",
+      language: versionMetadata?.language ?? meta.language ?? "python",
       version,
-      status: meta.status,
-      description: undefined,
+      status: versionMetadata?.status ?? meta.status,
+      description: versionMetadata ? versionMetadata.description : meta.description,
       config,
       backtestCode,
       reasoning,
@@ -367,6 +385,12 @@ export namespace LocalAlgorithmStore {
     sourceDir: string
     userId: string
     now?: number
+  }
+
+  export interface MaterializeCanonicalVersionInput {
+    catalog: CatalogMetadata
+    userId: string
+    package: VerifiedPackage
   }
 
   export function directoryFor(algorithmId: string): string {
@@ -475,6 +499,118 @@ export namespace LocalAlgorithmStore {
     }
   }
 
+  export async function materializeCanonicalVersion(input: MaterializeCanonicalVersionInput): Promise<AlgorithmRow> {
+    const { catalog, package: verified } = input
+    if (catalog.algorithmId !== verified.manifest.algorithmId || catalog.version !== verified.manifest.version) {
+      throw new Error("Catalog identity does not match the verified package")
+    }
+    if (!catalog.name.trim()) throw new Error("Catalog algorithm name must not be empty")
+
+    const releaseVersionLock = await acquireVersionLock(catalog.algorithmId)
+    try {
+      const existingByName = await getByName(input.userId, catalog.name)
+      if (existingByName && existingByName.algorithmId !== catalog.algorithmId) {
+        throw new Error(`Algorithm name collision for "${catalog.name}"`)
+      }
+
+      const existingMeta = await readMeta(catalog.algorithmId)
+      if (existingMeta && existingMeta.name !== catalog.name) {
+        throw new Error(`Algorithm identity collision for ${catalog.algorithmId}`)
+      }
+
+      const dir = algoDir(catalog.algorithmId)
+      await fs.mkdir(dir, { recursive: true })
+      if (!existingMeta) await scaffoldAlgoStructure(catalog.algorithmId)
+      const finalDir = versionDirPath(catalog.algorithmId, catalog.version)
+      const existingStat = await fs.stat(finalDir).catch(() => null)
+      if (existingStat) {
+        if (!existingStat.isDirectory())
+          throw new Error(`Algorithm version path is not a directory: ${versionTag(catalog.version)}`)
+        for (const filename of [
+          "strategy.py",
+          "config.json",
+          "reasoning.md",
+          ...Object.values(VERSION_DOCUMENT_FILES),
+          "backtest.py",
+        ]) {
+          const expected = verified.files.get(filename)
+          const actual = await fs.readFile(path.join(finalDir, filename)).catch((error: any) => {
+            if (error?.code === "ENOENT") return undefined
+            throw error
+          })
+          if (expected === undefined && actual === undefined) continue
+          if (expected === undefined || actual === undefined || !Buffer.from(expected).equals(actual)) {
+            throw new Error(`Conflicting bytes for ${catalog.algorithmId} ${versionTag(catalog.version)} ${filename}`)
+          }
+        }
+      } else {
+        const staging = path.join(dir, `.tmp-${versionTag(catalog.version)}-${crypto.randomUUID()}`)
+        try {
+          await fs.mkdir(staging)
+          for (const [filename, bytes] of verified.files) await fs.writeFile(path.join(staging, filename), bytes)
+          await fs.rename(staging, finalDir)
+        } catch (error) {
+          await fs.rm(staging, { recursive: true, force: true }).catch(() => undefined)
+          throw error
+        }
+      }
+
+      const latestVersion = Math.max(existingMeta?.latestVersion ?? 0, catalog.version)
+      const preserveCurrentMeta = Boolean(existingMeta && catalog.version < existingMeta.latestVersion)
+      const meta: AlgorithmMeta = {
+        algorithmId: catalog.algorithmId,
+        userId: input.userId,
+        name: catalog.name,
+        language: preserveCurrentMeta ? existingMeta!.language : catalog.language,
+        status: preserveCurrentMeta ? existingMeta!.status : catalog.status,
+        description: preserveCurrentMeta ? existingMeta!.description : catalog.description,
+        versionMetadata: {
+          ...existingMeta?.versionMetadata,
+          [String(catalog.version)]: {
+            language: catalog.language,
+            status: catalog.status,
+            description: catalog.description,
+          },
+        },
+        brokerKind: preserveCurrentMeta
+          ? existingMeta!.brokerKind
+          : (knownBrokerKind(catalog.brokerKind) ?? existingMeta?.brokerKind),
+        targetBrokerage: preserveCurrentMeta
+          ? existingMeta!.targetBrokerage
+          : (knownBrokerKind(catalog.targetBrokerage) ?? existingMeta?.targetBrokerage),
+        latestVersion,
+        time_created: existingMeta?.time_created ?? catalog.timeCreated,
+        time_updated: preserveCurrentMeta
+          ? existingMeta!.time_updated
+          : Math.max(existingMeta?.time_updated ?? 0, catalog.timeUpdated),
+      }
+      const index = await readNameIndex()
+      index[nameKey(input.userId, catalog.name)] = catalog.algorithmId
+      await writeMeta(meta)
+      await writeNameIndex(index)
+
+      if (!existingMeta || catalog.version >= existingMeta.latestVersion) {
+        const docs = await readVersionDocuments(catalog.algorithmId, catalog.version)
+        await writeCurrent(catalog.algorithmId, catalog.version)
+        await mirrorCurrentDocuments(catalog.algorithmId, docs)
+      }
+
+      const row = await readVersion(catalog.algorithmId, catalog.version, meta)
+      if (!row)
+        throw new Error(
+          `Materialized algorithm version is unreadable: ${catalog.algorithmId} ${versionTag(catalog.version)}`,
+        )
+      log.info("canonical algorithm version materialized", {
+        algorithmId: catalog.algorithmId,
+        version: catalog.version,
+        idempotent: Boolean(existingStat),
+      })
+      return row
+    } finally {
+      await releaseVersionLock()
+    }
+  }
+
   export async function insertVersion(values: {
     algorithmId: string
     userId: string
@@ -503,6 +639,8 @@ export namespace LocalAlgorithmStore {
 
     const versions = await scanVersions(values.algorithmId)
     const latestVer = versions.length > 0 ? Math.max(...versions) : undefined
+    const existingMeta = await readMeta(values.algorithmId)
+    const persistedTimeUpdated = nextMetadataRevision(values.time_updated, existingMeta)
     const docsMode = values.docsMode ?? (latestVer === undefined ? "replace" : "inherit")
     const docs = await resolveVersionDocuments({
       algorithmId: values.algorithmId,
@@ -535,14 +673,24 @@ export namespace LocalAlgorithmStore {
           .every((key) => prevDocs[key] === docs[key])
 
         if (codeMatch && configMatch && backtestMatch && reasoningMatch && docsMatch) {
-          const meta = await readMeta(values.algorithmId)
+          const meta = existingMeta
           if (meta) {
-            meta.time_updated = values.time_updated
+            const previousVersionMetadata = meta.versionMetadata?.[String(latestVer)]
+            meta.description = values.description
+            meta.versionMetadata = {
+              ...meta.versionMetadata,
+              [String(latestVer)]: {
+                language: previousVersionMetadata?.language ?? meta.language,
+                status: previousVersionMetadata?.status ?? meta.status,
+                description: values.description,
+              },
+            }
+            meta.time_updated = persistedTimeUpdated
             await writeMeta(meta)
           }
           log.info("skipped duplicate version", { algorithmId: values.algorithmId, version: latestVer })
           const row = meta ? await readVersion(values.algorithmId, latestVer, meta) : null
-          if (row) return { ...row, time_updated: values.time_updated }
+          if (row) return row
         }
       } catch {}
     }
@@ -583,11 +731,20 @@ export namespace LocalAlgorithmStore {
       name: values.name,
       language: values.language,
       status: values.status,
+      description: values.description,
+      versionMetadata: {
+        ...existingMeta?.versionMetadata,
+        [String(nextVersion)]: {
+          language: values.language,
+          status: values.status,
+          description: values.description,
+        },
+      },
       brokerKind: values.brokerKind,
       targetBrokerage: values.targetBrokerage,
       latestVersion: nextVersion,
       time_created: values.time_created,
-      time_updated: values.time_updated,
+      time_updated: persistedTimeUpdated,
     }
     const nameIndex = await readNameIndex()
     nameIndex[nameKey(values.userId, values.name)] = values.algorithmId
@@ -621,7 +778,7 @@ export namespace LocalAlgorithmStore {
       brokerKind: values.brokerKind,
       targetBrokerage: values.targetBrokerage,
       time_created: values.time_created,
-      time_updated: values.time_updated,
+      time_updated: persistedTimeUpdated,
     }
     } finally {
       await releaseVersionLock()
@@ -690,8 +847,18 @@ export namespace LocalAlgorithmStore {
   export async function updateStatus(algorithmId: string, status: string): Promise<{ algorithmId: string; status: string } | null> {
     const meta = await readMeta(algorithmId)
     if (!meta) return null
+    const currentVersion = await readCurrentVersion(algorithmId, meta.latestVersion)
+    const currentVersionMetadata = meta.versionMetadata?.[String(currentVersion)]
     meta.status = status
-    meta.time_updated = Date.now()
+    meta.versionMetadata = {
+      ...meta.versionMetadata,
+      [String(currentVersion)]: {
+        language: currentVersionMetadata?.language ?? meta.language,
+        status,
+        description: currentVersionMetadata ? currentVersionMetadata.description : meta.description,
+      },
+    }
+    meta.time_updated = nextMetadataRevision(Date.now(), meta)
     await writeMeta(meta)
     return { algorithmId, status }
   }

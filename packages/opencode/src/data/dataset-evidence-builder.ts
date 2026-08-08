@@ -253,14 +253,49 @@ function intervalMilliseconds(interval: string): number {
   return Number(match[1]) * unit
 }
 
-function outlierCount(bars: ParsedBar[]): number {
+function median(values: number[]): number {
+  const sorted = [...values].sort((left, right) => left - right)
+  const middle = Math.floor(sorted.length / 2)
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle]
+}
+
+function minimumOutlierLogReturn(interval: string, assetClass: RequestBinding["assetClass"]): number {
+  const step = intervalMilliseconds(interval)
+  if (step >= 86_400_000) return assetClass === "equity" ? 0.2 : 0.35
+  const minutes = step / 60_000
+  if (assetClass === "equity") {
+    if (minutes <= 5) return 0.03
+    if (minutes <= 15) return 0.04
+    return 0.05
+  }
+  if (minutes <= 5) return 0.08
+  if (minutes <= 15) return 0.1
+  return 0.12
+}
+
+function outlierCount(bars: ParsedBar[], interval: string, assetClass: RequestBinding["assetClass"]): number {
   if (bars.length < 4) return 0
-  const returns = bars.slice(1).map((bar, index) => Math.log(bar.close / bars[index].close))
-  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length
-  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / returns.length
+  const step = intervalMilliseconds(interval)
+  const returns = bars.slice(1).map((bar, index) => ({
+    value: Math.log(bar.close / bars[index].close),
+    continuous:
+      assetClass === "equity" && step >= 86_400_000 ? true : bar.timestamp - bars[index].timestamp <= step * 1.5,
+  }))
+  const scored = returns.filter((item) => item.continuous).map((item) => item.value)
+  if (scored.length <= 30) return 0
+  const mean = scored.reduce((sum, value) => sum + value, 0) / scored.length
+  const variance = scored.reduce((sum, value) => sum + (value - mean) ** 2, 0) / scored.length
   const deviation = Math.sqrt(variance)
-  if (!Number.isFinite(deviation) || deviation === 0) return 0
-  return returns.filter((value) => Math.abs(value - mean) / deviation > 8).length
+  const center = median(scored)
+  const mad = median(scored.map((value) => Math.abs(value - center)))
+  if ((!Number.isFinite(deviation) || deviation === 0) && (!Number.isFinite(mad) || mad === 0)) return 0
+  const minimumMove = minimumOutlierLogReturn(interval, assetClass)
+  return returns.filter((item) => {
+    if (!item.continuous || Math.abs(item.value) < minimumMove) return false
+    const standardZ = deviation > 0 ? (item.value - mean) / deviation : 0
+    const robustZ = mad > 0 ? (0.6745 * (item.value - center)) / mad : 0
+    return Math.max(Math.abs(standardZ), Math.abs(robustZ)) > 8
+  }).length
 }
 
 function required(input: { value: string | number | undefined; label: string }): string {
@@ -428,7 +463,13 @@ function qualifyEvidence(
   bars: ParsedBar[],
   reconciliation: TimestampReconciliation,
 ): Qualification {
-  const outliers = outlierCount(bars)
+  const assetClass = input.request.requested_asset_class
+  invariant(assetClass === "equity" || assetClass === "crypto", "request context missing asset class")
+  const outliers = outlierCount(
+    bars,
+    required({ value: input.request.requested_interval, label: "interval" }),
+    assetClass,
+  )
   const zeroVolume = bars.filter((bar) => bar.volume === 0).length
   const regionalProviderObserved = Boolean(
     regionalMarketForTicker(selectedSymbol({ request: input.request, requested: input.canonicalSymbol })),
@@ -447,8 +488,7 @@ function qualifyEvidence(
   const expectedCount = reconciliation.expected.length
   const observedExpectedCount = expectedCount - reconciliation.missing.length
   const coverageRatio = expectedCount > 0 ? observedExpectedCount / expectedCount : 0
-  const hardBlocked =
-    (coverageRatio < 0.95 && !reconciliation.openFinalCandle) || reconciliation.extra.length > 0
+  const hardBlocked = (coverageRatio < 0.95 && !reconciliation.openFinalCandle) || reconciliation.extra.length > 0
   return {
     outliers,
     zeroVolume,
@@ -567,7 +607,9 @@ function legacyManifestFields(input: ManifestAssemblyInput) {
     coverage: qualification.coverage,
     coverage_note: qualification.coverageNote,
     usable_for_parent: qualification.usableForParent,
-    usable_for_research: qualification.usableForParent,
+    // Coverage can prevent strict parent admission without erasing the valid
+    // bars' research value. Structural CSV failures throw before assembly.
+    usable_for_research: bars.length > 0 ? ("yes" as const) : ("no" as const),
     strict_backtest_eligible: (qualification.status === "strict_qualified" ? "yes" : "no") as "yes" | "no",
   }
 }

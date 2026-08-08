@@ -305,7 +305,8 @@ export function blockedOutput(action: string, tasks: readonly ContextTaskRef[]) 
   return [
     `BLOCKED: ${action} must wait for the active strategy-context subagents to finish.`,
     `Pending context: ${pending}.`,
-    "Continue only non-overlapping setup. Do not duplicate, poll, or synthesize the strategy until their completion results are delivered.",
+    "Call finny_strategy_context_wait once to wait for every pending context task without polling.",
+    "Do not duplicate or synthesize the strategy until that wait returns every completion result.",
   ].join(" ")
 }
 

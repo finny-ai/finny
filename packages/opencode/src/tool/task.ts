@@ -39,15 +39,24 @@ import { bindSessionRequest, readRequestSpec } from "@/agent/request-spec"
 import { bootstrapWorkspace } from "@/plugin/finny-workspace"
 import {
   requireVerifiedDataExtractorEvidenceForSession,
+  renderPartialDataExtractorHandoff,
   validateDataExtractorTaskText,
   validateExistingDataExtractorEvidence,
   validateExistingDataExtractorEvidenceSet,
+  type PartialDataExtractorEvidence,
 } from "@/data/data-extractor-evidence"
 import { validateNewsAgentTaskText } from "@/data/news-evidence"
 import { parseSecRequestContext } from "@/data/sec-edgar"
 import { renderSubagentArtifactPointer } from "@/agent/subagent-artifact"
 import { TaskState } from "@/task/state"
 import { BuildWorkflow } from "@/task/build-workflow"
+import {
+  effectiveFundRuntimePermission,
+  fundDelegationError,
+  isFundRuntimeAgent,
+  isFundSpecialistAgent,
+} from "@/agent/fund-policy"
+import { FundCaseStore } from "@/fund/case-store"
 import { StrategyContext } from "@/task/strategy-context"
 import {
   activeWorkflowForSession,
@@ -100,7 +109,6 @@ export interface TaskPromptOps {
 }
 
 const permission = "task"
-const DATA_AGENT_COOKBOOK_PATH = path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")
 const TASK_START_DESCRIPTION = [
   DESCRIPTION,
   "Launch exactly one optional subagent asynchronously and return immediately.",
@@ -569,33 +577,19 @@ export function withFinnySubagentContext(
   if (params.subagent_type === "data_extractor") {
     const intent = withoutDataRequestBlock(prompt)
     return [
-      "<finny-subagent-context>",
-      "Authoritative runtime context. It overrides conflicting task wording.",
-      "Data request context:",
-      field("workspace_slug", workspace),
-      ...requestLineageFields(context),
-      field("requested_algorithm_name", algorithmName),
-      field("requested_symbol", symbolsOrUniverse),
-      field("symbols_or_universe", symbolsOrUniverse),
-      field("requested_interval", interval),
-      field("requested_asset_class", assetClass),
-      field("requested_start", dataWindow.start),
-      field("requested_end", dataWindow.end),
-      field("symbol", symbolsOrUniverse),
-      field("start_date", dataWindow.start),
-      field("end_date", dataWindow.end),
-      "- end_date_inclusive: true",
-      field("provider", dataRequestProvider(prompt) ?? explicitlyRequestedDataProvider(prompt) ?? "auto"),
-      field("workspace", dataDir),
-      field("allowed_data_dir", dataDir),
-      field("mission_path", path.join(workspacePath, "mission.md")),
-      field("cookbook_path", DATA_AGENT_COOKBOOK_PATH),
+      "<data-request>",
+      field("request_id", context?.request_id),
+      field("algorithm", algorithmName),
+      field("workspace", workspace),
+      field("symbols", symbolsOrUniverse),
       field("asset_class", assetClass),
       field("interval", interval),
-      "",
-      "Use only allowed_data_dir for generated data and use cookbook_path for provider recipes.",
-      "</finny-subagent-context>",
-      ...(intent ? ["", "Task intent:", intent] : []),
+      field("start_inclusive", dataWindow.start),
+      field("end_inclusive", dataWindow.end),
+      field("provider", dataRequestProvider(prompt) ?? explicitlyRequestedDataProvider(prompt) ?? "auto"),
+      field("output_dir", dataDir),
+      "</data-request>",
+      ...(intent ? ["", intent] : []),
     ].join("\n")
   }
 
@@ -799,6 +793,25 @@ function summarizeTaskResult(text: string) {
   return trimmed.length > 4_000 ? trimmed.slice(0, 4_000) : trimmed
 }
 
+const DATA_EXTRACTOR_REPAIR_ATTEMPTS = 1
+
+export function dataExtractorRepairInstruction(partial: PartialDataExtractorEvidence): string {
+  return [
+    "<data-repair>",
+    `Continue this same extraction task for ${partial.requestedSymbol} ${partial.requestedInterval}, ${partial.requestedStart} through ${partial.requestedEnd}.`,
+    `Progress: ${partial.rows} canonical rows; missing=${partial.missingCount}; extra=${partial.extraCount}.`,
+    `Canonical CSV: ${partial.csvPath}`,
+    `Evidence manifest: ${partial.manifestPath} (timestamps.missing_ranges is the exact repair target).`,
+    `Missing ranges: ${JSON.stringify(partial.missingRanges)}`,
+    "Fetch only those missing ranges. Do not redownload the full window or create another canonical dataset.",
+    "Try compatible alternative sources where useful, merge into the existing CSV, deduplicate by timestamp, and preserve source provenance in the analysis/limitations artifact.",
+    "Generate or refresh the coverage, regime, and candidate-hypothesis artifacts even if coverage remains partial.",
+    "Keep the requested symbol, interval, and dates unchanged, then run the evidence finalizer again.",
+    "If compatible sources are exhausted, leave the valid partial CSV and its coverage/regime/hypothesis artifacts in place and report that limitation.",
+    "</data-repair>",
+  ].join("\n")
+}
+
 const EVIDENCE_AGENT_TYPES = new Set(["data_extractor", "news_agent", "researcher", "sec_agent", "sentiment_agent"])
 
 const EXPLICIT_EVIDENCE_REQUEST =
@@ -905,6 +918,8 @@ const taskExecutor = Effect.gen(function* () {
     ctx: Tool.Context,
     options: { mode: "background" | "foreground"; batch?: boolean },
   ) {
+    const fundDelegationIssue = fundDelegationError(ctx.agent, params.subagent_type)
+    if (fundDelegationIssue) return yield* Effect.fail(new Error(fundDelegationIssue))
     const cfg = yield* config.get()
     const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
       Effect.provideService(Database.Service, database),
@@ -920,6 +935,26 @@ const taskExecutor = Effect.gen(function* () {
       : undefined
     const latestUserText =
       latestUserMessage?.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join(" ") ?? ""
+    const fundSpecialistAgent = isFundSpecialistAgent(params.subagent_type) ? params.subagent_type : undefined
+    const fundLaunch = fundSpecialistAgent
+      ? yield* Effect.promise(() =>
+          FundCaseStore.specialistLaunchStatus(
+            {
+              managerSessionID: ctx.sessionID,
+              triggerMessageID: workflowRunID,
+              agent: fundSpecialistAgent,
+            },
+            database,
+          ),
+        )
+      : undefined
+    if (fundLaunch && !fundLaunch.allowed) {
+      return {
+        title: `${params.subagent_type} launch rejected`,
+        metadata: { parentSessionId: ctx.sessionID } as TaskMetadata,
+        output: `BLOCKED: ${fundLaunch.message}`,
+      }
+    }
     const activeWorkflow = EVIDENCE_AGENT_TYPES.has(params.subagent_type)
       ? yield* activeWorkflowForSession(ctx.sessionID).pipe(Effect.provideService(Database.Service, database))
       : undefined
@@ -954,6 +989,13 @@ const taskExecutor = Effect.gen(function* () {
     }
     if (params.task_id) {
       const activeTask = yield* Effect.promise(() => TaskState.get(params.task_id!, database))
+      if (isFundSpecialistAgent(params.subagent_type)) {
+        return yield* Effect.fail(
+          new Error(
+            "Protected fund specialist tasks cannot be resumed by task_id; retry a terminal failure with a fresh registered child.",
+          ),
+        )
+      }
       if (
         activeTask &&
         activeTask.parentSessionID === ctx.sessionID &&
@@ -996,7 +1038,11 @@ const taskExecutor = Effect.gen(function* () {
         }
       }
     }
-    if (!params.task_id && BuildWorkflow.isBuildAgent(ctx.agent) && EVIDENCE_AGENT_TYPES.has(params.subagent_type)) {
+    if (
+      !params.task_id &&
+      ((BuildWorkflow.isBuildAgent(ctx.agent) && EVIDENCE_AGENT_TYPES.has(params.subagent_type)) ||
+        params.subagent_type === "data_extractor")
+    ) {
       const activeSameRole = (yield* Effect.promise(() => TaskState.listByParent(ctx.sessionID, database))).find(
         (task) => task.subagentType === params.subagent_type && !TaskState.isTerminal(task.status),
       )
@@ -1096,6 +1142,48 @@ const taskExecutor = Effect.gen(function* () {
         ].join("\n"),
       }
     }
+    if (!params.task_id && params.subagent_type === "data_extractor") {
+      const priorTerminalExtractor = (yield* Effect.promise(() =>
+        TaskState.listByParent(ctx.sessionID, database),
+      )).findLast((task) => task.subagentType === "data_extractor" && TaskState.isTerminal(task.status))
+      if (priorTerminalExtractor) {
+        const parentWorkspace =
+          activeWorkflow?.workspaceSlug ??
+          (yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null)))
+        const parentContext = yield* Effect.promise(() => readRuntimeRequestFacts(ctx.sessionID))
+        const contextMismatch = dataRequestContextMismatchBlock({
+          prompt: params.prompt,
+          workspace: parentWorkspace,
+          context: parentContext as WorkspaceRequestContext,
+        })
+        const validationContext = dataExtractorValidationContext(
+          parentContext as WorkspaceRequestContext,
+          parseRequestFacts(params.prompt),
+        )
+        const existing = yield* Effect.promise(() =>
+          validateExistingDataExtractorEvidence({
+            workspaceSlug: parentWorkspace,
+            context: validationContext,
+            requestedProvider: explicitlyRequestedDataProvider(params.prompt),
+          }),
+        )
+        if (!contextMismatch && existing.result?.partialEvidence) {
+          return {
+            title: "Existing partial data extraction reused",
+            metadata: {
+              parentSessionId: ctx.sessionID,
+              sessionId: priorTerminalExtractor.id,
+            } as TaskMetadata,
+            output: renderOutput({
+              sessionID: priorTerminalExtractor.id,
+              state: "completed",
+              summary: "Bounded repair already completed",
+              text: renderPartialDataExtractorHandoff(existing.result.partialEvidence),
+            }),
+          }
+        }
+      }
+    }
     const durableFingerprint = mandatoryEvidence
       ? BuildWorkflow.taskFingerprint({
           role: params.subagent_type,
@@ -1165,16 +1253,32 @@ const taskExecutor = Effect.gen(function* () {
     const session = params.task_id
       ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
       : undefined
+    if (
+      params.task_id &&
+      isFundRuntimeAgent(next.name) &&
+      (!session ||
+        session.parentID !== ctx.sessionID ||
+        session.agent !== next.name ||
+        session.permission?.some((rule) => rule.action === "allow"))
+    ) {
+      return yield* Effect.fail(new Error("Protected fund task_id lineage or canonical permissions do not match."))
+    }
     const parent = yield* sessions.get(ctx.sessionID)
     const childPermission = deriveSubagentSessionPermission({
       parentSessionPermission: parent.permission ?? [],
       subagent: next,
     })
+    const effectiveChildPermission = effectiveFundRuntimePermission(next.name, next.permission)
+    const protectedFundChild = isFundRuntimeAgent(next.name)
     const childToolDenies = [
-      ...(next.permission.some((rule) => rule.permission === "todowrite")
+      ...((protectedFundChild
+        ? Permission.evaluate("todowrite", "*", effectiveChildPermission).action === "allow"
+        : next.permission.some((rule) => rule.permission === "todowrite"))
         ? []
         : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-      ...(next.permission.some((rule) => rule.permission === permission)
+      ...((protectedFundChild
+        ? Permission.evaluate(permission, "*", effectiveChildPermission).action === "allow"
+        : next.permission.some((rule) => rule.permission === permission))
         ? []
         : [{ permission, pattern: "*" as const, action: "deny" as const }]),
       ...(cfg.experimental?.primary_tools?.map((permission) => ({
@@ -1303,7 +1407,11 @@ const taskExecutor = Effect.gen(function* () {
     // The scripted fixture keeps real child sessions/tools but bypasses the
     // optional task registry, whose lazy dev migration can race in a fresh
     // isolated database. This path is unavailable to live-model harnesses.
-    const scriptedHarness = process.env.FINNY_HARNESS_MODE === "1" && process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1"
+    const scriptedHarness =
+      process.env.FINNY_HARNESS_MODE === "1" &&
+      process.env.FINNY_HARNESS_SCRIPTED_MODEL === "1" &&
+      !isFundRuntimeAgent(ctx.agent) &&
+      !isFundSpecialistAgent(params.subagent_type)
     const registryExit = scriptedHarness
       ? Exit.succeed(undefined)
       : yield* Effect.exit(
@@ -1318,6 +1426,17 @@ const taskExecutor = Effect.gen(function* () {
                   subagentType: params.subagent_type,
                   mode,
                   status: TaskState.Status.queued,
+                },
+                database,
+              )
+            }
+            if (isFundSpecialistAgent(params.subagent_type)) {
+              await FundCaseStore.admitChildAttempt(
+                {
+                  managerSessionID: ctx.sessionID,
+                  triggerMessageID: workflowRunID,
+                  childSessionID: nextSession.id,
+                  agent: params.subagent_type,
                 },
                 database,
               )
@@ -1346,6 +1465,10 @@ const taskExecutor = Effect.gen(function* () {
         }),
       }
     }
+
+    const fundChildContext = isFundSpecialistAgent(params.subagent_type)
+      ? yield* Effect.promise(() => FundCaseStore.childContext(nextSession.id, database))
+      : undefined
 
     yield* ctx.metadata({
       title: params.description,
@@ -1457,19 +1580,28 @@ const taskExecutor = Effect.gen(function* () {
             requestedProvider: explicitlyRequestedDataProvider(params.prompt),
           }),
         )
-        if (existing.found && existing.result?.ok) return existing.result.text
+        if (existing.found && existing.result?.ok && !existing.result.partialEvidence) return existing.result.text
       }
       const parts = yield* ops.resolvePromptParts(
-        withFinnySubagentContext(params, params.prompt, workspace, workspaceContext),
+        withFinnySubagentContext(
+          params,
+          fundChildContext ? `${fundChildContext}\n\n${params.prompt}` : params.prompt,
+          workspace,
+          workspaceContext,
+        ),
       )
       let result = yield* ops.prompt({
         messageID: MessageID.ascending(),
         sessionID: nextSession.id,
-        model: {
-          modelID: model.modelID,
-          providerID: model.providerID,
-        },
-        variant: next.model ? undefined : variant,
+        ...(isFundRuntimeAgent(next.name)
+          ? {}
+          : {
+              model: {
+                modelID: model.modelID,
+                providerID: model.providerID,
+              },
+              variant: next.model ? undefined : variant,
+            }),
         agent: next.name,
         parts,
       })
@@ -1529,11 +1661,15 @@ const taskExecutor = Effect.gen(function* () {
           result = yield* ops.prompt({
             messageID: MessageID.ascending(),
             sessionID: nextSession.id,
-            model: {
-              modelID: model.modelID,
-              providerID: model.providerID,
-            },
-            variant: next.model ? undefined : variant,
+            ...(isFundRuntimeAgent(next.name)
+              ? {}
+              : {
+                  model: {
+                    modelID: model.modelID,
+                    providerID: model.providerID,
+                  },
+                  variant: next.model ? undefined : variant,
+                }),
             agent: next.name,
             parts: correction,
           })
@@ -1560,14 +1696,17 @@ const taskExecutor = Effect.gen(function* () {
         return finalSpecialistTaskText({ subagentType: "sentiment_agent", text, pointer })
       }
       if (params.subagent_type !== "data_extractor") return text
-      const validated = yield* Effect.promise(() =>
-        validateDataExtractorTaskText({
-          text,
-          workspaceSlug: workspace,
-          context: validationContext,
-        }),
-      )
-      if (!validated.ok) {
+      const validateCurrentEvidence = Effect.fn("TaskTool.validateCurrentDataEvidence")(function* (
+        candidateText: string,
+      ) {
+        const candidate = yield* Effect.promise(() =>
+          validateDataExtractorTaskText({
+            text: candidateText,
+            workspaceSlug: workspace,
+            context: validationContext,
+          }),
+        )
+        if (candidate.ok) return candidate
         const existing = yield* Effect.promise(() =>
           validateExistingDataExtractorEvidence({
             workspaceSlug: workspace,
@@ -1575,8 +1714,31 @@ const taskExecutor = Effect.gen(function* () {
             requestedProvider: explicitlyRequestedDataProvider(params.prompt),
           }),
         )
-        if (existing.found && existing.result?.ok) return existing.result.text
+        return existing.found && existing.result ? existing.result : candidate
+      })
+
+      let validated = yield* validateCurrentEvidence(text)
+      for (let attempt = 0; attempt < DATA_EXTRACTOR_REPAIR_ATTEMPTS && validated.partialEvidence; attempt++) {
+        const repair = yield* ops.resolvePromptParts(dataExtractorRepairInstruction(validated.partialEvidence))
+        result = yield* ops.prompt({
+          messageID: MessageID.ascending(),
+          sessionID: nextSession.id,
+          ...(isFundRuntimeAgent(next.name)
+            ? {}
+            : {
+                model: {
+                  modelID: model.modelID,
+                  providerID: model.providerID,
+                },
+                variant: next.model ? undefined : variant,
+              }),
+          agent: next.name,
+          parts: repair,
+        })
+        text = finalTaskText(result.parts)
+        validated = yield* validateCurrentEvidence(text)
       }
+      if (validated.partialEvidence) return renderPartialDataExtractorHandoff(validated.partialEvidence)
       return validated.text
     })
 
@@ -1690,10 +1852,20 @@ const taskExecutor = Effect.gen(function* () {
       })
       const deliver = (): Effect.Effect<boolean> =>
         waitForParentIdle().pipe(
-          // Construct the prompt effect only after readiness, because custom
-          // prompt adapters may perform bookkeeping when invoked.
-          Effect.andThen(Effect.suspend(() => ops.prompt(input))),
-          Effect.as(true),
+          // A foreground strategy-context wait may have consumed and
+          // terminalized this result while the notifier was waiting for the
+          // parent to become idle. Re-check at the delivery boundary so the
+          // same result cannot trigger a second synthesis turn.
+          Effect.andThen(
+            Effect.promise(() => TaskState.get(nextSession.id, database)).pipe(
+              Effect.flatMap((task) => {
+                if (task && TaskState.isTerminal(task.status)) return Effect.succeed(false)
+                // Construct the prompt effect only after readiness, because
+                // custom prompt adapters may perform bookkeeping when invoked.
+                return Effect.suspend(() => ops.prompt(input)).pipe(Effect.as(true))
+              }),
+            ),
+          ),
           Effect.catchCause((cause) => {
             const error = Cause.squash(cause)
             // Status can race from idle back to busy between the readiness

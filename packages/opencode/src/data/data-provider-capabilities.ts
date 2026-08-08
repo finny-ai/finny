@@ -155,6 +155,33 @@ function isPublicYfinanceIntradayLimit(request: DataProviderRequest) {
   return start !== undefined && end !== undefined && end - start > 60
 }
 
+/**
+ * Documented provider lookback limits, in days back from the current UTC day.
+ * A request that starts before this floor cannot be served by that provider no
+ * matter how the fetch is retried, so the floor is a mechanical fact rather
+ * than a judgement call — `finny_workspace_edit` may clamp to it without
+ * asking the user, while any other window change still needs approval.
+ * Providers absent from this table have no fixed public floor.
+ */
+const PROVIDER_LOOKBACK_DAYS: Partial<Record<DataProviderID, Readonly<Record<string, number>>>> = {
+  yfinance: { "1m": 30, "5m": 60, "15m": 60, "30m": 60, "1h": 730 },
+}
+
+/** Earliest `YYYY-MM-DD` a provider can serve for an interval, or undefined when unbounded. */
+export function providerLookbackFloor(input: {
+  provider: DataProviderID
+  interval?: string
+  now?: Date
+}): string | undefined {
+  const interval = normalizeInterval(input.interval)
+  if (!interval) return undefined
+  const days = PROVIDER_LOOKBACK_DAYS[input.provider]?.[interval]
+  if (days === undefined) return undefined
+  const now = input.now ?? new Date()
+  const floor = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days))
+  return floor.toISOString().slice(0, 10)
+}
+
 function normalizedAssetClass(value?: string): "equity" | "crypto" | undefined {
   const normalized = value?.trim().toLowerCase()
   if (["equity", "equities", "stock", "stocks", "etf"].includes(normalized ?? "")) return "equity"

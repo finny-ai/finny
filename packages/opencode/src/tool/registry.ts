@@ -13,6 +13,7 @@ import { TaskBatchRunTool, TaskRunTool, TaskStartTool, TaskTool } from "./task"
 import { Database } from "@opencode-ai/core/database/database"
 import { ListTasksTool } from "./list-tasks"
 import { StopTaskTool } from "./stop-task"
+import { StrategyContextWaitTool } from "./strategy-context-wait"
 import { TodoWriteTool } from "./todo"
 import { AlgorithmSaveTool } from "./algorithm-save"
 import { AlgorithmListTool } from "./algorithm-list"
@@ -24,12 +25,14 @@ import { AlgorithmVersionsTool } from "./algorithm-versions"
 import { AlgorithmExportTool } from "./algorithm-export"
 import { BrokerageSwitchTool } from "./brokerage-switch"
 import { WorkspacePrepareTool } from "./workspace-prepare"
+import { WorkspaceEditTool } from "./workspace-edit"
 import { BacktestTool } from "./backtest"
 import { QualifyCandidateTool } from "./qualify-candidate"
 import { BacktestHistoryTool } from "./backtest-history"
 import { PaperApproveTool } from "./paper-approve"
 import { ReviewPacketTool } from "./review-packet"
 import { WorkflowRequestApprovalTool } from "./workflow-request-approval"
+import { WorkflowInvalidateCandidateTool } from "./workflow-invalidate-candidate"
 import { BacktestSweepTool } from "./backtest-sweep"
 import { MonitorSnapshotTool } from "./monitor-snapshot"
 import { ScheduleSubagentTool } from "./schedule-subagent"
@@ -40,6 +43,7 @@ import { PriceHistoryTool } from "./price-history"
 import { PortfolioBacktestTool } from "./portfolio-backtest"
 import { DiscordReadTool } from "./discord"
 import { DatasetEvidenceFinalizeTool } from "./dataset-evidence-finalize"
+import { FundActionDraftTool, FundActionProposalTool, FundSpecialistReportTool } from "./fund-contracts"
 import { WebFetchTool } from "./webfetch"
 import { WriteTool } from "./write"
 import { InvalidTool } from "./invalid"
@@ -84,6 +88,7 @@ import { hasPerplexityApiKey } from "./perplexity-credentials"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { Bus } from "@/bus"
 import { BuildWorkflow } from "@/task/build-workflow"
+import { effectiveFundRuntimePermission, isFundRuntimeAgent } from "@/agent/fund-policy"
 
 export function webSearchEnabled(
   providerID: ProviderV2.ID,
@@ -130,6 +135,7 @@ export const layer = Layer.effect(
     const taskBatchRun = yield* TaskBatchRunTool
     const listTasks = yield* ListTasksTool
     const stopTask = yield* StopTaskTool
+    const strategyContextWait = yield* StrategyContextWaitTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -154,12 +160,14 @@ export const layer = Layer.effect(
     const algorithmExport = yield* AlgorithmExportTool
     const brokerageSwitch = yield* BrokerageSwitchTool
     const workspacePrepare = yield* WorkspacePrepareTool
+    const workspaceEdit = yield* WorkspaceEditTool
     const backtest = yield* BacktestTool
     const qualifyCandidate = yield* QualifyCandidateTool
     const backtestHistory = yield* BacktestHistoryTool
     const paperApprove = yield* PaperApproveTool
     const reviewPacket = yield* ReviewPacketTool
     const workflowRequestApproval = yield* WorkflowRequestApprovalTool
+    const workflowInvalidateCandidate = yield* WorkflowInvalidateCandidateTool
     const backtestSweep = yield* BacktestSweepTool
     const monitorSnapshot = yield* MonitorSnapshotTool
     const scheduleSubagent = yield* ScheduleSubagentTool
@@ -170,6 +178,9 @@ export const layer = Layer.effect(
     const portfolioBacktest = yield* PortfolioBacktestTool
     const discordRead = yield* DiscordReadTool
     const datasetEvidenceFinalize = yield* DatasetEvidenceFinalizeTool
+    const fundActionDraft = yield* FundActionDraftTool
+    const fundActionProposal = yield* FundActionProposalTool
+    const fundSpecialistReport = yield* FundSpecialistReportTool
     const agent = yield* Agent.Service
 
     const state = yield* InstanceState.make<State>(
@@ -281,6 +292,7 @@ export const layer = Layer.effect(
           taskBatchRun: Tool.init(taskBatchRun),
           listTasks: Tool.init(listTasks),
           stopTask: Tool.init(stopTask),
+          strategyContextWait: Tool.init(strategyContextWait),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -299,12 +311,14 @@ export const layer = Layer.effect(
           algorithmExport: Tool.init(algorithmExport),
           brokerageSwitch: Tool.init(brokerageSwitch),
           workspacePrepare: Tool.init(workspacePrepare),
+          workspaceEdit: Tool.init(workspaceEdit),
           backtest: Tool.init(backtest),
           qualifyCandidate: Tool.init(qualifyCandidate),
           backtestHistory: Tool.init(backtestHistory),
           paperApprove: Tool.init(paperApprove),
           reviewPacket: Tool.init(reviewPacket),
           workflowRequestApproval: Tool.init(workflowRequestApproval),
+          workflowInvalidateCandidate: Tool.init(workflowInvalidateCandidate),
           backtestSweep: Tool.init(backtestSweep),
           monitorSnapshot: Tool.init(monitorSnapshot),
           scheduleSubagent: Tool.init(scheduleSubagent),
@@ -315,6 +329,9 @@ export const layer = Layer.effect(
           portfolioBacktest: Tool.init(portfolioBacktest),
           discordRead: Tool.init(discordRead),
           datasetEvidenceFinalize: Tool.init(datasetEvidenceFinalize),
+          fundActionDraft: Tool.init(fundActionDraft),
+          fundActionProposal: Tool.init(fundActionProposal),
+          fundSpecialistReport: Tool.init(fundSpecialistReport),
         })
 
         return {
@@ -333,6 +350,7 @@ export const layer = Layer.effect(
             tool.taskBatchRun,
             tool.listTasks,
             tool.stopTask,
+            tool.strategyContextWait,
             tool.fetch,
             tool.todo,
             tool.search,
@@ -348,12 +366,14 @@ export const layer = Layer.effect(
             tool.algorithmExport,
             tool.brokerageSwitch,
             tool.workspacePrepare,
+            tool.workspaceEdit,
             tool.backtest,
             tool.qualifyCandidate,
             tool.backtestHistory,
             tool.paperApprove,
             tool.reviewPacket,
             tool.workflowRequestApproval,
+            tool.workflowInvalidateCandidate,
             tool.backtestSweep,
             tool.monitorSnapshot,
             tool.scheduleSubagent,
@@ -364,6 +384,9 @@ export const layer = Layer.effect(
             tool.portfolioBacktest,
             tool.discordRead,
             tool.datasetEvidenceFinalize,
+            tool.fundActionDraft,
+            tool.fundActionProposal,
+            tool.fundSpecialistReport,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],
@@ -384,8 +407,9 @@ export const layer = Layer.effect(
 
     const describeTask = Effect.fn("ToolRegistry.describeTask")(function* (agent: Agent.Info) {
       const items = (yield* agents.list()).filter((item) => item.mode !== "primary")
+      const effectivePermission = effectiveFundRuntimePermission(agent.name, agent.permission)
       const filtered = items.filter(
-        (item) => Permission.evaluate("task", item.name, agent.permission).action !== "deny",
+        (item) => Permission.evaluate("task", item.name, effectivePermission).action !== "deny",
       )
       const list = filtered.toSorted((a, b) => a.name.localeCompare(b.name))
       const description = list
@@ -425,7 +449,9 @@ export const layer = Layer.effect(
             parameters: tool.parameters,
             jsonSchema: tool.jsonSchema,
           }
-          yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          if (!isFundRuntimeAgent(input.agent.name)) {
+            yield* plugin.trigger("tool.definition", { toolID: tool.id }, output)
+          }
           const jsonSchema =
             output.parameters === tool.parameters || output.jsonSchema !== tool.jsonSchema
               ? output.jsonSchema

@@ -20,43 +20,100 @@ on:
 
 permissions:
   contents: read
+  pull-requests: write
 
 jobs:
   smoke:
-    name: deterministic smoke
+    name: deterministic trajectory and quality smoke
     if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-bun
-      - run: bun run --cwd packages/opencode finnybench:trajectory:smoke
+      - name: Validate trajectory contracts
+        run: bun run --cwd packages/opencode finnybench:trajectory:smoke
+      - name: Exercise pinned synthetic quality gate
+        run: bun run --cwd packages/opencode finnybench:quality:smoke
+      - name: Upload synthetic regression evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: finnybench-quality-smoke-${{ github.run_id }}
+          path: .artifacts/finnybench-quality
+          if-no-files-found: error
+          retention-days: 90
+      - name: Post or update PR quality delta
+        if: always() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs")
+            const marker = "<!-- finnybench-quality-regression -->"
+            const fallback = "## FinnyBench quality regression: FAILURE\n\nThe synthetic quality report was not produced. Inspect the workflow logs."
+            const summary = fs.existsSync(".artifacts/finnybench-quality/summary.md")
+              ? fs.readFileSync(".artifacts/finnybench-quality/summary.md", "utf8")
+              : fallback
+            const body = `${marker}\n${summary}`
+            const { owner, repo } = context.repo
+            const issue_number = context.issue.number
+            const comments = await github.paginate(github.rest.issues.listComments, { owner, repo, issue_number })
+            const existing = comments.find((comment) =>
+              comment.user?.type === "Bot" && comment.body?.includes(marker)
+            )
+            if (existing) {
+              await github.rest.issues.updateComment({ owner, repo, comment_id: existing.id, body })
+            } else {
+              await github.rest.issues.createComment({ owner, repo, issue_number, body })
+            }
 
   full:
-    name: provider-backed full suite
+    name: provider-backed full suite and quality gate
     if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.artifact_url != '')
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       CAPTURE_URL: ${{ inputs.artifact_url || vars.FINNYBENCH_FULL_ARTIFACT_URL }}
+      QUALITY_BASELINE_URL: ${{ vars.FINNYBENCH_QUALITY_BASELINE_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-bun
-      - name: Require private capture configuration
-        run: test -n "$CAPTURE_URL"
+      - name: Require pinned capture and accepted baseline configuration
+        run: |
+          test -n "$CAPTURE_URL"
+          test -n "$QUALITY_BASELINE_URL"
       - name: Download redacted provider-backed trajectories
         run: >-
           curl --fail --location --silent --show-error
           --header "Authorization: Bearer ${{ secrets.FINNYBENCH_ARTIFACT_TOKEN }}"
           "$CAPTURE_URL" --output full.jsonl
+      - name: Download accepted pinned quality baseline
+        run: >-
+          curl --fail --location --silent --show-error
+          --header "Authorization: Bearer ${{ secrets.FINNYBENCH_ARTIFACT_TOKEN }}"
+          "$QUALITY_BASELINE_URL" --output quality-baseline.jsonl
       - name: Grade full Gemini and OpenAI-compatible coverage
         run: >-
           bun run packages/opencode/script/finnybench-trajectory.ts
           --suite packages/opencode/finnybench/trajectory-suite.json
-          --input full.jsonl --require-subset full > trajectory-report.json
-      - name: Upload deterministic scorecard
+          --input full.jsonl --require-subset full
+          --require-harness-revision ${{ github.sha }} > trajectory-report.json
+      - name: Gate pinned harness output quality
+        run: >-
+          bun run packages/opencode/script/finnybench-quality.ts
+          --config packages/opencode/finnybench/quality-gate.json
+          --baseline quality-baseline.jsonl
+          --candidate full.jsonl
+          --report quality-report.json
+          --summary quality-summary.md
+      - name: Upload deterministic scorecards and trend point
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: finnybench-trajectory-report-${{ github.run_id }}
-          path: trajectory-report.json
+          name: finnybench-report-${{ github.run_id }}
+          path: |
+            trajectory-report.json
+            quality-report.json
+            quality-summary.md
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 90

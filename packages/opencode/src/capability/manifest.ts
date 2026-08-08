@@ -6,6 +6,7 @@ import { EngineV2 } from "@/backtest/results"
 import { Permission } from "@/permission"
 import { PRICE_HISTORY_INTERVALS, PRICE_HISTORY_RETENTION } from "@/tool/price-history"
 import type { Tool } from "@/tool/tool"
+import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 
 export const CAPABILITY_MANIFEST_VERSION = "1.0.0"
 
@@ -197,7 +198,11 @@ export function buildCapabilityManifest(input: {
   sessionPermission?: PermissionV1.Ruleset
 }): CapabilityManifest {
   const phase = PHASE_BY_AGENT[input.agent.name] ?? "internal"
-  const ruleset = Permission.merge(input.agent.permission, input.sessionPermission ?? [])
+  const ruleset = effectiveFundRuntimePermission(
+    input.agent.name,
+    input.agent.permission,
+    input.sessionPermission ?? [],
+  )
   const tools = capabilityTools(input.tools, phase, ruleset)
   const agents = capabilityAgents(input.agents, ruleset)
   const selectedCapabilities = selectedCapabilityIDs(tools, agents)
@@ -336,11 +341,12 @@ function blockerCapabilities(): CapabilityManifest["blockers"] {
     { class: "validation_failed", recovery: "Fix validator errors before backtesting." },
     {
       class: "data_blocked",
-      recovery: "Run data_extractor with the requested symbol, interval, asset class, and dates.",
+      recovery:
+        "Report Crucible's provider-collection blocker for the exact requested symbol, interval, asset class, and dates.",
     },
     {
       class: "data_quality_failed",
-      recovery: "Change the window/interval or request approval for a repair_outliers research rerun.",
+      recovery: "Report Crucible's strict quality facts and keep the confirmed request unchanged.",
     },
     { class: "insufficient_walk_forward", recovery: "Use a longer duration or coarser interval." },
     {
