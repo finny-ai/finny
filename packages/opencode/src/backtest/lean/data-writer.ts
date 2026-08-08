@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { fileURLToPath } from "node:url"
+import { deflateRawSync } from "node:zlib"
 
 /**
  * Writes Finny-attested OHLCV into LEAN's on-disk data layout. QuantConnect
@@ -152,49 +153,67 @@ export async function writeLeanMarketData(input: {
 }
 
 async function zipCsv(name: string, csv: string): Promise<Buffer> {
-  // Minimal ZIP writer: local file header + stored data (no compression).
-  const data = Buffer.from(csv, "utf8")
+  // Correct minimal ZIP writer (deflate + CRC32). LEAN reads the first .csv
+  // entry via System.IO.Compression, which validates central directory and
+  // sizes, so the structure must be byte-exact.
+  const raw = Buffer.from(csv, "utf8")
+  const data = deflateRawSync(raw)
   const nameBuf = Buffer.from(name, "utf8")
-  const header = Buffer.alloc(30)
-  header.writeUInt32LE(0x04034b50, 0)
-  header.writeUInt16LE(20, 4)
-  header.writeUInt16LE(0x0800, 6) // UTF-8 name
-  header.writeUInt16LE(0, 8) // stored
-  header.writeUInt32LE(0, 10)
-  header.writeUInt16LE(0, 14)
-  header.writeUInt16LE(0, 16)
-  header.writeUInt16LE(nameBuf.length, 18)
-  header.writeUInt16LE(data.length, 20)
-  header.writeUInt16LE(data.length, 24)
-  header.writeUInt32LE(0, 26)
+  const crc = crc32(raw)
+  const localHeader = Buffer.alloc(30)
+  localHeader.writeUInt32LE(0x04034b50, 0) // local file header signature
+  localHeader.writeUInt16LE(20, 4) // version needed
+  localHeader.writeUInt16LE(0x0800, 6) // UTF-8 flag
+  localHeader.writeUInt16LE(8, 8) // deflate
+  localHeader.writeUInt32LE(crc, 14)
+  localHeader.writeUInt32LE(data.length, 18)
+  localHeader.writeUInt32LE(raw.length, 22)
+  localHeader.writeUInt16LE(nameBuf.length, 26)
+  localHeader.writeUInt16LE(0, 28) // extra length
+
   const central = Buffer.alloc(46)
-  central.writeUInt32LE(0x02014b50, 0)
-  central.writeUInt16LE(20, 4)
-  central.writeUInt16LE(20, 6)
-  central.writeUInt16LE(0x0800, 8)
-  central.writeUInt16LE(0, 10)
-  central.writeUInt16LE(0, 12)
-  central.writeUInt16LE(0, 14)
-  central.writeUInt16LE(0, 16)
-  central.writeUInt32LE(0, 18)
-  central.writeUInt16LE(nameBuf.length, 22)
-  central.writeUInt16LE(0, 24)
-  central.writeUInt16LE(0, 26)
-  central.writeUInt32LE(0, 28)
-  central.writeUInt32LE(0, 32)
-  central.writeUInt32LE(0, 36)
-  central.writeUInt32LE(0, 40)
-  central.writeUInt16LE(0, 44)
+  central.writeUInt32LE(0x02014b50, 0) // central directory signature
+  central.writeUInt16LE(20, 4) // version made by
+  central.writeUInt16LE(20, 6) // version needed
+  central.writeUInt16LE(0x0800, 8) // UTF-8 flag
+  central.writeUInt16LE(8, 10) // deflate
+  central.writeUInt32LE(crc, 16)
+  central.writeUInt32LE(data.length, 20)
+  central.writeUInt32LE(raw.length, 24)
+  central.writeUInt16LE(nameBuf.length, 28)
+  central.writeUInt16LE(0, 30) // extra length
+  central.writeUInt16LE(0, 32) // comment length
+  central.writeUInt16LE(0, 34) // disk number start
+  central.writeUInt16LE(0, 36) // internal attrs
+  central.writeUInt32LE(0, 38) // external attrs
+  central.writeUInt32LE(0, 42) // local header offset
+
   const eocd = Buffer.alloc(22)
-  eocd.writeUInt32LE(0x06054b50, 0)
-  eocd.writeUInt16LE(0, 4)
-  eocd.writeUInt16LE(0, 6)
-  eocd.writeUInt16LE(1, 8)
-  eocd.writeUInt16LE(1, 10)
-  eocd.writeUInt32LE(46 + nameBuf.length, 12)
-  eocd.writeUInt32LE(30 + nameBuf.length + data.length + 46 + nameBuf.length, 16)
-  eocd.writeUInt16LE(0, 20)
-  return Buffer.concat([header, nameBuf, data, central, nameBuf, eocd])
+  eocd.writeUInt32LE(0x06054b50, 0) // end of central directory signature
+  eocd.writeUInt16LE(0, 4) // disk number
+  eocd.writeUInt16LE(0, 6) // central dir disk
+  eocd.writeUInt16LE(1, 8) // entries on this disk
+  eocd.writeUInt16LE(1, 10) // total entries
+  eocd.writeUInt32LE(46 + nameBuf.length, 12) // central dir size
+  eocd.writeUInt32LE(30 + nameBuf.length + data.length, 16) // central dir offset
+  eocd.writeUInt16LE(0, 20) // comment length
+  return Buffer.concat([localHeader, nameBuf, data, central, nameBuf, eocd])
+}
+
+let crcTable: Int32Array | undefined
+function crc32(buffer: Buffer): number {
+  crcTable ??= (() => {
+    const table = new Int32Array(256)
+    for (let n = 0; n < 256; n++) {
+      let c = n
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1
+      table[n] = c
+    }
+    return table
+  })()
+  let crc = 0xffffffff
+  for (const byte of buffer) crc = crcTable![(crc ^ byte) & 0xff]! ^ (crc >>> 8)
+  return (crc ^ 0xffffffff) >>> 0
 }
 
 export { localParts }
