@@ -24,6 +24,8 @@ import PROMPT_FINNY_DATA_EXTRACTOR from "./prompt/finny-data-extractor.txt"
 import PROMPT_FINNY_NEWS_AGENT from "./prompt/finny-news-agent.txt"
 import PROMPT_FINNY_SEC_AGENT from "./prompt/finny-sec-agent.txt"
 import PROMPT_FINNY_SENTIMENT_AGENT from "./prompt/finny-sentiment-agent.txt"
+import PROMPT_FINNY_FUND_MANAGER_RAW from "./prompt/finny-fund-manager.txt"
+import PROMPT_FINNY_FUND_SPECIALIST_RAW from "./prompt/finny-fund-specialist.txt"
 import { renderPromptWithSymbols } from "../data/symbols"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
@@ -45,12 +47,21 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
+import {
+  FUND_MANAGER_AGENT,
+  FUND_RUNTIME_MODEL,
+  FUND_SPECIALIST_AGENTS,
+  fundAgentConfigError,
+  type FundSpecialistAgent,
+} from "./fund-policy"
 
 const PROMPT_FINNY = renderPromptWithSymbols(PROMPT_FINNY_RAW)
 const PROMPT_FINNY_BUILD = renderPromptWithSymbols(PROMPT_FINNY_BUILD_RAW)
 const PROMPT_FINNY_RESEARCH = renderPromptWithSymbols(PROMPT_FINNY_RESEARCH_RAW)
 const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
+const PROMPT_FINNY_FUND_MANAGER = renderPromptWithSymbols(PROMPT_FINNY_FUND_MANAGER_RAW)
+const PROMPT_FINNY_FUND_SPECIALIST = renderPromptWithSymbols(PROMPT_FINNY_FUND_SPECIALIST_RAW)
 type PermissionConfig = Parameters<typeof Permission.fromConfig>[0]
 
 const BUILTIN_AGENT_ALIASES: Record<string, string> = {
@@ -192,10 +203,17 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        // A mechanical clamp inside finny_workspace_edit applies silently; only a
+        // window/interval change the user has to own reaches this permission, and
+        // the tool bundle's blanket deny would otherwise turn that into a dead end.
+        const finnyWorkspaceEditPrompt = Permission.fromConfig({
+          finny_workspace_edit_identity: "ask",
+        })
 
         const finnyBuildTools = [
           "question",
           "task",
+          "finny_strategy_context_wait",
           "finny_workspace_prepare",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
@@ -206,6 +224,7 @@ export const layer = Layer.effect(
           "finny_algorithm_export",
           "finny_algorithm_set_params",
           "finny_workflow_request_approval",
+          "finny_workflow_invalidate_candidate",
           "finny_backtest",
           "qualify_candidate",
           "finny_review_packet",
@@ -217,12 +236,14 @@ export const layer = Layer.effect(
         const finnyModeTools = [
           "question",
           "task",
+          "finny_strategy_context_wait",
           "bash",
           "read",
           "write",
           "edit",
           "todowrite",
           "finny_workspace_prepare",
+          "finny_workspace_edit",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
           "finny_algorithm_get",
@@ -231,6 +252,7 @@ export const layer = Layer.effect(
           "finny_algorithm_export",
           "finny_algorithm_set_params",
           "finny_workflow_request_approval",
+          "finny_workflow_invalidate_candidate",
           "finny_backtest",
           "qualify_candidate",
           "finny_review_packet",
@@ -262,6 +284,8 @@ export const layer = Layer.effect(
           "webfetch",
           "skill",
         ]
+        const fundManagerTools = ["task", "finny_fund_action_draft", "finny_fund_action_propose"]
+        const fundSpecialistTools = ["finny_fund_specialist_report"]
 
         function finnyAlgoRoot() {
           const starts = [...new Set([ctx.directory, ctx.worktree].filter((item) => item && item !== "/"))]
@@ -478,6 +502,25 @@ export const layer = Layer.effect(
           write: "deny",
           edit: "deny",
         })
+        function fundSpecialistAgent(name: FundSpecialistAgent, description: string): Info {
+          return {
+            name,
+            description,
+            options: {},
+            prompt: PROMPT_FINNY_FUND_SPECIALIST,
+            model: { ...FUND_RUNTIME_MODEL },
+            permission: Permission.merge(
+              defaults,
+              user,
+              finnyToolBundle(fundSpecialistTools),
+              finnyFileSystemSandbox,
+              finnySecretReadDeny,
+            ),
+            mode: "subagent",
+            native: true,
+            hidden: true,
+          }
+        }
         const agents: Record<string, Info> = {
           finny: {
             name: "finny",
@@ -499,6 +542,7 @@ export const layer = Layer.effect(
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
+              finnyWorkspaceEditPrompt,
             ),
             mode: "primary",
             native: true,
@@ -587,6 +631,57 @@ export const layer = Layer.effect(
             native: true,
             hidden: true,
           },
+          fund_manager: {
+            name: FUND_MANAGER_AGENT,
+            description:
+              "Prompt-gated fund controller. Delegates advisory analysis and emits typed, non-executable action proposals for an external policy gateway.",
+            color: "#0f766e",
+            options: {},
+            model: { ...FUND_RUNTIME_MODEL },
+            prompt: PROMPT_FINNY_FUND_MANAGER,
+            permission: Permission.merge(
+              defaults,
+              user,
+              finnyToolBundle(fundManagerTools, [...FUND_SPECIALIST_AGENTS]),
+              finnyFileSystemSandbox,
+              finnySecretReadDeny,
+            ),
+            mode: "primary",
+            native: true,
+            hidden: false,
+          },
+          fund_strategy_researcher: fundSpecialistAgent(
+            "fund_strategy_researcher",
+            "Researches strategy hypotheses and evidence for the Fund Manager; it cannot create, approve, deploy, or execute a strategy.",
+          ),
+          fund_regime_analyst: fundSpecialistAgent(
+            "fund_regime_analyst",
+            "Advises the Fund Manager about regime transitions using only the event context and immutable evidence references supplied to its session.",
+          ),
+          fund_fill_auditor: fundSpecialistAgent(
+            "fund_fill_auditor",
+            "Advises whether a reported fill aligns with strategy intent, market evidence, and the supplied portfolio snapshot.",
+          ),
+          fund_risk_analyst: fundSpecialistAgent(
+            "fund_risk_analyst",
+            "Advises on portfolio and position risk from immutable snapshots without changing limits or execution state.",
+          ),
+          fund_code_change_agent: fundSpecialistAgent(
+            "fund_code_change_agent",
+            "Advises whether strategy logic merits a separately reviewed change; it cannot edit, deploy, or execute code.",
+          ),
+          fund_independent_validator: fundSpecialistAgent(
+            "fund_independent_validator",
+            "Independently checks another specialist's evidence and recommendation; it cannot approve or execute the recommendation.",
+          ),
+          fund_deployment_adviser: fundSpecialistAgent(
+            "fund_deployment_adviser",
+            "Advises on deployment readiness and rollback evidence; it cannot approve, deploy, or access infrastructure credentials.",
+          ),
+          fund_risk_sentinel: fundSpecialistAgent(
+            "fund_risk_sentinel",
+            "Provides an independent fail-closed risk challenge for proposed fund actions; it cannot change limits, approve, or execute.",
+          ),
           general: {
             name: "general",
             description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
@@ -627,17 +722,15 @@ export const layer = Layer.effect(
           data_extractor: {
             name: "data_extractor",
             description:
-              "Data extraction subagent. Reads repo-level data-agent instructions, fetches or transforms data " +
-              "through host bash, writes files into the active algorithm's data/ folder, and returns a structured " +
-              "digest or artifact summary — not raw bars. Use this when the main agent needs market data for strategy " +
-              "design, backtesting, or analysis.",
+              "Collects historical market data and returns concise coverage and regime analysis for strategy research. " +
+              "It does not create strategies or run backtests.",
             color: "#06b6d4",
             options: {},
             prompt: PROMPT_FINNY_DATA_EXTRACTOR,
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,
-              finnyToolBundle(["bash", "read", "skill", "finny_dataset_evidence_finalize"]),
+              finnyToolBundle(["bash", "read", "websearch", "webfetch", "finny_dataset_evidence_finalize"]),
               user,
               finnyDataAgentAccess,
               finnySecretReadDeny,
@@ -779,6 +872,16 @@ export const layer = Layer.effect(
         }
 
         for (const [key, value] of Object.entries(cfg.agent ?? {})) {
+          const fundConfigIssue = fundAgentConfigError({
+            agent: key,
+            configuredName: value.name,
+            disabled: value.disable,
+            model: value.model,
+            temperature: value.temperature,
+            topP: value.top_p,
+            options: value.options,
+          })
+          if (fundConfigIssue) throw new Error(fundConfigIssue)
           if (value.disable) {
             delete agents[key]
             continue
@@ -807,6 +910,51 @@ export const layer = Layer.effect(
           item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
         }
 
+        // Fund runtime roles remain fixed-model and capability
+        // constrained even when user/global configuration is broad. This
+        // prompt and visibility are pinned to the reviewed built-in policy.
+        const fundManager = agents[FUND_MANAGER_AGENT]
+        if (fundManager) {
+          fundManager.name = FUND_MANAGER_AGENT
+          fundManager.model = { ...FUND_RUNTIME_MODEL }
+          fundManager.variant = undefined
+          fundManager.options = {}
+          fundManager.temperature = undefined
+          fundManager.topP = undefined
+          fundManager.steps = undefined
+          fundManager.mode = "primary"
+          fundManager.native = true
+          fundManager.hidden = false
+          fundManager.prompt = PROMPT_FINNY_FUND_MANAGER
+          fundManager.permission = Permission.merge(
+            fundManager.permission,
+            finnyToolBundle(fundManagerTools, [...FUND_SPECIALIST_AGENTS]),
+            finnyFileSystemSandbox,
+            finnySecretReadDeny,
+          )
+        }
+        for (const name of FUND_SPECIALIST_AGENTS) {
+          const specialist = agents[name]
+          if (!specialist) continue
+          specialist.name = name
+          specialist.model = { ...FUND_RUNTIME_MODEL }
+          specialist.variant = undefined
+          specialist.options = {}
+          specialist.temperature = undefined
+          specialist.topP = undefined
+          specialist.steps = undefined
+          specialist.mode = "subagent"
+          specialist.native = true
+          specialist.hidden = true
+          specialist.prompt = PROMPT_FINNY_FUND_SPECIALIST
+          specialist.permission = Permission.merge(
+            specialist.permission,
+            finnyToolBundle(fundSpecialistTools),
+            finnyFileSystemSandbox,
+            finnySecretReadDeny,
+          )
+        }
+
         // Ensure Truncate.GLOB is allowed unless explicitly configured
         for (const name in agents) {
           const agent = agents[name]
@@ -833,6 +981,7 @@ export const layer = Layer.effect(
           ["research", 2],
           ["chat", 3],
           ["portfolio_builder", 4],
+          [FUND_MANAGER_AGENT, 5],
         ])
 
         const list = Effect.fnUntraced(function* () {

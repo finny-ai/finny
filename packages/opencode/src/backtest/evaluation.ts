@@ -1,13 +1,86 @@
 import type { BacktestRunner } from "./runner"
-import { qualificationInputErrors, type QualificationInputV1 } from "./qualification-policy"
+import {
+  confirmatoryPolicyErrors,
+  qualificationInputErrors,
+  type QualificationInputV1,
+} from "./qualification-policy"
 
-export type BacktestQualityLabel = "failed" | "inconclusive" | "weak_positive" | "candidate" | "paper_eligible"
+export type BacktestQualityLabel =
+  | "failed"
+  | "inconclusive"
+  | "unevaluated"
+  | "weak_positive"
+  | "candidate"
+  | "paper_eligible"
+
+export interface QualificationGateDeltaV1 {
+  rank: number
+  gate: string
+  message: string
+  nextAction: string
+}
 
 export interface BacktestQuality {
   label: BacktestQualityLabel
   paperEligible: boolean
   reasons: string[]
+  deltas: QualificationGateDeltaV1[]
   minTrades: number
+}
+
+function deltaFor(message: string, order: number): QualificationGateDeltaV1 {
+  const rule = [
+    {
+      matches: /closed trade count|trade count low/,
+      gate: "trade_count",
+      priority: 2,
+      nextAction: "extend the research window or revise entry frequency until the stated trade-count floor is met",
+    },
+    {
+      matches: /stitched OOS return/,
+      gate: "stitched_oos_return",
+      priority: 1,
+      nextAction: "revise the economic signal and rerun walk-forward validation until stitched OOS return is positive",
+    },
+    {
+      matches: /cost sensitivity/,
+      gate: "cost_sensitivity",
+      priority: 3,
+      nextAction: "add or improve the configured fee and slippage stress so the cost-sensitivity run passes",
+    },
+    {
+      matches: /exploratory evidence only|validation evidence only/,
+      gate: "phase_promotion",
+      priority: 5,
+      nextAction: "freeze the candidate and invoke qualify_candidate to run validation and the approved sealed confirmatory holdout",
+    },
+    {
+      matches: /phase|holdout|dataset qualification|data quality mode|budget|policy/,
+      gate: "qualification_contract",
+      priority: 0,
+      nextAction: "repair the immutable qualification input before attempting promotion",
+    },
+  ].find((candidate) => candidate.matches.test(message))
+  return {
+    rank: rule?.priority ?? order + 10,
+    gate: rule?.gate ?? "quality_gate",
+    message,
+    nextAction: rule?.nextAction ?? "address this gate, then rerun the same phase with a new candidate version",
+  }
+}
+
+function quality(
+  label: BacktestQualityLabel,
+  paperEligible: boolean,
+  reasons: readonly string[],
+  minTrades: number,
+): BacktestQuality {
+  const unique = [...new Set(reasons)]
+  const deltas = unique
+    .map(deltaFor)
+    .sort((left, right) => left.rank - right.rank)
+    .map((delta, index) => ({ ...delta, rank: index + 1 }))
+  return { label, paperEligible, reasons: unique, deltas, minTrades }
 }
 
 function finite(value: unknown, fallback = 0): number {
@@ -80,6 +153,32 @@ export function evaluateBacktestQuality(
         riskContract.drawdown?.limit_pct == null ||
         riskContract.max_positions == null))
 
+  if (confirmatoryPolicyErrors(policy).length > 0) {
+    const exploratoryReasons = [...qualificationReasons]
+    if (results.totalTrades < minTrades) {
+      exploratoryReasons.push(`closed trade count below minimum for this window (${results.totalTrades} < ${minTrades})`)
+    }
+    if (!wf || !Number.isFinite(wf.stitched_oos_return)) {
+      exploratoryReasons.push("stitched OOS return unavailable")
+    } else if (finite(wf.stitched_oos_return, Number.NEGATIVE_INFINITY) <= 0) {
+      exploratoryReasons.push("stitched OOS return <= 0")
+    }
+    if (policy.requireCostSensitivity) {
+      const costSensitivity = results.sensitivityOutcomes?.find((item) => /cost|fee|slippage/i.test(item.name))
+      if (!costSensitivity || costSensitivity.status !== "pass") {
+        exploratoryReasons.push("configured cost sensitivity did not pass")
+      }
+    }
+    if (exploratoryReasons.length === 0) {
+      exploratoryReasons.push(
+        `${policy.requiredPhase} evidence only; strict confirmatory qualification is required for paper eligibility`,
+      )
+      return quality("weak_positive", false, exploratoryReasons, minTrades)
+    }
+    const failed = exploratoryReasons.includes("stitched OOS return <= 0") || qualificationReasons.length > 0
+    return quality(failed ? "failed" : "inconclusive", false, exploratoryReasons, minTrades)
+  }
+
   if (liquidationAdjustedReturn <= 0) reasons.push("liquidation-adjusted return <= 0")
   if (requiresBenchmark && !Number.isFinite(benchmarkReturn)) reasons.push("buy-and-hold benchmark unavailable")
   if (policy.requirePositiveAlpha && !Number.isFinite(alpha)) reasons.push("alpha vs buy-and-hold unavailable")
@@ -91,7 +190,7 @@ export function evaluateBacktestQuality(
   if (drawdownTrigger && typeof drawdownTrigger === "object") reasons.push("drawdown risk contract triggered")
 
   if (reasons.length > 0) {
-    return { label: "failed", paperEligible: false, reasons: [...qualificationReasons, ...reasons], minTrades }
+    return quality("failed", false, [...qualificationReasons, ...reasons], minTrades)
   }
 
   if (results.totalTrades < minTrades) {
@@ -103,12 +202,12 @@ export function evaluateBacktestQuality(
     reasons.push("positive total return depends on open unrealized PnL while realized PnL is nonpositive")
   }
   if (reasons.length > 0) {
-    return {
-      label: qualificationReasons.length ? "failed" : "inconclusive",
-      paperEligible: false,
-      reasons: [...qualificationReasons, ...reasons],
+    return quality(
+      qualificationReasons.length ? "failed" : "inconclusive",
+      false,
+      [...qualificationReasons, ...reasons],
       minTrades,
-    }
+    )
   }
 
   if (results.sharpeRatio < 1) reasons.push("Sharpe < 1.0")
@@ -146,35 +245,34 @@ export function evaluateBacktestQuality(
     const costSensitivity = results.sensitivityOutcomes?.find((item) => /cost|fee|slippage/i.test(item.name))
     if (!costSensitivity || costSensitivity.status !== "pass") reasons.push("configured cost sensitivity did not pass")
   }
-  if (policy.minWalkForwardFolds > 0 && (!wf || finite(wf.n_folds, 0) < policy.minWalkForwardFolds)) {
+  const missingRequiredWalkForward = policy.minWalkForwardFolds > 0 && !wf
+  if (missingRequiredWalkForward) {
+    reasons.push(`walk-forward robustness required by policy (${policy.minWalkForwardFolds} folds) but not run`)
+  } else if (wf && policy.minWalkForwardFolds > 0 && finite(wf.n_folds, 0) < policy.minWalkForwardFolds) {
     reasons.push(`walk-forward folds < ${policy.minWalkForwardFolds}`)
   }
   if (policy.requireRiskContract && researchOnlyRisk) reasons.push("legacy/v3 risk contract is research-only")
   reasons.push(...qualificationReasons)
 
-  if (reasons.length > 0) {
-    return { label: qualificationReasons.length ? "failed" : "weak_positive", paperEligible: false, reasons, minTrades }
+  if (qualificationReasons.length > 0 || missingRequiredWalkForward) {
+    return quality("failed", false, reasons, minTrades)
   }
 
   if (!wf) {
-    const candidateReasons = ["walk-forward robustness not run"]
-    if (researchOnlyRisk) candidateReasons.push("legacy/v3 risk contract is research-only")
-    return {
-      label: "candidate",
-      paperEligible: false,
-      reasons: candidateReasons,
-      minTrades,
+    const unevaluatedReasons = [...reasons, "walk-forward robustness not run"]
+    if (researchOnlyRisk && !unevaluatedReasons.includes("legacy/v3 risk contract is research-only")) {
+      unevaluatedReasons.push("legacy/v3 risk contract is research-only")
     }
+    return quality("unevaluated", false, unevaluatedReasons, minTrades)
+  }
+
+  if (reasons.length > 0) {
+    return quality("weak_positive", false, reasons, minTrades)
   }
 
   if (researchOnlyRisk) {
-    return {
-      label: "candidate",
-      paperEligible: false,
-      reasons: ["legacy/v3 risk contract is research-only"],
-      minTrades,
-    }
+    return quality("candidate", false, ["legacy/v3 risk contract is research-only"], minTrades)
   }
 
-  return { label: "paper_eligible", paperEligible: true, reasons: [], minTrades }
+  return quality("paper_eligible", true, [], minTrades)
 }

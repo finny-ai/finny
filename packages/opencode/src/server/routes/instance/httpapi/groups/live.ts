@@ -10,7 +10,16 @@ const root = "/live"
 
 // Effect-Schema mirrors of the LiveRunner namespace TS interfaces. These must
 // stay in sync with packages/opencode/src/live/runner.ts.
-const BrokerKind = Schema.Literals(["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"])
+const BrokerKind = Schema.Literals([
+  "alpaca",
+  "binance",
+  "ibkr",
+  "zerodha",
+  "saxo",
+  "questrade",
+  "futu",
+  "robinhood",
+])
 const BrokerMode = Schema.Literals(["paper", "testnet", "live"])
 const RunStatus = Schema.Literals(["starting", "running", "stopped", "error"])
 

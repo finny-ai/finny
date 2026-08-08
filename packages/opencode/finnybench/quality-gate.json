@@ -1,0 +1,23 @@
+{
+  "schema": "finnybench.quality-gate.v1",
+  "suite_id": "finnybench-harness-quality-v1",
+  "minimum_observations": 8,
+  "thresholds": {
+    "median_excess_sharpe": {
+      "warning_delta": -0.1,
+      "failure_delta": -0.25
+    },
+    "share_beating_buy_hold": {
+      "warning_delta": -0.1,
+      "failure_delta": -0.2
+    },
+    "share_exploratory_gate": {
+      "warning_delta": -0.1,
+      "failure_delta": -0.2
+    },
+    "median_trade_count": {
+      "warning_delta": -5,
+      "failure_delta": -10
+    }
+  }
+}

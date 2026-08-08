@@ -10,8 +10,8 @@ export interface QualificationPolicyV1 {
   version: 1
   policyId: string
   policyHash: string
-  requiredPhase: "confirmatory"
-  requireSealedHoldout: true
+  requiredPhase: ExperimentPhase
+  requireSealedHoldout: boolean
   maxSelectionTrials: number
   minTrades: number
   minEffectiveSampleSize: number
@@ -25,8 +25,8 @@ export interface QualificationPolicyV1 {
   maxDrawdown: number
   maxStressDrawdown: number
   requireRiskContract: boolean
-  allowedDataQualification: readonly ["strict_qualified"]
-  allowedDataQualityMode: "strict"
+  allowedDataQualification: readonly DatasetQualification[]
+  allowedDataQualityMode: "strict" | "repair_outliers" | "any"
 }
 
 export interface QualificationContextV1 {
@@ -115,6 +115,32 @@ export function makeQualificationPolicyV1(
 
 export const DEFAULT_QUALIFICATION_POLICY_V1 = Object.freeze(makeQualificationPolicyV1())
 
+export function makeExploratoryQualificationPolicyV1(
+  overrides: Partial<Omit<QualificationPolicyV1, "schema" | "version" | "policyId" | "policyHash">> = {},
+): QualificationPolicyV1 {
+  return makeQualificationPolicyV1({
+    requiredPhase: "exploratory",
+    requireSealedHoldout: false,
+    minTrades: 3,
+    minEffectiveSampleSize: 3,
+    minOosCoverage: 0,
+    minWalkForwardFolds: 0,
+    minDeflatedSharpe: 0,
+    minProbabilisticSharpe: 0,
+    requireCostSensitivity: true,
+    requireBenchmark: false,
+    requirePositiveAlpha: false,
+    maxDrawdown: 1,
+    maxStressDrawdown: 1,
+    requireRiskContract: false,
+    allowedDataQualification: ["unqualified", "research_only", "strict_qualified"],
+    allowedDataQualityMode: "any",
+    ...overrides,
+  })
+}
+
+export const EXPLORATORY_QUALIFICATION_POLICY_V1 = Object.freeze(makeExploratoryQualificationPolicyV1())
+
 export function makeHoldoutOpenEventV1(input: {
   planId: string
   planHash: string
@@ -173,7 +199,11 @@ export function researchQualificationContext(
 export function qualificationInputForResearch(
   input: Parameters<typeof researchQualificationContext>[0] = {},
 ): QualificationInputV1 {
-  return { policy: DEFAULT_QUALIFICATION_POLICY_V1, context: researchQualificationContext(input) }
+  const phase = input.phase ?? "exploratory"
+  return {
+    policy: makeExploratoryQualificationPolicyV1({ requiredPhase: phase }),
+    context: researchQualificationContext({ ...input, phase }),
+  }
 }
 
 function contextIdentityErrors(context: QualificationContextV1): string[] {
@@ -211,7 +241,12 @@ function holdoutEventErrors(context: QualificationContextV1): string[] {
   ])
 }
 
+function requiredHoldoutErrors(context: QualificationContextV1, policy: QualificationPolicyV1): string[] {
+  return policy.requireSealedHoldout ? holdoutEventErrors(context) : []
+}
+
 function budgetErrors(context: QualificationContextV1, policy: QualificationPolicyV1): string[] {
+  if (policy.requiredPhase !== "confirmatory") return []
   return failedChecks([
     {
       valid: [Number.isSafeInteger(context?.durableSelectionBudget), context?.durableSelectionBudget >= 1].every(Boolean),
@@ -233,11 +268,43 @@ function budgetErrors(context: QualificationContextV1, policy: QualificationPoli
 }
 
 function promotabilityErrors(context: QualificationContextV1, policy: QualificationPolicyV1): string[] {
+  const datasetError =
+    policy.requiredPhase === "confirmatory"
+      ? `dataset qualification ${context?.datasetQualification ?? "missing"} is not promotable`
+      : `dataset qualification ${context?.datasetQualification ?? "missing"} is not allowed by the ${policy.requiredPhase} policy`
+  const dataQualityError =
+    policy.requiredPhase === "confirmatory"
+      ? `data quality mode ${context?.dataQualityMode ?? "missing"} is research-only`
+      : `data quality mode ${context?.dataQualityMode ?? "missing"} is not allowed by the ${policy.requiredPhase} policy`
   return failedChecks([
     { valid: context?.phase === policy.requiredPhase, error: `experiment phase is ${context?.phase ?? "missing"}, not ${policy.requiredPhase}` },
-    { valid: context?.datasetQualification === "strict_qualified", error: `dataset qualification ${context?.datasetQualification ?? "missing"} is not promotable` },
-    { valid: context?.dataQualityMode === policy.allowedDataQualityMode, error: `data quality mode ${context?.dataQualityMode ?? "missing"} is research-only` },
+    {
+      valid: policy.allowedDataQualification.includes(context?.datasetQualification),
+      error: datasetError,
+    },
+    {
+      valid: policy.allowedDataQualityMode === "any" || policy.allowedDataQualityMode === context?.dataQualityMode,
+      error: dataQualityError,
+    },
   ])
+}
+
+export function confirmatoryPolicyErrors(policy: QualificationPolicyV1): string[] {
+  return [
+    ...verifyQualificationPolicyV1(policy),
+    ...failedChecks([
+      { valid: policy.requiredPhase === "confirmatory", error: "qualification plan policy must require the confirmatory phase" },
+      { valid: policy.requireSealedHoldout, error: "qualification plan policy must require a sealed holdout" },
+      {
+        valid: policy.allowedDataQualification.length === 1 && policy.allowedDataQualification[0] === "strict_qualified",
+        error: "qualification plan policy must allow only strict_qualified data",
+      },
+      {
+        valid: policy.allowedDataQualityMode === "strict",
+        error: "qualification plan policy must allow only strict data quality mode",
+      },
+    ]),
+  ]
 }
 
 export function qualificationInputErrors(input: QualificationInputV1): string[] {
@@ -247,7 +314,7 @@ export function qualificationInputErrors(input: QualificationInputV1): string[] 
     ...verifyQualificationPolicyV1(input.policy),
     ...contextIdentityErrors(context),
     ...promotabilityErrors(context, input.policy),
-    ...holdoutEventErrors(context),
+    ...requiredHoldoutErrors(context, input.policy),
     ...budgetErrors(context, input.policy),
   ]
 }

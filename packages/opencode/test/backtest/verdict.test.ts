@@ -7,6 +7,7 @@ const weakQuality: BacktestQuality = {
   label: "weak_positive",
   paperEligible: false,
   reasons: ["Sharpe < 1.0"],
+  deltas: [],
   minTrades: 3,
 }
 
@@ -14,6 +15,7 @@ const candidateQuality: BacktestQuality = {
   label: "candidate",
   paperEligible: false,
   reasons: [],
+  deltas: [],
   minTrades: 3,
 }
 

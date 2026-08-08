@@ -4,11 +4,10 @@ import { Tool } from "./tool"
 import { Algorithm } from "../algorithm"
 import { BacktestRunner } from "../backtest/runner"
 import { Validate } from "../algorithm/validate"
-import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 
 const MAX_COMBOS = 27
 
-const parameters = z.object({
+export const BacktestSweepParameters = z.object({
   algorithmName: z
     .string()
     .describe("Name of the saved algorithm to backtest"),
@@ -34,6 +33,16 @@ const parameters = z.object({
     .default("1h")
     .describe("Bar interval"),
   capital: z.string().default("10000").describe("Starting capital in USD"),
+  startDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe("Exact confirmed sweep start date YYYY-MM-DD."),
+  endDate: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}$/)
+    .optional()
+    .describe("Exact confirmed sweep end date YYYY-MM-DD."),
   walkForwardFolds: z
     .number()
     .int()
@@ -50,6 +59,9 @@ const parameters = z.object({
     .nonnegative()
     .optional()
     .describe("Optional base slippage in basis points for each run. Overrides the saved execution slippage without changing the algorithm."),
+}).refine((input) => Boolean(input.startDate) === Boolean(input.endDate), {
+  message: "startDate and endDate must be supplied together to preserve the exact sweep window",
+  path: ["startDate"],
 })
 
 type Combo = Record<string, number | string | boolean>
@@ -93,10 +105,11 @@ export const BacktestSweepTool = Tool.define(
       "a performance matrix plus sensitivity analysis. Use this to detect parameter overfitting — " +
       "a robust strategy performs similarly across nearby parameter values; a fragile strategy has " +
       "wildly different metrics for small changes. Cap of " + MAX_COMBOS + " total combinations. " +
+      "Crucible collects and strictly validates its own market data; Data Agent artifacts are not required or consumed. " +
       "The strategy MUST accept a `params` kwarg in its constructor and read values from it; " +
       "otherwise every combo runs identical code and the sweep is meaningless.",
-    parameters,
-    execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
+    parameters: BacktestSweepParameters,
+    execute: (input: z.infer<typeof BacktestSweepParameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
         await ctx.ask({
           permission: "finny_backtest_sweep",
@@ -104,20 +117,6 @@ export const BacktestSweepTool = Tool.define(
           always: ["*"],
           metadata: {},
         })
-
-        const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
-        if (!evidence.ok) {
-          return {
-            title: "Sweep blocked by missing evidence",
-            output: evidence.text,
-            metadata: {
-              blocked: true,
-              evidenceRequired: true,
-              workspaceSlug: evidence.workspaceSlug,
-              issues: evidence.issues,
-            } as Record<string, unknown>,
-          }
-        }
 
         const algo = await Algorithm.get(input.algorithmName)
         if (!algo) {
@@ -184,6 +183,8 @@ export const BacktestSweepTool = Tool.define(
             duration: input.duration,
             interval: input.interval,
             capital: input.capital,
+            startDate: input.startDate,
+            endDate: input.endDate,
             configOverrides: {
               params: combo,
               ...(input.feeBps === undefined && input.slippageBps === undefined
@@ -198,7 +199,7 @@ export const BacktestSweepTool = Tool.define(
             source: "sweep",
             robustness: { monteCarloPaths: 0, regimes: true, walkForwardFolds: input.walkForwardFolds },
             sessionID: ctx.sessionID,
-            dataSource: { kind: "verified_artifact", dataset: evidence.dataset },
+            dataSource: { kind: "provider_fetch" },
           })
           if (r.ok) results.push({ params: combo, ok: true, metrics: r.results })
           else results.push({ params: combo, ok: false, error: r.error })

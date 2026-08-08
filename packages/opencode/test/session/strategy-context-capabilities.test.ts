@@ -20,6 +20,7 @@ describe("pending strategy-context capability surface", () => {
     "task_start",
     "task_run",
     "task_batch_run",
+    "finny_strategy_context_wait",
     "read",
     "glob",
     "grep",
@@ -131,6 +132,7 @@ describe("required strategy-context roles", () => {
     })
     expect(pendingBlock?.metadata.strategyContext).toBe("pending")
     expect(pendingBlock?.output).toContain("data_extractor:task_data")
+    expect(pendingBlock?.output).toContain("Call finny_strategy_context_wait once")
 
     const verifiedWorkflow = {
       ...delegatedWorkflow,

@@ -62,6 +62,7 @@ export const WORKER_RUNTIME_ENV = [
  */
 export const DATA_PROVIDER_CREDENTIALS = [
   // Equity / ETF market data (Alpaca + optional Polygon/Bloomberg/generic).
+  { key: "ALPACA_OAUTH_TOKEN", assets: ["equity"] as const },
   { key: "ALPACA_API_KEY_ID", assets: ["equity"] as const },
   { key: "ALPACA_API_SECRET_KEY", assets: ["equity"] as const },
   { key: "ALPACA_DATA_FEED", assets: ["equity"] as const },
@@ -177,6 +178,11 @@ function pickEnvironment(env: NodeJS.ProcessEnv, allowed: ReadonlySet<string>) {
     if (value !== undefined && allowed.has(key.toUpperCase())) out[key] = value
   }
   return out
+}
+
+/** Runtime-only host environment with all provider and application secrets removed. */
+export function workerRuntimeEnv(env: NodeJS.ProcessEnv) {
+  return pickEnvironment(env, COMMON_RUNTIME_ENV)
 }
 
 /**

@@ -7,7 +7,10 @@ import {
   type AuthoritativeBarV1,
   type CompileExperimentPlanInput,
 } from "../../src/backtest/experiment-plan"
-import { DEFAULT_QUALIFICATION_POLICY_V1 } from "../../src/backtest/qualification-policy"
+import {
+  DEFAULT_QUALIFICATION_POLICY_V1,
+  EXPLORATORY_QUALIFICATION_POLICY_V1,
+} from "../../src/backtest/qualification-policy"
 
 function bar(timestamp: string, sessionId: string, sessionOpen: string, sessionClose: string): AuthoritativeBarV1 {
   return { timestamp, sessionId, sessionOpen, sessionClose }
@@ -67,6 +70,13 @@ function input(
 }
 
 describe("ExperimentPlanV1 compiler", () => {
+  test("refuses to bind an exploratory preset to a confirmatory qualification plan", () => {
+    const bars = intradaySession({ id: "2026-01-09", open: "2026-01-09T14:30:00.000Z", bars: 16 })
+    expect(() =>
+      compileExperimentPlanV1(input(bars, { qualificationPolicy: EXPLORATORY_QUALIFICATION_POLICY_V1 })),
+    ).toThrow("must require the confirmatory phase")
+  })
+
   test("accepts date-only coverage beginning at the first authoritative session bar", () => {
     const bars = [
       ...intradaySession({ id: "2026-01-09", open: "2026-01-09T14:30:00.000Z", bars: 8 }),

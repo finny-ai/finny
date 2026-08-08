@@ -1,5 +1,5 @@
 import crypto from "node:crypto"
-import { verifyQualificationPolicyV1, type QualificationPolicyV1 } from "./qualification-policy"
+import { confirmatoryPolicyErrors, type QualificationPolicyV1 } from "./qualification-policy"
 
 export const EXPERIMENT_PLAN_SCHEMA = "finny.experiment_plan" as const
 
@@ -145,7 +145,7 @@ function requireIdentity(input: CompileExperimentPlanInput) {
   if (required.some((value) => !value)) {
     throw new ExperimentPlanCompileError("invalid_input", "request, dataset, and calendar identities are required")
   }
-  const policyError = verifyQualificationPolicyV1(input.qualificationPolicy)[0]
+  const policyError = confirmatoryPolicyErrors(input.qualificationPolicy)[0]
   if (policyError) throw new ExperimentPlanCompileError("invalid_input", policyError)
 }
 

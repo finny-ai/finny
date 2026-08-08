@@ -18,6 +18,7 @@ import {
   type HarnessIntegrityIssue,
 } from "./run-artifacts"
 import { canonicalScenarioJson, loadScenario, scenarioSha256 as hashScenario } from "./scenario"
+import { semanticHash } from "./semantic-hash"
 import { classifyOutcome, observeRun, parseJsonEvents } from "./semantic-verdict"
 import type { HeadlessHarnessOptions, HeadlessHarnessResult, RunManifestV1 } from "./types"
 
@@ -29,96 +30,7 @@ function runId(): string {
   return `${stamp}-${crypto.randomBytes(5).toString("hex")}`
 }
 
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value as Record<string, unknown>)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([key, child]) => `${JSON.stringify(key)}:${stable(child)}`)
-      .join(",")}}`
-  }
-  return JSON.stringify(value)
-}
-
-function normalizeSemanticValue(value: unknown, volatile: string[]): unknown {
-  if (Array.isArray(value)) return value.map((item) => normalizeSemanticValue(item, volatile))
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .filter(
-          ([key]) =>
-            ![
-              "timestamp",
-              "time",
-              "sessionID",
-              "sessionId",
-              "session_id",
-              "runId",
-              "run_id",
-              "identityHash",
-              "identity_hash",
-              "manifestHash",
-              "manifest_hash",
-              "artifactPath",
-              "artifact_path",
-              "workflowId",
-              "workflow_id",
-              "experimentId",
-              "experiment_id",
-              "challengeId",
-              "challenge_id",
-              "approvalChallengeId",
-              "scopeHash",
-              "sourceMessageId",
-              "questionRequestId",
-              "runIdentityHash",
-              "strictRunIdentityHash",
-              "id",
-              "callID",
-              "messageID",
-              "messageId",
-              "request_id",
-              "request_content_hash",
-              "content_hash",
-              "parentSessionId",
-              "algorithmId",
-              "algorithm_id",
-              "conceptId",
-              "concept_id",
-              "replayKey",
-              "replay_key",
-              "updated",
-              "createdAt",
-              "finishedAt",
-              "startedAt",
-              "snapshot",
-            ].includes(key),
-        )
-        .map(([key, child]) => [key, normalizeSemanticValue(child, volatile)]),
-    )
-  }
-  if (typeof value !== "string") return value
-  let normalized = value.replace(/\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z/g, "<timestamp>")
-  for (const token of volatile.filter(Boolean).sort((a, b) => b.length - a.length))
-    normalized = normalized.replaceAll(token, "<volatile>")
-  normalized = normalized.replace(/ses_[A-Za-z0-9_-]+/g, "<session>")
-  normalized = normalized.replace(/(?:msg|prt)_[A-Za-z0-9_-]+/g, "<message-part>")
-  normalized = normalized.replace(/wf_[a-f0-9]{32}/gi, "<workflow>")
-  normalized = normalized.replace(/(?:evt|approval)_[a-z0-9_-]*[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<workflow-event>")
-  normalized = normalized.replace(
-    /((?:request_)?content_hash\s*[:=]\s*)(?:sha256:)?[a-f0-9]{64}/gi,
-    "$1<request-content-hash>",
-  )
-  normalized = normalized.replace(/\b(?:sha256:)?[a-f0-9]{64}\b/gi, "<content-hash>")
-  normalized = normalized.replace(/[a-z0-9-]+\.\d+\.\d+\.\d+\.\d+\.[a-f0-9]{8}/gi, "<workspace>")
-  normalized = normalized.replace(/\d{8}T\d{6}Z-[a-f0-9]+/gi, "<artifact-run>")
-  normalized = normalized.replace(/[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi, "<uuid>")
-  return normalized
-}
-
-export function semanticHash(value: unknown, volatile: string[] = []): string {
-  return sha256Bytes(stable(normalizeSemanticValue(value, volatile)))
-}
+export { semanticHash } from "./semantic-hash"
 
 export function semanticEventHash(observation: ReturnType<typeof observeRun>): string {
   return semanticHash({
@@ -173,9 +85,7 @@ type HarnessPreflight = {
 
 function telemetryFlush(events: Array<Record<string, any>>): HarnessObservability["flush"] {
   const value = events.findLast((event) => event.type === "harness_telemetry")?.flush
-  return value === "completed" || value === "timed_out" || value === "failed" || value === "not_run"
-    ? value
-    : "not_run"
+  return value === "completed" || value === "timed_out" || value === "failed" || value === "not_run" ? value : "not_run"
 }
 
 async function collectObservability(input: {
@@ -240,11 +150,29 @@ async function collectObservability(input: {
       const fetched = await fetchSpans(args)
       const grades = gradeSessions(fetched.spans)
       const validation = validateGrade({ args, fetched, grades })
-      last = { endpoint: args.endpoint, project: args.project, runId: args.runId, commit: args.commit, session: args.session, fetched, grades, validation, attempts: attempt }
+      last = {
+        endpoint: args.endpoint,
+        project: args.project,
+        runId: args.runId,
+        commit: args.commit,
+        session: args.session,
+        fetched,
+        grades,
+        validation,
+        attempts: attempt,
+      }
       if (validation.valid) break
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error)
-      last = { endpoint: args.endpoint, project: args.project, runId: args.runId, commit: args.commit, session: args.session, error: lastError, attempts: attempt }
+      last = {
+        endpoint: args.endpoint,
+        project: args.project,
+        runId: args.runId,
+        commit: args.commit,
+        session: args.session,
+        error: lastError,
+        attempts: attempt,
+      }
     }
     await Bun.sleep(1_000)
   }
@@ -348,10 +276,7 @@ async function prepareSource(input: {
   }
 }
 
-async function requiredDependencyError(input: {
-  source: string
-  required?: string[]
-}): Promise<string | undefined> {
+async function requiredDependencyError(input: { source: string; required?: string[] }): Promise<string | undefined> {
   if (!input.required?.length) return
   const missing = await missingDependencies(input.source, input.required)
   return missing.length > 0 ? `missing required dependencies: ${missing.join(", ")}` : undefined
@@ -443,9 +368,7 @@ async function cleanupDetachedSource(input: {
     cwd: input.repository,
     timeoutMs: 120_000,
   })
-  return remove.exitCode === 0
-    ? { sourceAdded: false, status: "completed" }
-    : { sourceAdded: true, status: "failed" }
+  return remove.exitCode === 0 ? { sourceAdded: false, status: "completed" } : { sourceAdded: true, status: "failed" }
 }
 
 export function runHeadlessHarness(options: HeadlessHarnessOptions): Effect.Effect<HeadlessHarnessResult, unknown> {

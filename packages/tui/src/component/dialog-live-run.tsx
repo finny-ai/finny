@@ -60,7 +60,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
         <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme.text} attributes={TextAttributes.BOLD}>
-              Live · {r().algorithmName}
+              {r().brokerKind === "robinhood" ? "Live Account Data · Shadow Orders" : "Live"} · {r().algorithmName}
             </text>
             <text fg={theme.textMuted} onMouseUp={close}>
               esc

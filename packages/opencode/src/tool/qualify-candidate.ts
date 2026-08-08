@@ -331,7 +331,7 @@ export const QualifyCandidateTool = Tool.define<
                 })
                 return true
               },
-              executePhase: async ({ phase, window, qualification }) => {
+              executePhase: async ({ phase, window, qualification, walkForwardFolds }) => {
                 const holdoutEvent = qualification.context.holdoutOpenEvents[0]
                 const trial = await beginTrial({
                   algorithm: candidate,
@@ -362,7 +362,9 @@ export const QualifyCandidateTool = Tool.define<
                   source: "run",
                   robustness: {
                     regimes: true,
-                    walkForwardFolds: phase === "confirmatory" ? policy.minWalkForwardFolds : 0,
+                    // Supplied by the runtime (walkForwardFoldsForPhase) so the
+                    // reduced exploratory fold count stays centrally defined.
+                    walkForwardFolds,
                     costSensitivity: phase === "confirmatory" && policy.requireCostSensitivity,
                     // Exploratory, validation, and confirmatory are evaluations of
                     // one immutable code/config candidate, not three selections.

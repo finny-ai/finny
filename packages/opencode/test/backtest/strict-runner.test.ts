@@ -8,6 +8,7 @@ import type { Algorithm } from "../../src/algorithm"
 import { validateExistingDataExtractorEvidence, type VerifiedDatasetRef } from "../../src/data/data-extractor-evidence"
 import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
 import { qualificationInputForResearch } from "../../src/backtest/qualification-policy"
+import { FINNY_BROKER_PY } from "../../src/backtest/broker-py"
 
 function algo(overrides: Partial<Algorithm.Info> = {}): Algorithm.Info {
   return {
@@ -188,7 +189,7 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     ).toBe(true)
   })
 
-  test("keeps a traceable run ID on non-promotable strict research results", () => {
+  test("keeps a provider-pipeline run as Crucible instead of downgrading it to research-only", () => {
     const results = { v2: { run_metadata: { existing: "value" } } } as unknown as BacktestRunner.Results
 
     BacktestRunner._internalForTests.markNonPromotableStrictRun({
@@ -201,12 +202,11 @@ describe("BacktestRunner strict_v2 guardrails", () => {
 
     expect(results).toMatchObject({
       runId: "run_research_only",
-      runKind: "legacy",
       eligibilityStatus: "backtested",
       v2: {
         run_metadata: {
           existing: "value",
-          product_eligibility_blockers: ["provider_fetch_research_only"],
+          product_eligibility_blockers: ["qualification_operation_required"],
         },
       },
     })
@@ -275,7 +275,7 @@ describe("BacktestRunner strict_v2 guardrails", () => {
     }
   })
 
-  test("allows provider fetch for research but requires verified evidence for qualification", () => {
+  test("allows Crucible provider collection without evidence but keeps qualification evidence-bound", () => {
     expect(
       BacktestRunner.qualificationDataSourceIssue({
         engineMode: "strict_v2",
@@ -290,7 +290,90 @@ describe("BacktestRunner strict_v2 guardrails", () => {
         dataSource: { kind: "provider_fetch" },
         qualification: qualificationInputForResearch(),
       }),
-    ).toContain("research-only")
+    ).toContain("Qualification requires")
+  })
+
+  test("launches provider preparation without DatasetEvidence", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-crucible-provider-"))
+    try {
+      let launched = 0
+      const prepared = await BacktestRunner._internalForTests.prepareBacktestData({
+        dataSource: { kind: "provider_fetch" },
+        tmpDir: runDir,
+        fetchProvider: async () => {
+          launched += 1
+          return {
+            providerUsed: "fixture-provider",
+            provenance: { mode: "provider_fetch", provider: "fixture-provider" },
+          }
+        },
+      })
+      expect(launched).toBe(1)
+      expect(prepared).toEqual({
+        providerUsed: "fixture-provider",
+        provenance: { mode: "provider_fetch", provider: "fixture-provider" },
+      })
+      expect(JSON.stringify(prepared)).not.toContain("research_only")
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true })
+    }
+  })
+
+  test("materializes an immutable Crucible provider manifest without DatasetEvidence", async () => {
+    const runDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-crucible-manifest-"))
+    try {
+      const csv = [
+        "timestamp,open,high,low,close,volume",
+        "2026-01-09T14:30:00Z,590,591,589,590.5,100000",
+        "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000",
+      ].join("\n")
+      await fs.writeFile(path.join(runDir, "ohlcv.csv"), csv)
+      const rawHash = crypto.createHash("sha256").update(csv).digest("hex")
+      await BacktestRunner._internalForTests.writeCrucibleProviderManifest({
+        tmpDir: runDir,
+        runId: "run-provider-1",
+        algorithmName: "spy-sma",
+        results: {
+          v2: { start_ts: "2026-01-09T14:30:00Z", end_ts: "2026-01-09T14:35:00Z" },
+        } as unknown as BacktestRunner.Results,
+        provenance: {
+          mode: "provider_fetch",
+          provider: "finny-harness-fixture",
+          raw_sha256: rawHash,
+          snapshot_id: "crucible-data-provider-1",
+          requested: {
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "5m",
+            start: "2026-01-09",
+            end: "2026-01-09",
+          },
+          source_attempts: [{ provider: "finny-harness-fixture", status: "success", rows: 2 }],
+        },
+      })
+
+      const manifest = JSON.parse(await fs.readFile(path.join(runDir, "data_extractor.manifest.json"), "utf8"))
+      expect(manifest).toMatchObject({
+        schema: "finny.crucible_data_manifest",
+        source: "finny-harness-fixture",
+        snapshot_id: "crucible-data-provider-1",
+        requested_symbol: "SPY",
+        requested_interval: "5m",
+        requested_start: "2026-01-09",
+        requested_end: "2026-01-09",
+        actual_start: "2026-01-09",
+        actual_end: "2026-01-09",
+        rows: 2,
+        run_id: "run-provider-1",
+        usable_for_parent: "yes",
+        strict_backtest_eligible: "yes",
+        qualification: "unqualified",
+        csv_sha256: rawHash,
+      })
+      expect(JSON.stringify(manifest)).not.toContain("DatasetEvidence")
+    } finally {
+      await fs.rm(runDir, { recursive: true, force: true })
+    }
   })
 
   test("rejects structurally forged verified dataset references", async () => {
@@ -374,6 +457,63 @@ describe("BacktestRunner strict_v2 guardrails", () => {
         fs.rm(sourceDir, { recursive: true, force: true }),
         fs.rm(runDir, { recursive: true, force: true }),
       ])
+    }
+  })
+
+  test("passes a hash-bound fund snapshot column to the strict strategy", async () => {
+    const sourceDir = await fs.mkdtemp(path.join(os.tmpdir(), "finny-snapshot-runner-"))
+    try {
+      const snapshot = JSON.stringify({ schema_version: 1, signal: "buy" }).replaceAll('"', '""')
+      await Promise.all([
+        fs.writeFile(path.join(sourceDir, "backtest.py"), BacktestRunner._internalForTests.DEFAULT_BACKTEST_PY),
+        fs.writeFile(path.join(sourceDir, "finny_broker.py"), FINNY_BROKER_PY),
+        fs.writeFile(path.join(sourceDir, "config.json"), JSON.stringify({ symbol: "SPY" })),
+        fs.writeFile(
+          path.join(sourceDir, "ohlcv.csv"),
+          [
+            "timestamp,open,high,low,close,volume,finny_snapshot_json",
+            `2026-01-09T14:30:00Z,590,591,589,590.5,100000,"${snapshot}"`,
+            "2026-01-09T14:35:00Z,590.5,592,590,591.5,110000,",
+          ].join("\n"),
+        ),
+        fs.writeFile(
+          path.join(sourceDir, "strategy.py"),
+          `class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+    def on_bar(self, symbol, bar):
+        snapshot = bar.get("finny_snapshot")
+        if snapshot and snapshot.get("signal") == "buy":
+            self.broker.buy(symbol, qty=1)
+`,
+        ),
+      ])
+      const proc = Bun.spawn(
+        [
+          "python3",
+          "backtest.py",
+          "--csv",
+          "ohlcv.csv",
+          "--config",
+          "config.json",
+          "--interval",
+          "5min",
+          "--capital",
+          "10000",
+        ],
+        { cwd: sourceDir, stdout: "pipe", stderr: "pipe" },
+      )
+      const [status, stdout, stderr] = await Promise.all([
+        proc.exited,
+        new Response(proc.stdout).text(),
+        new Response(proc.stderr).text(),
+      ])
+      expect(stderr).not.toContain("strategy error")
+      expect(status).toBe(0)
+      expect(stdout).toContain("diag_buy_attempts: 1")
+      expect(stdout).toContain("diag_strategy_errors: 0")
+    } finally {
+      await fs.rm(sourceDir, { recursive: true, force: true })
     }
   })
 

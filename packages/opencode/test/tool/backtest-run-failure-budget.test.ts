@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test"
 import {
   inferSavedBacktestDates,
+  formatCrucibleDataCollectionBlocker,
   paperApprovalRequestForWorkflow,
   parseDataQualityFailure,
-  repairOutliersBlockMessage,
   strictDataQualityNextSteps,
 } from "../../src/tool/backtest"
 
@@ -61,35 +61,6 @@ describe("backtest paper approval challenge", () => {
   })
 })
 
-describe("backtest repair approval", () => {
-  test("blocks repair_outliers unless explicitly approved", () => {
-    expect(
-      repairOutliersBlockMessage({
-        dataQualityMode: "repair_outliers",
-      }),
-    ).toContain("requires a scoped workflow approval record")
-  })
-
-  test("does not treat failure-budget approval as repair approval", () => {
-    expect(
-      repairOutliersBlockMessage({
-        dataQualityMode: "repair_outliers",
-        userApproved: true,
-      } as any),
-    ).toContain("requires a scoped workflow approval record")
-  })
-
-  test("allows strict mode but deprecated repair booleans cannot bypass the controller", () => {
-    expect(repairOutliersBlockMessage({ dataQualityMode: "strict" })).toBeUndefined()
-    expect(
-      repairOutliersBlockMessage({
-        dataQualityMode: "repair_outliers",
-        repairOutliersApproved: true,
-      }),
-    ).toContain("deprecated repairOutliersApproved boolean cannot grant approval")
-  })
-})
-
 describe("backtest exact date windows", () => {
   test("infers saved explicit dates from common config fields", () => {
     expect(
@@ -112,7 +83,9 @@ describe("backtest exact date windows", () => {
   })
 
   test("ignores missing or non-ISO saved dates", () => {
-    expect(inferSavedBacktestDates(JSON.stringify({ backtest: { start: "Jan 1 2024", end: "Mar 31 2024" } }))).toEqual({})
+    expect(inferSavedBacktestDates(JSON.stringify({ backtest: { start: "Jan 1 2024", end: "Mar 31 2024" } }))).toEqual(
+      {},
+    )
     expect(inferSavedBacktestDates(undefined)).toEqual({})
   })
 })
@@ -122,10 +95,37 @@ describe("strict data quality next steps", () => {
     const output = strictDataQualityNextSteps()
     expect(output).toContain("No performance metrics were produced")
     expect(output).toContain("do not call this strategy backtested, ready, or paper/live eligible")
-    expect(output).toContain("Verify the flagged candles first")
-    expect(output).toContain("Only after explicit user approval")
-    expect(output.indexOf("Verify the flagged candles first")).toBeLessThan(output.indexOf("Only after explicit user approval"))
-    expect(output).toContain("before changing the backtest window, interval, provider, or data-quality strictness")
+    expect(output).toContain("Crucible could not obtain usable strict data")
+    expect(output).toContain("Keep the confirmed symbol, interval, and date window unchanged")
+    expect(output).not.toContain("repair_outliers")
+  })
+})
+
+describe("Crucible data collection blockers", () => {
+  test("reports the exact identity without suggesting request drift", () => {
+    const output = formatCrucibleDataCollectionBlocker({
+      symbol: "SPY",
+      interval: "1h",
+      duration: "1y",
+      startDate: "2025-08-01",
+      endDate: "2026-08-01",
+      error: "primary and fallback providers returned no usable bars",
+    })
+    expect(output).toContain("SPY at 1h over 2025-08-01 -> 2026-08-01")
+    expect(output).toContain("were not changed")
+    expect(output).toContain("No performance metrics were produced")
+    expect(output).not.toContain("shorter")
+    expect(output).not.toContain("coarser")
+  })
+
+  test("includes the exact duration when dates are derived", () => {
+    const output = formatCrucibleDataCollectionBlocker({
+      symbol: "BTC.USD",
+      interval: "15min",
+      duration: "3m",
+      error: "provider authentication failed",
+    })
+    expect(output).toContain("BTC.USD at 15min over duration-derived window (3m)")
   })
 })
 
@@ -142,7 +142,6 @@ describe("backtest data quality failure parsing", () => {
       duration: "3m",
       interval: "15min",
       capital: "10000",
-      dataQualityMode: "strict",
     })
 
     expect(parsed).toMatchObject({
@@ -159,7 +158,6 @@ describe("backtest data quality failure parsing", () => {
       invalidOhlc: 0,
       outliers: 1,
       zeroVolume: 0,
-      repair_outliers_allowed: false,
     })
     expect(parsed?.outlierDetails[0]).toEqual({
       timestamp: "2026-03-09 19:15:00+00:00",

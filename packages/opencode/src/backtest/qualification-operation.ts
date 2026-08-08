@@ -1,4 +1,5 @@
 import type { BacktestRunner } from "./runner"
+import { dynamicMinTrades } from "./evaluation"
 import {
   candidateMatchesExperimentPlanV1,
   verifyExperimentPlanV1,
@@ -11,8 +12,9 @@ import type {
   QualificationExecutionIdentityV1,
 } from "./qualification-attempt-ledger"
 import {
+  confirmatoryPolicyErrors,
+  makeExploratoryQualificationPolicyV1,
   qualificationInputErrors,
-  verifyQualificationPolicyV1,
   type HoldoutOpenEventV1,
   type QualificationContextV1,
   type QualificationInputV1,
@@ -21,12 +23,22 @@ import {
 
 export type PlanExecutionPhase = "exploratory" | "validation" | "confirmatory"
 
+export const REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS = 2
+
+export function walkForwardFoldsForPhase(
+  phase: PlanExecutionPhase,
+  policy: Pick<QualificationPolicyV1, "minWalkForwardFolds">,
+): number {
+  return phase === "confirmatory" ? policy.minWalkForwardFolds : REDUCED_EXPLORATORY_WALK_FORWARD_FOLDS
+}
+
 export interface PhaseExecutionInputV1 {
   candidateId: string
   plan: ExperimentPlanV1
   phase: PlanExecutionPhase
   window: ExperimentWindowV1
   qualification: QualificationInputV1
+  walkForwardFolds: number
 }
 
 export type PhaseExecutorV1 = (input: PhaseExecutionInputV1) => Promise<BacktestRunner.RunResult>
@@ -89,7 +101,10 @@ function invalidPlanBlocker(input: OperationInput): QualificationBlockerV1 | und
 }
 
 function invalidPolicyBlocker(input: OperationInput): QualificationBlockerV1 | undefined {
-  const policyError = verifyQualificationPolicyV1(input.policy)[0]
+  // dev tightened this call site: confirmatoryPolicyErrors runs
+  // verifyQualificationPolicyV1 and then the confirmatory-phase checks this
+  // operation depends on, so it is the strictly safer validator here.
+  const policyError = confirmatoryPolicyErrors(input.policy)[0]
   if (policyError) return blocker("invalid_policy", "qualificationPolicy", policyError, "supply the exact immutable policy")
   const matches = [
     input.plan.qualificationPolicyId === input.policy.policyId,
@@ -170,20 +185,26 @@ function preHoldoutMetricReasons(input: {
   results: BacktestRunner.Results
   policy: QualificationPolicyV1
 }): string[] {
+  const minimumTrades = Math.max(
+    dynamicMinTrades(input.results),
+    input.policy.minTrades,
+    input.policy.minEffectiveSampleSize,
+  )
+  const walkForward = input.results.v2?.walk_forward
+  const stitchedOosReturn = walkForward?.stitched_oos_return
+  const costSensitivity = input.results.sensitivityOutcomes?.find((item) => /cost|fee|slippage/i.test(item.name))
   const checks = [
-    { valid: Number.isFinite(input.results.totalReturn) && input.results.totalReturn > 0, error: "total return must be positive" },
-    { valid: Number.isFinite(input.results.sharpeRatio) && input.results.sharpeRatio > 0, error: "Sharpe must be positive" },
     {
-      valid: Number.isFinite(input.results.maxDrawdown) && input.results.maxDrawdown <= input.policy.maxDrawdown,
-      error: `max drawdown exceeds ${(input.policy.maxDrawdown * 100).toFixed(0)}%`,
+      valid: input.results.totalTrades >= minimumTrades,
+      error: `closed trade count below minimum for this window (${input.results.totalTrades} < ${minimumTrades})`,
     },
     {
-      valid: !input.policy.requireBenchmark || Number.isFinite(input.results.benchmarkReturn),
-      error: "buy-and-hold benchmark is unavailable",
+      valid: typeof stitchedOosReturn === "number" && Number.isFinite(stitchedOosReturn) && stitchedOosReturn > 0,
+      error: walkForward ? "stitched OOS return must be positive" : "stitched OOS return is unavailable",
     },
     {
-      valid: !input.policy.requirePositiveAlpha || (Number.isFinite(input.results.alpha) && input.results.alpha! > 0),
-      error: "alpha vs buy-and-hold must be positive",
+      valid: !input.policy.requireCostSensitivity || costSensitivity?.status === "pass",
+      error: "configured cost sensitivity did not pass",
     },
   ]
   return checks.filter((check) => !check.valid).map((check) => check.error)
@@ -257,6 +278,7 @@ async function executePhaseSafely(
       phase,
       window: input.plan.windows[phase],
       qualification,
+      walkForwardFolds: walkForwardFoldsForPhase(phase, input.policy),
     })
   } catch (error) {
     return { ok: false, error: error instanceof Error ? error.message : String(error), kind: "internal" } as const
@@ -264,8 +286,12 @@ async function executePhaseSafely(
 }
 
 async function runPhase(input: OperationInput, phase: PlanExecutionPhase, trial: number): Promise<PhaseRunOutcomeV1> {
+  const policy =
+    phase === "confirmatory"
+      ? input.policy
+      : makeExploratoryQualificationPolicyV1({ requiredPhase: phase })
   const qualification: QualificationInputV1 = {
-    policy: input.policy,
+    policy,
     context: contextFor({ plan: input.plan, phase, trial, holdoutOpenEvents: input.holdoutOpenEvents }),
   }
   if (phase === "confirmatory") {
@@ -277,7 +303,7 @@ async function runPhase(input: OperationInput, phase: PlanExecutionPhase, trial:
   const claimed = await claimedPhaseOutcome(input, phase, claim)
   if (claimed) return claimed
   const result = await executePhaseSafely(input, phase, qualification)
-  const failed = executionBlocker(phase, result) ?? preHoldoutMetricBlocker({ phase, result, policy: input.policy })
+  const failed = executionBlocker(phase, result) ?? preHoldoutMetricBlocker({ phase, result, policy })
   await input.attemptLedger.complete({ ...identity, attemptId: claim.attemptId, result, blocker: failed })
   if (failed) return { blocker: failed }
   return { result }
