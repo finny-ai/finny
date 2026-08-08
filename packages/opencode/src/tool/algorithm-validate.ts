@@ -5,6 +5,8 @@ import { Tool } from "./tool"
 import DESCRIPTION from "./algorithm-validate.txt"
 import { Validate } from "../algorithm/validate"
 import { StrategyContext } from "../task/strategy-context"
+import { isLeanProfile } from "../backtest/lean/contracts"
+import { runtimeFromConfig, validateLeanSourceManifest } from "../backtest/lean/select"
 
 const parameters = z.object({
   code: z.string().describe("The full Python strategy source code to validate"),
@@ -55,6 +57,30 @@ export const AlgorithmValidateTool = Tool.define(
             }),
           )
 
+          const runtime = runtimeFromConfig(params.config)
+          if (isLeanProfile(runtime.profile)) {
+            const issues = validateLeanSourceManifest(runtime.source, runtime.profile.profileId)
+            const valid = issues.length === 0
+            return {
+              title: valid
+                ? `Valid (LEAN ${runtime.profile.profileId} source manifest)`
+                : `Invalid (LEAN ${runtime.profile.profileId} source manifest)`,
+              output: valid
+                ? `LEAN runtime ${runtime.profile.profileId} does not use the Finny Shape-C validator; ` +
+                  "the strategy source manifest was validated instead. Compilation and execution are certified " +
+                  "inside the pinned offline engine image."
+                : issues.join("\n"),
+              metadata: {
+                blocked: false,
+                evidenceRequired: false,
+                workspaceSlug: undefined,
+                issues,
+                valid,
+                errorCount: valid ? 0 : issues.length,
+                warningCount: 0,
+              } as ValidationMetadata,
+            }
+          }
           const result = await Validate.run(params.code, { config: params.config })
           const output = Validate.format(result)
 
