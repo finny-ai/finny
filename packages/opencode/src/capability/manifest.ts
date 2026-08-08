@@ -3,12 +3,13 @@ import type { JSONSchema7, JSONSchema7Definition } from "@ai-sdk/provider"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import type { Agent } from "@/agent/agent"
 import { EngineV2 } from "@/backtest/results"
+import { LeanAdapter } from "@/backtest/lean/adapter"
 import { Permission } from "@/permission"
 import { PRICE_HISTORY_INTERVALS, PRICE_HISTORY_RETENTION } from "@/tool/price-history"
 import type { Tool } from "@/tool/tool"
 import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
 
-export const CAPABILITY_MANIFEST_VERSION = "1.0.0"
+export const CAPABILITY_MANIFEST_VERSION = "2.0.0"
 
 export type CapabilityPhase = "strategy" | "build" | "research" | "chat" | "portfolio" | "subagent" | "internal"
 
@@ -52,6 +53,8 @@ export interface CapabilityManifest {
     calendars: string[]
     qualityGates: string[]
     artifacts: Record<string, string>
+    /** Additive LEAN runtime advertisement; populated only when ready. */
+    runtimes?: LeanRuntimeAdvertisement
   }
   unsupported: Array<{ id: string; reason: string; recovery?: string }>
   blockers: Array<{ class: string; recovery: string }>
@@ -104,6 +107,12 @@ const BACKTEST_METRICS = [
   "deflated_sharpe_probability",
   "probabilistic_sharpe_ratio",
 ] as const
+
+export type LeanRuntimeAdvertisement = Array<{
+  profileId: "lean_python" | "lean_csharp"
+  availability: "available" | "unavailable"
+  reasons: string[]
+}>
 
 function stable(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`
@@ -293,6 +302,7 @@ function dataCapabilities(tools: CapabilityManifest["tools"]): Pick<CapabilityMa
 function backtestCapabilities(tools: CapabilityManifest["tools"]): Pick<CapabilityManifest, "backtest"> | {} {
   const ids = new Set(tools.map((tool) => tool.id))
   if (!["finny_backtest", "finny_portfolio_backtest"].some((id) => ids.has(id))) return {}
+  const readiness = leanRuntimeReadiness()
   return {
     backtest: {
       engine: {
@@ -317,8 +327,25 @@ function backtestCapabilities(tools: CapabilityManifest["tools"]): Pick<Capabili
         run: "finny.run.v1",
         reviewPacket: "finny.review_packet.v1",
       },
+      ...(readiness ? { runtimes: readiness } : {}),
     },
   }
+}
+
+function leanRuntimeReadiness(): LeanRuntimeAdvertisement {
+  const probe = new LeanAdapter().probeReady()
+  return [
+    {
+      profileId: "lean_python",
+      availability: probe.ready ? "available" : "unavailable",
+      reasons: probe.reasons,
+    },
+    {
+      profileId: "lean_csharp",
+      availability: "unavailable",
+      reasons: ["lean_csharp runtime is not part of the first release"],
+    },
+  ]
 }
 
 function unsupportedCapabilities(): CapabilityManifest["unsupported"] {
