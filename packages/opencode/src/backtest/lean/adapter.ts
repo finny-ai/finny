@@ -56,7 +56,10 @@ async function relocateForDocker(input: {
   scratchDir: string
   resultsDir: string
 }): Promise<{ root: string; resultsDir: string }> {
-  const root = path.join(os.homedir(), ".finny-lean-runs", crypto.randomBytes(6).toString("hex"))
+  // The harness isolates $HOME into a temp tree that colima cannot mount;
+  // os.userInfo() reads the passwd home, which is the real mountable home.
+  const realHome = os.userInfo().homedir || os.homedir()
+  const root = path.join(realHome, ".finny-lean-runs", crypto.randomBytes(6).toString("hex"))
   await fs.mkdir(path.join(root, "scratch"), { recursive: true })
   await fs.mkdir(path.join(root, "source"), { recursive: true })
   await fs.mkdir(path.join(root, "results"), { recursive: true })
