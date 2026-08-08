@@ -3,9 +3,13 @@ import path from "node:path"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
 import {
   compileExperimentPlanV1,
+  compileExperimentPlanV2,
   verifyExperimentPlanV1,
+  verifyExperimentPlanV2,
   type CompileExperimentPlanInput,
+  type CompileExperimentPlanV2Input,
   type ExperimentPlanV1,
+  type ExperimentPlanV2,
 } from "./experiment-plan"
 import {
   confirmatoryPolicyErrors,
@@ -74,6 +78,42 @@ export async function loadExperimentPlanV1(planId: string): Promise<ExperimentPl
   return plan
 }
 
+export async function loadExperimentPlanV2(planId: string): Promise<ExperimentPlanV2> {
+  const plan = JSON.parse(await fs.readFile(path.join(planDir({ planId }), "plan.json"), "utf8")) as ExperimentPlanV2
+  const errors = verifyExperimentPlanV2(plan)
+  if (errors.length || plan.planId !== planId) throw new Error(errors[0] ?? "stored experiment plan id mismatch")
+  return plan
+}
+
+export async function saveExperimentPlanV2(plan: ExperimentPlanV2, policy: QualificationPolicyV1) {
+  const errors = verifyExperimentPlanV2(plan)
+  if (errors.length) throw new Error(errors.join("; "))
+  const policyErrors = confirmatoryPolicyErrors(policy)
+  if (policyErrors.length) throw new Error(policyErrors.join("; "))
+  if (plan.qualificationPolicyId !== policy.policyId || plan.qualificationPolicyHash !== policy.policyHash) {
+    throw new Error("experiment plan qualification policy binding mismatch")
+  }
+  const dir = planDir({ planId: plan.planId })
+  await fs.mkdir(dir, { recursive: true })
+  await writeImmutableJson({
+    file: path.join(dir, "plan.json"),
+    value: plan,
+    mismatch: "experiment plan id already exists with different bytes",
+  })
+  await writeImmutableJson({
+    file: path.join(dir, "policy.json"),
+    value: policy,
+    mismatch: "experiment plan policy already exists with different bytes",
+  })
+  return plan
+}
+
+export async function compileAndSaveExperimentPlanV2(input: CompileExperimentPlanV2Input) {
+  const plan = compileExperimentPlanV2(input)
+  await saveExperimentPlanV2(plan, input.qualificationPolicy)
+  return plan
+}
+
 function holdoutFile(input: { planId: string }) {
   return path.join(planDir(input), "holdout-open.json")
 }
@@ -91,13 +131,30 @@ export async function recordHoldoutOpenEventV1(input: {
   approvalHash: string
   openedAt?: string
 }): Promise<HoldoutOpenEventV1> {
+  return recordHoldoutOpenEvent({ planId: input.plan.planId, planHash: input.plan.planHash, ...input })
+}
+
+export async function recordHoldoutOpenEventForPlanV2(input: {
+  plan: ExperimentPlanV2
+  approvalHash: string
+  openedAt?: string
+}): Promise<HoldoutOpenEventV1> {
+  return recordHoldoutOpenEvent({ planId: input.plan.planId, planHash: input.plan.planHash, ...input })
+}
+
+async function recordHoldoutOpenEvent(input: {
+  planId: string
+  planHash: string
+  approvalHash: string
+  openedAt?: string
+}): Promise<HoldoutOpenEventV1> {
   if (!/^[a-f0-9]{64}$/i.test(input.approvalHash)) throw new Error("holdout approval hash must be SHA-256")
   const event = makeHoldoutOpenEventV1({
-    planId: input.plan.planId,
-    planHash: input.plan.planHash,
+    planId: input.planId,
+    planHash: input.planHash,
     approvalHash: input.approvalHash,
     openedAt: input.openedAt ?? new Date().toISOString(),
   })
-  await fs.writeFile(holdoutFile({ planId: input.plan.planId }), JSON.stringify(event, null, 2), { flag: "wx" })
+  await fs.writeFile(holdoutFile({ planId: input.planId }), JSON.stringify(event, null, 2), { flag: "wx" })
   return event
 }
