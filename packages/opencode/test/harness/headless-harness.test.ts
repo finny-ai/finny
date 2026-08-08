@@ -146,6 +146,117 @@ describe("headless semantic verdict", () => {
     )
   })
 
+  test("semantic hashes retain integrity fields while normalizing runtime-only bindings", () => {
+    const source = {
+      scenarioSha256: "a".repeat(64),
+      bunLockSha256: "b".repeat(64),
+      evaluatorSourceSha256: "c".repeat(64),
+      evaluatorEntrypointSha256: "d".repeat(64),
+      manifestHash: "3".repeat(64),
+    }
+    const value = (runtime: {
+      sessionID: string
+      timestamp: string
+      root: string
+      requestHash: string
+      configHash: string
+    }) => ({
+      source,
+      runtime: {
+        sessionID: runtime.sessionID,
+        timestamp: runtime.timestamp,
+        artifactPath: `${runtime.root}/bundle`,
+        requestHash: runtime.requestHash,
+        configHash: runtime.configHash,
+        transcript: `root=${runtime.root} request_content_hash: sha256:${runtime.requestHash}`,
+      },
+    })
+    const leftRuntime = {
+      sessionID: "ses_left",
+      timestamp: "2026-07-26T10:00:00.000Z",
+      root: "/tmp/headless-left",
+      requestHash: "e".repeat(64),
+      configHash: "f".repeat(64),
+    }
+    const rightRuntime = {
+      sessionID: "ses_right",
+      timestamp: "2026-07-26T11:00:00.000Z",
+      root: "/tmp/headless-right",
+      requestHash: "1".repeat(64),
+      configHash: "2".repeat(64),
+    }
+
+    expect(semanticHash(value(leftRuntime), [leftRuntime.root])).toBe(
+      semanticHash(value(rightRuntime), [rightRuntime.root]),
+    )
+    for (const key of [
+      "scenarioSha256",
+      "bunLockSha256",
+      "evaluatorSourceSha256",
+      "evaluatorEntrypointSha256",
+      "manifestHash",
+    ] as const) {
+      const changed = value(leftRuntime)
+      changed.source = { ...source, [key]: "9".repeat(64) }
+      expect(semanticHash(changed, [leftRuntime.root])).not.toBe(semanticHash(value(leftRuntime), [leftRuntime.root]))
+    }
+  })
+
+  test("semantic strategy-result hashes retain the complete strict-run identity", () => {
+    const hash = (character: string) => character.repeat(64)
+    const identity = {
+      strategyHash: hash("1"),
+      savedConfigHash: hash("2"),
+      effectiveConfigHash: hash("3"),
+      documentHashes: {
+        mission: hash("4"),
+        preferences: hash("5"),
+        decisions: hash("6"),
+        reasoning: hash("7"),
+      },
+      riskContractHash: hash("8"),
+      rawDataHash: hash("9"),
+      processedDataHash: hash("a"),
+      manifestHash: hash("b"),
+      engineTreeHash: hash("c"),
+      assetProfileHash: hash("d"),
+      executionProfileHash: hash("e"),
+      experimentPlanHash: hash("f"),
+      qualificationPolicyHash: hash("0"),
+    }
+    const baseline = semanticHash({ identity })
+
+    for (const key of [
+      "strategyHash",
+      "savedConfigHash",
+      "effectiveConfigHash",
+      "riskContractHash",
+      "rawDataHash",
+      "processedDataHash",
+      "engineTreeHash",
+      "assetProfileHash",
+      "executionProfileHash",
+      "experimentPlanHash",
+      "qualificationPolicyHash",
+    ] as const) {
+      expect(semanticHash({ identity: { ...identity, [key]: hash(key === "strategyHash" ? "a" : "1") } })).not.toBe(
+        baseline,
+      )
+    }
+    for (const key of ["mission", "preferences", "decisions", "reasoning"] as const) {
+      expect(
+        semanticHash({
+          identity: {
+            ...identity,
+            documentHashes: { ...identity.documentHashes, [key]: hash(key === "mission" ? "a" : "1") },
+          },
+        }),
+      ).not.toBe(baseline)
+    }
+
+    expect(semanticHash({ identity: { ...identity, manifestHash: hash("a") } })).toBe(baseline)
+  })
+
   test("semantic hashes ignore generated strict-run manifest bindings", () => {
     const result = (algorithmId: string, manifestHash: string) => [
       {
@@ -196,7 +307,12 @@ describe("headless semantic verdict", () => {
         `request_id: ${sessionID}\nrequest_content_hash: sha256:${contentHash}`,
         { sessionId: sessionID, request_content_hash: `sha256:${contentHash}` },
       ),
-      { type: "text", part: { text: "Return: measured. Sharpe: measured. Max drawdown: measured. Eligibility: backtested. Next step: review." } },
+      {
+        type: "text",
+        part: {
+          text: "Return: measured. Sharpe: measured. Max drawdown: measured. Eligibility: backtested. Next step: review.",
+        },
+      },
     ]
     expect(semanticEventHash(observeRun(events("ses_one", "a".repeat(64)), scenario))).toBe(
       semanticEventHash(observeRun(events("ses_two", "b".repeat(64)), scenario)),

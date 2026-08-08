@@ -1,3 +1,4 @@
+import fs from "node:fs/promises"
 import path from "node:path"
 import z from "zod"
 import { Effect } from "effect"
@@ -72,6 +73,17 @@ type WorkspacePrepareWindow = {
   startDate?: string
   endDate?: string
   error?: string
+}
+
+const TODO_SCAFFOLD = "# Todo\n\n"
+
+export async function ensureWorkspaceTodo(workspacePath: string): Promise<void> {
+  try {
+    await fs.writeFile(path.join(workspacePath, "todo.md"), TODO_SCAFFOLD, { encoding: "utf8", flag: "wx" })
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return
+    throw error
+  }
 }
 
 const DURATION_UNITS: Record<string, "d" | "w" | "m" | "y"> = {
@@ -686,6 +698,7 @@ export const WorkspacePrepareTool = Tool.define<
           }
 
           const workspacePath = prepared.dir || algoDir(prepared.slug)
+          await ensureWorkspaceTodo(workspacePath)
           if (!workflow && hasStructuredIdentity) {
             const symbols = effectiveParams.symbols?.length
               ? effectiveParams.symbols

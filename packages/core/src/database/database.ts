@@ -31,11 +31,19 @@ const makeService = (filename?: string) =>
     yield* db.run("PRAGMA cache_size = -64000")
     yield* db.run("PRAGMA foreign_keys = ON")
     yield* db.run("PRAGMA wal_checkpoint(PASSIVE)")
-    // Task-only Finny-root leftovers must be salvaged before apply() dies on
-    // "non-empty without session".
-    yield* StorageRoot.prepareTarget(db, filename ?? path())
-    yield* DatabaseMigration.apply(db)
-    yield* StorageRoot.reconcile(db, filename ?? path())
+    const target = filename ?? path()
+    yield* StorageRoot.withLock(
+      target,
+      Effect.gen(function* () {
+        // Task-only Finny-root leftovers must be salvaged before apply() dies on
+        // "non-empty without session". Keep preparation, schema application,
+        // backup creation, and reconciliation under one storage-root lease so
+        // concurrent processes cannot race a VACUUM against a wipe.
+        yield* StorageRoot.prepareTarget(db, target)
+        yield* DatabaseMigration.apply(db)
+        yield* StorageRoot.reconcile(db, target)
+      }),
+    )
 
     return { db }
   }).pipe(Effect.orDie)

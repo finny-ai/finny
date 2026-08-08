@@ -154,4 +154,64 @@ describe("LocalAlgorithmStore", () => {
     expect(await fs.readFile(path.join(root, "CURRENT"), "utf8")).toBe("v04")
     expect((await fs.readdir(root)).some((entry) => entry === ".version.lock" || entry.startsWith(".tmp-v"))).toBe(false)
   })
+
+  test("advances time_updated when an equal-timestamp description save deduplicates", async () => {
+    const common = {
+      algorithmId: "algo-description-update",
+      userId: "local",
+      name: "spy-description-update",
+      code: "class Strategy:\n    pass\n",
+      language: "python",
+      status: "draft",
+      time_created: 1,
+    }
+    const first = await LocalAlgorithmStore.insertVersion({
+      ...common,
+      description: "old description",
+      time_updated: 2,
+    })
+    const duplicate = await LocalAlgorithmStore.insertVersion({
+      ...common,
+      description: "updated description",
+      time_updated: 2,
+    })
+
+    expect(duplicate).toMatchObject({ version: first.version, description: "updated description", time_updated: 3 })
+    expect(await LocalAlgorithmStore.getById(common.algorithmId)).toMatchObject({
+      version: first.version,
+      description: "updated description",
+      time_updated: 3,
+    })
+    expect(await LocalAlgorithmStore.listVersions(common.algorithmId)).toHaveLength(1)
+  })
+
+  test("keeps metadata revisions monotonic for new versions and status updates", async () => {
+    const futureRevision = Date.now() + 100_000
+    const common = {
+      algorithmId: "algo-monotonic-metadata",
+      userId: "local",
+      name: "spy-monotonic-metadata",
+      language: "python",
+      status: "draft",
+      time_created: 1,
+    }
+    const first = await LocalAlgorithmStore.insertVersion({
+      ...common,
+      code: "class Strategy:\n    version = 1\n",
+      time_updated: futureRevision,
+    })
+    const second = await LocalAlgorithmStore.insertVersion({
+      ...common,
+      code: "class Strategy:\n    version = 2\n",
+      time_updated: futureRevision,
+    })
+
+    expect(second.time_updated).toBe(first.time_updated + 1)
+    await LocalAlgorithmStore.updateStatus(common.algorithmId, "ready")
+    expect(await LocalAlgorithmStore.getById(common.algorithmId)).toMatchObject({
+      version: 2,
+      status: "ready",
+      time_updated: second.time_updated + 1,
+    })
+  })
 })

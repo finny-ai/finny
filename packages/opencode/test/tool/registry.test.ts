@@ -66,12 +66,24 @@ afterEach(async () => {
 })
 
 describe("tool.registry", () => {
-  it.instance("exposes the high-level qualify_candidate operation", () =>
+  it.instance("exposes typed fund advisory contracts", () =>
+    Effect.gen(function* () {
+      const registry = yield* ToolRegistry.Service
+      const ids = yield* registry.ids()
+
+      expect(ids).toContain("finny_fund_action_propose")
+      expect(ids).toContain("finny_fund_specialist_report")
+    }),
+  )
+
+  it.instance("exposes high-level qualification, wait, and invalidate operations", () =>
     Effect.gen(function* () {
       const registry = yield* ToolRegistry.Service
       const ids = yield* registry.ids()
 
       expect(ids).toContain("qualify_candidate")
+      expect(ids).toContain("finny_strategy_context_wait")
+      expect(ids).toContain("finny_workflow_invalidate_candidate")
     }),
   )
 

@@ -10,7 +10,6 @@ import { evaluateBacktestQuality } from "../backtest/evaluation"
 import { composeBacktestVerdict, deriveWalkForwardVerdict } from "../backtest/verdict"
 import { generateReviewPacket } from "../backtest/review-packet"
 import { CRUCIBLE_2_0_PRODUCT_LABEL, representativeRerunForAlgorithm } from "../backtest/crucible-reruns"
-import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import {
   analyzeStrategyCodePatterns,
   classifyCompletedBacktestFailure,
@@ -36,11 +35,8 @@ import {
 import type { ApprovalKind, ApprovalScope, BuildWorkflowState } from "@/algorithm/build-workflow/types"
 import {
   completeWorkflowBacktest,
-  ensureWorkflowCandidate,
   failActiveWorkflowBacktest,
   failWorkflowBacktest,
-  pendingEvidenceRequirements,
-  recordVerifiedMarketDataSet,
   recordWorkflowAttempt,
   startWorkflowBacktest,
 } from "@/algorithm/build-workflow/lifecycle"
@@ -62,7 +58,7 @@ export function backtestAttemptFingerprint(input: {
       requestVersion: input.requestVersion ?? null,
       evidence: input.evidence
         ? `${input.evidence.manifestSha256}:${input.evidence.csvSha256}`
-        : "provider_fetch_research_only",
+        : "crucible_provider_pipeline",
       candidate: input.candidate
         ? {
             algorithmId: input.candidate.algorithmId,
@@ -101,7 +97,7 @@ export function backtestDataSourceSummary(input: {
   qualification?: string
 }): string {
   if (input.kind === "provider_fetch") {
-    return "Data source: provider fetch (research-only; evidence is optional, qualification/promotion disabled)"
+    return "Data source: Crucible-managed provider pipeline (strict collection and quality validation)"
   }
   if (input.qualification === "strict_qualified") {
     return "Data source: verified data_extractor artifact (strict qualification eligible)"
@@ -242,7 +238,7 @@ const experimentParameters = z.object({
   qualityGates: z.object({ minDeflatedSharpe: z.number().min(0).max(1).optional(), minProbabilisticSharpe: z.number().min(0).max(1).optional(), minOosCoverage: z.number().min(0).max(1).optional(), minTrades: z.number().int().positive().optional(), requireCostSensitivity: z.boolean().optional() }).optional(),
 })
 
-const parameters = z.object({
+export const BacktestParameters = z.object({
   algorithmName: z
     .string()
     .describe("Name of the saved algorithm to backtest (e.g. 'uco-intraday-hybrid')"),
@@ -288,16 +284,6 @@ const parameters = z.object({
     .regex(/^\d{4}-\d{2}-\d{2}$/, "endDate must be YYYY-MM-DD")
     .optional()
     .describe("Exact backtest end date YYYY-MM-DD. Required when the user requested explicit dates."),
-  dataQualityMode: z
-    .enum(["strict", "repair_outliers"])
-    .default("strict")
-    .describe("Strict by default. repair_outliers requires an exact controller-backed workflow approval."),
-  repairOutliersApproved: z
-    .boolean()
-    .optional()
-    .describe(
-      "Deprecated compatibility hint. It never grants repair approval; a scoped workflow approval record is required.",
-    ),
   userApproved: z
     .boolean()
     .optional()
@@ -316,7 +302,6 @@ export type DataQualityFailureMetadata = {
     capital: string
     startDate?: string
     endDate?: string
-    dataQualityMode: "strict" | "repair_outliers"
   }
   phase?: "before_resample" | "after_resample"
   reason: string
@@ -331,7 +316,6 @@ export type DataQualityFailureMetadata = {
   invalidOhlc?: number
   outliers?: number
   zeroVolume?: number
-  repair_outliers_allowed: boolean
   outlierDetails: Array<{
     timestamp: string
     prev_close: number
@@ -340,18 +324,6 @@ export type DataQualityFailureMetadata = {
     z_score: number
     provider?: string
   }>
-}
-
-export function repairOutliersBlockMessage(input: {
-  dataQualityMode: "strict" | "repair_outliers"
-  repairOutliersApproved?: boolean
-}) {
-  if (input.dataQualityMode !== "repair_outliers") return undefined
-  return (
-    "Backtest blocked: repair_outliers mode requires a scoped workflow approval record for a research-only repaired-data rerun. " +
-    "The deprecated repairOutliersApproved boolean cannot grant approval.\n\n" +
-    "Run strict mode first. If strict data quality fails, stop and report the exact timestamp(s) and reason; do not repair automatically."
-  )
 }
 
 export function paperApprovalRequestForWorkflow(
@@ -373,12 +345,27 @@ export function paperApprovalRequestForWorkflow(
 export function strictDataQualityNextSteps() {
   return [
     "No performance metrics were produced; do not call this strategy backtested, ready, or paper/live eligible.",
-    "Valid next steps:",
-    "1. Verify the flagged candles first: inspect neighboring raw candles and compare another provider if available.",
-    "2. Keep the confirmed window/interval. Do not shrink duration or switch bars to chase strict_qualified.",
-    "3. Ask the user before changing the backtest window, interval, provider, or data-quality strictness.",
-    "4. Only after explicit user approval, run repair_outliers as a research-only rerun on the same confirmed identity.",
-    "5. research_only verified evidence is a valid research path — present research metrics; do not thrash identity.",
+    "Crucible could not obtain usable strict data for the confirmed request.",
+    "Keep the confirmed symbol, interval, and date window unchanged; inspect the reported collection and quality facts before retrying.",
+  ].join("\n")
+}
+
+export function formatCrucibleDataCollectionBlocker(input: {
+  symbol?: string
+  interval: string
+  duration: string
+  startDate?: string
+  endDate?: string
+  error: string
+}) {
+  const window =
+    input.startDate && input.endDate
+      ? `${input.startDate} -> ${input.endDate}`
+      : `duration-derived window (${input.duration})`
+  return [
+    `Crucible data collection blocked for ${input.symbol ?? "the saved symbol"} at ${input.interval} over ${window}.`,
+    input.error,
+    "The confirmed symbol, interval, and date window were not changed. No performance metrics were produced.",
   ].join("\n")
 }
 
@@ -437,7 +424,6 @@ export function parseDataQualityFailure(
     capital: string
     startDate?: string
     endDate?: string
-    dataQualityMode: "strict" | "repair_outliers"
   },
 ): DataQualityFailureMetadata | undefined {
   if (!error.includes("__FINNY_OUTLIER__") && !error.includes("Data quality failed")) return undefined
@@ -487,7 +473,6 @@ export function parseDataQualityFailure(
     invalidOhlc: parseNumberField(reportLine ?? "", "invalid_ohlc"),
     outliers: parseNumberField(reportLine ?? "", "outliers"),
     zeroVolume: parseNumberField(reportLine ?? "", "zero_volume"),
-    repair_outliers_allowed: input.dataQualityMode === "repair_outliers",
     outlierDetails,
   }
 }
@@ -509,7 +494,7 @@ async function verifyPersistedRecommendation(input: {
   }
 }
 
-export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata, Database.Service, "finny_backtest">(
+export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolMetadata, Database.Service, "finny_backtest">(
   "finny_backtest",
   Effect.gen(function* () {
     const database = yield* Database.Service
@@ -518,9 +503,9 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
 
     return {
     description:
-      "Run the full research-only backtest gauntlet on a saved algorithm in one call: base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. Verified evidence is optional for this exploratory operation: call it directly without launching evidence agents solely to unlock a backtest. Provider-fetched results remain research-only. A recommended research result may create a controller-scoped paper-approval challenge, but this operation cannot qualify a candidate or create a promotable run. For qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
-    parameters,
-    execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
+      "Run the full Crucible backtest gauntlet on a saved algorithm in one call: Crucible-owned market-data collection, strict quality validation, base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. Data Agent artifacts are optional strategy research and are not backtest inputs or prerequisites. For promotion qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
+    parameters: BacktestParameters,
+    execute: (params: z.infer<typeof BacktestParameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {
         const preflightWorkflow = (yield* Effect.promise(() =>
           runWorkflow(BuildWorkflowStore.listBySession(ctx.sessionID)),
@@ -545,10 +530,7 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         })
         const boundStartDate = boundDates.startDate
         const boundEndDate = boundDates.endDate
-        const evidence = yield* Effect.promise(() => requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID))
-        const dataSource: BacktestRunner.BacktestDataSource = evidence.ok
-          ? { kind: "verified_artifact", dataset: evidence.dataset }
-          : { kind: "provider_fetch" }
+        const dataSource: BacktestRunner.BacktestDataSource = { kind: "provider_fetch" }
         const algo = yield* Effect.promise(() => Algorithm.get(params.algorithmName))
         if (!algo) {
           return {
@@ -560,7 +542,6 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         const fingerprint = backtestAttemptFingerprint({
           params: { ...params, startDate: boundStartDate, endDate: boundEndDate },
           requestVersion: preflightWorkflow?.requestVersion,
-          evidence: evidence.ok ? evidence.dataset : undefined,
           candidate: {
             algorithmId: algo.algorithmId,
             version: algo.version,
@@ -601,12 +582,6 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         let workflow = preflightWorkflow
         let experiment: ExperimentRunContext | undefined
         let paperApprovalChallengeId: string | undefined
-
-        const exactApproval = (state: BuildWorkflowState | undefined, kind: ApprovalKind, scope: ApprovalScope) => {
-          if (!state) return false
-          const hash = approvalScopeHash(kind, scope)
-          return state.approvals.some((record) => record.kind === kind && record.scopeHash === hash)
-        }
 
         const ensureChallenge = async (kind: ApprovalKind, scope: ApprovalScope, reason: string) => {
           if (!workflow) return undefined
@@ -670,45 +645,6 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           results: undefined as BacktestRunner.Results | undefined,
         }
 
-        const repairScope: ApprovalScope = {
-          algorithmName: params.algorithmName,
-          dataQualityMode: "repair_outliers",
-        }
-        // Research-only verified evidence already encodes non-promotable quality
-        // caveats (commonly isolated outliers). Allow the research repair path
-        // without a second approval so the confirmed window can be evaluated.
-        const researchOnlyVerified =
-          evidence.ok && evidence.dataset.identity.qualification === "research_only"
-        if (
-          params.dataQualityMode === "repair_outliers" &&
-          !researchOnlyVerified &&
-          !exactApproval(workflow, "repair_outliers", repairScope)
-        ) {
-          const challengeId = await ensureChallenge(
-            "repair_outliers",
-            repairScope,
-            "Approve a research-only rerun that repairs isolated market-data outliers.",
-          )
-          return {
-            title: "Backtest blocked by repair approval",
-            output:
-              "Backtest blocked: repair_outliers mode requires a scoped workflow approval record. " +
-              "The deprecated repairOutliersApproved boolean cannot grant approval." +
-              (challengeId
-                ? ` Call finny_workflow_request_approval with challengeId=${challengeId}.`
-                : " No authoritative workflow challenge is available in this legacy session."),
-            metadata: { ...emptyMeta, repair_outliers_allowed: false, approvalChallengeId: challengeId },
-          }
-        }
-
-        if (evidence.ok) {
-          const evidencedWorkflow = await runWorkflow(
-            recordVerifiedMarketDataSet({ sessionId: ctx.sessionID, datasets: evidence.datasets }),
-          )
-          if (evidencedWorkflow) workflow = evidencedWorkflow
-        }
-        const pendingEvidence = workflow ? pendingEvidenceRequirements(workflow) : []
-
         const assetClass = typeof (algo.config as any)?.asset_class === "string" ? (algo.config as any).asset_class : undefined
         const codePatternWarnings = analyzeStrategyCodePatterns(algo.code, {
           assetClass,
@@ -749,18 +685,6 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         const savedBacktestDates = inferSavedBacktestDates(algo.config)
         const effectiveStartDate = boundStartDate ?? savedBacktestDates.startDate
         const effectiveEndDate = boundEndDate ?? savedBacktestDates.endDate
-        if (workflow && evidence.ok) {
-          const candidate = await runWorkflow(ensureWorkflowCandidate({
-            workflow,
-            algorithm: algo,
-            dataset: evidence.dataset,
-            interval: params.interval,
-            start: effectiveStartDate,
-            end: effectiveEndDate,
-          }))
-          workflow = candidate.workflow
-          experiment = candidate.experiment
-        }
         const totalDays = BacktestRunner.parseDurationDays(params.duration)
         if (!totalDays || totalDays < 14) {
           const failureDiagnosis = classifyEngineFailedFailure("window too short for >=2 folds")
@@ -803,7 +727,7 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           capital: params.capital,
           startDate: effectiveStartDate,
           endDate: effectiveEndDate,
-          dataQualityMode: params.dataQualityMode,
+          dataQualityMode: "strict",
           configOverrides:
             params.feeBps === undefined && params.slippageBps === undefined
               ? undefined
@@ -840,7 +764,6 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
             capital: params.capital,
             startDate: effectiveStartDate,
             endDate: effectiveEndDate,
-            dataQualityMode: params.dataQualityMode,
           })
           if (dataQualityFailure) {
             const failureDiagnosis = classifyDataBlockedFailure(dataQualityFailure.reason)
@@ -856,13 +779,34 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
                 `Strict data quality blocked "${params.algorithmName}".\n` +
                 `${dataQualityFailure.reason}\n` +
                 (details ? `\n${details}\n` : "") +
-                `\nStopped without running repair_outliers.\nVerdict: failed\n\n${strictDataQualityNextSteps()}` +
+                `\nVerdict: failed\n\n${strictDataQualityNextSteps()}` +
                 formatFailureDiagnosisBlock(failureDiagnosis).join("\n"),
               metadata: {
                 ...emptyMeta,
                 ...dataQualityFailure,
                 failure_diagnosis: failureDiagnosis,
               },
+            }
+          }
+          if (["unknown_symbol", "empty_window", "network", "auth", "data_evidence"].includes(result.kind)) {
+            let symbol: string | undefined
+            try {
+              const config = JSON.parse(algo.config ?? "{}")
+              if (typeof config.symbol === "string") symbol = config.symbol
+            } catch {}
+            const failureDiagnosis = classifyDataBlockedFailure(result.error)
+            return {
+              title: "Crucible data collection blocked",
+              output:
+                formatCrucibleDataCollectionBlocker({
+                  symbol,
+                  interval: params.interval,
+                  duration: params.duration,
+                  startDate: effectiveStartDate,
+                  endDate: effectiveEndDate,
+                  error: result.error,
+                }) + `\n${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
+              metadata: { ...emptyMeta, blocked: true, blockerCode: result.kind, failure_diagnosis: failureDiagnosis },
             }
           }
           const failureDiagnosis = classifyEngineFailedFailure(result.error)
@@ -922,7 +866,7 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         }
         const representativeRerun = representativeRerunForAlgorithm(algo.name)
         const qualification = qualificationInputForResearch({
-          dataQualityMode: params.dataQualityMode,
+          dataQualityMode: "strict",
           phase: trial.reference.phase,
         })
         const quality = evaluateBacktestQuality(r, qualification)
@@ -933,30 +877,13 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
           consistency: r.v2?.consistency,
           decay: r.v2?.alpha_decay,
         })
-        const researchOnlyArtifact =
-          dataSource.kind === "verified_artifact" &&
-          dataSource.dataset.identity.qualification === "research_only"
-        const unified =
-          computedUnified.verdict !== "failed" &&
-          (dataSource.kind === "provider_fetch" || researchOnlyArtifact)
-            ? {
-                verdict: "research_only" as const,
-                reasons: [
-                  ...computedUnified.reasons,
-                  ...(dataSource.kind === "provider_fetch"
-                    ? ["provider_fetch_research_only"]
-                    : ["verified_dataset_research_only"]),
-                ],
-              }
-            : computedUnified
+        const unified = computedUnified
         await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)
         if (workflow && experiment) {
           const controllerVerdict =
-            unified.verdict === "recommended_for_paper" ||
-            unified.verdict === "candidate" ||
-            unified.verdict === "failed"
+            unified.verdict === "recommended_for_paper" || unified.verdict === "failed"
               ? unified.verdict
-              : "research_only"
+              : "candidate"
           workflow = await runWorkflow(
             completeWorkflowBacktest({
               workflow,
@@ -991,6 +918,9 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
         const fmtDollar = (v: number | null | undefined) => v == null ? "N/A" : `$${fmt(v)}`
         const processedRange = r.v2?.start_ts && r.v2?.end_ts ? `${r.v2.start_ts} → ${r.v2.end_ts}` : undefined
+        const dataProvenance = r.v2?.run_metadata?.raw_data_provenance as
+          | { snapshot_id?: string; provider?: string; raw_sha256?: string; processed_sha256?: string }
+          | undefined
 
         const lines = [
           `Algorithm: ${algo.name} (v${algo.version})`,
@@ -1000,13 +930,12 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
             ` | Interval: ${params.interval} | Capital: $${params.capital}`,
           backtestDataSourceSummary({
             kind: dataSource.kind,
-            qualification: evidence.ok ? evidence.dataset.identity.qualification : undefined,
           }),
-          !evidence.ok && pendingEvidence.length > 0
-            ? `Optional evidence caveat: ${pendingEvidence.join(" | ")}`
+          dataProvenance?.snapshot_id
+            ? `Data snapshot: ${dataProvenance.snapshot_id} | Provider: ${dataProvenance.provider ?? "unknown"}`
             : null,
           processedRange ? `Processed range: ${processedRange} | Bars processed: ${r.diagnostics?.barsProcessed ?? r.v2?.bars_processed ?? "N/A"}` : null,
-          params.dataQualityMode === "repair_outliers" ? `Data quality mode: REPAIRED DATA BACKTEST (research-only)` : `Data quality mode: strict`,
+          `Data quality mode: strict`,
           ``,
           `┌──────────────────────────────────────────────────┐`,
           `│  BACKTEST RESULTS                                │`,
@@ -1128,6 +1057,14 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
         }
         if (quality.reasons.length > 0) {
           lines.push(`Reasons: ${quality.reasons.join("; ")}`)
+        }
+        if (quality.deltas.length > 0) {
+          lines.push(
+            `Next actions:`,
+            ...quality.deltas.map(
+              (delta) => `${delta.rank}. [${delta.gate}] ${delta.message} → ${delta.nextAction}`,
+            ),
+          )
         }
         if (r.totalTrades > 0 && r.totalTrades < quality.minTrades) {
           lines.push(
@@ -1356,8 +1293,8 @@ export const BacktestTool = Tool.define<typeof parameters, BacktestToolMetadata,
             },
             results: { ...r, v2: undefined },
             dataSourceMode: dataSource.kind,
-            qualificationEligible: dataSource.kind === "verified_artifact",
-            evidenceIssues: evidence.ok ? [] : evidence.issues,
+            dataSnapshot: dataProvenance,
+            qualificationEligible: false,
             walkForward,
             verdict: unified.verdict,
             verdictReasons: unified.reasons,

@@ -1,7 +1,7 @@
 import type { BacktestRunner } from "./runner"
 import { evaluateBacktestQuality, type BacktestQuality } from "./evaluation"
 import { composeBacktestVerdict, deriveWalkForwardVerdict } from "./verdict"
-import { qualificationInputErrors, type QualificationInputV1 } from "./qualification-policy"
+import { confirmatoryPolicyErrors, qualificationInputErrors, type QualificationInputV1 } from "./qualification-policy"
 import type { RunRecommendation } from "./run-integrity-core"
 
 export type QualificationBlockerCode =
@@ -119,7 +119,10 @@ export function qualifyCandidateV1(input: {
     consistency: input.results.v2?.consistency,
     decay: input.results.v2?.alpha_decay,
   })
-  const contractErrors = qualificationInputErrors(input.qualification)
+  const contractErrors = [
+    ...confirmatoryPolicyErrors(input.qualification.policy),
+    ...qualificationInputErrors(input.qualification),
+  ]
   const failure = contractErrors[0] ?? quality.reasons[0] ?? recommendation.reasons[0]
   const common = {
     candidateId: input.candidateId,

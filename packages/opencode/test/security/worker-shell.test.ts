@@ -7,6 +7,7 @@ import {
   listWorkerDataCredentialKeys,
   listWorkerRuntimeKeys,
   redactSensitiveOutput,
+  workerRuntimeEnv,
   workerShellEnv,
 } from "../../src/security/worker-shell"
 import {
@@ -26,6 +27,7 @@ describe("worker shell environment policy", () => {
     expect(listWorkerRuntimeKeys()).not.toContain("OPENAI_API_KEY")
     expect(listWorkerRuntimeKeys()).not.toContain("FINNY_TELEMETRY_SECRET")
     expect(listWorkerDataCredentialKeys()).toContain("ALPACA_API_KEY_ID")
+    expect(listWorkerDataCredentialKeys()).toContain("ALPACA_OAUTH_TOKEN")
     expect(listWorkerDataCredentialKeys()).toContain("ALPACA_DATA_FEED")
     expect(listWorkerDataCredentialKeys()).toContain("BINANCE_BASE_URL")
     expect(listWorkerDataCredentialKeys()).toContain("KITE_ACCESS_TOKEN")
@@ -36,6 +38,17 @@ describe("worker shell environment policy", () => {
     expect(listWorkerDataCredentialKeys()).not.toContain("BINANCE_API_KEY")
     expect(listWorkerDataCredentialKeys()).not.toContain("OPENAI_API_KEY")
     expect(DATA_PROVIDER_CREDENTIALS.length).toBeGreaterThan(0)
+  })
+
+  test("runtime-only environments exclude all host secrets and RHX live tokens", () => {
+    expect(
+      workerRuntimeEnv({
+        PATH: "/safe/bin",
+        HOME: "/safe/home",
+        RHX_LIVE_CONFIRM_TOKEN: "must-not-leak",
+        RH_CRYPTO_PRIVATE_KEY_B64: "must-not-leak-either",
+      }),
+    ).toEqual({ PATH: "/safe/bin", HOME: "/safe/home" })
   })
 
   test("every Finny worker filters host and plugin secrets", () => {
@@ -67,6 +80,7 @@ describe("worker shell environment policy", () => {
 
   test("Data Agent receives only asset-relevant provider credentials", () => {
     const env = {
+      ALPACA_OAUTH_TOKEN: "alpaca-bearer",
       ALPACA_API_KEY_ID: "alpaca-id",
       ALPACA_API_SECRET_KEY: "alpaca-secret",
       ALPACA_DATA_FEED: "iex",
@@ -82,6 +96,7 @@ describe("worker shell environment policy", () => {
       request: { requested_asset_class: "equity", requested_symbol: "RELIANCE.NS" },
     })
     expect(equity).toMatchObject({
+      ALPACA_OAUTH_TOKEN: "alpaca-bearer",
       ALPACA_API_KEY_ID: "alpaca-id",
       ALPACA_API_SECRET_KEY: "alpaca-secret",
       ALPACA_DATA_FEED: "iex",
@@ -106,6 +121,7 @@ describe("worker shell environment policy", () => {
     const crypto = workerShellEnv({ agent: "data_extractor", env, request: { requested_asset_class: "crypto" } })
     expect(crypto.BINANCE_BASE_URL).toBe("https://data-api.binance.vision")
     expect(crypto.ALPACA_API_KEY_ID).toBeUndefined()
+    expect(crypto.ALPACA_OAUTH_TOKEN).toBeUndefined()
     expect(crypto.ALPACA_API_SECRET_KEY).toBeUndefined()
     expect(crypto.ALPACA_DATA_FEED).toBeUndefined()
     expect(crypto.POLYGON_API_KEY).toBeUndefined()
@@ -170,13 +186,14 @@ describe("worker shell environment policy", () => {
 
   test("redacts scoped credential values and secret-shaped assignments before persistence", () => {
     const output = redactSensitiveOutput({
-      text: "ALPACA_API_SECRET_KEY=provider-canary\nOPENAI_API_KEY=unknown-canary\nsk-1234567890abcdefghijklmnop",
-      env: { ALPACA_API_SECRET_KEY: "provider-canary" },
+      text: "ALPACA_API_SECRET_KEY=provider-canary\nALPACA_OAUTH_TOKEN=oauth-canary\nOPENAI_API_KEY=unknown-canary\nsk-1234567890abcdefghijklmnop",
+      env: { ALPACA_API_SECRET_KEY: "provider-canary", ALPACA_OAUTH_TOKEN: "oauth-canary" },
     })
     expect(output).not.toContain("provider-canary")
     expect(output).not.toContain("unknown-canary")
     expect(output).not.toContain("sk-1234567890abcdefghijklmnop")
-    expect(output.match(/\[REDACTED\]/g)?.length).toBe(3)
+    expect(output).not.toContain("oauth-canary")
+    expect(output.match(/\[REDACTED\]/g)?.length).toBe(4)
   })
 })
 

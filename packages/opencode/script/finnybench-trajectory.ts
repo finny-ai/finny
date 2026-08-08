@@ -33,6 +33,7 @@ interface Options {
   inputPath?: string
   baselinePath?: string
   requiredSubset?: "smoke" | "full"
+  requiredHarnessRevision?: string
   validateOnly: boolean
 }
 
@@ -112,6 +113,16 @@ function coverageErrors(suite: SuiteContract, grades: TrajectoryGrade[], subset?
   )
 }
 
+function harnessRevisionErrors(trajectories: Trajectory[], requiredRevision?: string): string[] {
+  if (!requiredRevision) return []
+  return trajectories
+    .filter((trajectory) => trajectory.pins.harness_revision !== requiredRevision)
+    .map(
+      (trajectory) =>
+        `${trajectory.scenario_id}:${trajectory.pins.provider}:${trajectory.run_id}: harness revision ${trajectory.pins.harness_revision} does not match ${requiredRevision}`,
+    )
+}
+
 function options(): Options {
   const subsetValue = valueAfter("--require-subset")
   requireCondition(
@@ -123,6 +134,7 @@ function options(): Options {
     inputPath: valueAfter("--input"),
     baselinePath: valueAfter("--baseline"),
     requiredSubset: subsetValue === "smoke" || subsetValue === "full" ? subsetValue : undefined,
+    requiredHarnessRevision: valueAfter("--require-harness-revision"),
     validateOnly: process.argv.includes("--validate-suite"),
   }
 }
@@ -176,6 +188,11 @@ async function main() {
   }
   requireCondition(!!input.inputPath, "--input <trajectory.json|trajectory.jsonl> is required")
   const trajectories = await loadTrajectories(input.inputPath)
+  const revisionErrors = harnessRevisionErrors(trajectories, input.requiredHarnessRevision)
+  requireCondition(
+    revisionErrors.length === 0,
+    `Stale harness capture:\n${revisionErrors.map((item) => `- ${item}`).join("\n")}`,
+  )
   const grades = trajectories.map((trajectory) => gradeTrajectory(suite, trajectory))
   requireCoverage(suite, grades, input.requiredSubset)
   await requireBaseline(input.baselinePath, grades)
@@ -189,4 +206,4 @@ if (import.meta.main)
     process.exit(1)
   })
 
-export { baselineDifferences, coverageErrors }
+export { baselineDifferences, coverageErrors, harnessRevisionErrors }

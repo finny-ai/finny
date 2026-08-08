@@ -16,7 +16,7 @@ const it = testEffect(
 )
 
 describe("SkillPlugin.Plugin", () => {
-  it.effect("registers the built-in customize-opencode skill", () =>
+  it.effect("registers the built-in skills", () =>
     Effect.gen(function* () {
       const skill = yield* SkillV2.Service
       yield* SkillPlugin.Plugin.effect.pipe(Effect.provideService(SkillV2.Service, skill))
@@ -25,6 +25,13 @@ describe("SkillPlugin.Plugin", () => {
         expect.objectContaining({
           name: "customize-opencode",
           description: expect.stringContaining("opencode's own configuration"),
+        }),
+      )
+      expect(yield* skill.list()).toContainEqual(
+        expect.objectContaining({
+          name: "finny-robinhood",
+          description: expect.stringContaining("Robinhood through Finny"),
+          content: expect.stringContaining("credentials"),
         }),
       )
     }),

@@ -20,6 +20,7 @@ import {
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalSpecialistTaskText,
   finalTaskText,
+  dataExtractorRepairInstruction,
   shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
   TaskBatchRunTool,
@@ -35,6 +36,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
 import { StrategyContext } from "@/task/strategy-context"
 import { AlgorithmScaffoldTool } from "@/tool/algorithm-scaffold"
+import { StrategyContextWaitTool } from "@/tool/strategy-context-wait"
 import { assertFinnyWorkspacePathPolicy, isStrategySynthesisPath } from "@/tool/finny-workspace-guard"
 import { BuildWorkflow } from "@/task/build-workflow"
 import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
@@ -50,6 +52,7 @@ import {
   parseMission,
 } from "@finny-ai/core/algo"
 import { syncWorkspaceRequestContext } from "../../src/agent/finny-workspace-context"
+import { finalizeDatasetEvidenceFile } from "../../src/data/dataset-evidence-finalizer"
 import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -318,6 +321,45 @@ function reply(input: SessionPrompt.PromptInput, text: string): SessionV1.WithPa
   }
 }
 
+async function seedPartialBtcEvidence(input: { sessionID: string; slug: string }) {
+  await bindSessionWorkspace(input.sessionID, input.slug)
+  const context = await syncWorkspaceRequestContext({
+    sessionID: input.sessionID,
+    slug: input.slug,
+    prompt: "Research BTC crypto with 1d bars from 2026-07-01 to 2026-07-10.",
+  })
+  const dataRoot = path.join(algoDir(input.slug), "data")
+  const csvPath = "crypto/BTC_1d_2026-07-01_2026-07-10.csv"
+  await fs.mkdir(path.join(dataRoot, "crypto"), { recursive: true })
+  await fs.writeFile(
+    path.join(dataRoot, csvPath),
+    [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-01T00:00:00Z,100,101,99,100.5,1000",
+      "2026-07-02T00:00:00Z,100.5,102,100,101.5,1200",
+    ].join("\n"),
+  )
+  return finalizeDatasetEvidenceFile({
+    dataRoot,
+    csvPath,
+    request: context,
+    workspaceSlug: input.slug,
+    canonicalSymbol: "BTC",
+    provider: { id: "binance", feed: "public-klines", venue: "BINANCE", providerSymbol: "BTCUSDT" },
+    priceBasis: {
+      basis: "raw",
+      split_treatment: "not_applicable",
+      dividend_treatment: "not_applicable",
+      corporate_action_status: "not_applicable",
+      events: [],
+    },
+    analysisSummaryPath: "crypto/BTC_1d_2026-07-01_2026-07-10.analysis_summary.json",
+    analysisRegime: "range_bound",
+    analysisHypotheses: ["Candidate mean reversion; requires backtest."],
+    now: new Date("2026-07-11T12:00:00Z"),
+  })
+}
+
 describe("finalTaskText", () => {
   const part = (type: string, text?: string) => ({ type, text })
 
@@ -357,6 +399,30 @@ describe("finalTaskText", () => {
       }),
     ).toBe(EMPTY_SUBAGENT_RESULT_MARKER)
   })
+})
+
+test("data repair instruction targets only exact missing ranges and the existing canonical dataset", () => {
+  const text = dataExtractorRepairInstruction({
+    requestedSymbol: "SPY",
+    requestedInterval: "1h",
+    requestedStart: "2025-08-01",
+    requestedEnd: "2026-07-31",
+    rows: 2_183,
+    expectedCount: 3_934,
+    actualCount: 2_183,
+    missingCount: 2,
+    extraCount: 0,
+    missingRanges: [{ start: "2026-07-30T14:30:00Z", end: "2026-07-30T15:30:00Z", count: 2 }],
+    csvPath: "stock/SPY_1h.csv",
+    manifestPath: "stock/SPY_1h.manifest.json",
+    source: "alpaca/iex/IEX",
+    coverage: "partial",
+  })
+  expect(text).toContain('"start":"2026-07-30T14:30:00Z"')
+  expect(text).toContain("Canonical CSV: stock/SPY_1h.csv")
+  expect(text).toContain("Fetch only those missing ranges")
+  expect(text).toContain("Do not redownload the full window")
+  expect(text).toContain("coverage, regime, and candidate-hypothesis artifacts")
 })
 
 describe("completedIntradayWindow", () => {
@@ -460,6 +526,60 @@ describe("tool.task", () => {
         },
       },
     },
+  )
+
+  it.instance("enforces the Fund Manager delegation boundary before launch", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskRunTool
+      const def = yield* tool.init()
+      let asks = 0
+      let seen: SessionPrompt.PromptInput | undefined
+      const context = (agent: string) => ({
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent,
+        abort: new AbortController().signal,
+        extra: {
+          promptOps: stubOps({
+            text: "advisory complete",
+            onPrompt: (input) => (seen = input),
+          }),
+        },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () =>
+          Effect.sync(() => {
+            asks += 1
+          }),
+      })
+      const task = {
+        description: "Review regime",
+        prompt: "Review the supplied immutable regime evidence.",
+        subagent_type: "fund_regime_analyst",
+      }
+
+      const nonManager = yield* Effect.exit(def.execute(task, context("finny")))
+      expect(Exit.isFailure(nonManager)).toBe(true)
+      if (Exit.isFailure(nonManager)) {
+        expect(String(Cause.squash(nonManager.cause))).toContain('may be launched only by "fund_manager"')
+      }
+      expect(asks).toBe(0)
+
+      const nested = yield* Effect.exit(
+        def.execute({ ...task, subagent_type: "fund_risk_sentinel" }, context("fund_regime_analyst")),
+      )
+      expect(Exit.isFailure(nested)).toBe(true)
+      if (Exit.isFailure(nested)) {
+        expect(String(Cause.squash(nested.cause))).toContain("cannot delegate nested tasks")
+      }
+      expect(asks).toBe(0)
+
+      const result = yield* def.execute(task, context("fund_manager"))
+      expect(asks).toBe(0)
+      expect(result.output).toContain("No immutable fund event is admitted")
+      expect(seen).toBeUndefined()
+    }),
   )
 
   it.instance("records foreground subagent lifecycle in TaskState", () =>
@@ -605,32 +725,24 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text.match(/Data request context:/g)).toHaveLength(1)
-          expect(text).toContain("<finny-subagent-context>")
-          expect(text).toContain(`- workspace_slug: ${slug}`)
+          expect(text.match(/<data-request>/g)).toHaveLength(1)
+          expect(text.match(/<\/data-request>/g)).toHaveLength(1)
           expect(text).toMatch(/- request_id: ses_[A-Za-z0-9]+/)
-          expect(text).toContain("- request_version: 1")
-          expect(text).toMatch(/- request_content_hash: sha256:[a-f0-9]{64}/)
-          expect(text).toContain("- requested_algorithm_name: spy-5m-strategy")
-          expect(text).toContain("- requested_symbol: SPY")
-          expect(text).toContain("- requested_interval: 5m")
-          expect(text).toContain("- requested_asset_class: equity")
-          expect(text).toContain("- requested_start: 2026-03-10")
-          expect(text).toContain("- requested_end: 2026-06-10")
-          expect(text).toContain("- symbol: SPY")
-          expect(text).toContain("- start_date: 2026-03-10")
-          expect(text).toContain("- end_date: 2026-06-10")
-          expect(text).toContain("- end_date_inclusive: true")
-          expect(text).toContain("- provider: auto")
-          expect(text).toContain(`- workspace: ${dataDir}`)
-          expect(text).toContain(`- allowed_data_dir: ${dataDir}`)
-          expect(text).toContain(`- mission_path: ${path.join(algoDir(slug), "mission.md")}`)
-          expect(text).toContain(
-            `- cookbook_path: ${path.resolve(import.meta.dir, "../../../..", "data-agent/instructions.md")}`,
-          )
+          expect(text).toContain("- algorithm: spy-5m-strategy")
+          expect(text).toContain(`- workspace: ${slug}`)
+          expect(text).toContain("- symbols: SPY")
           expect(text).toContain("- asset_class: equity")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("Task intent:\nAcquire SPY OHLCV for an intraday strategy study.")
+          expect(text).toContain("- start_inclusive: 2026-03-10")
+          expect(text).toContain("- end_inclusive: 2026-06-10")
+          expect(text).toContain("- provider: auto")
+          expect(text).toContain(`- output_dir: ${dataDir}`)
+          expect(text).toContain("</data-request>\n\nAcquire SPY OHLCV for an intraday strategy study.")
+          expect(text).not.toContain("requested_symbol")
+          expect(text).not.toContain("request_content_hash")
+          expect(text).not.toContain("allowed_data_dir")
+          expect(text).not.toContain("cookbook_path")
+          expect(text).not.toContain("mission_path")
           expect(text).not.toContain("provider_capabilities")
           expect(text).not.toContain("MISSING")
 
@@ -641,6 +753,66 @@ describe("tool.task", () => {
           expect(mission.frontmatter.scope.horizon).toBe("intraday")
           expect(missionRaw).toContain("requested_start: 2026-03-10")
           expect(missionRaw).toContain("requested_end: 2026-06-10")
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("continues partial coverage in the same child and reuses the exhausted partial handoff", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          const slug = "btc-partial-repair.1.1.00.00"
+          const partial = yield* Effect.promise(() => seedPartialBtcEvidence({ sessionID: chat.id, slug }))
+          const prompts: SessionPrompt.PromptInput[] = []
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          const params = {
+            description: "BTC partial data repair",
+            prompt: "Extract BTC crypto 1d bars from 2026-07-01 to 2026-07-10.",
+            subagent_type: "data_extractor",
+          }
+          const context = {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: {
+              promptOps: stubOps({
+                onPrompt: (input) => prompts.push(input),
+                text: partial.digest,
+              }),
+            },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          }
+
+          const first = yield* def.execute(params, context)
+          expect(prompts).toHaveLength(2)
+          expect(prompts[0]!.sessionID).toBe(prompts[1]!.sessionID)
+          const repairText = prompts[1]!.parts.find((part) => part.type === "text")?.text ?? ""
+          expect(repairText).toContain("Fetch only those missing ranges")
+          expect(repairText).toContain('"start":"2026-07-03T00:00:00Z"')
+          expect(repairText).toContain("Do not redownload the full window or create another canonical dataset")
+          expect(first.output).toContain("PARTIAL_DATASET:")
+          expect(first.output).toContain("usable_for_research: yes")
+          expect(first.output).toContain("analysis_regime: range_bound")
+          expect(first.output).toContain("Candidate mean reversion; requires backtest.")
+          expect(first.output).toContain("Crucible/backtest collection is independent")
+          expect(first.output).not.toContain("BLOCKED:")
+
+          const second = yield* def.execute(params, context)
+          expect(prompts).toHaveLength(2)
+          expect(second.output).toContain("Bounded repair already completed")
+          expect(second.output).toContain("PARTIAL_DATASET:")
+          expect(second.metadata.sessionId).toBe(prompts[0]!.sessionID)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -690,7 +862,7 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("data request context mismatch")
           expect(seen).toBeDefined()
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: BTC")
+          expect(text).toContain("- symbols: BTC")
           expect(text).toContain("- interval: 1d")
           expect(text).toContain("- asset_class: crypto")
         } finally {
@@ -743,8 +915,8 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: DJT, RUM, GEO, CXW")
-          expect(text).not.toContain("- symbol: ES")
+          expect(text).toContain("- symbols: DJT, RUM, GEO, CXW")
+          expect(text).not.toContain("- symbols: ES")
           expect(text).toContain("- interval: 1d")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
@@ -858,10 +1030,10 @@ describe("tool.task", () => {
           const childWorkspace = yield* Effect.promise(() => getSessionWorkspace(seenInput.sessionID))
           expect(childWorkspace).toBe(slug)
           const text = seenInput.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: RUM")
-          expect(text).toContain("- start_date: 2026-01-01")
-          expect(text).toContain("- end_date: 2026-06-29")
-          expect(text).not.toContain("- symbol: ES")
+          expect(text).toContain("- symbols: RUM")
+          expect(text).toContain("- start_inclusive: 2026-01-01")
+          expect(text).toContain("- end_inclusive: 2026-06-29")
+          expect(text).not.toContain("- symbols: ES")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -912,9 +1084,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: DJT")
-          expect(text).toContain("- start_date: 2026-01-01")
-          expect(text).toContain("- end_date: 2026-06-29")
+          expect(text).toContain("- symbols: DJT")
+          expect(text).toContain("- start_inclusive: 2026-01-01")
+          expect(text).toContain("- end_inclusive: 2026-06-29")
 
           const request = JSON.parse(
             yield* Effect.promise(() => fs.readFile(path.join(algoDir(slug), "request.json"), "utf8")),
@@ -1078,9 +1250,8 @@ describe("tool.task", () => {
 
           expect(allowed.output).not.toContain("BLOCKED: incomplete authoritative data window")
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- start_date: 2025-06-30")
-          expect(text).toContain("- end_date: 2026-06-30")
-          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain("- start_inclusive: 2025-06-30")
+          expect(text).toContain("- end_inclusive: 2026-06-30")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1411,8 +1582,7 @@ describe("tool.task", () => {
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
           expect(text).toContain("- interval: 1h")
-          expect(text).toContain(`- end_date: ${yesterdayIso}`)
-          expect(text).toContain("- end_date_inclusive: true")
+          expect(text).toContain(`- end_inclusive: ${yesterdayIso}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1730,10 +1900,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).toContain("Task intent:")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("Name it spy-5m-product-demo-20260614-v2")
-          expect(text).toContain("- requested_algorithm_name: spy-5m-product-demo-20260614-v2")
+          expect(text).toContain("- algorithm: spy-5m-product-demo-20260614-v2")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1785,10 +1954,9 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).toContain("Task intent:")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
           expect(text).toContain("spy-1h-momentum-breakout")
-          expect(text).toContain("- requested_algorithm_name: spy-1h-momentum-breakout")
+          expect(text).toContain("- algorithm: spy-1h-momentum-breakout")
           const persisted = yield* Effect.promise(() =>
             fs.readFile(path.join(algoDir(slug), "request.json"), "utf8").then(JSON.parse),
           )
@@ -1845,15 +2013,15 @@ describe("tool.task", () => {
           )
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: SPY")
+          expect(text).toContain("- symbols: SPY")
           expect(text).toContain("- interval: 5m")
-          expect(text).toContain("- start_date: 2026-03-10")
-          expect(text).toContain("- end_date: 2026-06-10")
-          expect(text).toContain(`- workspace: ${path.join(algoDir(slug), "data")}`)
-          expect(text).not.toContain("- symbol: MISSING")
+          expect(text).toContain("- start_inclusive: 2026-03-10")
+          expect(text).toContain("- end_inclusive: 2026-06-10")
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(slug), "data")}`)
+          expect(text).not.toContain("- symbols: MISSING")
           expect(text).not.toContain("- interval: MISSING")
-          expect(text).not.toContain("- start_date: MISSING")
-          expect(text).not.toContain("- end_date: MISSING")
+          expect(text).not.toContain("- start_inclusive: MISSING")
+          expect(text).not.toContain("- end_inclusive: MISSING")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -2637,9 +2805,9 @@ describe("tool.task", () => {
           expect(childWorkspace).toBe(parentWorkspace)
 
           const text = seen?.parts.find((part) => part.type === "text")?.text ?? ""
-          expect(text).toContain("- symbol: MSFT")
+          expect(text).toContain("- symbols: MSFT")
           expect(text).toContain("- interval: 1d")
-          expect(text).toContain(`- workspace: ${path.join(algoDir(parentWorkspace!), "data")}`)
+          expect(text).toContain(`- output_dir: ${path.join(algoDir(parentWorkspace!), "data")}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -3139,7 +3307,8 @@ describe("tool.task", () => {
       const result = yield* def.execute(
         {
           description: "BTC daily data",
-          prompt: "Continue and finish the previously started BTC/USD daily data extraction task. Return the final structured digest only.",
+          prompt:
+            "Continue and finish the previously started BTC/USD daily data extraction task. Return the final structured digest only.",
           subagent_type: "data_extractor",
           task_id: active.id,
         },
@@ -3754,6 +3923,193 @@ describe("tool.task", () => {
         "write",
         database,
       )
+    }),
+  )
+
+  background.instance("waits for the full context set before releasing synthesis", () =>
+    Effect.gen(function* () {
+      const jobs = yield* BackgroundJob.Service
+      const database = yield* Database.Service
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      yield* Effect.promise(() => bindSessionWorkspace(chat.id, "issue-40-wait-test"))
+      const first = yield* sessions.create({ parentID: chat.id, title: "SPY data context" })
+      const second = yield* sessions.create({ parentID: chat.id, title: "SPY news context" })
+      const firstDone = yield* Deferred.make<void>()
+      const secondDone = yield* Deferred.make<void>()
+
+      for (const task of [
+        { id: first.id, subagentType: "data_extractor", description: "SPY data context" },
+        { id: second.id, subagentType: "news_agent", description: "SPY news context" },
+      ]) {
+        yield* Effect.promise(() =>
+          TaskState.upsert(
+            {
+              ...task,
+              parentSessionID: chat.id,
+              mode: "background",
+              status: TaskState.Status.running,
+              startedAt: Date.now(),
+            },
+            database,
+          ),
+        )
+      }
+      yield* jobs.start({
+        id: first.id,
+        type: "task",
+        run: Deferred.await(firstDone).pipe(Effect.as("data context complete")),
+      })
+      yield* jobs.start({
+        id: second.id,
+        type: "task",
+        run: Deferred.await(secondDone).pipe(Effect.as("news context complete")),
+      })
+
+      const captured = yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))
+      const waitStarted = yield* Deferred.make<void>()
+      let askedPatterns: readonly string[] = []
+      const waitTool = yield* StrategyContextWaitTool
+      const waitDef = yield* waitTool.init()
+      const waitFiber = yield* waitDef
+        .execute(
+          {},
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "finny",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: (request) =>
+              Effect.sync(() => {
+                askedPatterns = request.patterns
+              }).pipe(Effect.andThen(Deferred.succeed(waitStarted, undefined))),
+          },
+        )
+        .pipe(Effect.forkChild)
+
+      yield* Deferred.await(waitStarted)
+      yield* Deferred.succeed(firstDone, undefined)
+      expect((yield* jobs.wait({ id: first.id, timeout: 1_000 })).info?.status).toBe("completed")
+
+      // One completed sibling is not enough to release synthesis. The wait
+      // barrier terminalizes the captured set only after every job settles.
+      expect((yield* Effect.promise(() => TaskState.get(first.id, database)))?.status).toBe(TaskState.Status.running)
+      expect((yield* Effect.promise(() => TaskState.get(second.id, database)))?.status).toBe(TaskState.Status.running)
+      const workspace = yield* Effect.promise(() => getSessionWorkspace(chat.id))
+      if (!workspace) throw new Error("workspace was not bound")
+      const edgeAnalysis = path.join(algoDir(workspace), "edge_analysis.md")
+      const blockedWrite = yield* Effect.exit(
+        assertFinnyWorkspacePathPolicy(
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "finny",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+          edgeAnalysis,
+          "write",
+          database,
+        ),
+      )
+      expect(Exit.isFailure(blockedWrite)).toBe(true)
+
+      yield* Deferred.succeed(secondDone, undefined)
+      const waited = yield* Fiber.join(waitFiber)
+      expect(waited.metadata).toMatchObject({ captured: 2, completed: 2, pendingContext: [] })
+      expect(new Set(askedPatterns)).toEqual(new Set(["data_extractor", "news_agent"]))
+      const orderedIDs = captured.map((task) => task.id)
+      const firstCaptured = orderedIDs[0]
+      const secondCaptured = orderedIDs[1]
+      if (!firstCaptured || !secondCaptured) throw new Error("expected two captured context tasks")
+      expect(waited.output.indexOf(firstCaptured)).toBeLessThan(waited.output.indexOf(secondCaptured))
+      expect(yield* Effect.promise(() => StrategyContext.pendingTasks(chat.id, database))).toEqual([])
+      yield* assertFinnyWorkspacePathPolicy(
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+        edgeAnalysis,
+        "write",
+        database,
+      )
+    }),
+  )
+
+  background.instance("consuming context through the wait tool suppresses duplicate automatic delivery", () =>
+    Effect.gen(function* () {
+      const status = yield* SessionStatus.Service
+      const database = yield* Database.Service
+      const { chat, assistant } = yield* seed("Pinned", "Create a new SPY 1d strategy")
+      yield* status.set(chat.id, { type: "busy" })
+      let parentDeliveries = 0
+      const promptOps: TaskPromptOps = {
+        ...stubOps(),
+        prompt: (input) => {
+          if (input.sessionID === chat.id) {
+            parentDeliveries += 1
+            return Effect.succeed(reply(input, "unexpected duplicate delivery"))
+          }
+          return Effect.succeed(reply(input, "context complete"))
+        },
+      }
+
+      const startTool = yield* TaskStartTool
+      const startDef = yield* startTool.init()
+      const started = yield* startDef.execute(
+        {
+          description: "research SPY context",
+          prompt: "Research SPY market context.",
+          subagent_type: "news_agent",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const waitTool = yield* StrategyContextWaitTool
+      const waitDef = yield* waitTool.init()
+      const waited = yield* waitDef.execute(
+        {},
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "finny",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      expect(waited.metadata.pendingContext).toEqual([])
+      expect(waited.output).toContain(`<context_task id="${started.metadata.sessionId}"`)
+      expect((yield* Effect.promise(() => TaskState.get(started.metadata.sessionId, database)))?.status).toBe(
+        TaskState.Status.completed,
+      )
+
+      yield* status.set(chat.id, { type: "idle" })
+      yield* Effect.sleep("250 millis")
+      expect(parentDeliveries).toBe(0)
     }),
   )
 

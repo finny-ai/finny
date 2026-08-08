@@ -10,6 +10,8 @@ describe("broker policy helpers", () => {
   test("parses target broker comment from the first non-empty line", () => {
     expect(parseTargetBrokerComment('\n# Target broker: IBKR\nclass Strategy:\n    pass')).toBe("ibkr")
     expect(parseTargetBrokerComment("# Target broker: alpaca")).toBe("alpaca")
+    expect(parseTargetBrokerComment("# Target broker: Robinhood")).toBe("robinhood")
+    expect(parseTargetBrokerComment("# Target broker: rhx")).toBe("robinhood")
     expect(parseTargetBrokerComment("class Strategy:\n    pass")).toBeNull()
   })
 

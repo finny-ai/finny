@@ -12,6 +12,7 @@ import { resourceFromAttributes } from "@opentelemetry/resources"
 import { Log } from "./util/log"
 import { runTelemetryAttributes } from "./telemetry/run-attributes"
 import { installAsyncContextManager, rootSpan } from "./otel-context"
+import { ProcessSignal } from "@opencode-ai/core/process-signal"
 
 // Route OTel diagnostics through the file logger. Writing them to stderr via
 // console.error corrupts the interactive TUI, since it renders into the same
@@ -193,7 +194,10 @@ if (activeProvider) {
       .then(([appRuntime, manualTelemetry]) => emitHarnessTelemetry(appRuntime, manualTelemetry))
       .finally(() => process.exit(exitCode))
   }
-  process.on("SIGINT", () => flushAndExit(130))
+  process.on("SIGINT", () => {
+    if (ProcessSignal.isOwned("SIGINT")) return
+    flushAndExit(130)
+  })
   process.on("SIGTERM", () => flushAndExit(143))
 }
 

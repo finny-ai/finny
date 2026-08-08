@@ -15,6 +15,26 @@ import type {
   AuthRemoveResponses,
   AuthSetErrors,
   AuthSetResponses,
+  CampaignAbortErrors,
+  CampaignAbortResponses,
+  CampaignAdvanceErrors,
+  CampaignAdvanceResponses,
+  CampaignCompareErrors,
+  CampaignCompareResponses,
+  CampaignContinueErrors,
+  CampaignContinueResponses,
+  CampaignCreateErrors,
+  CampaignCreateResponses,
+  CampaignEventsErrors,
+  CampaignEventsResponses,
+  CampaignGetErrors,
+  CampaignGetResponses,
+  CampaignRecordArtifactErrors,
+  CampaignRecordArtifactResponses,
+  CampaignStartErrors,
+  CampaignStartResponses,
+  CampaignWaitErrors,
+  CampaignWaitResponses,
   CommandListErrors,
   CommandListResponses,
   Config as Config3,
@@ -82,6 +102,10 @@ import type {
   FindTextResponses,
   FormatterStatusErrors,
   FormatterStatusResponses,
+  FundQualificationArtifactExportErrors,
+  FundQualificationArtifactExportResponses,
+  FundQualificationDatasetImportErrors,
+  FundQualificationDatasetImportResponses,
   GlobalConfigGetErrors,
   GlobalConfigGetResponses,
   GlobalConfigUpdateErrors,
@@ -94,8 +118,21 @@ import type {
   GlobalHealthResponses,
   GlobalUpgradeErrors,
   GlobalUpgradeResponses,
+  HealthLiveResponses,
+  HealthReadyResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
+  LiveGetErrors,
+  LiveGetResponses,
+  LiveListErrors,
+  LiveListResponses,
+  LiveRemoveErrors,
+  LiveRemoveResponses,
+  LiveStartErrors,
+  LiveStartPayload,
+  LiveStartResponses,
+  LiveStopErrors,
+  LiveStopResponses,
   LocationRef,
   LspStatusErrors,
   LspStatusResponses,
@@ -412,6 +449,22 @@ class HeyApiRegistry<T> {
 
   set(value: T, key?: string): void {
     this.instances.set(key ?? this.defaultKey, value)
+  }
+}
+
+export class Health extends HeyApiClient {
+  public live<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<HealthLiveResponses, unknown, ThrowOnError>({
+      url: "/livez",
+      ...options,
+    })
+  }
+
+  public ready<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<HealthReadyResponses, unknown, ThrowOnError>({
+      url: "/readyz",
+      ...options,
+    })
   }
 }
 
@@ -2011,6 +2064,147 @@ export class File extends HeyApiClient {
   }
 }
 
+export class Dataset extends HeyApiClient {
+  /**
+   * Import a controller-owned qualification dataset
+   *
+   * Hash-verifies a bounded OHLCV CSV and creates DatasetEvidenceV2 inside the exact Finny session workspace.
+   */
+  public import<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionId?: string
+      algorithmName?: string
+      symbol?: string
+      assetClass?: "equity" | "crypto"
+      interval?: string
+      requestedStart?: string
+      requestedEnd?: string
+      csvBase64?: string
+      csvSha256?: string
+      providerId?: "alpaca" | "binance"
+      providerFeed?: string
+      providerVenue?: string
+      providerSymbol?: string
+      priceBasis?: "raw" | "adjusted"
+      splitTreatment?: string
+      dividendTreatment?: string
+      corporateActionStatus?: "resolved" | "not_applicable"
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionId" },
+            { in: "body", key: "algorithmName" },
+            { in: "body", key: "symbol" },
+            { in: "body", key: "assetClass" },
+            { in: "body", key: "interval" },
+            { in: "body", key: "requestedStart" },
+            { in: "body", key: "requestedEnd" },
+            { in: "body", key: "csvBase64" },
+            { in: "body", key: "csvSha256" },
+            { in: "body", key: "providerId" },
+            { in: "body", key: "providerFeed" },
+            { in: "body", key: "providerVenue" },
+            { in: "body", key: "providerSymbol" },
+            { in: "body", key: "priceBasis" },
+            { in: "body", key: "splitTreatment" },
+            { in: "body", key: "dividendTreatment" },
+            { in: "body", key: "corporateActionStatus" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      FundQualificationDatasetImportResponses,
+      FundQualificationDatasetImportErrors,
+      ThrowOnError
+    >({
+      url: "/fund/qualification/dataset",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Artifact extends HeyApiClient {
+  /**
+   * Export exact qualified artifact evidence
+   *
+   * Revalidates and exports the exact saved code/config plus immutable plan, dataset, holdout, policy, and durable confirmatory evidence.
+   */
+  public export<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      sessionId?: string
+      algorithmId?: string
+      experimentPlanId?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "sessionId" },
+            { in: "body", key: "algorithmId" },
+            { in: "body", key: "experimentPlanId" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      FundQualificationArtifactExportResponses,
+      FundQualificationArtifactExportErrors,
+      ThrowOnError
+    >({
+      url: "/fund/qualification/artifact",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Qualification extends HeyApiClient {
+  private _dataset?: Dataset
+  get dataset(): Dataset {
+    return (this._dataset ??= new Dataset({ client: this.client }))
+  }
+
+  private _artifact?: Artifact
+  get artifact(): Artifact {
+    return (this._artifact ??= new Artifact({ client: this.client }))
+  }
+}
+
+export class Fund extends HeyApiClient {
+  private _qualification?: Qualification
+  get qualification(): Qualification {
+    return (this._qualification ??= new Qualification({ client: this.client }))
+  }
+}
+
 export class Instance extends HeyApiClient {
   /**
    * Dispose instance
@@ -2335,6 +2529,171 @@ export class Formatter extends HeyApiClient {
     )
     return (options?.client ?? this.client).get<FormatterStatusResponses, FormatterStatusErrors, ThrowOnError>({
       url: "/formatter",
+      ...options,
+      ...params,
+    })
+  }
+}
+
+export class Live extends HeyApiClient {
+  /**
+   * List live runs
+   *
+   * List the live/paper trading runs owned by the daemon for the current project directory.
+   */
+  public list<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LiveListResponses, LiveListErrors, ThrowOnError>({
+      url: "/live",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Remove a live run
+   *
+   * Remove a stopped run from the daemon's registry.
+   */
+  public remove<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).delete<LiveRemoveResponses, LiveRemoveErrors, ThrowOnError>({
+      url: "/live/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Get a live run
+   *
+   * Get a single live run by id.
+   */
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<LiveGetResponses, LiveGetErrors, ThrowOnError>({
+      url: "/live/{id}",
+      ...options,
+      ...params,
+    })
+  }
+
+  /**
+   * Start a live run
+   *
+   * Start a live/paper trading run. Returns immediately with a 'starting' snapshot.
+   */
+  public start<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      liveStartPayload?: LiveStartPayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "liveStartPayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LiveStartResponses, LiveStartErrors, ThrowOnError>({
+      url: "/live/start",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Stop a live run
+   *
+   * Stop a running live/paper run.
+   */
+  public stop<ThrowOnError extends boolean = false>(
+    parameters: {
+      id: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "id" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<LiveStopResponses, LiveStopErrors, ThrowOnError>({
+      url: "/live/{id}/stop",
       ...options,
       ...params,
     })
@@ -3855,6 +4214,37 @@ export class Session2 extends HeyApiClient {
       format?: OutputFormat
       system?: string
       variant?: string
+      fundCase?: {
+        eventType:
+          | "order_filled"
+          | "order_cancelled"
+          | "regime_changed"
+          | "strategy_health_changed"
+          | "risk_limit_changed"
+          | "deployment_result"
+          | "scheduled_review"
+          | "operator_request"
+        sourceEventRef: string
+        payloadSha256: string
+        occurredAt?: string
+        evidence: Array<{
+          kind:
+            | "fund_event"
+            | "market_snapshot"
+            | "portfolio_snapshot"
+            | "position_snapshot"
+            | "strategy_version"
+            | "regime_observation"
+            | "fill"
+            | "backtest_run"
+            | "review_packet"
+            | "specialist_report"
+            | "fund_policy"
+            | "news_context"
+          ref: string
+          sha256: string
+        }>
+      }
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -3875,6 +4265,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "format" },
             { in: "body", key: "system" },
             { in: "body", key: "variant" },
+            { in: "body", key: "fundCase" },
             { in: "body", key: "parts" },
           ],
         },
@@ -4208,6 +4599,37 @@ export class Session2 extends HeyApiClient {
       format?: OutputFormat
       system?: string
       variant?: string
+      fundCase?: {
+        eventType:
+          | "order_filled"
+          | "order_cancelled"
+          | "regime_changed"
+          | "strategy_health_changed"
+          | "risk_limit_changed"
+          | "deployment_result"
+          | "scheduled_review"
+          | "operator_request"
+        sourceEventRef: string
+        payloadSha256: string
+        occurredAt?: string
+        evidence: Array<{
+          kind:
+            | "fund_event"
+            | "market_snapshot"
+            | "portfolio_snapshot"
+            | "position_snapshot"
+            | "strategy_version"
+            | "regime_observation"
+            | "fill"
+            | "backtest_run"
+            | "review_packet"
+            | "specialist_report"
+            | "fund_policy"
+            | "news_context"
+          ref: string
+          sha256: string
+        }>
+      }
       parts?: Array<TextPartInput | FilePartInput | AgentPartInput | SubtaskPartInput>
     },
     options?: Options<never, ThrowOnError>,
@@ -4228,6 +4650,7 @@ export class Session2 extends HeyApiClient {
             { in: "body", key: "format" },
             { in: "body", key: "system" },
             { in: "body", key: "variant" },
+            { in: "body", key: "fundCase" },
             { in: "body", key: "parts" },
           ],
         },
@@ -5119,7 +5542,367 @@ export class Tui extends HeyApiClient {
   }
 }
 
-export class Health extends HeyApiClient {
+export class Campaign extends HeyApiClient {
+  public create<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      operationID?: string
+      goal?: string
+      candidates?: Array<{
+        id: string
+        prompt: string
+        parentCandidateID?: string
+      }>
+      budget?: {
+        maxSessions: number
+        maxTurns: number
+        maxTokens: number
+        maxCost: number
+        maxWallClockMs: number
+      }
+      stop?: {
+        maxRounds: number
+        targetSharpe?: number
+        maxDrawdown?: number
+      }
+      agent?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "goal" },
+            { in: "body", key: "candidates" },
+            { in: "body", key: "budget" },
+            { in: "body", key: "stop" },
+            { in: "body", key: "agent" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CampaignCreateResponses, CampaignCreateErrors, ThrowOnError>({
+      url: "/experimental/campaign",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public get<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CampaignGetResponses, CampaignGetErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}",
+      ...options,
+      ...params,
+    })
+  }
+
+  public start<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      candidateID: string
+      directory?: string
+      workspace?: string
+      operationID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "path", key: "candidateID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CampaignStartResponses, CampaignStartErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/candidate/{candidateID}/start",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public continue<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      operationID?: string
+      candidateID?: string
+      prompt?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "candidateID" },
+            { in: "body", key: "prompt" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CampaignContinueResponses, CampaignContinueErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/continue",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public abort<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      operationID?: string
+      candidateID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "candidateID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CampaignAbortResponses, CampaignAbortErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/abort",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public recordArtifact<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      operationID?: string
+      candidateID?: string
+      manifestID?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "candidateID" },
+            { in: "body", key: "manifestID" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      CampaignRecordArtifactResponses,
+      CampaignRecordArtifactErrors,
+      ThrowOnError
+    >({
+      url: "/experimental/campaign/{campaignID}/artifact",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public events<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      after?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "after" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CampaignEventsResponses, CampaignEventsErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/event",
+      ...options,
+      ...params,
+    })
+  }
+
+  public wait<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      after?: string
+      timeoutMs?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "after" },
+            { in: "query", key: "timeoutMs" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CampaignWaitResponses, CampaignWaitErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/wait",
+      ...options,
+      ...params,
+    })
+  }
+
+  public compare<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<CampaignCompareResponses, CampaignCompareErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/comparison",
+      ...options,
+      ...params,
+    })
+  }
+
+  public advance<ThrowOnError extends boolean = false>(
+    parameters: {
+      campaignID: string
+      directory?: string
+      workspace?: string
+      operationID?: string
+      improvementPrompt?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "campaignID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "body", key: "operationID" },
+            { in: "body", key: "improvementPrompt" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<CampaignAdvanceResponses, CampaignAdvanceErrors, ThrowOnError>({
+      url: "/experimental/campaign/{campaignID}/advance",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Health2 extends HeyApiClient {
   /**
    * Check server health
    *
@@ -6451,9 +7234,9 @@ export class ProjectCopy2 extends HeyApiClient {
 }
 
 export class V2 extends HeyApiClient {
-  private _health?: Health
-  get health(): Health {
-    return (this._health ??= new Health({ client: this.client }))
+  private _health?: Health2
+  get health(): Health2 {
+    return (this._health ??= new Health2({ client: this.client }))
   }
 
   private _location?: Location
@@ -6540,6 +7323,11 @@ export class OpencodeClient extends HeyApiClient {
     OpencodeClient.__registry.set(this, args?.key)
   }
 
+  private _health?: Health
+  get health(): Health {
+    return (this._health ??= new Health({ client: this.client }))
+  }
+
   private _auth?: Auth
   get auth(): Auth {
     return (this._auth ??= new Auth({ client: this.client }))
@@ -6590,6 +7378,11 @@ export class OpencodeClient extends HeyApiClient {
     return (this._file ??= new File({ client: this.client }))
   }
 
+  private _fund?: Fund
+  get fund(): Fund {
+    return (this._fund ??= new Fund({ client: this.client }))
+  }
+
   private _instance?: Instance
   get instance(): Instance {
     return (this._instance ??= new Instance({ client: this.client }))
@@ -6618,6 +7411,11 @@ export class OpencodeClient extends HeyApiClient {
   private _formatter?: Formatter
   get formatter(): Formatter {
     return (this._formatter ??= new Formatter({ client: this.client }))
+  }
+
+  private _live?: Live
+  get live(): Live {
+    return (this._live ??= new Live({ client: this.client }))
   }
 
   private _mcp?: Mcp
@@ -6668,6 +7466,11 @@ export class OpencodeClient extends HeyApiClient {
   private _tui?: Tui
   get tui(): Tui {
     return (this._tui ??= new Tui({ client: this.client }))
+  }
+
+  private _campaign?: Campaign
+  get campaign(): Campaign {
+    return (this._campaign ??= new Campaign({ client: this.client }))
   }
 
   private _v2?: V2

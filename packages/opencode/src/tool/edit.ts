@@ -4,7 +4,7 @@
 // https://github.com/cline/cline/blob/main/evals/diff-edits/diff-apply/diff-06-26-25.ts
 
 import * as path from "path"
-import { Effect, Option, Schema, Semaphore } from "effect"
+import { Effect, Option, Schema, SchemaGetter, Semaphore } from "effect"
 import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch, diffLines } from "diff"
@@ -47,13 +47,20 @@ function lock(filePath: string) {
   return next
 }
 
+const BooleanOrBooleanString = Schema.Union([Schema.Boolean, Schema.Literals(["true", "false"])]).pipe(
+  Schema.decodeTo(Schema.Boolean, {
+    decode: SchemaGetter.transform((value) => (typeof value === "boolean" ? value : value === "true")),
+    encode: SchemaGetter.transform((value) => value),
+  }),
+)
+
 export const Parameters = Schema.Struct({
   filePath: Schema.String.annotate({ description: "The absolute path to the file to modify" }),
   oldString: Schema.String.annotate({ description: "The text to replace" }),
   newString: Schema.String.annotate({
     description: "The text to replace it with (must be different from oldString)",
   }),
-  replaceAll: Schema.optional(Schema.Boolean).annotate({
+  replaceAll: Schema.optional(BooleanOrBooleanString).annotate({
     description: "Replace all occurrences of oldString (default false)",
   }),
 })
@@ -724,11 +731,86 @@ export function replace(content: string, oldString: string, newString: string, r
   }
 
   if (notFound) {
+    const hint = closestNearMatch(content, oldString)
     throw new Error(
-      "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
+      [
+        "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.",
+        hint,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     )
   }
   throw new Error("Found multiple matches for oldString. Provide more surrounding context to make the match unique.")
+}
+
+const NEAR_MATCH_MAX_LINES = 8
+const NEAR_MATCH_MAX_CHARS = 800
+const NEAR_MATCH_COMPARE_CHARS_PER_LINE = 200
+const NEAR_MATCH_MIN_SIMILARITY = 0.6
+
+function closestNearMatch(content: string, oldString: string): string | undefined {
+  const contentLines = content.split("\n")
+  const searchLines = oldString.split("\n")
+  if (searchLines.at(-1) === "") searchLines.pop()
+  if (searchLines.length === 0 || contentLines.length === 0) return undefined
+
+  const windowLines = Math.min(searchLines.length, NEAR_MATCH_MAX_LINES)
+  const normalize = (value: string) =>
+    value
+      .slice(0, NEAR_MATCH_COMPARE_CHARS_PER_LINE * 2)
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, NEAR_MATCH_COMPARE_CHARS_PER_LINE)
+  const similarity = (left: string, right: string) => {
+    if (left === right) return 1
+    if (left.length < 2 || right.length < 2) return 0
+
+    const pairs = new Map<string, number>()
+    for (let index = 0; index < left.length - 1; index++) {
+      const pair = left.slice(index, index + 2)
+      pairs.set(pair, (pairs.get(pair) ?? 0) + 1)
+    }
+
+    let overlap = 0
+    for (let index = 0; index < right.length - 1; index++) {
+      const pair = right.slice(index, index + 2)
+      const count = pairs.get(pair) ?? 0
+      if (count === 0) continue
+      overlap++
+      pairs.set(pair, count - 1)
+    }
+    return (2 * overlap) / (left.length + right.length - 2)
+  }
+  const needle = searchLines.slice(0, windowLines).map(normalize)
+  if (needle.every((line) => line === "")) return undefined
+
+  let best:
+    | {
+        start: number
+        similarity: number
+      }
+    | undefined
+
+  for (let start = 0; start <= contentLines.length - windowLines; start++) {
+    const candidateLines = contentLines.slice(start, start + windowLines)
+    const score =
+      candidateLines.reduce((total, line, index) => {
+        const candidate = normalize(line)
+        return total + similarity(needle[index], candidate)
+      }, 0) / windowLines
+    if (!best || score > best.similarity) best = { start, similarity: score }
+  }
+
+  if (!best || best.similarity < NEAR_MATCH_MIN_SIMILARITY) return undefined
+  const end = best.start + windowLines
+  const text = contentLines.slice(best.start, end).join("\n")
+  const truncated = text.length > NEAR_MATCH_MAX_CHARS
+  const preview = text.slice(0, NEAR_MATCH_MAX_CHARS)
+  return [
+    `Closest near-match (lines ${best.start + 1}-${end}):`,
+    preview + (truncated ? "\n[near-match truncated]" : ""),
+  ].join("\n")
 }
 
 function isDisproportionateMatch(search: string, oldString: string) {

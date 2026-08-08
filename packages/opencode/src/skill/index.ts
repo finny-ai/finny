@@ -33,6 +33,11 @@ const CUSTOMIZE_OPENCODE_SKILL_NAME = "customize-opencode"
 const CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION =
   "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself."
 const CUSTOMIZE_OPENCODE_SKILL_BODY = SkillPlugin.CustomizeOpencodeContent
+const FINNY_ROBINHOOD_SKILL_NAME = "finny-robinhood"
+const FINNY_ROBINHOOD_SKILL_DESCRIPTION =
+  "Use when the user wants to install, connect, verify, recover, or use Robinhood through Finny, including RHX stock and ETF brokerage or the official Robinhood Crypto API. Enforces credential isolation, capability checks, and fail-closed live-trading policy."
+const FINNY_ROBINHOOD_SKILL_BODY = SkillPlugin.FinnyRobinhoodContent
+const RESERVED_BUILT_IN_SKILL_NAMES = new Set([FINNY_ROBINHOOD_SKILL_NAME])
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -122,15 +127,17 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
 
   if (!isSkillFrontmatter(md.data)) return
 
-  if (state.skills[md.data.name]) {
+  const existing = state.skills[md.data.name]
+  if (existing) {
     yield* Effect.logWarning("duplicate skill name", {
       name: md.data.name,
-      existing: state.skills[md.data.name].location,
+      existing: existing.location,
       duplicate: match,
     })
   }
 
   state.dirs.add(path.dirname(match))
+  if (existing?.location === "<built-in>" && RESERVED_BUILT_IN_SKILL_NAMES.has(md.data.name)) return
   state.skills[md.data.name] = {
     name: md.data.name,
     description: md.data.description,
@@ -273,13 +280,19 @@ export const layer = Layer.effect(
     const state = yield* InstanceState.make(
       Effect.fn("Skill.state")(function* () {
         const s: State = { skills: {}, dirs: new Set() }
-        // Register the built-in skill BEFORE disk discovery so a user-disk
-        // skill with the same name can override it.
+        // Ordinary built-ins remain overridable by disk discovery. Security-
+        // sensitive built-ins are reserved by the load merge above.
         s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME] = {
           name: CUSTOMIZE_OPENCODE_SKILL_NAME,
           description: CUSTOMIZE_OPENCODE_SKILL_DESCRIPTION,
           location: "<built-in>",
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
+        }
+        s.skills[FINNY_ROBINHOOD_SKILL_NAME] = {
+          name: FINNY_ROBINHOOD_SKILL_NAME,
+          description: FINNY_ROBINHOOD_SKILL_DESCRIPTION,
+          location: "<built-in>",
+          content: FINNY_ROBINHOOD_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
         return s

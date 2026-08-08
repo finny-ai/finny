@@ -199,7 +199,7 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
     <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
       <box flexDirection="row" justifyContent="space-between">
         <text fg={theme.text} attributes={TextAttributes.BOLD}>
-          Run · {runModeTitle(props.runMode)} · {props.algorithm.name}
+          Run · {props.runMode === "live" && selectedKind() === "robinhood" ? "Live Account Data · Shadow Orders" : runModeTitle(props.runMode)} · {props.algorithm.name}
         </text>
         <text fg={theme.textMuted} onMouseUp={cancel}>
           esc
@@ -397,6 +397,11 @@ export function DialogLiveConfirm(props: DialogLiveConfirmProps) {
           <text fg={theme.info} attributes={TextAttributes.BOLD}>
             Read before running
           </text>
+          <Show when={selectedKind() === "robinhood"}>
+            <text fg={theme.warning} attributes={TextAttributes.BOLD}>
+              Robinhood is read-only: this run reads live account data and simulates orders. It cannot submit orders.
+            </text>
+          </Show>
           <text fg={theme.textMuted}>
             This run is bound to your Finny session. If you close Finny, the Python worker dies and
             any open positions stay at the broker without being managed by the strategy.

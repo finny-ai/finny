@@ -7,6 +7,7 @@ import { Log } from "../util/log"
 import { emit } from "../analytics/emit"
 import { BROKER_KINDS, type BrokerKind } from "@/live/brokers/types"
 import { normalizeConfigForSave } from "./strategy-params"
+import { CentralSync } from "./central-sync"
 
 const log = Log.create({ service: "algorithm" })
 const BrokerKindSchema = z.enum(BROKER_KINDS)
@@ -186,6 +187,8 @@ export namespace Algorithm {
       },
     })
 
+    await CentralSync.publishAlgorithmVersion(record)
+
     return record
   }
 
@@ -285,6 +288,8 @@ export namespace Algorithm {
       algorithmId,
       payload: { algorithmId, config, version: result.version },
     })
+
+    await CentralSync.publishAlgorithmVersion(result as Info)
 
     return result as Info
   }

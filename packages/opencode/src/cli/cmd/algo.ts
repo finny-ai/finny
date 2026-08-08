@@ -5,6 +5,7 @@ import { effectCmd, fail } from "../effect-cmd"
 import { Algorithm } from "@/algorithm"
 import { Validate } from "@/algorithm/validate"
 import { BacktestRunner } from "@/backtest/runner"
+import { BROKER_KINDS } from "@/live/brokers/types"
 import { Filesystem } from "@/util/filesystem"
 import { applyPythonEnvReclaim, planPythonEnvReclaim } from "@/python/reclaim"
 
@@ -16,7 +17,6 @@ type BacktestArgs = {
   capital: string
   startDate?: string
   endDate?: string
-  dataQualityMode: "strict" | "repair_outliers"
 }
 
 function print(value: unknown) {
@@ -165,7 +165,6 @@ function backtestParams(args: {
   capital: string
   "start-date"?: string
   "end-date"?: string
-  "data-quality-mode": "strict" | "repair_outliers"
 }): BacktestArgs {
   return {
     duration: args.duration,
@@ -173,7 +172,6 @@ function backtestParams(args: {
     capital: args.capital,
     startDate: args["start-date"],
     endDate: args["end-date"],
-    dataQualityMode: args["data-quality-mode"],
   }
 }
 
@@ -191,7 +189,7 @@ async function maybeBacktest(algorithm: SavedAlgorithm, enabled: boolean, params
     capital: params.capital,
     startDate: params.startDate,
     endDate: params.endDate,
-    dataQualityMode: params.dataQualityMode,
+    dataQualityMode: "strict",
     robustness: { monteCarloPaths: 500, regimes: true },
   })
   return summarizeBacktest(algorithm, params, result)
@@ -270,7 +268,7 @@ const AlgoListCommand = effectCmd({
     }),
   handler: Effect.fn("Cli.algo.list")(function* (args) {
     const algorithms = (yield* Effect.promise(() => Algorithm.list())) as SavedAlgorithm[]
-    if (Boolean(args["all-versions"])) {
+    if (args["all-versions"]) {
       return print((yield* Effect.promise(() => allAlgorithms(algorithms))).map(serializeAlgorithm))
     }
 
@@ -349,7 +347,7 @@ const algoAddOptionSpecs = [
     "target-brokerage",
     {
       type: "string",
-      choices: ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu"] as const,
+      choices: BROKER_KINDS,
       describe: "optional target brokerage metadata",
     },
   ],
@@ -360,15 +358,6 @@ const algoAddOptionSpecs = [
   ["capital", { type: "string", default: "10000", describe: "backtest capital when --backtest is used" }],
   ["start-date", { type: "string", describe: "exact backtest start date YYYY-MM-DD" }],
   ["end-date", { type: "string", describe: "exact backtest end date YYYY-MM-DD" }],
-  [
-    "data-quality-mode",
-    {
-      type: "string",
-      choices: ["strict", "repair_outliers"] as const,
-      default: "strict",
-      describe: "backtest data quality mode when --backtest is used",
-    },
-  ],
 ] as const
 
 function buildAlgoAddCommand(yargs: Argv) {
@@ -476,12 +465,6 @@ const AlgoBacktestCommand = effectCmd({
       .option("end-date", {
         type: "string",
         describe: "exact backtest end date YYYY-MM-DD",
-      })
-      .option("data-quality-mode", {
-        type: "string",
-        choices: ["strict", "repair_outliers"] as const,
-        default: "strict",
-        describe: "data quality mode",
       }),
   handler: Effect.fn("Cli.algo.backtest")(function* (args) {
     const algorithm = yield* Effect.promise(() => requireAlgorithm(args.algorithm, args["algo-version"]))
@@ -494,7 +477,7 @@ const AlgoBacktestCommand = effectCmd({
         capital: params.capital,
         startDate: params.startDate,
         endDate: params.endDate,
-        dataQualityMode: params.dataQualityMode,
+        dataQualityMode: "strict",
         robustness: { monteCarloPaths: 500, regimes: true },
       }),
     )

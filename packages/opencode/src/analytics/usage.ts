@@ -3,6 +3,7 @@ import { Telemetry } from "./gate"
 import { TelemetrySink } from "./sink"
 import { detectInstallMethod } from "../device/register"
 import { Log } from "../util/log"
+import { ProcessSignal } from "@opencode-ai/core/process-signal"
 
 const log = Log.create({ service: "usage-tracker" })
 
@@ -35,7 +36,11 @@ function beat(endedAt?: number) {
   }
 }
 
-function onExit() {
+function onExit(reason?: number | NodeJS.Signals) {
+  if (typeof reason === "string" && ProcessSignal.isOwned(reason)) {
+    process.once(reason, onExit)
+    return
+  }
   void UsageTracker.stop()
 }
 

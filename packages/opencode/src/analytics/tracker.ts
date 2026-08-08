@@ -1,6 +1,7 @@
 import { Log } from "../util/log"
 import { Telemetry } from "./gate"
 import { TelemetrySink } from "./sink"
+import { ProcessSignal } from "@opencode-ai/core/process-signal"
 
 const log = Log.create({ service: "analytics" })
 const debug = process.env["FINNY_TELEMETRY_DEBUG"] === "1"
@@ -57,6 +58,7 @@ process.on("beforeExit", async () => {
 })
 
 const signalHandler = (sig: NodeJS.Signals) => {
+  if (ProcessSignal.isOwned(sig)) return
   process.removeListener(sig, signalHandler as any)
   Analytics.drain(1500)
     .catch(() => {})

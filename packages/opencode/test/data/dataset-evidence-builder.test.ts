@@ -125,6 +125,109 @@ describe("DatasetEvidenceV2 builder", () => {
     ).toEqual([])
   })
 
+  test("does not classify plausible heavy-tailed intraday returns as provider corruption", () => {
+    const intradayRequest = {
+      ...request,
+      request_id: "request-btc-intraday-heavy-tail",
+      requested_interval: "1m",
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-13",
+    }
+    let price = 100
+    const rows = Array.from({ length: 1440 }, (_, index) => {
+      price *= index === 720 ? 1.01 : index % 2 === 0 ? 1.0001 : 0.9999
+      const timestamp = new Date(Date.parse("2026-07-13T00:00:00Z") + index * 60_000).toISOString()
+      return `${timestamp},${price},${price},${price},${price},1000`
+    })
+    const csvText = ["timestamp,open,high,low,close,volume", ...rows].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: intradayRequest,
+      workspaceSlug: "btc-intraday-heavy-tail.1.1.00.00",
+      outputPath: "crypto/BTC_1m_2026-07-13_2026-07-13.csv",
+      provider,
+      priceBasis,
+      now: new Date("2026-07-14T12:00:00Z"),
+    })
+
+    expect(built.manifest.quality.outlier_count).toBe(0)
+    expect(built.manifest.qualification).toEqual({ status: "strict_qualified", reason_codes: [] })
+  })
+
+  test("still rejects a statistically extreme intraday move above the asset-class floor", () => {
+    const intradayRequest = {
+      ...request,
+      request_id: "request-btc-intraday-corruption",
+      requested_interval: "1m",
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-13",
+    }
+    let price = 100
+    const rows = Array.from({ length: 1440 }, (_, index) => {
+      price *= index === 720 ? 1.1 : index % 2 === 0 ? 1.0001 : 0.9999
+      const timestamp = new Date(Date.parse("2026-07-13T00:00:00Z") + index * 60_000).toISOString()
+      return `${timestamp},${price},${price},${price},${price},1000`
+    })
+    const csvText = ["timestamp,open,high,low,close,volume", ...rows].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: intradayRequest,
+      workspaceSlug: "btc-intraday-corruption.1.1.00.00",
+      outputPath: "crypto/BTC_1m_2026-07-13_2026-07-13.csv",
+      provider,
+      priceBasis,
+      now: new Date("2026-07-14T12:00:00Z"),
+    })
+
+    expect(built.manifest.quality.outlier_count).toBe(1)
+    expect(built.manifest.qualification).toEqual({ status: "research_only", reason_codes: ["OUTLIER"] })
+  })
+
+  test("ignores regular equity overnight returns while retaining strict continuous-bar checks", () => {
+    const equityRequest = {
+      ...request,
+      request_id: "request-spy-session-gap",
+      requested_algorithm_name: "spy-session-gap",
+      requested_symbol: "SPY",
+      requested_asset_class: "equity" as const,
+      requested_interval: "1m",
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-14",
+    }
+    let price = 100
+    const rows: string[] = []
+    for (const [session, start] of ["2026-07-13T13:30:00Z", "2026-07-14T13:30:00Z"].entries()) {
+      if (session === 1) price *= 1.3
+      for (let index = 0; index < 390; index += 1) {
+        price *= index % 2 === 0 ? 1.0001 : 0.9999
+        const timestamp = new Date(Date.parse(start) + index * 60_000).toISOString()
+        rows.push(`${timestamp},${price},${price},${price},${price},1000`)
+      }
+    }
+    const csvText = ["timestamp,open,high,low,close,volume", ...rows].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: equityRequest,
+      workspaceSlug: "spy-session-gap.1.1.00.00",
+      outputPath: "stock/SPY_1m_2026-07-13_2026-07-14.csv",
+      provider: { id: "alpaca", feed: "sip", venue: "CONSOLIDATED", providerSymbol: "SPY" },
+      priceBasis: {
+        ...priceBasis,
+        basis: "adjusted",
+        split_treatment: "split_adjusted",
+        dividend_treatment: "unadjusted",
+        corporate_action_status: "resolved",
+      },
+      now: new Date("2026-07-15T12:00:00Z"),
+    })
+
+    expect(built.manifest.quality.outlier_count).toBe(0)
+    expect(built.manifest.qualification).toEqual({ status: "strict_qualified", reason_codes: [] })
+  })
+
   test("keeps completed datasets above the 95% coverage threshold research-usable", () => {
     const dates = Array.from({ length: 20 }, (_, index) => `2026-06-${String(index + 1).padStart(2, "0")}`)
     const partialRequest = {
@@ -135,7 +238,9 @@ describe("DatasetEvidenceV2 builder", () => {
     }
     const csvText = [
       "timestamp,open,high,low,close,volume",
-      ...dates.slice(0, -1).map((day, index) => `${day}T00:00:00Z,${100 + index},${101 + index},${99 + index},${100 + index},1000`),
+      ...dates
+        .slice(0, -1)
+        .map((day, index) => `${day}T00:00:00Z,${100 + index},${101 + index},${99 + index},${100 + index},1000`),
     ].join("\n")
     const built = buildDatasetEvidenceV2({
       csvBytes: Buffer.from(csvText),
@@ -155,6 +260,36 @@ describe("DatasetEvidenceV2 builder", () => {
     })
     expect(built.manifest.coverage).toBe("partial")
     expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(built.manifest.strict_backtest_eligible).toBe("no")
+  })
+
+  test("preserves structurally valid low-coverage bars for research", () => {
+    const partialRequest = {
+      ...request,
+      request_id: "request-btc-low-coverage",
+      requested_start: "2026-06-01",
+      requested_end: "2026-06-10",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-06-01T00:00:00Z,100,101,99,100.5,1000",
+      "2026-06-02T00:00:00Z,100.5,102,100,101.5,1200",
+    ].join("\n")
+    const built = buildDatasetEvidenceV2({
+      csvBytes: Buffer.from(csvText),
+      csvText,
+      request: partialRequest,
+      workspaceSlug: "btc-low-coverage.1.1.00.00",
+      outputPath: "crypto/BTC_1d_2026-06-01_2026-06-10.csv",
+      provider,
+      priceBasis,
+      now: new Date("2026-06-11T12:00:00Z"),
+    })
+
+    expect(built.manifest.timestamps).toMatchObject({ expected_count: 10, actual_count: 2, missing_count: 8 })
+    expect(built.manifest.qualification.status).toBe("blocked")
+    expect(built.manifest.usable_for_parent).toBe("no")
+    expect(built.manifest.usable_for_research).toBe("yes")
     expect(built.manifest.strict_backtest_eligible).toBe("no")
   })
 
@@ -243,10 +378,7 @@ describe("DatasetEvidenceV2 builder", () => {
   })
 
   test("rejects malformed rows instead of blessing a broken manifest", () => {
-    const csvText = [
-      "timestamp,open,high,low,close,volume",
-      "2026-07-13T00:00:00Z,100,99,101,104,1000",
-    ].join("\n")
+    const csvText = ["timestamp,open,high,low,close,volume", "2026-07-13T00:00:00Z,100,99,101,104,1000"].join("\n")
     expect(() =>
       buildDatasetEvidenceV2({
         csvBytes: Buffer.from(csvText),

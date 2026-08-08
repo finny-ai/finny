@@ -56,7 +56,7 @@ export function isMandatoryEvidenceRole(role: string) {
 }
 
 function providers(prompt: string) {
-  return [...prompt.toLowerCase().matchAll(/\b(alpaca|binance|ibkr|polygon|yahoo|sec|edgar|perplexity)\b/g)]
+  return [...prompt.toLowerCase().matchAll(/\b(alpaca|binance|ibkr|robinhood|rhx|polygon|yahoo|sec|edgar|perplexity)\b/g)]
     .map((match) => match[1])
     .filter((value, index, all) => all.indexOf(value) === index)
     .sort()

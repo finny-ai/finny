@@ -20,6 +20,13 @@ export const SESSION_PREFLIGHT_PACKAGES: Python.PackageRequirement[] = [
 export function workspaceEnvDir(workspacePath: string): string {
   const harnessEnv = process.env.FINNY_HARNESS_PYTHON_ENV?.trim()
   if (process.env.FINNY_HARNESS_MODE === "1" && harnessEnv) return path.resolve(harnessEnv)
+  const sharedEnv = process.env.FINNY_SHARED_PYTHON_ENV?.trim()
+  if (sharedEnv) {
+    if (!path.isAbsolute(sharedEnv)) {
+      throw new Error("FINNY_SHARED_PYTHON_ENV must be an absolute path")
+    }
+    return path.resolve(sharedEnv)
+  }
   return path.join(workspacePath, WORKSPACE_VENV)
 }
 

@@ -51,6 +51,10 @@ from engine_v2.runtime.loop import run_loop
 from engine_v2.runtime.risk import RiskContract
 
 
+class PointInTimeSnapshotResampleError(ValueError):
+    """Snapshot-bearing rows must retain their controller-authored clock."""
+
+
 def _load_csv(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path)
     df.columns = [c.strip().lower() for c in df.columns]
@@ -75,7 +79,25 @@ def _load_csv(path: Path) -> pd.DataFrame:
         df["timestamp"] = pd.to_datetime(raw_timestamps, utc=True)
     df = df.sort_values("timestamp").reset_index(drop=True)
     keep = ["timestamp", "open", "high", "low", "close", "volume"]
-    return df[keep].astype({c: "float64" for c in keep[1:]})
+    if "finny_snapshot_json" in df.columns:
+        has_snapshot = False
+        for raw in df["finny_snapshot_json"]:
+            if pd.isna(raw) or str(raw).strip() == "":
+                continue
+            has_snapshot = True
+            encoded = str(raw).encode("utf-8")
+            if len(encoded) > 1_000_000:
+                raise SystemExit("finny_snapshot_json exceeds the 1 MB row limit")
+            try:
+                snapshot = json.loads(encoded)
+            except json.JSONDecodeError as exc:
+                raise SystemExit("finny_snapshot_json is not valid JSON") from exc
+            if not isinstance(snapshot, dict):
+                raise SystemExit("finny_snapshot_json must decode to an object")
+        if has_snapshot:
+            keep.append("finny_snapshot_json")
+    result = df[keep].copy()
+    return result.astype({c: "float64" for c in keep[1:6]})
 
 
 def _quality_failure(
@@ -131,6 +153,10 @@ def _resample(df: pd.DataFrame, interval: str) -> pd.DataFrame:
     # to preserve for intraday aggregate bars.
     if target_step < pd.Timedelta(days=1) and (positive_deltas.empty or positive_deltas.min() >= target_step):
         return df.sort_values("timestamp").reset_index(drop=True)
+    if "finny_snapshot_json" in df.columns:
+        raise PointInTimeSnapshotResampleError(
+            "point-in-time finny_snapshot_json rows cannot be resampled"
+        )
     d = df.set_index("timestamp").resample(rule, label="left", closed="left").agg({
         "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum",
     }).dropna().reset_index()
@@ -363,7 +389,10 @@ def _sha256_bytes(data: bytes) -> str:
 
 
 def _data_hash(df: pd.DataFrame) -> str:
-    payload = df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv(index=False).encode("utf-8")
+    columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    if "finny_snapshot_json" in df.columns:
+        columns.append("finny_snapshot_json")
+    payload = df[columns].to_csv(index=False).encode("utf-8")
     return _sha256_bytes(payload)
 
 
@@ -962,6 +991,8 @@ def main() -> None:
     # Match v1 — resample to interval (CSV may be at different resolution).
     try:
         df = _resample(df, args.interval)
+    except PointInTimeSnapshotResampleError as e:
+        raise SystemExit(str(e)) from e
     except ValueError as e:
         raise SystemExit(f"Invalid interval {args.interval!r}: {e}") from e
     except Exception as e:
@@ -1048,7 +1079,10 @@ def main() -> None:
 
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    df[["timestamp", "open", "high", "low", "close", "volume"]].to_csv(
+    processed_columns = ["timestamp", "open", "high", "low", "close", "volume"]
+    if "finny_snapshot_json" in df.columns:
+        processed_columns.append("finny_snapshot_json")
+    df[processed_columns].to_csv(
         out_dir / "processed_ohlcv.csv",
         index=False,
     )
