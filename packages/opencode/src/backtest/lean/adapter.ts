@@ -13,6 +13,10 @@ import fs from "node:fs/promises"
 
 const ADAPTER_CERT_ENV = "FINNY_LEAN_ADAPTER_CERT"
 const ADAPTER_CERT_VALUE = "finny-lean-adapter-cert-v1"
+const DOCKER_ENV = {
+  PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+  HOME: process.env.HOME ?? "/tmp",
+}
 
 function truthy(value: string | undefined): boolean {
   const normalized = value?.toLowerCase()
@@ -64,7 +68,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     const docker = await Process.run(["docker", "version", "--format", "{{.Server.Version}}"], {
       nothrow: true,
       timeout: 15_000,
-      env: null,
+      env: DOCKER_ENV,
       inheritEnv: false,
     })
     if (docker.code !== 0) {
@@ -72,7 +76,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     }
     const inspect = await Process.run(
       ["docker", "image", "inspect", LEAN_PINNED_IMAGE_DIGEST, "--format", "{{json .RepoDigests}}"],
-      { nothrow: true, timeout: 15_000, env: null, inheritEnv: false },
+      { nothrow: true, timeout: 15_000, env: DOCKER_ENV, inheritEnv: false },
     )
     if (inspect.code !== 0) {
       return failure(
@@ -156,7 +160,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     const result = await Process.run(cmd, {
       nothrow: true,
       timeout: 20 * 60_000,
-      env: null,
+      env: DOCKER_ENV,
       inheritEnv: false,
     })
     if (result.code !== 0) {

@@ -13,7 +13,10 @@ export async function probeLeanDockerReadiness(input?: {
   const docker = await Process.run(["docker", "version", "--format", "{{.Server.Version}}"], {
     nothrow: true,
     timeout: 15_000,
-    env: null,
+    env: {
+      PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
+      HOME: process.env.HOME ?? "/tmp",
+    },
     inheritEnv: false,
   })
   if (docker.code !== 0) {
@@ -30,7 +33,12 @@ export async function probeLeanDockerReadiness(input?: {
   const pinned = input?.pinnedDigest ?? LEAN_PINNED_IMAGE_DIGEST
   const inspect = await Process.run(
     ["docker", "image", "inspect", pinned, "--format", "{{json .RepoDigests}}"],
-    { nothrow: true, timeout: 15_000, env: null, inheritEnv: false },
+    {
+      nothrow: true,
+      timeout: 15_000,
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin" },
+      inheritEnv: false,
+    },
   )
   let imageVerified = false
   if (inspect.code !== 0) {
