@@ -678,25 +678,27 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         })
 
         let riskBanner = ""
-        try {
-          const v = await Validate.run(algo.code, {
-            config: algo.config,
-          })
-          if (!v.valid) {
+        if (!isLeanProfile(runtimeForCandidate(algo).profile)) {
+          try {
+            const v = await Validate.run(algo.code, {
+              config: algo.config,
+            })
+            if (!v.valid) {
+              const failureDiagnosis = classifyValidationFailedFailure()
+              return {
+                title: "Backtest blocked by validation",
+                output: `${Validate.format(v)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
+                metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
+              }
+            }
+            riskBanner = Validate.formatRiskBanner(v)
+          } catch (e: any) {
             const failureDiagnosis = classifyValidationFailedFailure()
             return {
               title: "Backtest blocked by validation",
-              output: `${Validate.format(v)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
+              output: `Validation failed to run: ${e?.message ?? String(e)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
               metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
             }
-          }
-          riskBanner = Validate.formatRiskBanner(v)
-        } catch (e: any) {
-          const failureDiagnosis = classifyValidationFailedFailure()
-          return {
-            title: "Backtest blocked by validation",
-            output: `Validation failed to run: ${e?.message ?? String(e)}${formatFailureDiagnosisBlock(failureDiagnosis).join("\n")}`,
-            metadata: { ...emptyMeta, failure_diagnosis: failureDiagnosis },
           }
         }
 
