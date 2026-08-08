@@ -15,6 +15,7 @@
     "audit:finny": "bun run script/finny-audit.ts",
     "harness:headless": "bun run script/headless-harness.ts",
     "harness:fund": "bun run script/fund-headless-harness.ts",
+    "campaign:mcp": "bun run script/campaign-mcp.ts",
     "finnybench:trajectory:validate": "bun run script/finnybench-trajectory.ts --validate-suite",
     "finnybench:trajectory:smoke": "bun test --timeout 30000 test/finnybench/trajectory-grader.test.ts && bun run finnybench:trajectory:validate",
     "finnybench:quality:smoke": "bun test --timeout 30000 test/finnybench/quality-gate.test.ts && bun run script/finnybench-quality.ts --baseline finnybench/quality-baseline.synthetic.jsonl --candidate finnybench/quality-candidate.synthetic.jsonl --report ../../.artifacts/finnybench-quality/report.json --summary ../../.artifacts/finnybench-quality/summary.md",
