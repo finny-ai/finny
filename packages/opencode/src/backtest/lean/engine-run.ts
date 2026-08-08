@@ -236,6 +236,9 @@ export async function runLeanEngineInRunner(input: {
   )
   await fs.writeFile(path.join(input.tmpDir, "results.json"), JSON.stringify(v2, null, 2), "utf8")
   await fs.writeFile(path.join(input.tmpDir, "trades.csv"), JSON.stringify(v2.trades, null, 2), "utf8")
+  // Processed data is the Finny-attested bytes (no transformation for LEAN);
+  // the strict publisher and benchmark attachment require this artifact.
+  await fs.copyFile(path.join(input.tmpDir, input.csvPath), path.join(input.tmpDir, "processed_ohlcv.csv"))
   // LEAN engine identity marker so the strict run's engine tree hash reflects
   // the pinned engine rather than engine_v2.
   const engineMarker = path.join(input.tmpDir, "lean-engine")
