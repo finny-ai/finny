@@ -90,7 +90,6 @@ export async function writeLeanMarketData(input: {
     "..",
     "..",
     "..",
-    "..",
     "lean-engine",
     "data-reference",
   )
@@ -117,8 +116,8 @@ export async function writeLeanMarketData(input: {
   if (resolution === "minute") {
     const dir = path.join(input.dataDir, input.assetClass === "equity" ? "equity" : "crypto", market, "minute", leanSymbol.toLowerCase())
     await fs.mkdir(dir, { recursive: true })
-    for (const [date, rows] of grouped) {
-      const lines = rows
+    for (const [date, dayRows] of grouped) {
+      const lines = dayRows
         .map((row) => {
           const local = localParts({ timestamp: row.timestamp, timezone })
           const ms = (local.hour * 3600 + local.minute * 60 + local.second) * 1000
@@ -132,7 +131,7 @@ export async function writeLeanMarketData(input: {
       const zip = await zipCsv(`${date}_trade.csv`, csv)
       await fs.writeFile(file, zip)
       files.push(file)
-      rowsWritten += rows.length
+      rowsWritten += dayRows.length
     }
   } else {
     const dir = path.join(input.dataDir, input.assetClass === "equity" ? "equity" : "crypto", market, resolution)
