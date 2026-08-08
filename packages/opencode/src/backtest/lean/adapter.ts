@@ -10,6 +10,9 @@ import type { LeanAdapterContextV1, LeanAdapterResultV1, LeanAdapterV1 } from ".
 import type { LeanAdapterFailureV1 } from "./types"
 import { buildLeanLauncherConfig } from "./engine-config"
 import fs from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import crypto from "node:crypto"
 
 const ADAPTER_CERT_ENV = "FINNY_LEAN_ADAPTER_CERT"
 const ADAPTER_CERT_VALUE = "finny-lean-adapter-cert-v1"
@@ -41,6 +44,29 @@ async function resolveDockerHost(): Promise<string | undefined> {
 async function dockerEnv(): Promise<Record<string, string>> {
   const host = await resolveDockerHost()
   return host ? { ...DOCKER_BASE_ENV, DOCKER_HOST: host } : DOCKER_BASE_ENV
+}
+
+/**
+ * Colima/Docker Desktop cannot bind-mount macOS temp paths (/var/folders),
+ * so every run is relocated under the user home before mounting and the
+ * results are copied back afterwards.
+ */
+async function relocateForDocker(input: {
+  sourceDir: string
+  scratchDir: string
+  resultsDir: string
+}): Promise<{ root: string; resultsDir: string }> {
+  const root = path.join(os.homedir(), ".finny-lean-runs", crypto.randomBytes(6).toString("hex"))
+  await fs.mkdir(path.join(root, "scratch"), { recursive: true })
+  await fs.mkdir(path.join(root, "source"), { recursive: true })
+  await fs.mkdir(path.join(root, "results"), { recursive: true })
+  await fs.cp(input.scratchDir, path.join(root, "scratch"), { recursive: true })
+  await fs.cp(input.sourceDir, path.join(root, "source"), { recursive: true })
+  await Promise.all([
+    fs.chmod(path.join(root, "scratch"), 0o777).catch(() => undefined),
+    fs.chmod(path.join(root, "results"), 0o777).catch(() => undefined),
+  ])
+  return { root, resultsDir: path.join(root, "results") }
 }
 
 function truthy(value: string | undefined): boolean {
@@ -129,12 +155,20 @@ export class LeanAdapter implements LeanAdapterV1 {
       dataFeedWorkers: input.bundle.executionProfile.dataFeedWorkers,
     })
     await fs.writeFile(`${input.scratchDir}/lean-config.json`, launcher.json, "utf8")
+    const relocated = await relocateForDocker({
+      sourceDir: input.sourceDir,
+      scratchDir: input.scratchDir,
+      resultsDir: input.resultsDir,
+    })
+    const mountScratch = path.join(relocated.root, "scratch")
+    const mountSource = path.join(relocated.root, "source")
+    const mountResults = relocated.resultsDir
     // Container uid 10001 must be able to write results; host bind mounts on
     // macOS/CI do not map that uid, so widen dev scratch dirs. The production
     // posture uses uid-mapped volumes instead of 0777.
     await Promise.all([
-      fs.chmod(input.scratchDir, 0o777).catch(() => undefined),
-      fs.chmod(input.resultsDir, 0o777).catch(() => undefined),
+      fs.chmod(mountScratch, 0o777).catch(() => undefined),
+      fs.chmod(mountResults, 0o777).catch(() => undefined),
     ])
     const cmd = [
       "docker",
@@ -160,17 +194,17 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--cpus",
       "2",
       "--mount",
-      `type=bind,source=${input.scratchDir},target=/Lean/Data,readonly`,
+      `type=bind,source=${mountScratch},target=/Lean/Data,readonly`,
       "--mount",
-      `type=bind,source=${input.sourceDir},target=/Lean/Algorithm,readonly`,
+      `type=bind,source=${mountSource},target=/Lean/Algorithm,readonly`,
       "--mount",
-      `type=bind,source=${input.resultsDir},target=/Results`,
+      `type=bind,source=${mountResults},target=/Results`,
       "--mount",
-      `type=bind,source=${input.scratchDir},target=/Lean/Storage`,
+      `type=bind,source=${mountScratch},target=/Lean/Storage`,
       "--mount",
       "type=tmpfs,destination=/tmp",
       "--mount",
-      `type=bind,source=${input.scratchDir}/lean-config.json,target=/Lean/Launcher/lean-config.json,readonly`,
+      `type=bind,source=${mountScratch}/lean-config.json,target=/Lean/Launcher/lean-config.json,readonly`,
       "--env",
       `FINNY_SEED=${input.seed}`,
       "--env",
@@ -193,6 +227,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       const stderr = result.stderr.toString().trim().slice(0, 4000)
       return failure("engine_crash", `LEAN engine exited ${result.code}: ${stderr}`)
     }
+    await fs.cp(mountResults, input.resultsDir, { recursive: true }).catch(() => undefined)
 
     // Artifact parsing is performed by the canonical result mapper; the
     // adapter only asserts the expected files exist.

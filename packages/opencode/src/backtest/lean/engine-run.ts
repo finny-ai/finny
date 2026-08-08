@@ -84,7 +84,7 @@ export async function runLeanEngineInRunner(input: {
   let rows
   try {
     rows = parseFinnyOhlcv(await fs.readFile(path.join(input.tmpDir, input.csvPath), "utf8"))
-    const dataDir = path.join(scratchDir, "data")
+    const dataDir = scratchDir
     await writeLeanMarketData({
       rows,
       symbol,
