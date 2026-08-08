@@ -72,12 +72,14 @@ export const AlgorithmListTool = Tool.define(
     parameters,
     execute: (_params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_algorithm_list",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_algorithm_list",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const algos = await Algorithm.list()
         const payload = buildAlgorithmListPayload(algos)

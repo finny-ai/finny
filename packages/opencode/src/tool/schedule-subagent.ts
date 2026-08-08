@@ -77,12 +77,14 @@ export const ScheduleSubagentTool = Tool.define(
           algorithmId: string | null
         }>
       >(async () => {
-        await ctx.ask({
-          permission: "schedule_subagent",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "schedule_subagent",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const timezone = params.timezone ?? (Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York")
         const parsed = Schedule.parse(params.cron, timezone)

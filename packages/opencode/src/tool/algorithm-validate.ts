@@ -46,12 +46,14 @@ export const AlgorithmValidateTool = Tool.define(
               } as ValidationMetadata,
             }
           }
-          await ctx.ask({
-            permission: "finny_algorithm_validate",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "finny_algorithm_validate",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const result = await Validate.run(params.code, { config: params.config })
           const output = Validate.format(result)

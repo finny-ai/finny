@@ -572,12 +572,14 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
           }
         }
         const resultExit = yield* Effect.exit(Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_backtest",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_backtest",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         let workflow = preflightWorkflow
         let experiment: ExperimentRunContext | undefined

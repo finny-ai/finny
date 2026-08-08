@@ -609,12 +609,14 @@ export const AlgorithmSaveTool = Tool.define(
           }
           const outcomeExit = yield* Effect.exit(
             Effect.promise(async (): Promise<SaveOutcome> => {
-              const _permission = await ctx.ask({
-                permission: "finny_algorithm_save",
-                patterns: ["*"],
-                always: ["*"],
-                metadata: {},
-              })
+              const _permission = await Effect.runPromise(
+                ctx.ask({
+                  permission: "finny_algorithm_save",
+                  patterns: ["*"],
+                  always: ["*"],
+                  metadata: {},
+                }),
+              )
 
               const evidence = await requireVerifiedDataExtractorEvidenceForSession(ctx.sessionID)
               let workflow = evidence.ok

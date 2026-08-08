@@ -52,12 +52,14 @@ export const BrokerageSwitchTool = Tool.define(
     parameters,
     execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<{ title: string; output: string; metadata: Record<string, unknown> }> => {
-        await ctx.ask({
-          permission: "finny_brokerage_switch",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: { kind: input.kind, reason: input.reason },
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_brokerage_switch",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: { kind: input.kind, reason: input.reason },
+          }),
+        )
 
         const spec = BrokerRegistry.specs().find((s) => s.kind === input.kind)
         if (!spec) {

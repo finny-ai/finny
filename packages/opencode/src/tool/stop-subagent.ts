@@ -21,12 +21,14 @@ export const StopSubagentTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "stop_subagent",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "stop_subagent",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const jobs = (await CronStorage.list()).filter((job) => {
           if (job.parentSessionID !== ctx.sessionID) return false

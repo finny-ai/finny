@@ -204,6 +204,12 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        // `research_brief_approve` is a permission id, not a tool, so it is absent
+        // from the tool bundles and would otherwise fall through to their `"*": "deny"`.
+        // The Research→Build handoff is a user decision, so it must prompt.
+        const finnyResearchBriefApprovalPrompt = Permission.fromConfig({
+          research_brief_approve: "ask",
+        })
         const finnyRobinhoodMcpPolicy = Permission.fromConfig(McpRobinhood.permissionConfig())
         const finnyRobinhoodUserDenials = user.filter(
           (rule) => rule.action === "deny" && McpRobinhood.isServerToolID(rule.permission),
@@ -549,6 +555,7 @@ export const layer = Layer.effect(
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
               finnyWorkspaceEditPrompt,
             ),
             mode: "primary",
@@ -580,6 +587,7 @@ export const layer = Layer.effect(
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,
@@ -599,6 +607,7 @@ export const layer = Layer.effect(
               user,
               finnyRobinhoodMcpPolicy,
               finnyRobinhoodUserDenials,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,

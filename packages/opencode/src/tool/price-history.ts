@@ -110,12 +110,14 @@ export const PriceHistoryTool = Tool.define(
               )
             : undefined
         if (contextBlock) return contextBlock
-        await ctx.ask({
-          permission: "finny_get_history",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: { symbol: params.symbol, interval: params.interval, limit: params.limit },
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_get_history",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: { symbol: params.symbol, interval: params.interval, limit: params.limit },
+          }),
+        )
 
         const resolved = resolveSymbol(params.symbol)
         if (!resolved) {
