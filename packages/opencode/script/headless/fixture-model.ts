@@ -72,6 +72,8 @@ class Main(QCAlgorithm):
         self.entry_price = None
 
     def OnConsolidated(self, bar):
+        self.fast.Update(bar.EndTime, bar.Close)
+        self.slow.Update(bar.EndTime, bar.Close)
         if self.IsWarmingUp or not self.fast.IsReady or not self.slow.IsReady:
             return
         fast_ma = self.fast.Current.Value
