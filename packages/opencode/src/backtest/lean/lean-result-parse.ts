@@ -83,6 +83,7 @@ export function parseLeanResultJson(input: { text: string; summaryText?: string 
   }
 
   const fills: LeanFillRecord[] = []
+  const filledOrderIds = new Set<string>()
   for (const order of filledOrders) {
     const quantity = Math.abs(order.quantity)
     const price = order.price
@@ -97,10 +98,13 @@ export function parseLeanResultJson(input: { text: string; summaryText?: string 
       time: order.time,
       status: "Filled",
     })
+    filledOrderIds.add(order.orderId)
   }
   for (const event of events) {
     const status = String(event?.status ?? "")
     if (!/filled/i.test(status)) continue
+    const eventOrderId = String(event?.orderId ?? "")
+    if (filledOrderIds.has(eventOrderId)) continue
     const quantity = Number(event?.fillQuantity ?? 0)
     const price = Number(event?.fillPrice ?? 0)
     if (!Number.isFinite(quantity) || !Number.isFinite(price) || quantity === 0) continue
