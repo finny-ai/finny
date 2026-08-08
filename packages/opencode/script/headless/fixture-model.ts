@@ -53,6 +53,50 @@ class Strategy:
         self.prices.append(settled)
 `
 
+const LEAN_STRATEGY = `from AlgorithmImports import *
+
+class Main(QCAlgorithm):
+    """Deterministic SPY 5-minute SMA crossover LEAN harness candidate."""
+
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(120, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.fast = SimpleMovingAverage(8)
+        self.slow = SimpleMovingAverage(24)
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+        self.previous_fast = None
+        self.previous_slow = None
+        self.entry_price = None
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp or not self.fast.IsReady or not self.slow.IsReady:
+            return
+        fast_ma = self.fast.Current.Value
+        slow_ma = self.slow.Current.Value
+        holdings = self.Portfolio[self.symbol].Quantity
+        price = bar.Close
+        bullish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
+        bearish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
+        if holdings == 0 and bearish and price > 0:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / price)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = price
+        elif holdings > 0 and (bullish or (self.entry_price is not None and price <= self.entry_price * 0.985)):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.previous_fast = fast_ma
+        self.previous_slow = slow_ma
+
+    def OnData(self, slice):
+        pass
+`
+
 const CORE8 = [
   "market_universe",
   "timeframe_bar_interval",
@@ -126,82 +170,13 @@ const CONFIG = JSON.stringify({
   },
 })
 
-const POSITIVE_STRATEGY = `from collections import deque
-
-class Strategy:
-    def __init__(self, broker, params=None):
-        self.broker = broker
-        p = params or {}
-        self.fast = int(p.get("fast", 1))
-        self.slow = int(p.get("slow", 2))
-        self.risk_pct = float(p.get("risk_pct", 0.01))
-        self.stop_pct = float(p.get("stop_pct", 0.015))
-        self.prices = deque(maxlen=self.slow)
-        self.previous_fast = None
-        self.previous_slow = None
-        self.entry_price = None
-
-    def on_bar(self, symbol, bar):
-        open_px = bar["open"]
-        settled = bar["prev_close"]
-        if settled is None or open_px <= 0:
-            return
-        if len(self.prices) < self.slow - 1:
-            self.prices.append(settled)
-            return
-        if self.fast <= 0 or self.slow <= 0:
-            return
-        values = [*self.prices, settled]
-        fast_ma = sum(values[-self.fast:]) / self.fast
-        slow_ma = sum(values[-self.slow:]) / self.slow
-        position = self.broker.position(symbol)
-        bullish_cross = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
-        bearish_cross = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
-        if position == 0 and bullish_cross:
-            equity = self.broker.equity()
-            cash = self.broker.cash()
-            stop_distance = open_px * self.stop_pct
-            by_risk = (equity * self.risk_pct) / stop_distance if stop_distance > 0 else 0
-            by_cash = (cash * 0.95) / open_px if cash > 0 else 0
-            qty = int(min(by_risk, by_cash))
-            if qty > 0:
-                self.broker.buy(symbol, qty=qty)
-                self.entry_price = open_px
-        elif position > 0 and (bearish_cross or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
-            self.broker.sell(symbol, qty=position)
-            self.entry_price = None
-        self.previous_fast = fast_ma
-        self.previous_slow = slow_ma
-        self.prices.append(settled)
-`
-
-const POSITIVE_CONFIG = JSON.stringify({
+const LEAN_CONFIG = JSON.stringify({
   symbol: "SPY",
   asset_class: "equity",
   interval: "5m",
-  required_history_bars: 2,
-  params: { fast: 1, slow: 2, risk_pct: 0.01, stop_pct: 0.015 },
-  risk_contract: {
-    sizing_stop_distance_pct: 1.5,
-    protective_stop: { mode: "strategy_next_open" },
-    drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
-    max_positions: 1,
-  },
+  required_history_bars: 24,
+  params: { fast: 8, slow: 24 },
 })
-
-function capturedValue(text: string, field: string): string | undefined {
-  const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-  const matches = [
-    ...text.matchAll(new RegExp(`"${escaped}"\\s*:\\s*"([^"]+)"`, "g")),
-    ...text.matchAll(new RegExp(`(?:^|\\n)${escaped}:\\s*([^\\n]+)`, "g")),
-  ]
-  return matches
-    .map((match) => ({ index: match.index, value: match[1]?.trim() }))
-    .filter((match): match is { index: number; value: string } => Boolean(match.value))
-    .sort((left, right) => left.index - right.index)
-    .map((match) => match.value)
-    .at(-1)
-}
 
 function providerConfig(url: string) {
   return {
@@ -427,31 +402,27 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
   if (!calls.includes("finny_algorithm_save")) {
     const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    const isLean = process.env.FINNY_HARNESS_LEAN === "1"
     return {
       type: "tool",
       name: "finny_algorithm_save",
       arguments: {
         name: candidateName,
-        code: mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
+        code: isLean ? LEAN_STRATEGY : STRATEGY,
         saveMode: "new",
         language: "python",
+        ...(isLean ? { runtimeProfile: "lean_python" } : {}),
         description:
           mode === "strategy_drift"
             ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
             : "Deterministic SPY 5-minute SMA crossover harness candidate",
-        config: mode === "positive_qualification" ? POSITIVE_CONFIG : CONFIG,
+        config: isLean ? LEAN_CONFIG : CONFIG,
         mission: mission(strategyType, candidateName),
         prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
         decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",
-        reasoning:
-          mode === "positive_qualification"
-            ? "The causal 2/4 SMA uses settled closes, next-open execution, and immutable synthetic evidence."
-            : "8/24 SMA windows fit the 24-bar warmup; whole-share sizing is capped by risk and cash.",
+        reasoning: "8/24 SMA windows fit the 24-bar warmup; whole-share sizing is capped by risk and cash.",
       },
     }
-  }
-  if (mode === "positive_qualification" && !capturedValue(text, "algorithmId")) {
-    return { type: "text", text: "BLOCKED: saved candidate ID was not returned." }
   }
   if (!calls.includes("finny_backtest")) {
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
@@ -467,52 +438,6 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
         endDate: "2026-07-08",
         dataQualityMode: "strict",
       },
-    }
-  }
-  if (mode === "positive_qualification") {
-    const candidateId = capturedValue(text, "algorithmId")
-    if (!candidateId) return { type: "text", text: "BLOCKED: saved candidate ID was not returned." }
-    const qualifyCalls = calls.filter((name) => name === "qualify_candidate").length
-    if (qualifyCalls === 0) {
-      return { type: "tool", name: "qualify_candidate", arguments: { candidateId } }
-    }
-    const experimentPlanId = capturedValue(text, "experimentPlanId") ?? capturedValue(text, "planId")
-    if (qualifyCalls === 1) {
-      if (!experimentPlanId) return { type: "text", text: "BLOCKED: qualification plan ID was not returned." }
-      return { type: "tool", name: "qualify_candidate", arguments: { candidateId, experimentPlanId } }
-    }
-    const latestQualification = text.slice(text.lastIndexOf("qualify_candidate"))
-    const qualificationSucceeded = /"ok"\s*:\s*true/.test(latestQualification)
-    if (!qualificationSucceeded) {
-      return {
-        type: "text",
-        text: "Return: synthetic fixture result. Sharpe: measured. Max drawdown: measured. Eligibility: blocked. Blockers: qualification runtime refused the exact contract. Next step: inspect the typed blocker; no paper or live permission is granted.",
-      }
-    }
-    if (!calls.includes("finny_review_packet")) {
-      const workflowRunId = capturedValue(text, "workflowRunId")
-      if (!workflowRunId) return { type: "text", text: "BLOCKED: qualified workflow ID was not returned." }
-      return {
-        type: "tool",
-        name: "finny_review_packet",
-        arguments: {
-          algorithmName: ALGORITHM_NAME,
-          experimentId: workflowRunId,
-          conclusion: "recommended_for_paper",
-          reason:
-            "Synthetic deterministic qualification completed with positive total return, stitched OOS return, and alpha.",
-        },
-      }
-    }
-    if (!/Final quant review packet created/i.test(text)) {
-      return {
-        type: "text",
-        text: "Return: synthetic positive fixture result. Sharpe: positive. Max drawdown: within policy. Eligibility: qualified but packet blocked. Blockers: final packet was not created. Next step: inspect the packet gate; no paper or live permission is granted.",
-      }
-    }
-    return {
-      type: "text",
-      text: "Return: synthetic positive fixture result. Sharpe: positive. Max drawdown: within policy. Eligibility: recommended_for_paper fixture verdict only. Blockers: none. Next step: human review; this synthetic proof grants no paper or live permission.",
     }
   }
   return {
