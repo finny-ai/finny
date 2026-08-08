@@ -20,6 +20,8 @@ const DOCKER_BASE_ENV = {
 
 let dockerHostPromise: Promise<string | undefined> | undefined
 async function resolveDockerHost(): Promise<string | undefined> {
+  const inherited = process.env.DOCKER_HOST
+  if (inherited) return inherited
   dockerHostPromise ??= (async () => {
     const probe = await Process.run(
       ["docker", "context", "ls", "--format", "{{.Name}}|{{.Current}}|{{.DockerEndpoint}}"],
