@@ -56,9 +56,13 @@ async function relocateForDocker(input: {
   scratchDir: string
   resultsDir: string
 }): Promise<{ root: string; resultsDir: string }> {
-  // The harness isolates $HOME into a temp tree that colima cannot mount;
-  // os.userInfo() reads the passwd home, which is the real mountable home.
-  const realHome = os.userInfo().homedir || os.homedir()
+  // The harness isolates $HOME into a temp tree that colima cannot mount.
+  // Bun's os.userInfo() mirrors $HOME, so derive the macOS account home from
+  // USER; other platforms keep the regular home resolution.
+  const realHome =
+    process.platform === "darwin" && process.env.USER
+      ? `/Users/${process.env.USER}`
+      : os.userInfo().homedir || os.homedir()
   const root = path.join(realHome, ".finny-lean-runs", crypto.randomBytes(6).toString("hex"))
   await fs.mkdir(path.join(root, "scratch"), { recursive: true })
   await fs.mkdir(path.join(root, "source"), { recursive: true })
