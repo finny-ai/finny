@@ -68,6 +68,9 @@ export function buildLeanLauncherConfig(input: {
       "finny-volume-participation-cap-pct": input.profile.volumeParticipationCapPct,
     },
   }
+  if (input.algorithmLanguage === "Python") {
+    config["python-additional-paths"] = ["/Lean/Launcher/bin/Debug", "/Lean/Algorithm"]
+  }
   const json = `${JSON.stringify(config, null, 2)}\n`
   return { config, json, configHash: sha256Text(json) }
 }
