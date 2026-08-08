@@ -34,6 +34,7 @@ import { runLeanPhase } from "./run"
 import type { LeanAdapterV1 } from "./runner"
 import type { LeanBarScheduleV1 } from "./types"
 import { runtimeForCandidate, type RuntimeConfigV1 } from "./select"
+import { leanSourceDir } from "./source-store"
 
 const LEAN_ADAPTER_HASH = crypto
   .createHash("sha256")
@@ -441,6 +442,7 @@ export async function executeLeanQualificationV2(input: {
           phase,
           window: { start: window.start, end: window.end },
           seed: input.plan.planHash ? Number.parseInt(input.plan.planHash.slice(0, 8), 16) : 0,
+          sourceDir: await leanSourceDir(input.candidate),
           resultsDir: `/tmp/finny-lean-qualify/${input.plan.planId}/${phase}`,
           scratchDir: `/tmp/finny-lean-qualify/${input.plan.planId}/scratch-${phase}`,
         },

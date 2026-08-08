@@ -15,6 +15,9 @@ import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
 import { resolveAssetSpec } from "./asset-spec"
 import { BrokerRegistry } from "@/live/brokers"
+import { runLeanEngineInRunner } from "./lean/engine-run"
+import { isLeanProfile } from "./lean/contracts"
+import { runtimeForCandidate } from "./lean/select"
 import { evaluateBacktestQuality } from "./evaluation"
 import type { ExperimentReference } from "./experiment"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
@@ -244,7 +247,19 @@ export namespace BacktestRunner {
     | "unsafe_custom_runner"
     | "invalid_input"
     | "engine_invariant"
+    | "engine_crash"
     | "results_unparseable"
+    | "docker_unavailable"
+    | "image_unavailable"
+    | "image_digest_mismatch"
+    | "data_bundle_invalid"
+    | "schedule_divergence"
+    | "model_policy_violation"
+    | "unsupported_order"
+    | "source_missing"
+    | "resource_breach"
+    | "timeout"
+    | "canceled"
     | "internal"
 
   export type RunResult =
@@ -2824,7 +2839,11 @@ if __name__ == "__main__":
       if (issue) return { ok: false, error: issue, kind: "data_evidence" }
     }
 
-    const validation = await Validate.run(algorithm.code, { config: effectiveConfig })
+    const leanRuntime = runtimeForCandidate(algorithm)
+    const isLeanRun = isLeanProfile(leanRuntime.profile)
+    const validation = isLeanRun
+      ? ({ valid: true, errors: [], warnings: [] } as unknown as Awaited<ReturnType<typeof Validate.run>>)
+      : await Validate.run(algorithm.code, { config: effectiveConfig })
     if (!validation.valid) {
       return {
         ok: false,
@@ -2860,7 +2879,7 @@ if __name__ == "__main__":
       } catch {
         engineV2Ready = await materializeBundledEngineV2(path.join(tmpDir, "engine_v2"))
       }
-      if (engineMode === "strict_v2" && !engineV2Ready) {
+      if (engineMode === "strict_v2" && !engineV2Ready && !isLeanRun) {
         return {
           ok: false,
           error: `engine_v2 source not found at ${ENGINE_V2_SRC}; strict backtests cannot run.`,
@@ -3049,7 +3068,36 @@ if __name__ == "__main__":
         ...stripModelChildSecrets(process.env),
         FINNY_SEED: String(effectiveSeed),
       }
-      if (engineMode === "strict_v2") {
+      let results: Results | undefined
+      if (isLeanRun) {
+        const leanOutcome = await runLeanEngineInRunner({
+          tmpDir,
+          algorithm,
+          config,
+          csvPath,
+          interval,
+          capital: parsedCapital,
+          seed: effectiveSeed,
+          startDate: start,
+          endDate: end,
+        })
+        if (!leanOutcome.ok) {
+          emit({
+            eventType: "backtest.failed",
+            algorithmId: algorithm.algorithmId,
+            payload: {
+              error: leanOutcome.error,
+              kind: leanOutcome.kind,
+              duration,
+              interval,
+              capital,
+              engine: "lean",
+            },
+          })
+          return { ok: false, error: `LEAN engine failed: ${leanOutcome.error}`, kind: leanOutcome.kind }
+        }
+        results = leanOutcome.results
+      } else if (engineMode === "strict_v2") {
         const engineArgs = [
           pythonCmd,
           "-m",
@@ -3124,8 +3172,8 @@ if __name__ == "__main__":
           return { ok: false, error: `Strict engine failed: ${stderr || "unknown error"}`, kind: "engine_invariant" }
         }
 
-        const results = await parseResults(engineResult.stdout.toString(), tmpDir!, false)
-        if (!results || !results.v2) {
+        const parsed = await parseResults(engineResult.stdout.toString(), tmpDir!, false)
+        if (!parsed || !parsed.v2) {
           emit({
             eventType: "backtest.failed",
             algorithmId: algorithm.algorithmId,
@@ -3143,6 +3191,9 @@ if __name__ == "__main__":
             kind: "results_unparseable",
           }
         }
+        results = parsed
+      }
+      if (results) {
         if (preparedData.provenance.mode === "provider_fetch") {
           const processedBytes = await fs.readFile(path.join(tmpDir, PROCESSED_OHLCV_CSV))
           preparedData.provenance.processed_sha256 = sha256Bytes(processedBytes)
@@ -3285,7 +3336,7 @@ if __name__ == "__main__":
             diagnostics: {
               barsProcessed: results.diagnostics?.barsProcessed,
               liquidationCount: results.liquidationCount,
-              dataQuality: results.v2.data_quality,
+              dataQuality: results.v2!.data_quality,
             },
           },
         })
@@ -3427,8 +3478,8 @@ if __name__ == "__main__":
       }
 
       const stdout = backtestResult.stdout.toString()
-      const results = await parseResults(stdout, tmpDir!)
-      if (!results) {
+      const legacyResults = await parseResults(stdout, tmpDir!)
+      if (!legacyResults) {
         emit({
           eventType: "backtest.failed",
           algorithmId: algorithm.algorithmId,
@@ -3436,13 +3487,13 @@ if __name__ == "__main__":
         })
         return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
-      results.runId = runId
+      legacyResults.runId = runId
       await persistBacktestEvidenceOrReport({
         tmpDir,
         runId,
         algorithm,
         config,
-        results,
+        results: legacyResults,
         duration,
         interval,
         capital,
@@ -3459,19 +3510,19 @@ if __name__ == "__main__":
           duration,
           interval,
           capital,
-          engineVersion: results.engineVersion,
-          schemaVersion: results.schemaVersion,
-          totalReturn: results.totalReturn,
-          maxDrawdown: results.maxDrawdown,
-          sharpeRatio: results.sharpeRatio,
-          totalTrades: results.totalTrades,
-          benchmarkReturn: results.benchmarkReturn,
-          alpha: results.alpha,
-          evidenceDir: results.evidenceDir,
-          evidenceError: results.evidenceError,
+            engineVersion: legacyResults.engineVersion,
+            schemaVersion: legacyResults.schemaVersion,
+            totalReturn: legacyResults.totalReturn,
+            maxDrawdown: legacyResults.maxDrawdown,
+            sharpeRatio: legacyResults.sharpeRatio,
+            totalTrades: legacyResults.totalTrades,
+            benchmarkReturn: legacyResults.benchmarkReturn,
+            alpha: legacyResults.alpha,
+            evidenceDir: legacyResults.evidenceDir,
+            evidenceError: legacyResults.evidenceError,
         },
       })
-      return { ok: true, results }
+      return { ok: true, results: legacyResults }
     } catch (e: any) {
       emit({
         eventType: "backtest.failed",

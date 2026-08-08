@@ -20,6 +20,7 @@ import {
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import { strategySourceV1 } from "../backtest/lean/contracts"
 import { embedRuntimeConfig, runtimeForCandidate, validateLeanSourceManifest } from "../backtest/lean/select"
+import { writeLeanSourceFile } from "../backtest/lean/source-store"
 import { Database } from "@opencode-ai/core/database/database"
 import {
   activeWorkflowForSession,
@@ -521,10 +522,20 @@ export const AlgorithmSaveTool = Tool.define(
                   `changing runtimes must create a new candidate version and plan`,
               )
             }
-            const source = params.strategySource
+            const derivedFiles =
+              params.runtimeProfile === "lean_python" && !params.strategySource
+                ? [
+                    {
+                      path: "main.py",
+                      sha256: createHash("sha256").update(params.code).digest("hex"),
+                      bytes: Buffer.byteLength(params.code, "utf8"),
+                    },
+                  ]
+                : params.strategySource?.files
+            const source = derivedFiles
               ? strategySourceV1({
                   profileId: params.runtimeProfile,
-                  files: params.strategySource.files,
+                  files: derivedFiles,
                 })
               : undefined
             const sourceIssues = validateLeanSourceManifest(source, params.runtimeProfile)
@@ -792,11 +803,21 @@ export const AlgorithmSaveTool = Tool.define(
 
               let algo
               try {
+                const leanSourceFiles =
+                  params.runtimeProfile === "lean_python" && !params.strategySource
+                    ? [
+                        {
+                          path: "main.py",
+                          sha256: createHash("sha256").update(params.code).digest("hex"),
+                          bytes: Buffer.byteLength(params.code, "utf8"),
+                        },
+                      ]
+                    : params.strategySource?.files
                 const saveConfig = params.runtimeProfile
                   ? embedRuntimeConfig({
                       config: normalizedConfig,
                       profileId: params.runtimeProfile,
-                      sourceFiles: params.strategySource?.files,
+                      sourceFiles: leanSourceFiles,
                     })
                   : normalizedConfig
                 algo = await Algorithm.save({
@@ -815,6 +836,13 @@ export const AlgorithmSaveTool = Tool.define(
                   targetBrokerage: params.targetBrokerage,
                   saveMode: params.saveMode,
                 })
+                if (params.runtimeProfile === "lean_python") {
+                  await writeLeanSourceFile({
+                    algorithm: { algorithmId: algo.algorithmId, version: algo.version },
+                    relativePath: "main.py",
+                    content: params.code,
+                  })
+                }
               } catch (err) {
                 if (err instanceof Algorithm.SaveModeConflictError) {
                   const lines = [err.message]

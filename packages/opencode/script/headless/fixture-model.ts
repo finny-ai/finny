@@ -53,6 +53,50 @@ class Strategy:
         self.prices.append(settled)
 `
 
+const LEAN_STRATEGY = `from AlgorithmImports import *
+
+class Main(QCAlgorithm):
+    """Deterministic SPY 5-minute SMA crossover LEAN harness candidate."""
+
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(120, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.fast = SimpleMovingAverage(8)
+        self.slow = SimpleMovingAverage(24)
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+        self.previous_fast = None
+        self.previous_slow = None
+        self.entry_price = None
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp or not self.fast.IsReady or not self.slow.IsReady:
+            return
+        fast_ma = self.fast.Current.Value
+        slow_ma = self.slow.Current.Value
+        holdings = self.Portfolio[self.symbol].Quantity
+        price = bar.Close
+        bullish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
+        bearish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
+        if holdings == 0 and bearish and price > 0:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / price)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = price
+        elif holdings > 0 and (bullish or (self.entry_price is not None and price <= self.entry_price * 0.985)):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.previous_fast = fast_ma
+        self.previous_slow = slow_ma
+
+    def OnData(self, slice):
+        pass
+`
+
 const CORE8 = [
   "market_universe",
   "timeframe_bar_interval",
@@ -126,6 +170,7 @@ const CONFIG = JSON.stringify({
   },
 })
 
+<<<<<<< HEAD
 const POSITIVE_STRATEGY = `from collections import deque
 
 class Strategy:
@@ -189,6 +234,14 @@ const POSITIVE_CONFIG = JSON.stringify({
   },
 })
 
+const LEAN_CONFIG = JSON.stringify({
+  symbol: "SPY",
+  asset_class: "equity",
+  interval: "5m",
+  required_history_bars: 24,
+  params: { fast: 8, slow: 24 },
+})
+
 function capturedValue(text: string, field: string): string | undefined {
   const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
   const matches = [
@@ -203,6 +256,16 @@ function capturedValue(text: string, field: string): string | undefined {
     .at(-1)
 }
 
+=======
+const LEAN_CONFIG = JSON.stringify({
+  symbol: "SPY",
+  asset_class: "equity",
+  interval: "5m",
+  required_history_bars: 24,
+  params: { fast: 8, slow: 24 },
+})
+
+>>>>>>> 1c8363e16e (feat(lean): real engine execution, canonical metrics, and LEAN headless fixture)
 function providerConfig(url: string) {
   return {
     formatter: false,
@@ -427,19 +490,23 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
   if (!calls.includes("finny_algorithm_save")) {
     const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    const isLean = process.env.FINNY_HARNESS_LEAN === "1"
     return {
       type: "tool",
       name: "finny_algorithm_save",
       arguments: {
         name: candidateName,
-        code: mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
+        code: isLean ? LEAN_STRATEGY : STRATEGY,
+        ...(mode === "positive_qualification" && !isLean ? { code: POSITIVE_STRATEGY } : {}),
         saveMode: "new",
         language: "python",
+        ...(isLean ? { runtimeProfile: "lean_python" } : {}),
         description:
           mode === "strategy_drift"
             ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
             : "Deterministic SPY 5-minute SMA crossover harness candidate",
-        config: mode === "positive_qualification" ? POSITIVE_CONFIG : CONFIG,
+        config: isLean ? LEAN_CONFIG : CONFIG,
+        ...(mode === "positive_qualification" && !isLean ? { config: POSITIVE_CONFIG } : {}),
         mission: mission(strategyType, candidateName),
         prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
         decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",

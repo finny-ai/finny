@@ -6,7 +6,6 @@ import {
   LEAN_PINNED_IMAGE_DIGEST,
   verifyExecutionProfile,
 } from "./contracts"
-import { materializeLeanDataBundle } from "./materialize"
 import type { LeanAdapterContextV1, LeanAdapterResultV1, LeanAdapterV1 } from "./runner"
 import type { LeanAdapterFailureV1 } from "./types"
 import { buildLeanLauncherConfig } from "./engine-config"
@@ -82,31 +81,6 @@ export class LeanAdapter implements LeanAdapterV1 {
       )
     }
 
-    // Materialize the phase-scoped data bundle into the scratch directory.
-    let bundle
-    try {
-      bundle = await materializeLeanDataBundle({
-        phase: input.phase,
-        interval: input.plan.interval,
-        assetFamily: input.dataBundle.assetFamily,
-        schedules: input.plan.datasets.map((dataset) => ({
-          symbol: dataset.canonicalSymbol,
-          assetClass: dataset.assetClass,
-          interval: input.plan.interval,
-          calendarId: "finny",
-          calendarVersion: input.plan.calendarPolicyVersion,
-          timezone: "UTC",
-          bars: [],
-          scheduleHash: dataset.scheduleHash,
-        })),
-        window: input.window,
-        warmupBars: input.plan.warmupBars,
-        outputDir: input.scratchDir,
-      })
-    } catch (error) {
-      return failure("data_bundle_invalid", `data bundle materialization failed: ${String(error)}`)
-    }
-
     // Offline, read-only, capability-dropped execution with controller-owned
     // limits. The pinned image runs the LEAN launcher directly; never the CLI.
     const launcher = buildLeanLauncherConfig({
@@ -117,13 +91,21 @@ export class LeanAdapter implements LeanAdapterV1 {
       cash: 10000,
       algorithmTypeName: "Main",
       algorithmLanguage: input.bundle.profile.profileId === "lean_csharp" ? "CSharp" : "Python",
-      algorithmLocation: input.bundle.profile.profileId === "lean_csharp" ? "Algorithm.dll" : "main.py",
+      algorithmLocation:
+        input.bundle.profile.profileId === "lean_csharp" ? "/Lean/Algorithm/Algorithm.dll" : "/Lean/Algorithm/main.py",
       dataFolder: "/Lean/Data",
       resultsFolder: "/Results",
       seed: input.seed,
       dataFeedWorkers: input.bundle.executionProfile.dataFeedWorkers,
     })
     await fs.writeFile(`${input.scratchDir}/lean-config.json`, launcher.json, "utf8")
+    // Container uid 10001 must be able to write results; host bind mounts on
+    // macOS/CI do not map that uid, so widen dev scratch dirs. The production
+    // posture uses uid-mapped volumes instead of 0777.
+    await Promise.all([
+      fs.chmod(input.scratchDir, 0o777).catch(() => undefined),
+      fs.chmod(input.resultsDir, 0o777).catch(() => undefined),
+    ])
     const cmd = [
       "docker",
       "run",
@@ -132,6 +114,8 @@ export class LeanAdapter implements LeanAdapterV1 {
       "none",
       "--user",
       "10001:10001",
+      "--workdir",
+      "/Lean/Launcher/bin/Debug",
       "--read-only",
       "--cap-drop",
       "ALL",
@@ -146,7 +130,11 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--mount",
       `type=bind,source=${input.scratchDir},target=/Lean/Data,readonly`,
       "--mount",
+      `type=bind,source=${input.sourceDir},target=/Lean/Algorithm,readonly`,
+      "--mount",
       `type=bind,source=${input.resultsDir},target=/Results`,
+      "--mount",
+      `type=bind,source=${input.scratchDir},target=/Lean/Storage`,
       "--mount",
       "type=tmpfs,destination=/tmp",
       "--mount",
@@ -157,7 +145,9 @@ export class LeanAdapter implements LeanAdapterV1 {
       `FINNY_PHASE=${input.phase}`,
       LEAN_PINNED_IMAGE_DIGEST,
       "dotnet",
-      "QuantConnect.Lean.Launcher.dll",
+      "/Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll",
+      "--config",
+      "/Lean/Launcher/bin/Debug/config.json",
     ]
 
     const result = await Process.run(cmd, {

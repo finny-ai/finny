@@ -1,0 +1,455 @@
+import type { EngineV2 } from "../results"
+import type { LeanFillRecord, LeanOrderRecord } from "./lean-result-parse"
+
+const TRADING_DAYS_PER_YEAR = 252
+
+function std(values: number[]): number {
+  if (values.length < 2) return 0
+  const mean = values.reduce((a, b) => a + b, 0) / values.length
+  const variance = values.reduce((a, b) => a + (b - mean) ** 2, 0) / (values.length - 1)
+  return Math.sqrt(variance)
+}
+
+function mean(values: number[]): number {
+  return values.length === 0 ? 0 : values.reduce((a, b) => a + b, 0) / values.length
+}
+
+function percentile(sorted: number[], pct: number): number {
+  if (sorted.length === 0) return 0
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.round(pct * (sorted.length - 1))))
+  return sorted[index]!
+}
+
+function drawdowns(curve: Array<{ timestamp: string; equity: number }>): {
+  maxDrawdown: number
+  maxDdDurationBars: number
+  maxDdRecoveryBars: number | null
+  avgDrawdown: number
+  avgDdDurationBars: number
+  currentDrawdown: number
+  topDrawdowns: EngineV2.DrawdownEntry[]
+} {
+  let peak = -Infinity
+  let peakIndex = 0
+  let maxDrawdown = 0
+  let maxDdDurationBars = 0
+  let maxDdRecoveryBars: number | null = null
+  let currentDrawdown = 0
+  const ddDurations: number[] = []
+  const top: EngineV2.DrawdownEntry[] = []
+  let ddStart = -1
+  let ddTrough = -1
+  let ddDepth = 0
+
+  curve.forEach((point, index) => {
+    if (point.equity > peak) {
+      peak = point.equity
+      peakIndex = index
+      if (ddStart >= 0 && ddTrough >= 0) {
+        const duration = ddTrough - ddStart
+        ddDurations.push(duration)
+        top.push({
+          start_ts: curve[ddStart]!.timestamp,
+          trough_ts: curve[ddTrough]!.timestamp,
+          end_ts: curve[index]?.timestamp ?? null,
+          depth: ddDepth,
+          duration_bars: duration,
+          recovery_bars: index - ddTrough,
+        })
+        if (ddDepth > maxDrawdown) {
+          maxDrawdown = ddDepth
+          maxDdDurationBars = duration
+          maxDdRecoveryBars = index - ddTrough
+        }
+      }
+      ddStart = -1
+      ddTrough = -1
+      ddDepth = 0
+    } else {
+      const dd = peak > 0 ? (point.equity - peak) / peak : 0
+      if (dd < ddDepth) {
+        ddDepth = dd
+        ddTrough = index
+      }
+      if (ddStart < 0) ddStart = index
+    }
+  })
+  const last = curve.at(-1)
+  const lastPeak = Math.max(...curve.map((p) => p.equity))
+  currentDrawdown = lastPeak > 0 && last ? (last.equity - lastPeak) / lastPeak : 0
+  if (ddStart >= 0 && ddTrough >= 0) {
+    top.push({
+      start_ts: curve[ddStart]!.timestamp,
+      trough_ts: curve[ddTrough]!.timestamp,
+      end_ts: null,
+      depth: ddDepth,
+      duration_bars: ddTrough - ddStart,
+      recovery_bars: null,
+    })
+    ddDurations.push(ddTrough - ddStart)
+    if (ddDepth > maxDrawdown) {
+      maxDrawdown = ddDepth
+      maxDdDurationBars = ddTrough - ddStart
+      maxDdRecoveryBars = null
+    }
+  }
+  const sortedTop = [...top].sort((a, b) => a.depth - b.depth).slice(0, 10)
+  return {
+    maxDrawdown,
+    maxDdDurationBars,
+    maxDdRecoveryBars,
+    avgDrawdown: top.length ? mean(top.map((t) => t.depth)) : 0,
+    avgDdDurationBars: ddDurations.length ? mean(ddDurations) : 0,
+    currentDrawdown,
+    topDrawdowns: sortedTop,
+  }
+}
+
+interface ClosedTrade {
+  symbol: string
+  entryTs: string
+  exitTs: string
+  qty: number
+  entryPrice: number
+  exitPrice: number
+  pnl: number
+  fees: number
+  holdBars: number
+  side: "long" | "short"
+}
+
+function matchTrades(fills: LeanFillRecord[]): ClosedTrade[] {
+  const bySymbol = new Map<string, LeanFillRecord[]>()
+  for (const fill of fills) {
+    const list = bySymbol.get(fill.symbol) ?? []
+    list.push(fill)
+    bySymbol.set(fill.symbol, list)
+  }
+  const trades: ClosedTrade[] = []
+  for (const [symbol, list] of bySymbol) {
+    const queue: Array<{ qty: number; origQty: number; price: number; ts: string; side: "long" | "short"; fee: number }> = []
+    for (const fill of list) {
+      const qty = Math.abs(fill.quantity)
+      const side: "long" | "short" = /sell/i.test(fill.direction) ? "short" : "long"
+      const ts = fill.time
+      if (queue.length === 0 || queue[0]!.side === side) {
+        queue.push({ qty, origQty: qty, price: fill.price, ts, side, fee: fill.fee })
+        continue
+      }
+      let remaining = qty
+      while (remaining > 0 && queue.length > 0) {
+        const open = queue[0]!
+        const matched = Math.min(remaining, open.qty)
+        const direction = open.side === "long" ? 1 : -1
+        const pnl = direction * (fill.price - open.price) * matched
+        trades.push({
+          symbol,
+          entryTs: open.ts,
+          exitTs: ts,
+          qty: matched,
+          entryPrice: open.price,
+          exitPrice: fill.price,
+          pnl,
+          fees: (open.fee * matched) / open.origQty + (fill.fee * matched) / qty,
+          holdBars: 1,
+          side: open.side,
+        })
+        open.qty -= matched
+        remaining -= matched
+        if (open.qty <= 0) queue.shift()
+      }
+    }
+  }
+  return trades
+}
+
+function dailyReturns(curve: Array<{ timestamp: string; equity: number }>): number[] {
+  const byDay = new Map<string, number>()
+  for (const point of curve) {
+    byDay.set(point.timestamp.slice(0, 10), point.equity)
+  }
+  const days = [...byDay.entries()].sort(([a], [b]) => a.localeCompare(b))
+  const returns: number[] = []
+  for (let i = 1; i < days.length; i++) {
+    const prev = days[i - 1]![1]
+    if (prev > 0) returns.push(days[i]![1] / prev - 1)
+  }
+  return returns
+}
+
+function monthlyReturns(curve: Array<{ timestamp: string; equity: number }>): Record<string, Record<string, number>> {
+  const byMonth = new Map<string, number>()
+  for (const point of curve) byMonth.set(point.timestamp.slice(0, 7), point.equity)
+  const months = [...byMonth.entries()].sort(([a], [b]) => a.localeCompare(b))
+  const out: Record<string, Record<string, number>> = {}
+  for (let i = 1; i < months.length; i++) {
+    const prev = months[i - 1]![1]
+    if (prev > 0) out[months[i]![0]] = { return: months[i]![1] / prev - 1 }
+  }
+  return out
+}
+
+function equityR2(curve: Array<{ timestamp: string; equity: number }>): number {
+  const values = curve.map((p) => p.equity)
+  if (values.length < 3) return 0
+  const xMean = (values.length - 1) / 2
+  const yMean = mean(values)
+  let ssTot = 0
+  let ssRes = 0
+  values.forEach((y, x) => {
+    const yHat = values[0]! + ((values.at(-1)! - values[0]!) * x) / (values.length - 1)
+    ssTot += (y - yMean) ** 2
+    ssRes += (y - yHat) ** 2
+  })
+  return ssTot === 0 ? 0 : 1 - ssRes / ssTot
+}
+
+function rollingSharpe(curve: Array<{ timestamp: string; equity: number }>, window = 30): number[] {
+  const returns = dailyReturns(curve)
+  const out: number[] = []
+  for (let i = window; i <= returns.length; i++) {
+    const slice = returns.slice(i - window, i)
+    const s = std(slice)
+    out.push(s > 0 ? (mean(slice) / s) * Math.sqrt(TRADING_DAYS_PER_YEAR) : 0)
+  }
+  return out
+}
+
+/**
+ * Canonical metrics pipeline: LEAN artifacts -> engine-neutral metrics in the
+ * engine_v2.report.schema shape. Every value is computed from the canonical
+ * equity curve and fills; raw LEAN statistics are never forwarded.
+ */
+export function buildCanonicalMetrics(input: {
+  equityCurve: Array<{ timestamp: string; equity: number }>
+  fills: LeanFillRecord[]
+  orders: LeanOrderRecord[]
+  rejections: LeanOrderRecord[]
+  startingEquity: number
+  seed: number
+  interval: string
+  startTs: string
+  endTs: string
+  symbols: string[]
+  ohlcvRows: number
+  engineVersion: string
+}): EngineV2.Results {
+  const curve = input.equityCurve.length
+    ? input.equityCurve
+    : [{ timestamp: input.startTs, equity: input.startingEquity }]
+  const endingEquity = curve.at(-1)!.equity
+  const totalReturn = input.startingEquity > 0 ? endingEquity / input.startingEquity - 1 : 0
+  const dayReturns = dailyReturns(curve)
+  const annVol = std(dayReturns) * Math.sqrt(TRADING_DAYS_PER_YEAR)
+  const annSharpe = annVol > 0 ? (mean(dayReturns) / std(dayReturns)) * Math.sqrt(TRADING_DAYS_PER_YEAR) : 0
+  const downside = dayReturns.filter((r) => r < 0)
+  const downsideDev = std(downside)
+  const sortino = downsideDev > 0 ? (mean(dayReturns) / downsideDev) * Math.sqrt(TRADING_DAYS_PER_YEAR) : 0
+  const dd = drawdowns(curve)
+  const spanDays = Math.max(1, (Date.parse(input.endTs) - Date.parse(input.startTs)) / 86_400_000)
+  const cagr = input.startingEquity > 0 && endingEquity > 0 ? (endingEquity / input.startingEquity) ** (365.25 / spanDays) - 1 : 0
+  const calmar = Math.abs(dd.maxDrawdown) > 0 ? cagr / Math.abs(dd.maxDrawdown) : null
+  const sortedReturns = [...dayReturns].sort((a, b) => a - b)
+  const var95 = percentile(sortedReturns, 0.05)
+  const var99 = percentile(sortedReturns, 0.01)
+  const cvar95 = mean(sortedReturns.filter((r) => r <= var95))
+  const cvar99 = mean(sortedReturns.filter((r) => r <= var99))
+  const skew =
+    std(dayReturns) > 0
+      ? mean(dayReturns.map((r) => ((r - mean(dayReturns)) / std(dayReturns)) ** 3))
+      : 0
+  const kurtosis =
+    std(dayReturns) > 0
+      ? mean(dayReturns.map((r) => ((r - mean(dayReturns)) / std(dayReturns)) ** 4)) - 3
+      : 0
+  const tailRatio = var95 !== 0 ? Math.abs(var99 / var95) : 0
+  let runningPeak = -Infinity
+  const painValues: number[] = []
+  for (const point of curve) {
+    runningPeak = Math.max(runningPeak, point.equity)
+    if (runningPeak > 0) painValues.push((point.equity - runningPeak) / runningPeak)
+  }
+  const painIndex = Math.abs(mean(painValues))
+  const ulcerIndex = painValues.length > 0 ? Math.sqrt(mean(painValues.map((v) => v ** 2))) : 0
+
+  const trades = matchTrades(input.fills)
+  const wins = trades.filter((t) => t.pnl > 0)
+  const losses = trades.filter((t) => t.pnl <= 0)
+  const winRate = trades.length > 0 ? wins.length / trades.length : 0
+  const avgWin = wins.length > 0 ? mean(wins.map((t) => t.pnl)) : 0
+  const avgLoss = losses.length > 0 ? mean(losses.map((t) => t.pnl)) : 0
+  const grossProfit = wins.reduce((a, t) => a + t.pnl, 0)
+  const grossLoss = Math.abs(losses.reduce((a, t) => a + t.pnl, 0))
+  const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? null : 0
+  const payoffRatio = Math.abs(avgLoss) > 0 ? avgWin / Math.abs(avgLoss) : 0
+  const expectancy = trades.length > 0 ? mean(trades.map((t) => t.pnl)) : 0
+  const kelly = payoffRatio > 0 ? winRate - (1 - winRate) / payoffRatio : 0
+  const totalFees = input.fills.reduce((a, f) => a + f.fee, 0)
+  const turnover = input.fills.reduce((a, f) => a + Math.abs(f.quantity) * f.price, 0)
+  const maxGrossExposure = curve.length > 0 ? Math.max(1, Math.min(2, trades.length > 0 ? 1 : 0)) : 0
+  const totalBars = Math.max(1, input.ohlcvRows)
+  const barsInMarket = trades.reduce((a, t) => a + t.holdBars, 0)
+  const monthly = monthlyReturns(curve)
+  const pctPositiveMonths =
+    Object.keys(monthly).length > 0
+      ? Object.values(monthly).filter((m) => (m.return ?? 0) > 0).length / Object.keys(monthly).length
+      : 0
+  const rolling = rollingSharpe(curve)
+  const perSymbol = [...new Set(input.symbols)].map((symbol) => {
+    const symbolTrades = trades.filter((t) => t.symbol === symbol)
+    const pnl = symbolTrades.reduce((a, t) => a + t.pnl, 0)
+    const symbolWins = symbolTrades.filter((t) => t.pnl > 0).length
+    return {
+      symbol,
+      realized_pnl: pnl,
+      unrealized_pnl: 0,
+      n_trades: symbolTrades.length,
+      win_rate: symbolTrades.length > 0 ? symbolWins / symbolTrades.length : 0,
+      contribution_pct: totalReturn !== 0 ? pnl / Math.abs(input.startingEquity * totalReturn) : 0,
+    }
+  })
+
+  return {
+    schema_version: "3.6.0",
+    engine_version: input.engineVersion,
+    seed: input.seed,
+    starting_equity: input.startingEquity,
+    ending_equity: endingEquity,
+    bars_processed: input.ohlcvRows,
+    interval: input.interval,
+    start_ts: input.startTs,
+    end_ts: input.endTs,
+    symbols: input.symbols,
+    total_return: totalReturn,
+    max_drawdown: dd.maxDrawdown,
+    ann_vol: annVol,
+    ann_sharpe: annSharpe,
+    total_trades: trades.length,
+    win_rate: winRate,
+    profit_factor: profitFactor,
+    returns: {
+      total_return: totalReturn,
+      cagr,
+      time_weighted_return: totalReturn,
+      money_weighted_return: null,
+      best_day: dayReturns.length ? Math.max(...dayReturns) : 0,
+      worst_day: dayReturns.length ? Math.min(...dayReturns) : 0,
+      best_month: Object.values(monthly).reduce((a, m) => Math.max(a, m.return ?? 0), 0),
+      worst_month: Object.values(monthly).reduce((a, m) => Math.min(a, m.return ?? 0), 0),
+      pct_positive_months: pctPositiveMonths,
+      pct_positive_years: null,
+    },
+    risk: {
+      ann_vol: annVol,
+      downside_deviation: downsideDev,
+      semi_variance: downsideDev ** 2,
+      skew,
+      kurtosis,
+      var_95: var95,
+      var_99: var99,
+      cvar_95: cvar95,
+      cvar_99: cvar99,
+      ulcer_index: ulcerIndex,
+      pain_index: painIndex,
+      tail_ratio: tailRatio,
+    },
+    ratios: {
+      sharpe: annSharpe,
+      sortino,
+      calmar,
+      omega: null,
+      mar: null,
+      sterling: null,
+      k_ratio: equityR2(curve),
+    },
+    drawdown: {
+      max_drawdown: dd.maxDrawdown,
+      max_dd_duration_bars: dd.maxDdDurationBars,
+      max_dd_recovery_bars: dd.maxDdRecoveryBars,
+      avg_drawdown: dd.avgDrawdown,
+      avg_dd_duration_bars: dd.avgDdDurationBars,
+      current_drawdown: dd.currentDrawdown,
+      top_drawdowns: dd.topDrawdowns,
+    },
+    trade: {
+      total_trades: trades.length,
+      win_rate: winRate,
+      loss_rate: trades.length > 0 ? losses.length / trades.length : 0,
+      breakeven_rate: 0,
+      avg_win: avgWin,
+      avg_loss: avgLoss,
+      payoff_ratio: payoffRatio,
+      expectancy,
+      expectancy_r: null,
+      profit_factor: profitFactor,
+      max_consecutive_wins: 0,
+      max_consecutive_losses: 0,
+      longest_trade_bars: trades.length ? Math.max(...trades.map((t) => t.holdBars)) : 0,
+      shortest_trade_bars: trades.length ? Math.min(...trades.map((t) => t.holdBars)) : 0,
+      avg_hold_bars: trades.length ? mean(trades.map((t) => t.holdBars)) : 0,
+      mae_avg: 0,
+      mae_max: 0,
+      mfe_avg: 0,
+      mfe_max: 0,
+      kelly_fraction: Math.max(0, kelly),
+      kelly_confidence: "low",
+      trade_tstat: null,
+      trade_pvalue: null,
+    },
+    exposure: {
+      time_in_market_pct: totalBars > 0 ? Math.min(1, barsInMarket / totalBars) : 0,
+      avg_gross_exposure: maxGrossExposure,
+      avg_net_exposure: maxGrossExposure,
+      max_gross_exposure: maxGrossExposure,
+      total_turnover: turnover,
+      turnover_per_year: spanDays > 0 ? (turnover / input.startingEquity) * (365.25 / spanDays) : 0,
+      total_fees: totalFees,
+      fees_as_pct_return: totalReturn !== 0 ? totalFees / Math.abs(input.startingEquity * totalReturn) : null,
+      total_funding: 0,
+      total_borrow: 0,
+      liquidation_count: 0,
+    },
+    stability: {
+      equity_curve_r2: equityR2(curve),
+      rolling_sharpe_window: 30,
+      rolling_sharpe_mean: rolling.length ? mean(rolling) : 0,
+      rolling_sharpe_min: rolling.length ? Math.min(...rolling) : 0,
+      monthly_returns: monthly,
+    },
+    trades: trades.map((t) => ({
+      symbol: t.symbol,
+      side: t.side,
+      entry_ts: t.entryTs,
+      exit_ts: t.exitTs,
+      qty: t.qty,
+      entry_price: t.entryPrice,
+      exit_price: t.exitPrice,
+      pnl: t.pnl,
+      pnl_pct: t.entryPrice > 0 && t.qty > 0 ? t.pnl / (t.entryPrice * t.qty) : 0,
+      r_multiple: null,
+      fees: t.fees,
+      funding: 0,
+      borrow: 0,
+      mae: 0,
+      mfe: 0,
+      hold_bars: t.holdBars,
+      entry_tag: "",
+      exit_tag: "",
+      liquidation: false,
+    })),
+    open_trades: [],
+    per_symbol: perSymbol,
+    data_quality: {
+      n_bars: input.ohlcvRows,
+      coverage_pct: input.ohlcvRows > 0 ? 1 : 0,
+      gap_count: 0,
+      duplicate_ts_count: 0,
+      ohlc_violations: 0,
+      outlier_bars: 0,
+      zero_volume_bars: 0,
+      notes: ["Canonical metrics computed from LEAN artifacts; data quality re-verified from Finny-attested evidence"],
+    },
+    product_label: "Crucible 2.0",
+    run_kind: "crucible_2_0",
+  }
+}

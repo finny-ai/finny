@@ -24,6 +24,7 @@ export function buildLeanLauncherConfig(input: {
 }): { config: Record<string, unknown>; json: string; configHash: string } {
   const config: Record<string, unknown> = {
     environment: "backtesting",
+    "algorithm-id": "Main",
     "algorithm-type-name": input.algorithmTypeName,
     "algorithm-language": input.algorithmLanguage,
     "algorithm-location": input.algorithmLocation,
