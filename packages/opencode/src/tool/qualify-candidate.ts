@@ -365,7 +365,11 @@ export const QualifyCandidateTool = Tool.define<
                     // Supplied by the runtime (walkForwardFoldsForPhase) so the
                     // reduced exploratory fold count stays centrally defined.
                     walkForwardFolds,
-                    costSensitivity: phase === "confirmatory" && policy.requireCostSensitivity,
+                    // preHoldoutMetricBlocker requires a passing cost-sensitivity
+                    // outcome in the exploratory and validation phases whenever the
+                    // policy demands one, so it has to be computed there too --
+                    // gating it on `confirmatory` made that gate unsatisfiable.
+                    costSensitivity: policy.requireCostSensitivity,
                     // Exploratory, validation, and confirmatory are evaluations of
                     // one immutable code/config candidate, not three selections.
                     priorSelectionTrials: 0,
