@@ -3134,6 +3134,7 @@ export type CrucibleEventControlV1 = {
   sourceKind: string
   summary?: string
   stage?: string
+  status?: string
   message?: string
 }
 

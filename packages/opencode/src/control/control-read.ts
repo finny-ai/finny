@@ -238,6 +238,7 @@ export const layer = Layer.effect(
         const payload = record(row.payload)
         const state = record(payload.state)
         const stage = optionalString(payload.stage) ?? optionalString(state.stage)
+        const status = optionalString(payload.status)
         const message =
           optionalString(payload.message) ??
           optionalString(payload.reason) ??
@@ -250,6 +251,7 @@ export const layer = Layer.effect(
           sourceKind: row.source_kind,
           ...(summary === undefined ? {} : { summary }),
           ...(stage === undefined ? {} : { stage }),
+          ...(status === undefined ? {} : { status }),
           ...(message === undefined ? {} : { message }),
         }
       })

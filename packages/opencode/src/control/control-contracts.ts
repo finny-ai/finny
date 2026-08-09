@@ -59,6 +59,7 @@ export const CrucibleEventControlV1 = Schema.Struct({
   sourceKind: Schema.String,
   summary: Schema.optional(Schema.String),
   stage: Schema.optional(Schema.String),
+  status: Schema.optional(Schema.String),
   message: Schema.optional(Schema.String),
 }).annotate({ identifier: "CrucibleEventControlV1" })
 
