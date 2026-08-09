@@ -89,6 +89,7 @@ import { fileHandlers } from "./handlers/file"
 import { fundQualificationHandlers } from "./handlers/fund-qualification"
 import { globalHandlers } from "./handlers/global"
 import { healthHandlers } from "./handlers/health"
+import { qcHandlers } from "./handlers/qc"
 import { integrationHandlers } from "./handlers/integrations"
 import { instanceHandlers } from "./handlers/instance"
 import { liveHandlers } from "./handlers/live"
@@ -235,6 +236,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
     questionHandlers,
     permissionHandlers,
     providerHandlers,
+    qcHandlers(InstanceHttpApi),
     sessionHandlers,
     syncHandlers,
     tuiHandlers,
