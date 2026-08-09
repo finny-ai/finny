@@ -3076,6 +3076,7 @@ if __name__ == "__main__":
           seed: effectiveSeed,
           startDate: start,
           endDate: end,
+          walkForwardFolds: robustness.walkForwardFolds ?? 0,
         })
         if (!leanOutcome.ok) {
           emit({

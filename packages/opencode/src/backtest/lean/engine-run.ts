@@ -8,7 +8,7 @@ import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST, leanExecutionProfileV1, r
 import { materializeLeanDataBundle } from "./materialize"
 import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
 import { parseLeanResultJson } from "./lean-result-parse"
-import { buildCanonicalMetrics } from "./metrics"
+import { buildCanonicalMetrics, buildWalkForwardSummary } from "./metrics"
 import { LeanAdapter } from "./adapter"
 import { readLeanSourceFile } from "./source-store"
 import type { LeanBarScheduleV1 } from "./types"
@@ -49,6 +49,7 @@ export async function runLeanEngineInRunner(input: {
   seed: number
   startDate: string
   endDate: string
+  walkForwardFolds: number
 }): Promise<LeanEngineRunResult> {
   const assetClass = String(input.config.asset_class ?? "equity").toLowerCase().includes("crypto")
     ? "crypto_spot"
@@ -206,6 +207,15 @@ export async function runLeanEngineInRunner(input: {
   const statsFees = Number(parsed.statistics?.["Total Fees"] ?? 0)
   if (Number.isFinite(statsFees) && statsFees > 0) {
     v2.exposure.total_fees = statsFees
+  }
+  if (input.walkForwardFolds > 1 && timestamps.length > 0) {
+    v2.walk_forward = buildWalkForwardSummary({
+      equityCurve: parsed.equityCurve,
+      fills: parsed.fills,
+      timestamps,
+      warmupBars: Number(input.config.required_history_bars ?? 0),
+      folds: input.walkForwardFolds,
+    })
   }
 
   // Canonical artifact set consumed by the strict run publisher.
