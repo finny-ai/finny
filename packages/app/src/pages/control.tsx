@@ -685,8 +685,10 @@ export default function Control() {
                               value={state.prompts[agent.id] ?? ""}
                               onInput={(event) => setState("prompts", agent.id, event.currentTarget.value)}
                               onKeyDown={(event) => {
-                                if (event.key === "Enter" && (event.metaKey || event.ctrlKey))
+                                if (event.key === "Enter") {
+                                  event.preventDefault()
                                   void submitPrompt(agent, "steer")
+                                }
                               }}
                               placeholder="Prompt this agent…"
                               disabled={busy()}
