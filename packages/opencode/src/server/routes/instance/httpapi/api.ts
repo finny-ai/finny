@@ -24,6 +24,7 @@ import { SyncApi } from "./groups/sync"
 import { TuiApi } from "./groups/tui"
 import { WorkspaceApi } from "./groups/workspace"
 import { CampaignApi } from "./groups/campaign"
+import { ControlV1Api } from "./groups/control-v1"
 import { Api } from "@opencode-ai/server/api"
 // GlobalEventSchema snapshots the registry after event-producing groups register their variants.
 import { GlobalApi } from "./groups/global"
@@ -79,6 +80,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(TuiApi)
   .addHttpApi(WorkspaceApi)
   .addHttpApi(CampaignApi)
+  .addHttpApi(ControlV1Api)
   .middleware(SchemaErrorMiddleware)
 
 export const OpenCodeHttpApi = HttpApi.make("opencode")

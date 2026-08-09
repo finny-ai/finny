@@ -52,6 +52,25 @@ import type {
   ConfigProvidersResponses,
   ConfigUpdateErrors,
   ConfigUpdateResponses,
+  ControlAbortV1,
+  ControlCreateSessionV1,
+  ControlPromptV1,
+  ControlV1AbortErrors,
+  ControlV1AbortResponses,
+  ControlV1AgentsErrors,
+  ControlV1AgentsResponses,
+  ControlV1CampaignsErrors,
+  ControlV1CampaignsResponses,
+  ControlV1CreateSessionErrors,
+  ControlV1CreateSessionResponses,
+  ControlV1CrucibleErrors,
+  ControlV1CrucibleEventsErrors,
+  ControlV1CrucibleEventsResponses,
+  ControlV1CrucibleResponses,
+  ControlV1OverviewErrors,
+  ControlV1OverviewResponses,
+  ControlV1PromptErrors,
+  ControlV1PromptResponses,
   EventSubscribeResponses,
   EventTuiCommandExecute,
   EventTuiPromptAppend,
@@ -122,12 +141,22 @@ import type {
   HealthReadyResponses,
   InstanceDisposeErrors,
   InstanceDisposeResponses,
+  IntegrationsRobinhoodDetachErrors,
+  IntegrationsRobinhoodDetachResponses,
+  IntegrationsRobinhoodInstallErrors,
+  IntegrationsRobinhoodInstallResponses,
+  IntegrationsRobinhoodStatusErrors,
+  IntegrationsRobinhoodStatusResponses,
+  IntegrationsRobinhoodVerifyErrors,
+  IntegrationsRobinhoodVerifyResponses,
   LiveGetErrors,
   LiveGetResponses,
   LiveListErrors,
   LiveListResponses,
   LiveRemoveErrors,
   LiveRemoveResponses,
+  LiveRobinhoodPreflightErrors,
+  LiveRobinhoodPreflightResponses,
   LiveStartErrors,
   LiveStartPayload,
   LiveStartResponses,
@@ -206,6 +235,12 @@ import type {
   PtyShellsResponses,
   PtyUpdateErrors,
   PtyUpdateResponses,
+  QcConnectErrors,
+  QcConnectResponses,
+  QcDisconnectErrors,
+  QcDisconnectResponses,
+  QcStatusErrors,
+  QcStatusResponses,
   QuestionAnswer,
   QuestionListErrors,
   QuestionListResponses,
@@ -214,6 +249,8 @@ import type {
   QuestionReplyErrors,
   QuestionReplyResponses,
   QuestionV2Reply,
+  RobinhoodIntegrationConfigureInput,
+  RobinhoodLivePreflightPayload,
   SessionAbortErrors,
   SessionAbortResponses,
   SessionChildrenErrors,
@@ -1355,6 +1392,103 @@ export class Global extends HeyApiClient {
   private _config?: Config
   get config(): Config {
     return (this._config ??= new Config({ client: this.client }))
+  }
+}
+
+export class Robinhood extends HeyApiClient {
+  /**
+   * Detach Robinhood integration
+   *
+   * Remove connector-owned Finny metadata while leaving rhx credentials and npm cache untouched.
+   */
+  public detach<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).delete<
+      IntegrationsRobinhoodDetachResponses,
+      IntegrationsRobinhoodDetachErrors,
+      ThrowOnError
+    >({ url: "/global/integrations/robinhood", ...options })
+  }
+
+  /**
+   * Get Robinhood integration status
+   *
+   * Passively inspect the managed rhx installation and local authentication state.
+   */
+  public status<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<
+      IntegrationsRobinhoodStatusResponses,
+      IntegrationsRobinhoodStatusErrors,
+      ThrowOnError
+    >({ url: "/global/integrations/robinhood", ...options })
+  }
+
+  /**
+   * Install or attach rhx
+   *
+   * Install pinned rhx 0.4.8 on demand or attach a manual executable path.
+   */
+  public install<ThrowOnError extends boolean = false>(
+    parameters?: {
+      robinhoodIntegrationConfigureInput?: RobinhoodIntegrationConfigureInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [{ args: [{ key: "robinhoodIntegrationConfigureInput", map: "body" }] }],
+    )
+    return (options?.client ?? this.client).post<
+      IntegrationsRobinhoodInstallResponses,
+      IntegrationsRobinhoodInstallErrors,
+      ThrowOnError
+    >({
+      url: "/global/integrations/robinhood/install",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  /**
+   * Verify Robinhood authentication
+   *
+   * Actively verify the configured rhx profile without accepting credentials or MFA input.
+   */
+  public verify<ThrowOnError extends boolean = false>(
+    parameters?: {
+      robinhoodIntegrationConfigureInput?: RobinhoodIntegrationConfigureInput
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [{ args: [{ key: "robinhoodIntegrationConfigureInput", map: "body" }] }],
+    )
+    return (options?.client ?? this.client).post<
+      IntegrationsRobinhoodVerifyResponses,
+      IntegrationsRobinhoodVerifyErrors,
+      ThrowOnError
+    >({
+      url: "/global/integrations/robinhood/verify",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
+export class Integrations extends HeyApiClient {
+  private _robinhood?: Robinhood
+  get robinhood(): Robinhood {
+    return (this._robinhood ??= new Robinhood({ client: this.client }))
   }
 }
 
@@ -2535,6 +2669,49 @@ export class Formatter extends HeyApiClient {
   }
 }
 
+export class Robinhood2 extends HeyApiClient {
+  /**
+   * Preflight Robinhood execution
+   *
+   * Discover the explicit Agentic account and issue a short-lived, server-bound execution challenge.
+   */
+  public preflight<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      robinhoodLivePreflightPayload?: RobinhoodLivePreflightPayload
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "robinhoodLivePreflightPayload", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      LiveRobinhoodPreflightResponses,
+      LiveRobinhoodPreflightErrors,
+      ThrowOnError
+    >({
+      url: "/live/robinhood/preflight",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Live extends HeyApiClient {
   /**
    * List live runs
@@ -2697,6 +2874,11 @@ export class Live extends HeyApiClient {
       ...options,
       ...params,
     })
+  }
+
+  private _robinhood?: Robinhood2
+  get robinhood(): Robinhood2 {
+    return (this._robinhood ??= new Robinhood2({ client: this.client }))
   }
 }
 
@@ -3432,6 +3614,52 @@ export class Pty extends HeyApiClient {
       url: "/pty/{ptyID}/connect",
       ...options,
       ...params,
+    })
+  }
+}
+
+export class Qc extends HeyApiClient {
+  public disconnect<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).delete<QcDisconnectResponses, QcDisconnectErrors, ThrowOnError>({
+      url: "/qc/credentials",
+      ...options,
+    })
+  }
+
+  public connect<ThrowOnError extends boolean = false>(
+    parameters?: {
+      userId?: string
+      apiToken?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "body", key: "userId" },
+            { in: "body", key: "apiToken" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<QcConnectResponses, QcConnectErrors, ThrowOnError>({
+      url: "/qc/credentials",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public status<ThrowOnError extends boolean = false>(options?: Options<never, ThrowOnError>) {
+    return (options?.client ?? this.client).get<QcStatusResponses, QcStatusErrors, ThrowOnError>({
+      url: "/qc/status",
+      ...options,
     })
   }
 }
@@ -5902,6 +6130,247 @@ export class Campaign extends HeyApiClient {
   }
 }
 
+export class ControlV1 extends HeyApiClient {
+  public overview<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ControlV1OverviewResponses, ControlV1OverviewErrors, ThrowOnError>({
+      url: "/control/v1/overview",
+      ...options,
+      ...params,
+    })
+  }
+
+  public agents<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      state?: "busy" | "idle" | "error" | "blocked"
+      cursor?: string
+      limit?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "state" },
+            { in: "query", key: "cursor" },
+            { in: "query", key: "limit" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ControlV1AgentsResponses, ControlV1AgentsErrors, ThrowOnError>({
+      url: "/control/v1/agents",
+      ...options,
+      ...params,
+    })
+  }
+
+  public crucible<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ControlV1CrucibleResponses, ControlV1CrucibleErrors, ThrowOnError>({
+      url: "/control/v1/crucible",
+      ...options,
+      ...params,
+    })
+  }
+
+  public crucibleEvents<ThrowOnError extends boolean = false>(
+    parameters: {
+      workflowID: string
+      directory?: string
+      workspace?: string
+      afterSeq?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "path", key: "workflowID" },
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { in: "query", key: "afterSeq" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<
+      ControlV1CrucibleEventsResponses,
+      ControlV1CrucibleEventsErrors,
+      ThrowOnError
+    >({
+      url: "/control/v1/crucible/{workflowID}/events",
+      ...options,
+      ...params,
+    })
+  }
+
+  public campaigns<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).get<ControlV1CampaignsResponses, ControlV1CampaignsErrors, ThrowOnError>({
+      url: "/control/v1/campaigns",
+      ...options,
+      ...params,
+    })
+  }
+
+  public createSession<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      controlCreateSessionV1?: ControlCreateSessionV1
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "controlCreateSessionV1", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<
+      ControlV1CreateSessionResponses,
+      ControlV1CreateSessionErrors,
+      ThrowOnError
+    >({
+      url: "/control/v1/sessions",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public prompt<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      controlPromptV1?: ControlPromptV1
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "controlPromptV1", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ControlV1PromptResponses, ControlV1PromptErrors, ThrowOnError>({
+      url: "/control/v1/prompts",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+
+  public abort<ThrowOnError extends boolean = false>(
+    parameters?: {
+      directory?: string
+      workspace?: string
+      controlAbortV1?: ControlAbortV1
+    },
+    options?: Options<never, ThrowOnError>,
+  ) {
+    const params = buildClientParams(
+      [parameters],
+      [
+        {
+          args: [
+            { in: "query", key: "directory" },
+            { in: "query", key: "workspace" },
+            { key: "controlAbortV1", map: "body" },
+          ],
+        },
+      ],
+    )
+    return (options?.client ?? this.client).post<ControlV1AbortResponses, ControlV1AbortErrors, ThrowOnError>({
+      url: "/control/v1/abort",
+      ...options,
+      ...params,
+      headers: {
+        "Content-Type": "application/json",
+        ...options?.headers,
+        ...params.headers,
+      },
+    })
+  }
+}
+
 export class Health2 extends HeyApiClient {
   /**
    * Check server health
@@ -7348,6 +7817,11 @@ export class OpencodeClient extends HeyApiClient {
     return (this._global ??= new Global({ client: this.client }))
   }
 
+  private _integrations?: Integrations
+  get integrations(): Integrations {
+    return (this._integrations ??= new Integrations({ client: this.client }))
+  }
+
   private _event?: Event
   get event(): Event {
     return (this._event ??= new Event({ client: this.client }))
@@ -7433,6 +7907,11 @@ export class OpencodeClient extends HeyApiClient {
     return (this._pty ??= new Pty({ client: this.client }))
   }
 
+  private _qc?: Qc
+  get qc(): Qc {
+    return (this._qc ??= new Qc({ client: this.client }))
+  }
+
   private _question?: Question
   get question(): Question {
     return (this._question ??= new Question({ client: this.client }))
@@ -7471,6 +7950,11 @@ export class OpencodeClient extends HeyApiClient {
   private _campaign?: Campaign
   get campaign(): Campaign {
     return (this._campaign ??= new Campaign({ client: this.client }))
+  }
+
+  private _controlV1?: ControlV1
+  get controlV1(): ControlV1 {
+    return (this._controlV1 ??= new ControlV1({ client: this.client }))
   }
 
   private _v2?: V2

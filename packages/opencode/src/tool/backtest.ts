@@ -47,6 +47,7 @@ import { normalizeInterval } from "@/agent/request-identity"
 import { LeanAdapter } from "@/backtest/lean/adapter"
 import { isLeanProfile } from "@/backtest/lean/contracts"
 import { runtimeForCandidate, validateLeanSourceManifest } from "@/backtest/lean/select"
+import { observeStageAsync } from "@/algorithm/build-workflow/observe"
 
 export function backtestAttemptFingerprint(input: {
   params: unknown
@@ -750,6 +751,15 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
           workflow = await runWorkflow(startWorkflowBacktest(workflow))
           experiment = { ...experiment, workflow }
         }
+        const observedWorkflowId = workflow?.workflowId
+        if (observedWorkflowId) {
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "data",
+            status: "started",
+            message: "Crucible data collection and strict quality validation",
+          })
+        }
         const result = await BacktestRunner.run({
           algorithm: algo,
           duration: params.duration,
@@ -780,8 +790,16 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         })
 
         if (!result.ok) {
+          if (observedWorkflowId) {
+            await observeStageAsync({
+              sessionId: ctx.sessionID,
+              stage: "data",
+              status: "failed",
+              message: `engine run failed: ${result.error}`,
+            })
+          }
           await finishTrial("failed", result.error)
-          if (workflow?.stage === "backtest_running") {
+          if (observedWorkflowId && workflow?.stage === "backtest_running") {
             workflow = await runWorkflow(
               failWorkflowBacktest({ workflowId: workflow.workflowId, reason: result.error }),
             )
@@ -851,6 +869,21 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         }
 
         const r = result.results
+        if (observedWorkflowId) {
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "data",
+            status: "completed",
+            artifactId: r.runId,
+            message: "strict data collection and quality validation completed",
+          })
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "base",
+            status: "started",
+            message: "base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay",
+          })
+        }
         const ledgerResult = await recordExperiment("metrics", r.runId)
         if (ledgerResult?.kind === "rejected") {
           if (workflow?.stage === "backtest_running") {
@@ -908,6 +941,21 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
           decay: r.v2?.alpha_decay,
         })
         const unified = computedUnified
+        if (observedWorkflowId) {
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "base",
+            status: "completed",
+            artifactId: r.runId,
+            message: `gauntlet verdict: ${unified.verdict}`,
+          })
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "review_packet",
+            status: "started",
+            message: "review packet and durability baseline generation",
+          })
+        }
         await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)
         if (workflow && experiment) {
           const controllerVerdict =
@@ -944,6 +992,15 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
           verdict: computedUnified.verdict,
           reasons: computedUnified.reasons,
         })
+        if (observedWorkflowId) {
+          await observeStageAsync({
+            sessionId: ctx.sessionID,
+            stage: "review_packet",
+            status: "completed",
+            artifactId: r.runId,
+            message: reviewPacket.error ?? undefined,
+          })
+        }
         const fmt = (v: number | null | undefined, d = 2) => v == null ? "N/A" : v.toFixed(d)
         const fmtPct = (v: number) => `${(v * 100).toFixed(2)}%`
         const fmtDollar = (v: number | null | undefined) => v == null ? "N/A" : `$${fmt(v)}`
@@ -1356,6 +1413,14 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         }
         }))
         if (resultExit._tag === "Failure") {
+          yield* Effect.promise(() =>
+            observeStageAsync({
+              sessionId: ctx.sessionID,
+              stage: "data",
+              status: "failed",
+              message: "backtest execution threw after strict execution started",
+            }),
+          )
           yield* Effect.promise(() =>
             runWorkflow(
               failActiveWorkflowBacktest({

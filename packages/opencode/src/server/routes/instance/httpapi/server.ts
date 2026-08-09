@@ -80,7 +80,9 @@ import { PtyConnectApi } from "./groups/pty"
 import { eventHandlers } from "./handlers/event"
 import { configHandlers } from "./handlers/config"
 import { campaignHandlers } from "./handlers/campaign"
+import { controlV1Handlers } from "./handlers/control-v1"
 import { CampaignController } from "@/control-plane/campaign"
+import { ControlReadService } from "@/control/control-read"
 import { MessageID, SessionID } from "@/session/schema"
 import { controlHandlers } from "./handlers/control"
 import { controlPlaneHandlers } from "./handlers/control-plane"
@@ -224,6 +226,7 @@ const instanceApiRoutes = HttpApiBuilder.layer(InstanceHttpApi).pipe(
   Layer.provide([
     configHandlers,
     campaignHandlers,
+    controlV1Handlers,
     experimentalHandlers,
     fileHandlers,
     fundQualificationHandlers(InstanceHttpApi),
@@ -252,6 +255,7 @@ const instanceRoutes = instanceApiRoutes.pipe(
         Layer.provide(campaignRuntimeLayer),
       ),
     ),
+    ControlReadService.layer,
     httpApiAuthLayer,
     workspaceRoutingLive,
     instanceContextLayer,

@@ -52,6 +52,7 @@ import { ErrorPage } from "./pages/error"
 import { useCheckServerHealth } from "./utils/server-health"
 
 const HomeRoute = lazy(() => import("@/pages/home"))
+const ControlRoute = lazy(() => import("@/pages/control"))
 const Session = lazy(() => import("@/pages/session"))
 const NewSession = lazy(() => import("@/pages/new-session"))
 
@@ -410,6 +411,7 @@ export function AppInterface(props: {
             )}
           >
             <Route path="/" component={HomeRoute} />
+            <Route path="/control" component={ControlRoute} />
             <Route path="/new-session" component={DraftRoute} />
             <Route path="/:dir" component={DirectoryLayout}>
               <Route path="/" component={() => <Navigate href="session" />} />

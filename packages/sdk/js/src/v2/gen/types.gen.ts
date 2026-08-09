@@ -2060,6 +2060,73 @@ export type Config = {
   }
 }
 
+export type RobinhoodIntegrationState =
+  | "unsupported"
+  | "not_installed"
+  | "installing"
+  | "installed"
+  | "authenticating"
+  | "ready"
+  | "mfa_required"
+  | "expired"
+  | "error"
+
+export type RobinhoodIntegrationCapabilityState =
+  | "unknown"
+  | "not_configured"
+  | "configured"
+  | "ready"
+  | "mfa_required"
+  | "expired"
+  | "error"
+
+export type RobinhoodIntegrationCapabilityStatus = {
+  configured: boolean
+  ready: boolean
+  state: RobinhoodIntegrationCapabilityState
+}
+
+export type RobinhoodIntegrationStatus = {
+  provider: "robinhood"
+  package: "rhx"
+  pinnedVersion: "0.4.8"
+  status: RobinhoodIntegrationState
+  supported: boolean
+  installed: boolean
+  ready: boolean
+  source?: "managed" | "manual"
+  executablePath?: string
+  profile?: string
+  loginArgs?: Array<string>
+  brokerage: RobinhoodIntegrationCapabilityStatus
+  crypto: RobinhoodIntegrationCapabilityStatus
+  message?: string
+  checkedAt?: string
+}
+
+export type RobinhoodIntegrationApiError = {
+  provider: "robinhood"
+  package: "rhx"
+  pinnedVersion: "0.4.8"
+  status: "error"
+  supported: boolean
+  installed: boolean
+  ready: boolean
+  source?: "managed" | "manual"
+  executablePath?: string
+  profile?: string
+  loginArgs?: Array<string>
+  brokerage: RobinhoodIntegrationCapabilityStatus
+  crypto: RobinhoodIntegrationCapabilityStatus
+  message: string
+  checkedAt?: string
+}
+
+export type RobinhoodIntegrationConfigureInput = {
+  executablePath?: string
+  profile?: string
+}
+
 export type FinnyHomeError = {
   name: "FinnyHomeError"
   data: {
@@ -2430,6 +2497,70 @@ export type FormatterStatus = {
   enabled: boolean
 }
 
+export type RobinhoodLivePreflightPayload = {
+  algorithmId: string
+  runId: string
+  symbol: string
+  interval: string
+  executionMode: "shadow" | "paper" | "live"
+  accountProviderID?: string
+}
+
+export type RobinhoodLivePreflight = {
+  schema: "finny.robinhood_live_preflight"
+  version: 1
+  eligible: boolean
+  executionMode: "shadow" | "paper" | "live"
+  brokerKind: "robinhood"
+  paperSupported: false
+  checks: Array<{
+    code: string
+    status: "pass" | "fail"
+    message: string
+  }>
+  account?: {
+    accountProviderID: string
+    label?: string
+    accountRole: "agentic"
+    accountScopeHash: string
+    cash: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    equity: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    observedAt: string
+    fractionalEquities: boolean
+  }
+  positions: Array<{
+    symbol: string
+    qty: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    mark: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    marketValue: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  }>
+  openOrders: Array<{
+    orderId: string
+    intentId?: string
+    symbol: string
+    side: "buy" | "sell"
+    qty: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    status: string
+  }>
+  risk?: {
+    maxPositions: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    drawdownLimitPct: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    sizingStopDistancePct: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    protectiveStopMode: string
+    maxGrossExposurePct?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    maxNetExposurePct?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    maxSymbolExposurePct?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+    flattenOnStop?: boolean
+  }
+  challengeId?: string
+  expiresAt?: string
+}
+
+export type LiveRunStartError = {
+  _tag: "LiveRunStartError"
+  message: string
+}
+
 export type LiveRun = {
   id: string
   algorithmId: string
@@ -2437,11 +2568,11 @@ export type LiveRun = {
   backtestRunId: string
   symbol: string
   interval: string
-  brokerKind: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  brokerKind: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
   accountProviderID: string
   accountLabel?: string
   mode?: "paper" | "testnet" | "live"
-  executionMode?: "shadow" | "paper"
+  executionMode?: "shadow" | "paper" | "live"
   directory?: string
   status: "starting" | "running" | "stopped" | "error"
   startedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
@@ -2508,8 +2639,8 @@ export type LiveAlgorithmInfo = {
   config?: string
   backtestCode?: string
   reasoning?: string
-  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
-  targetBrokerage?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
+  targetBrokerage?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
   time_created: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
   time_updated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
@@ -2520,7 +2651,10 @@ export type LiveStartPayload = {
   symbol: string
   interval: string
   accountProviderID: string
-  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu"
+  brokerKind?: "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
+  executionMode?: "shadow" | "paper" | "live"
+  challengeId?: string
+  realMoneyAcknowledgement?: boolean
   activationReceipt?: {
     schema: "finny.paper_activation_receipt"
     version: 1
@@ -2535,11 +2669,6 @@ export type LiveStartPayload = {
     receiptHash: string
     signature: string
   }
-}
-
-export type LiveRunStartError = {
-  _tag: "LiveRunStartError"
-  message: string
 }
 
 export type ConflictError = {
@@ -2578,6 +2707,11 @@ export type McpStatus =
   | McpStatusNeedsClientRegistration
 
 export type McpUnsupportedOAuthError = {
+  error: string
+}
+
+export type McpManagedLifecycleError = {
+  _tag: "McpManagedLifecycleError"
   error: string
 }
 
@@ -2912,6 +3046,159 @@ export type CampaignError = {
   data: {
     message: string
   }
+}
+
+export type AgentControlV1 = {
+  id: string
+  parentID?: string
+  directory: string
+  title: string
+  agent: string
+  modelRef?: string
+  status: "busy" | "idle" | "active" | "error" | "blocked"
+  currentActivity?: string
+  elapsedMs?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  cost?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  tokens?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  childCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  taskCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  pendingQuestionCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  pendingPermissionCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  timeCreated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  timeUpdated: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type TaskControlV1 = {
+  id: string
+  parentSessionID: string
+  subagentType: string
+  mode: string
+  status: string
+  startedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  finishedAt?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  resultSummary?: string
+  lastError?: string
+  createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type CrucibleWorkflowControlV1 = {
+  workflowId: string
+  sessionId: string
+  workspaceSlug: string
+  stage: string
+  status: string
+  phase: string
+  revision: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  requestVersion: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  candidate?: unknown
+  backtest?: unknown
+  blocker?: unknown
+  terminal?: unknown
+  updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type CampaignControlV1 = {
+  id: string
+  goal: string
+  agent: string
+  status: string
+  rounds: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  candidateCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  eventsCount: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  createdAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  updatedAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+}
+
+export type DomainHealthControlV1 = {
+  domain: "agents" | "crucible" | "campaign"
+  status: "fresh" | "stale" | "unavailable"
+  message?: string
+}
+
+export type ControlSnapshotV1 = {
+  schema: "finny.control_snapshot"
+  version: 1
+  capturedAt: string
+  agents: Array<AgentControlV1>
+  tasks: Array<TaskControlV1>
+  crucible: Array<CrucibleWorkflowControlV1>
+  campaigns: Array<CampaignControlV1>
+  health: Array<DomainHealthControlV1>
+}
+
+export type CrucibleEventControlV1 = {
+  seq: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  type: string
+  occurredAt: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
+  sourceKind: string
+  summary?: string
+  stage?: string
+  message?: string
+}
+
+export type ControlCreateSessionV1 = {
+  operationID: string
+  requestHash: string
+  title?: string
+  agent?: string
+  model?: string
+  metadata?: {
+    [key: string]: unknown
+  }
+}
+
+export type CommandReceiptV1 = {
+  operationID: string
+  accepted: boolean
+  alreadyHandled?: boolean
+  sessionID?: string
+  workflowID?: string
+  messageID?: string
+  message?: string
+}
+
+export type ControlPromptV1 = {
+  sessionID: string
+  text: string
+  delivery: "steer" | "queue"
+  operationID: string
+  requestHash: string
+  agent?: string
+  model?: string
+}
+
+export type CommandReceiptV11 = {
+  operationID: string
+  accepted: boolean
+  alreadyHandled?: boolean
+  sessionID?: string
+  workflowID?: string
+  messageID?: string
+  message?: string
+}
+
+export type ControlCommandNotFoundV1 = {
+  operationID: string
+  accepted: false
+  sessionID?: string
+  message: string
+}
+
+export type ControlAbortV1 = {
+  sessionID: string
+  operationID: string
+  requestHash: string
+}
+
+export type CommandReceiptV12 = {
+  operationID: string
+  accepted: boolean
+  alreadyHandled?: boolean
+  sessionID?: string
+  workflowID?: string
+  messageID?: string
+  message?: string
 }
 
 export type UnauthorizedError = {
@@ -5790,6 +6077,114 @@ export type GlobalUpgradeResponses = {
 
 export type GlobalUpgradeResponse = GlobalUpgradeResponses[keyof GlobalUpgradeResponses]
 
+export type IntegrationsRobinhoodDetachData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/integrations/robinhood"
+}
+
+export type IntegrationsRobinhoodDetachErrors = {
+  /**
+   * RobinhoodIntegrationApiError | InvalidRequestError
+   */
+  400: RobinhoodIntegrationApiError | InvalidRequestError
+}
+
+export type IntegrationsRobinhoodDetachError =
+  IntegrationsRobinhoodDetachErrors[keyof IntegrationsRobinhoodDetachErrors]
+
+export type IntegrationsRobinhoodDetachResponses = {
+  /**
+   * Detached Robinhood rhx integration status
+   */
+  200: RobinhoodIntegrationStatus
+}
+
+export type IntegrationsRobinhoodDetachResponse =
+  IntegrationsRobinhoodDetachResponses[keyof IntegrationsRobinhoodDetachResponses]
+
+export type IntegrationsRobinhoodStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/global/integrations/robinhood"
+}
+
+export type IntegrationsRobinhoodStatusErrors = {
+  /**
+   * RobinhoodIntegrationApiError | InvalidRequestError
+   */
+  400: RobinhoodIntegrationApiError | InvalidRequestError
+}
+
+export type IntegrationsRobinhoodStatusError =
+  IntegrationsRobinhoodStatusErrors[keyof IntegrationsRobinhoodStatusErrors]
+
+export type IntegrationsRobinhoodStatusResponses = {
+  /**
+   * Robinhood rhx integration status
+   */
+  200: RobinhoodIntegrationStatus
+}
+
+export type IntegrationsRobinhoodStatusResponse =
+  IntegrationsRobinhoodStatusResponses[keyof IntegrationsRobinhoodStatusResponses]
+
+export type IntegrationsRobinhoodInstallData = {
+  body?: RobinhoodIntegrationConfigureInput
+  path?: never
+  query?: never
+  url: "/global/integrations/robinhood/install"
+}
+
+export type IntegrationsRobinhoodInstallErrors = {
+  /**
+   * RobinhoodIntegrationApiError | BadRequest | InvalidRequestError
+   */
+  400: RobinhoodIntegrationApiError | EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type IntegrationsRobinhoodInstallError =
+  IntegrationsRobinhoodInstallErrors[keyof IntegrationsRobinhoodInstallErrors]
+
+export type IntegrationsRobinhoodInstallResponses = {
+  /**
+   * Robinhood rhx installation status
+   */
+  200: RobinhoodIntegrationStatus
+}
+
+export type IntegrationsRobinhoodInstallResponse =
+  IntegrationsRobinhoodInstallResponses[keyof IntegrationsRobinhoodInstallResponses]
+
+export type IntegrationsRobinhoodVerifyData = {
+  body?: RobinhoodIntegrationConfigureInput
+  path?: never
+  query?: never
+  url: "/global/integrations/robinhood/verify"
+}
+
+export type IntegrationsRobinhoodVerifyErrors = {
+  /**
+   * RobinhoodIntegrationApiError | BadRequest | InvalidRequestError
+   */
+  400: RobinhoodIntegrationApiError | EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type IntegrationsRobinhoodVerifyError =
+  IntegrationsRobinhoodVerifyErrors[keyof IntegrationsRobinhoodVerifyErrors]
+
+export type IntegrationsRobinhoodVerifyResponses = {
+  /**
+   * Robinhood rhx verification status
+   */
+  200: RobinhoodIntegrationStatus
+}
+
+export type IntegrationsRobinhoodVerifyResponse =
+  IntegrationsRobinhoodVerifyResponses[keyof IntegrationsRobinhoodVerifyResponses]
+
 export type EventSubscribeData = {
   body?: never
   path?: never
@@ -7086,6 +7481,34 @@ export type FormatterStatusResponses = {
 
 export type FormatterStatusResponse = FormatterStatusResponses[keyof FormatterStatusResponses]
 
+export type LiveRobinhoodPreflightData = {
+  body?: RobinhoodLivePreflightPayload
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/live/robinhood/preflight"
+}
+
+export type LiveRobinhoodPreflightErrors = {
+  /**
+   * LiveRunStartError | InvalidRequestError
+   */
+  400: LiveRunStartError | InvalidRequestError
+}
+
+export type LiveRobinhoodPreflightError = LiveRobinhoodPreflightErrors[keyof LiveRobinhoodPreflightErrors]
+
+export type LiveRobinhoodPreflightResponses = {
+  /**
+   * Robinhood live execution preflight challenge
+   */
+  200: RobinhoodLivePreflight
+}
+
+export type LiveRobinhoodPreflightResponse = LiveRobinhoodPreflightResponses[keyof LiveRobinhoodPreflightResponses]
+
 export type LiveListData = {
   body?: never
   path?: never
@@ -7329,6 +7752,10 @@ export type McpAuthRemoveErrors = {
    */
   400: BadRequestError
   /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
+  /**
    * McpServerNotFoundError
    */
   404: McpServerNotFoundError
@@ -7364,6 +7791,10 @@ export type McpAuthStartErrors = {
    * McpUnsupportedOAuthError | InvalidRequestError
    */
   400: McpUnsupportedOAuthError | InvalidRequestError
+  /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
   /**
    * McpServerNotFoundError
    */
@@ -7404,6 +7835,10 @@ export type McpAuthCallbackErrors = {
    */
   400: EffectHttpApiErrorBadRequest | InvalidRequestError
   /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
+  /**
    * McpServerNotFoundError
    */
   404: McpServerNotFoundError
@@ -7437,6 +7872,10 @@ export type McpAuthAuthenticateErrors = {
    * McpUnsupportedOAuthError | InvalidRequestError
    */
   400: McpUnsupportedOAuthError | InvalidRequestError
+  /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
   /**
    * McpServerNotFoundError
    */
@@ -7472,6 +7911,10 @@ export type McpConnectErrors = {
    */
   400: BadRequestError
   /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
+  /**
    * McpServerNotFoundError
    */
   404: McpServerNotFoundError
@@ -7505,6 +7948,10 @@ export type McpDisconnectErrors = {
    * Bad request
    */
   400: BadRequestError
+  /**
+   * McpManagedLifecycleError
+   */
+  403: McpManagedLifecycleError
   /**
    * McpServerNotFoundError
    */
@@ -7963,6 +8410,98 @@ export type PtyConnectTokenResponses = {
 }
 
 export type PtyConnectTokenResponse = PtyConnectTokenResponses[keyof PtyConnectTokenResponses]
+
+export type QcDisconnectData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/qc/credentials"
+}
+
+export type QcDisconnectErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type QcDisconnectError = QcDisconnectErrors[keyof QcDisconnectErrors]
+
+export type QcDisconnectResponses = {
+  /**
+   * Success
+   */
+  200: {
+    connected: boolean
+    userId?: string
+    name?: string
+    error?: string
+  }
+}
+
+export type QcDisconnectResponse = QcDisconnectResponses[keyof QcDisconnectResponses]
+
+export type QcConnectData = {
+  body?: {
+    userId: string
+    apiToken: string
+  }
+  path?: never
+  query?: never
+  url: "/qc/credentials"
+}
+
+export type QcConnectErrors = {
+  /**
+   * BadRequest | InvalidRequestError
+   */
+  400: EffectHttpApiErrorBadRequest | InvalidRequestError
+}
+
+export type QcConnectError = QcConnectErrors[keyof QcConnectErrors]
+
+export type QcConnectResponses = {
+  /**
+   * Success
+   */
+  200: {
+    connected: true
+    userId: string
+    name: string
+  }
+}
+
+export type QcConnectResponse = QcConnectResponses[keyof QcConnectResponses]
+
+export type QcStatusData = {
+  body?: never
+  path?: never
+  query?: never
+  url: "/qc/status"
+}
+
+export type QcStatusErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type QcStatusError = QcStatusErrors[keyof QcStatusErrors]
+
+export type QcStatusResponses = {
+  /**
+   * Success
+   */
+  200: {
+    connected: boolean
+    userId?: string
+    name?: string
+    error?: string
+  }
+}
+
+export type QcStatusResponse = QcStatusResponses[keyof QcStatusResponses]
 
 export type QuestionListData = {
   body?: never
@@ -10547,6 +11086,244 @@ export type CampaignAdvanceResponses = {
 }
 
 export type CampaignAdvanceResponse = CampaignAdvanceResponses[keyof CampaignAdvanceResponses]
+
+export type ControlV1OverviewData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/overview"
+}
+
+export type ControlV1OverviewErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1OverviewError = ControlV1OverviewErrors[keyof ControlV1OverviewErrors]
+
+export type ControlV1OverviewResponses = {
+  /**
+   * Unified Finny control snapshot
+   */
+  200: ControlSnapshotV1
+}
+
+export type ControlV1OverviewResponse = ControlV1OverviewResponses[keyof ControlV1OverviewResponses]
+
+export type ControlV1AgentsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+    state?: "busy" | "idle" | "error" | "blocked"
+    cursor?: string
+    limit?: string
+  }
+  url: "/control/v1/agents"
+}
+
+export type ControlV1AgentsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1AgentsError = ControlV1AgentsErrors[keyof ControlV1AgentsErrors]
+
+export type ControlV1AgentsResponses = {
+  /**
+   * Root agent sessions
+   */
+  200: Array<AgentControlV1>
+}
+
+export type ControlV1AgentsResponse = ControlV1AgentsResponses[keyof ControlV1AgentsResponses]
+
+export type ControlV1CrucibleData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/crucible"
+}
+
+export type ControlV1CrucibleErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1CrucibleError = ControlV1CrucibleErrors[keyof ControlV1CrucibleErrors]
+
+export type ControlV1CrucibleResponses = {
+  /**
+   * Recent Crucible workflows
+   */
+  200: Array<CrucibleWorkflowControlV1>
+}
+
+export type ControlV1CrucibleResponse = ControlV1CrucibleResponses[keyof ControlV1CrucibleResponses]
+
+export type ControlV1CrucibleEventsData = {
+  body?: never
+  path: {
+    workflowID: string
+  }
+  query?: {
+    directory?: string
+    workspace?: string
+    afterSeq?: string
+  }
+  url: "/control/v1/crucible/{workflowID}/events"
+}
+
+export type ControlV1CrucibleEventsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1CrucibleEventsError = ControlV1CrucibleEventsErrors[keyof ControlV1CrucibleEventsErrors]
+
+export type ControlV1CrucibleEventsResponses = {
+  /**
+   * Crucible workflow events
+   */
+  200: Array<CrucibleEventControlV1>
+}
+
+export type ControlV1CrucibleEventsResponse = ControlV1CrucibleEventsResponses[keyof ControlV1CrucibleEventsResponses]
+
+export type ControlV1CampaignsData = {
+  body?: never
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/campaigns"
+}
+
+export type ControlV1CampaignsErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1CampaignsError = ControlV1CampaignsErrors[keyof ControlV1CampaignsErrors]
+
+export type ControlV1CampaignsResponses = {
+  /**
+   * Campaign summaries
+   */
+  200: Array<CampaignControlV1>
+}
+
+export type ControlV1CampaignsResponse = ControlV1CampaignsResponses[keyof ControlV1CampaignsResponses]
+
+export type ControlV1CreateSessionData = {
+  body?: ControlCreateSessionV1
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/sessions"
+}
+
+export type ControlV1CreateSessionErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+}
+
+export type ControlV1CreateSessionError = ControlV1CreateSessionErrors[keyof ControlV1CreateSessionErrors]
+
+export type ControlV1CreateSessionResponses = {
+  /**
+   * Session command receipt
+   */
+  200: CommandReceiptV1
+}
+
+export type ControlV1CreateSessionResponse = ControlV1CreateSessionResponses[keyof ControlV1CreateSessionResponses]
+
+export type ControlV1PromptData = {
+  body?: ControlPromptV1
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/prompts"
+}
+
+export type ControlV1PromptErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * ControlCommandNotFoundV1
+   */
+  404: ControlCommandNotFoundV1
+}
+
+export type ControlV1PromptError = ControlV1PromptErrors[keyof ControlV1PromptErrors]
+
+export type ControlV1PromptResponses = {
+  /**
+   * Prompt command receipt
+   */
+  200: CommandReceiptV11
+}
+
+export type ControlV1PromptResponse = ControlV1PromptResponses[keyof ControlV1PromptResponses]
+
+export type ControlV1AbortData = {
+  body?: ControlAbortV1
+  path?: never
+  query?: {
+    directory?: string
+    workspace?: string
+  }
+  url: "/control/v1/abort"
+}
+
+export type ControlV1AbortErrors = {
+  /**
+   * Bad request
+   */
+  400: BadRequestError
+  /**
+   * ControlCommandNotFoundV1
+   */
+  404: ControlCommandNotFoundV1
+}
+
+export type ControlV1AbortError = ControlV1AbortErrors[keyof ControlV1AbortErrors]
+
+export type ControlV1AbortResponses = {
+  /**
+   * Abort command receipt
+   */
+  200: CommandReceiptV12
+}
+
+export type ControlV1AbortResponse = ControlV1AbortResponses[keyof ControlV1AbortResponses]
 
 export type V2HealthGetData = {
   body?: never
