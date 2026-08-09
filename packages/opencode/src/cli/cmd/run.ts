@@ -25,6 +25,7 @@ import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@openc
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
 import { recordRunCompletion } from "@/instrumentation"
+import { harnessSealedHoldoutAnswers } from "./run/harness-approval"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -789,6 +790,19 @@ export const RunCommand = effectCmd({
                   reply: "reject",
                 })
               }
+            }
+
+            if (event.type === "question.asked") {
+              const request = event.properties
+              if (request.sessionID !== sessionID) continue
+              const answers = harnessSealedHoldoutAnswers(request)
+              if (!answers) continue
+              await client.question.reply({ requestID: request.id, answers })
+              emit("harness_approval", {
+                requestID: request.id,
+                kind: "sealed_holdout",
+                answers,
+              })
             }
           }
           return error

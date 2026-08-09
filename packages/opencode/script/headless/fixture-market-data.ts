@@ -14,7 +14,7 @@ function sha256(input: string | Uint8Array): string {
   return crypto.createHash("sha256").update(input).digest("hex")
 }
 
-function deterministicCsv(): string {
+function deterministicCsv(profile: "negative" | "positive_qualification" = "negative"): string {
   const lines = ["timestamp,open,high,low,close,volume"]
   const expected = expectedEvidenceTimestamps({
     calendarId: "XNYS",
@@ -25,11 +25,14 @@ function deterministicCsv(): string {
   })
   let index = 0
   for (const timestamp of expected) {
-    // A slow downward drift with a deterministic oscillation creates repeated
-    // SMA crosses. The fixture is deliberately not profitable after costs;
-    // profitability is not a harness success condition.
-    const center = 510 - index * 0.00035
-    const wave = 2.4 * Math.sin(index / 23) + 0.65 * Math.sin(index / 7)
+    // The positive profile is stationary and cyclical so buy-and-hold remains
+    // flat while a causal crossover can produce repeated synthetic gains.
+    // It exists only to exercise the legal qualification state machine.
+    const center = profile === "positive_qualification" ? 510 : 510 - index * 0.00035
+    const wave =
+      profile === "positive_qualification"
+        ? 4.5 * Math.sin((2 * Math.PI * index) / 24)
+        : 2.4 * Math.sin(index / 23) + 0.65 * Math.sin(index / 7)
     const open = center + wave
     const close = open + 0.08 * Math.sin(index / 3)
     const high = Math.max(open, close) + 0.12
@@ -62,12 +65,13 @@ export async function startFixtureMarketDataProvider(input: {
   allowedRoot: string
   fixtureRoot: string
   harnessMode: true
+  profile?: "negative" | "positive_qualification"
 }): Promise<FixtureMarketDataProvider> {
   if (input.harnessMode !== true) throw new Error("fixture market data requires explicit harness mode")
   const allowedRoot = path.resolve(input.allowedRoot)
   const fixtureRoot = path.resolve(input.fixtureRoot)
   await fs.mkdir(fixtureRoot, { recursive: true })
-  const csv = deterministicCsv()
+  const csv = deterministicCsv(input.profile)
   const csvPath = path.join(fixtureRoot, `${FILE_STEM}.csv`)
   await fs.writeFile(csvPath, csv, "utf8")
   const csvSha256 = sha256(csv)

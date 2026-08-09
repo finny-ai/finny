@@ -83,6 +83,7 @@ it.instance("build agent has correct default properties", () =>
     expect(evalPerm(build, "edit")).toBe("deny")
     expect(evalPerm(build, "bash")).toBe("deny")
     expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+    expect(evalPerm(build, "qualify_candidate")).toBe("allow")
     expect(Permission.evaluate("task", "data_extractor", build!.permission).action).toBe("allow")
     expect(Permission.evaluate("task", "general", build!.permission).action).toBe("deny")
   }),
@@ -136,6 +137,7 @@ it.instance("versioned Finny CLI aliases resolve to their canonical compatibilit
     expect(research?.name).toBe("research")
     expect(chat?.name).toBe("chat")
     expect(evalPerm(build, "finny_algorithm_save")).toBe("allow")
+    expect(evalPerm(build, "qualify_candidate")).toBe("allow")
     expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
   }),
 )
@@ -170,6 +172,7 @@ it.instance("legacy strategy agents are hidden primary agents", () =>
     expect(chat?.mode).toBe("primary")
     expect(chat?.native).toBe(true)
     expect(chat?.hidden).toBe(true)
+    expect(evalPerm(finny, "qualify_candidate")).toBe("allow")
     expect(evalPerm(research, "finny_algorithm_save")).toBe("deny")
     expect(evalPerm(research, "finny_backtest")).toBe("deny")
     expect(evalPerm(research, "edit")).toBe("deny")

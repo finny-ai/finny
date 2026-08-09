@@ -214,13 +214,24 @@ function bindExperimentPlan(
   state: BuildWorkflowState,
   event: Extract<WorkflowEvent, { type: "experiment.plan_bound" }>,
 ) {
-  if (state.phase !== "candidate_validated" || !state.candidate) {
+  const replacingBlockedExploratory =
+    state.phase === "strict_blocked" &&
+    state.experimentPlan?.kind === "exploratory" &&
+    event.plan.kind === "qualification"
+  if ((state.phase !== "candidate_validated" && !replacingBlockedExploratory) || !state.candidate) {
     return rejected(state, "experiment_plan_candidate_required", "An experiment plan requires a validated candidate.")
   }
   if (event.plan.requestVersion !== state.requestVersion || event.plan.candidateId !== state.candidate.algorithmId) {
     return rejected(state, "experiment_plan_identity_mismatch", "Experiment plan does not match the active request and candidate.")
   }
-  return { ...state, phase: "experiment_planned" as const, experimentPlan: event.plan }
+  return {
+    ...state,
+    status: replacingBlockedExploratory ? ("active" as const) : state.status,
+    blocker: replacingBlockedExploratory ? undefined : state.blocker,
+    terminal: replacingBlockedExploratory ? undefined : state.terminal,
+    phase: "experiment_planned" as const,
+    experimentPlan: event.plan,
+  }
 }
 
 const BACKTEST_START_STAGES: WorkflowStage[] = ["candidate_ready", "backtested", "reviewable", "paper_approved"]

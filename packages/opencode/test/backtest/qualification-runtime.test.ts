@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { compileInputFromActiveEvidence } from "../../src/backtest/qualification-runtime"
+import { compileInputFromActiveEvidence, qualificationBinding } from "../../src/backtest/qualification-runtime"
 import { DEFAULT_QUALIFICATION_POLICY_V1 } from "../../src/backtest/qualification-policy"
 
 const cleanups: string[] = []
@@ -128,5 +128,49 @@ describe("active evidence qualification adapter", () => {
       policy: DEFAULT_QUALIFICATION_POLICY_V1,
     })
     expect(tampered.datasetEvidence.qualification).toBe("research_only")
+  })
+
+  test("trusts synthetic strict evidence only inside the exact hash-bound harness boundary", async () => {
+    const timestamps = Array.from({ length: 20 }, (_, index) =>
+      new Date(Date.parse("2025-01-02T14:30:00Z") + index * 300_000).toISOString(),
+    )
+    const evidence = await dataset(timestamps, { symbol: "SPY", interval: "5min", assetClass: "equity" })
+    evidence.identity.source = "finny-harness-fixture"
+    evidence.identity.qualification = "strict_qualified"
+    evidence.identity.evidenceId = "fixture-strict-evidence"
+    evidence.qualificationAttestation = {
+      schema: "finny.dataset_qualification_attestation",
+      version: 1,
+      datasetEvidenceId: "fixture-strict-evidence",
+      datasetHash: evidence.csvSha256,
+      manifestHash: evidence.manifestSha256,
+      qualification: "strict_qualified",
+    }
+    const env = {
+      FINNY_HARNESS_MODE: "1",
+      FINNY_HARNESS_FIXTURE_MARKET_DATA: "1",
+      FINNY_HARNESS_MARKET_DATA_SHA256: evidence.csvSha256,
+    }
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv)).toEqual({
+      datasetEvidenceId: "fixture-strict-evidence",
+      qualification: "strict_qualified",
+    })
+    const tampered = [
+      { ...env, FINNY_HARNESS_MODE: "0" },
+      { ...env, FINNY_HARNESS_FIXTURE_MARKET_DATA: "0" },
+      { ...env, FINNY_HARNESS_MARKET_DATA_SHA256: "c".repeat(64) },
+    ]
+    for (const variant of tampered) {
+      expect(qualificationBinding(evidence, variant as NodeJS.ProcessEnv).qualification).toBe("research_only")
+    }
+    evidence.identity.qualification = "research_only"
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
+    evidence.identity.qualification = "strict_qualified"
+    evidence.identity.evidenceId = ""
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
+    evidence.identity.evidenceId = "fixture-strict-evidence"
+    evidence.identity.source = "provider"
+    evidence.qualificationAttestation = undefined
+    expect(qualificationBinding(evidence, env as NodeJS.ProcessEnv).qualification).toBe("research_only")
   })
 })
