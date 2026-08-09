@@ -343,7 +343,7 @@ const algoAddOptionSpecs = [
     "runtime-profile",
     {
       type: "string",
-      choices: ["finny_python", "lean_python", "lean_csharp"] as const,
+      choices: ["finny_python", "lean_python", "lean_csharp", "qc_cloud"] as const,
       describe: "execution runtime; lean_python stores a real QCAlgorithm main.py",
     },
   ],

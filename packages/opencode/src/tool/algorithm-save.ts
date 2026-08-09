@@ -402,7 +402,7 @@ const parameters = z.object({
     ),
   language: z.string().optional().describe("Programming language, defaults to python"),
   runtimeProfile: z
-    .enum(["finny_python", "lean_python", "lean_csharp"])
+    .enum(["finny_python", "lean_python", "lean_csharp", "qc_cloud"])
     .optional()
     .describe(
       "Execution runtime for this version. Defaults to finny_python (existing engine_v2 path). " +
