@@ -215,6 +215,99 @@ function rollingSharpe(curve: Array<{ timestamp: string; equity: number }>, wind
   return out
 }
 
+function sharpeOf(returns: number[]): number {
+  const s = std(returns)
+  return s > 0 && returns.length > 1 ? (mean(returns) / s) * Math.sqrt(TRADING_DAYS_PER_YEAR) : 0
+}
+
+/**
+ * Canonical walk-forward from a single LEAN run: the equity curve and fills
+ * are partitioned into rolling train/test folds and per-fold IS/OOS metrics
+ * are computed with Finny's definitions. Mirrors the engine_v2 robustness
+ * contract so the same gates consume it.
+ */
+export function buildWalkForwardSummary(input: {
+  equityCurve: Array<{ timestamp: string; equity: number }>
+  fills: LeanFillRecord[]
+  timestamps: string[]
+  warmupBars: number
+  folds: number
+}): EngineV2.WalkForwardSummary {
+  const bars = input.timestamps.length
+  const usable = Math.max(1, bars - input.warmupBars)
+  const testLen = Math.max(1, Math.floor(usable / (input.folds + 1)))
+  const trainLen = Math.max(1, usable - testLen)
+  const startIndex = Math.min(input.warmupBars, bars - 1)
+  const foldList: EngineV2.WalkForwardFold[] = []
+
+  for (let f = 0; f < input.folds; f++) {
+    const trainStartIndex = startIndex
+    const trainEndIndex = Math.min(bars - 1, startIndex + trainLen - 1)
+    const testStartIndex = Math.min(bars - 1, trainEndIndex + 1)
+    const testEndIndex = Math.min(bars - 1, testStartIndex + testLen - 1)
+    const trainStart = input.timestamps[trainStartIndex]!
+    const trainEnd = input.timestamps[trainEndIndex]!
+    const testStart = input.timestamps[testStartIndex]!
+    const testEnd = input.timestamps[testEndIndex]!
+
+    const trainCurve = input.equityCurve.filter(
+      (p) => p.timestamp >= trainStart && p.timestamp <= trainEnd,
+    )
+    const testCurve = input.equityCurve.filter((p) => p.timestamp >= testStart && p.timestamp <= testEnd)
+    const trainReturns = dailyReturns(trainCurve.length >= 2 ? trainCurve : [trainCurve[0] ?? { timestamp: trainStart, equity: 0 }])
+    const testReturns = dailyReturns(testCurve.length >= 2 ? testCurve : [testCurve[0] ?? { timestamp: testStart, equity: 0 }])
+    const isReturn = trainCurve.length >= 2 && trainCurve[0]!.equity > 0 ? trainCurve.at(-1)!.equity / trainCurve[0]!.equity - 1 : 0
+    const oosReturn = testCurve.length >= 2 && testCurve[0]!.equity > 0 ? testCurve.at(-1)!.equity / testCurve[0]!.equity - 1 : 0
+    const oosTrades = input.fills.filter((fill) => fill.time >= testStart && fill.time <= testEnd).length
+    const oosBars = testEndIndex - testStartIndex + 1
+    foldList.push({
+      fold: f + 1,
+      train_start: trainStart.slice(0, 10),
+      train_end: trainEnd.slice(0, 10),
+      test_start: testStart.slice(0, 10),
+      test_end: testEnd.slice(0, 10),
+      is_sharpe: sharpeOf(trainReturns),
+      oos_sharpe: sharpeOf(testReturns),
+      is_return: isReturn,
+      oos_return: oosReturn,
+      oos_trades: oosTrades,
+      oos_bars: oosBars,
+      oos_coverage: oosBars > 0 ? 1 : 0,
+      oos_max_drawdown: drawdowns(testCurve).maxDrawdown,
+      ruined: oosReturn <= 0,
+      selected_params: null,
+    })
+  }
+
+  const isSharpeMean = mean(foldList.map((f) => f.is_sharpe ?? 0))
+  const oosSharpeMean = mean(foldList.map((f) => f.oos_sharpe ?? 0))
+  const stitchedOosReturn = foldList.reduce((acc, f) => acc * (1 + f.oos_return), 1) - 1
+  const stitchedOosTrades = foldList.reduce((acc, f) => acc + (f.oos_trades ?? 0), 0)
+  const ruinedFolds = foldList.filter((f) => f.ruined).length
+  const oosDecay = isSharpeMean > 0 ? (oosSharpeMean - isSharpeMean) / Math.abs(isSharpeMean) : 0
+  const flagged = isSharpeMean > 0 && oosSharpeMean < 0
+  return {
+    n_folds: foldList.length,
+    is_sharpe_mean: isSharpeMean,
+    oos_sharpe_mean: oosSharpeMean,
+    oos_decay: oosDecay,
+    is_to_oos_sharpe_change: oosSharpeMean - isSharpeMean,
+    flag_threshold: 0,
+    flagged,
+    flag_reasons: flagged ? ["positive IS Sharpe with negative OOS Sharpe"] : [],
+    deflated_sharpe: null,
+    probabilistic_sharpe: null,
+    stitched_oos_return: stitchedOosReturn,
+    stitched_oos_sharpe: oosSharpeMean,
+    stitched_oos_trades: stitchedOosTrades,
+    stitched_oos_bars: foldList.reduce((acc, f) => acc + (f.oos_bars ?? 0), 0),
+    stitched_oos_coverage: foldList.length > 0 ? mean(foldList.map((f) => f.oos_coverage ?? 0)) : 0,
+    ruined_folds: ruinedFolds,
+    multiple_testing_trials: 1,
+    folds: foldList,
+  }
+}
+
 /**
  * Canonical metrics pipeline: LEAN artifacts -> engine-neutral metrics in the
  * engine_v2.report.schema shape. Every value is computed from the canonical
