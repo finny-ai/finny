@@ -1,4 +1,5 @@
 import { Auth } from "@/auth"
+import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
 
@@ -26,6 +27,62 @@ export interface QcConnectionState {
   error?: string
 }
 
+/**
+ * Official QuantConnect API v2 authentication.
+ *
+ * Requests require a timestamped SHA-256 hash of the API token instead of the
+ * raw token:
+ *
+ *   Timestamp = unix seconds
+ *   HashedToken = sha256_hex(`${apiToken}:${Timestamp}`)
+ *   Authorization = Basic base64(`${userId}:${HashedToken}`)
+ *
+ * See https://www.quantconnect.com/docs/v2/cloud-platform/api-reference/authentication
+ */
+export function qcAuthHeaders(
+  input: QcCredentials,
+  nowSeconds?: number,
+): Record<string, string> {
+  const timestamp = String(nowSeconds ?? Math.floor(Date.now() / 1000))
+  const hashedToken = crypto.createHash("sha256").update(`${input.apiToken}:${timestamp}`).digest("hex")
+  return {
+    Authorization: `Basic ${Buffer.from(`${input.userId}:${hashedToken}`).toString("base64")}`,
+    Timestamp: timestamp,
+    "Content-Type": "application/json",
+  }
+}
+
+export interface QcApiRequestInput {
+  path: string
+  credentials: QcCredentials
+  body?: unknown
+  method?: "POST" | "GET"
+  nowSeconds?: number
+}
+
+/**
+ * Signed QuantConnect API v2 request with unified error surfacing. QC reports
+ * failures as HTTP 200 bodies with `success: false` and an `errors` array, so
+ * both that shape and real HTTP errors are normalized into a thrown Error.
+ */
+export async function qcApiRequest(input: QcApiRequestInput): Promise<Record<string, any>> {
+  const response = await fetch(`${QC_API_BASE}${input.path}`, {
+    method: input.method ?? "POST",
+    headers: qcAuthHeaders(input.credentials, input.nowSeconds),
+    body: input.body === undefined ? undefined : JSON.stringify(input.body),
+  })
+  const body = (await response.json().catch(() => ({}))) as Record<string, any>
+  if (!response.ok) {
+    const message = Array.isArray(body.errors) ? body.errors.join(" | ") : String(body.message ?? response.statusText)
+    throw new Error(`QuantConnect ${input.path} failed (HTTP ${response.status}): ${message}`)
+  }
+  if (body.success === false) {
+    const message = Array.isArray(body.errors) ? body.errors.join(" | ") : String(body.message ?? "request failed")
+    throw new Error(`QuantConnect ${input.path} failed: ${message}`)
+  }
+  return body
+}
+
 export function isQcFixtureMode(): boolean {
   return process.env.QC_FIXTURE === "1" || process.env.FINNY_QC_FIXTURE === "1"
 }
@@ -43,17 +100,12 @@ export async function readQcCredentials(): Promise<QcCredentials | null> {
  * The credentials are validated BEFORE anything is stored.
  */
 export async function verifyQcCredentials(input: QcCredentials): Promise<QcVerifiedIdentity> {
-  const response = await fetch(QC_AUTHENTICATE_URL, {
-    method: "GET",
-    headers: {
-      Authorization: `Basic ${Buffer.from(`${input.userId}:${input.apiToken}`).toString("base64")}`,
-      "Content-Type": "application/json",
-    },
-  })
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>
-  if (!response.ok || body.success !== true) {
+  let body: Record<string, unknown>
+  try {
+    body = await qcApiRequest({ path: "/authenticate", credentials: input })
+  } catch (error) {
     throw new Error(
-      `QuantConnect authentication failed (HTTP ${response.status}): ${String(body.message ?? body.error ?? "invalid credentials")}`,
+      `QuantConnect authentication failed: ${error instanceof Error ? error.message : String(error)}`,
     )
   }
   return {
