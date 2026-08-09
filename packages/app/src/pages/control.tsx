@@ -113,6 +113,9 @@ type ControlState = {
   snapshot?: ControlSnapshotV1
   loading: boolean
   refreshing: boolean
+  creating: boolean
+  createError?: string
+  createForm: { open: boolean; title: string; agent: string; model: string }
   error?: string
   prompts: Record<string, string>
   actions: Record<string, ActionState | undefined>
@@ -241,6 +244,9 @@ export default function Control() {
   const [state, setState] = createStore<ControlState>({
     loading: true,
     refreshing: false,
+    creating: false,
+    createError: undefined,
+    createForm: { open: false, title: "", agent: "", model: "" },
     prompts: {},
     actions: {},
     events: {},
@@ -426,6 +432,34 @@ export default function Control() {
     }
   }
 
+  const createSession = async () => {
+    const title = state.createForm.title.trim()
+    if (!title) {
+      setState("createError", "A title is required.")
+      return
+    }
+    const payload = {
+      title,
+      ...(state.createForm.agent.trim() ? { agent: state.createForm.agent.trim() } : {}),
+      ...(state.createForm.model.trim() ? { model: state.createForm.model.trim() } : {}),
+    }
+    setState({ creating: true, createError: undefined })
+    try {
+      const receipt = await request<CommandReceiptV1>("/control/v1/sessions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...payload, operationID: operationID(), requestHash: await hashRequest(payload) }),
+      })
+      if (!receipt.accepted) throw new Error(receipt.message ?? "The server did not accept the session request")
+      setState("createForm", { open: false, title: "", agent: "", model: "" })
+      await refreshOverview("event")
+    } catch (cause) {
+      setState("createError", errorMessage(cause))
+    } finally {
+      setState("creating", false)
+    }
+  }
+
   onMount(() => {
     void refreshOverview("initial")
     void runEventStream()
@@ -486,10 +520,59 @@ export default function Control() {
                 </Show>
               </div>
             </div>
-            <ButtonV2 onClick={() => void refreshOverview("manual")} disabled={state.refreshing}>
-              {state.refreshing ? "Refreshing…" : "Refresh"}
-            </ButtonV2>
+            <div class="flex items-center gap-2">
+              <ButtonV2
+                onClick={() => setState("createForm", "open", (open) => !open)}
+                disabled={state.creating}
+              >
+                {state.createForm.open ? "Close" : "New Session"}
+              </ButtonV2>
+              <ButtonV2 onClick={() => void refreshOverview("manual")} disabled={state.refreshing}>
+                {state.refreshing ? "Refreshing…" : "Refresh"}
+              </ButtonV2>
+            </div>
           </header>
+
+          <Show when={state.createForm.open}>
+            <form
+              class="flex flex-col gap-3 rounded-[8px] border border-v2-border-border-base bg-v2-background-bg-layer-01 p-3"
+              onSubmit={(event) => {
+                event.preventDefault()
+                void createSession()
+              }}
+            >
+              <div class="grid gap-3 sm:grid-cols-[1fr_180px_240px_auto]">
+                <TextInputV2
+                  value={state.createForm.title}
+                  onInput={(event) => setState("createForm", "title", event.currentTarget.value)}
+                  placeholder="Session title"
+                  aria-label="Session title"
+                />
+                <TextInputV2
+                  value={state.createForm.agent}
+                  onInput={(event) => setState("createForm", "agent", event.currentTarget.value)}
+                  placeholder="Agent (finny)"
+                  aria-label="Agent"
+                />
+                <TextInputV2
+                  value={state.createForm.model}
+                  onInput={(event) => setState("createForm", "model", event.currentTarget.value)}
+                  placeholder="Model (provider/model)"
+                  aria-label="Model"
+                />
+                <ButtonV2 type="submit" disabled={state.creating}>
+                  {state.creating ? "Creating…" : "Create"}
+                </ButtonV2>
+              </div>
+              <Show when={state.createError}>
+                {(error) => (
+                  <div class="rounded-[6px] border border-v2-state-border-danger bg-v2-state-bg-danger px-2.5 py-1.5 text-[12px] text-v2-state-fg-danger">
+                    {error()}
+                  </div>
+                )}
+              </Show>
+            </form>
+          </Show>
 
           <Show when={state.error}>
             {(error) => (
