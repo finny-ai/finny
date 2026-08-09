@@ -490,11 +490,56 @@ export const bindWorkflowExperimentPlan = Effect.fn("BuildWorkflowLifecycle.bind
         candidateId: workflow.candidate.algorithmId,
         fingerprint,
         createdAt: Date.now(),
+        kind: "exploratory",
       },
     },
     workflow.revision,
   )
 })
+
+/** Replace the exploratory placeholder with the exact immutable legal plan. */
+export const bindWorkflowQualificationPlan = Effect.fn("BuildWorkflowLifecycle.bindQualificationPlan")(
+  function* (input: {
+    workflow: BuildWorkflowState
+    plan: { planId: string; planHash: string; candidate: { candidateId: string } }
+  }) {
+    const { workflow, plan } = input
+    if (
+      workflow.experimentPlan?.kind === "qualification" &&
+      workflow.experimentPlan.id === plan.planId &&
+      workflow.experimentPlan.planHash === plan.planHash
+    )
+      return workflow
+    const replacingBlockedExploratory =
+      workflow.phase === "strict_blocked" && workflow.experimentPlan?.kind === "exploratory"
+    if (workflow.phase !== "candidate_validated" && !replacingBlockedExploratory) {
+      return yield* Effect.fail(
+        new Error(
+          `qualification plan cannot replace ${workflow.experimentPlan?.id ?? "no plan"} from phase ${workflow.phase}`,
+        ),
+      )
+    }
+    return yield* appendRequired(
+      workflow.workflowId,
+      {
+        id: eventID("evt_qualification_plan"),
+        type: "experiment.plan_bound",
+        occurredAt: Date.now(),
+        source: { actor: "tool" },
+        plan: {
+          id: plan.planId,
+          requestVersion: workflow.requestVersion,
+          candidateId: plan.candidate.candidateId,
+          fingerprint: plan.planHash,
+          createdAt: Date.now(),
+          kind: "qualification",
+          planHash: plan.planHash,
+        },
+      },
+      workflow.revision,
+    )
+  },
+)
 
 export const ensureWorkflowCandidate = Effect.fn("BuildWorkflowLifecycle.ensureCandidate")(function* (input: {
   workflow: BuildWorkflowState

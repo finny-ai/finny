@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 import { createBundleWriter } from "../../script/headless/artifacts"
+import { artifactCaptureDecision as productionArtifactCaptureDecision } from "../../script/headless/artifact-policy"
 import { startFixtureMarketDataProvider } from "../../script/headless/fixture-market-data"
 import { startScriptedModelServer } from "../../script/headless/fixture-model"
 import { configureCollector, createIsolation } from "../../script/headless/isolation"
@@ -319,6 +320,15 @@ describe("headless-only fixture boundaries", () => {
     expect(artifactCaptureDecision(path.join("algorithms", "algo-1", "v01", "runs", "run-1", "engine.so"))).toEqual({
       include: false,
       reason: "compiled_runtime",
+    })
+    const reviewPacket = path.join("algos", "spy-sma-crossover", "reviews", "workflow-run-1", "review.html")
+    expect(artifactCaptureDecision(reviewPacket)).toEqual({
+      include: true,
+      category: "algorithm_document",
+    })
+    expect(productionArtifactCaptureDecision({ relative: reviewPacket })).toEqual({
+      include: true,
+      category: "algorithm_document",
     })
 
     const writer = await createBundleWriter(output, "policy-test")

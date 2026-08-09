@@ -407,6 +407,44 @@ function phaseCounts(usable: number, validationFraction: number, confirmatoryFra
   return { exploratory: usable - validation - confirmatory, validation, confirmatory }
 }
 
+function sessionAlignedWindows(input: {
+  bars: AuthoritativeBarV1[]
+  warmupBars: number
+  validationFraction: number
+  confirmatoryFraction: number
+}) {
+  const sessions = [...Map.groupBy(input.bars, (bar) => bar.sessionId).values()]
+  let warmupSessions = 0
+  let warmedBars = 0
+  while (warmupSessions < sessions.length && warmedBars < input.warmupBars) {
+    warmedBars += sessions[warmupSessions].length
+    warmupSessions++
+  }
+  const usableSessions = sessions.length - warmupSessions
+  if (usableSessions < 3) return undefined
+  const validation = Math.max(1, Math.floor(usableSessions * input.validationFraction))
+  const confirmatory = Math.max(1, Math.floor(usableSessions * input.confirmatoryFraction))
+  const exploratory = usableSessions - validation - confirmatory
+  if (exploratory < 1) return undefined
+  const flatten = (start: number, length: number) => sessions.slice(start, start + length).flat()
+  const exploratoryStart = warmupSessions
+  const validationStart = exploratoryStart + exploratory
+  const confirmatoryStart = validationStart + validation
+  const exploratoryBars = flatten(exploratoryStart, exploratory)
+  const validationBars = flatten(validationStart, validation)
+  const confirmatoryBars = flatten(confirmatoryStart, confirmatory)
+  if (Math.min(exploratoryBars.length, validationBars.length, confirmatoryBars.length) < 2) return undefined
+  return {
+    warmupBars: warmedBars,
+    windows: {
+      warmup: window(sessions.slice(0, warmupSessions).flat(), 0, warmedBars),
+      exploratory: window(exploratoryBars, 0, exploratoryBars.length),
+      validation: window(validationBars, 0, validationBars.length),
+      confirmatory: window(confirmatoryBars, 0, confirmatoryBars.length),
+    },
+  }
+}
+
 function fractions(input: CompileExperimentPlanInput) {
   const validation = input.validationFraction ?? 0.2
   const confirmatory = input.confirmatoryFraction ?? 0.2
@@ -436,21 +474,30 @@ export function compileExperimentPlanV1(input: CompileExperimentPlanInput): Expe
       `requested range has ${bars.length} authoritative bars; warmup and all scientific phases require at least two bars`,
     )
   }
+  const aligned = sessionAlignedWindows({
+    bars,
+    warmupBars: input.warmupBars,
+    validationFraction: split.validation,
+    confirmatoryFraction: split.confirmatory,
+  })
+  // Whole-session alignment can increase the declared warmup; the aligned value
+  // is authoritative for both the candidate and plan warmup fields.
+  const plannedWarmupBars = aligned?.warmupBars ?? input.warmupBars
   const { orderedBars: _, ...evidenceBinding } = input.datasetEvidence
   const draft = {
     schema: EXPERIMENT_PLAN_SCHEMA,
     version: 1 as const,
     request: input.request,
-    candidate: input.candidate,
+    candidate: { ...input.candidate, warmupBars: plannedWarmupBars },
     datasetEvidence: evidenceBinding,
     barScheduleHash: input.datasetEvidence.calendar.scheduleHash,
     barCount: bars.length,
-    warmupBars: input.warmupBars,
+    warmupBars: plannedWarmupBars,
     declaredSearchBudget: input.declaredSearchBudget,
     qualificationPolicyId: input.qualificationPolicy.policyId,
     qualificationPolicyHash: input.qualificationPolicy.policyHash,
     sealedHoldoutPolicy: "single_approved_event" as const,
-    windows: {
+    windows: aligned?.windows ?? {
       warmup: window(bars, 0, input.warmupBars),
       exploratory: window(bars, input.warmupBars, counts.exploratory),
       validation: window(bars, input.warmupBars + counts.exploratory, counts.validation),

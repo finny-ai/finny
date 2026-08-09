@@ -23,6 +23,6 @@ export namespace PythonEnv {
   }
 
   export function reset(): Promise<void> {
-    return Python.reset()
+    return Python.resetSharedPythonEnv(requiredPackages())
   }
 }

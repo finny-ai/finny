@@ -218,6 +218,8 @@ export interface ExperimentPlanRef {
   candidateId: string
   fingerprint: string
   createdAt: number
+  kind?: "exploratory" | "qualification"
+  planHash?: string
 }
 
 export interface WorkflowInvalidation {

@@ -235,6 +235,17 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
       const message = typeof event.error === "string" ? event.error : JSON.stringify(event.error ?? {})
       errors.push({ kind: "session_error", message })
     }
+    if (
+      event.type === "harness_approval" &&
+      event.kind === "sealed_holdout" &&
+      Array.isArray(event.answers) &&
+      event.answers.length === 1 &&
+      Array.isArray(event.answers[0]) &&
+      event.answers[0].length === 1 &&
+      event.answers[0][0] === "Approve"
+    ) {
+      completedStages.add("holdout_approved")
+    }
 
     const part = toolPart(event)
     if (!part) continue
@@ -368,6 +379,23 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
       } else if (failed(part)) {
         failedStages.add("backtested")
       }
+    }
+    if (part.tool === "qualify_candidate") {
+      if (completed(part) && metadata.qualified === true) {
+        completedStages.add("qualified")
+      } else if (
+        completed(part) &&
+        typeof metadata.experimentPlanId === "string" &&
+        metadata.blockerCode === "sealed_holdout_required"
+      ) {
+        completedStages.add("experiment_planned")
+      } else if (completed(part) || failed(part)) {
+        failedStages.add("qualified")
+      }
+    }
+    if (part.tool === "finny_review_packet") {
+      if (completed(part) && metadata.created === true) completedStages.add("review_packet_ready")
+      else if (completed(part) || failed(part)) failedStages.add("review_packet_ready")
     }
 
     if (failed(part) || metadata.recovered === true) {

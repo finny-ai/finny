@@ -16,6 +16,7 @@ import { embedRuntimeConfig, runtimeForCandidate, validateLeanSourceManifest } f
 import { strategySourceV1 } from "@/backtest/lean/contracts"
 import { isLeanProfile } from "@/backtest/lean/contracts"
 import { writeLeanSourceFile } from "@/backtest/lean/source-store"
+import { applyPythonEnvReclaim, planPythonEnvReclaim } from "@/python/reclaim"
 
 type SavedAlgorithm = Awaited<ReturnType<typeof Algorithm.resolve>> extends infer T ? Exclude<T, null> : never
 
@@ -215,8 +216,55 @@ export const AlgoCommand = cmd({
       .command(AlgoAddCommand)
       .command(AlgoValidateCommand)
       .command(AlgoBacktestCommand)
+      .command(AlgoEnvCommand)
       .demandCommand(),
   async handler() {},
+})
+
+const AlgoEnvCommand = cmd({
+  command: "env",
+  describe: "inspect and reclaim managed Python environments",
+  builder: (yargs: Argv) => yargs.command(AlgoEnvReclaimCommand).demandCommand(),
+  async handler() {},
+})
+
+const AlgoEnvReclaimCommand = effectCmd({
+  command: "reclaim",
+  describe: "report or explicitly remove unused marker-verified Python environments",
+  builder: (yargs) =>
+    yargs
+      .option("apply", {
+        type: "boolean",
+        default: false,
+        describe: "apply the reported reclaim plan",
+      })
+      .option("yes", {
+        type: "boolean",
+        default: false,
+        describe: "confirm permanent deletion; required with --apply",
+      })
+      .option("max-age-days", {
+        type: "number",
+        default: 30,
+        describe: "minimum age for shared package environments eligible for reclaim",
+      })
+      .option("keep-shared", {
+        type: "number",
+        default: 8,
+        describe: "always retain this many most-recently-used shared environments",
+      }),
+  handler: Effect.fn("Cli.algo.env.reclaim")(function* (args) {
+    if (args.apply && !args.yes) {
+      return yield* fail("Refusing deletion without both --apply and --yes. Omit --apply for a dry-run report.")
+    }
+    const options = {
+      maxAgeDays: args["max-age-days"],
+      keepShared: args["keep-shared"],
+    }
+    const plan = yield* Effect.promise(() => planPythonEnvReclaim(options))
+    if (!args.apply) return print(plan)
+    return print(yield* Effect.promise(() => applyPythonEnvReclaim(plan, options)))
+  }),
 })
 
 const AlgoListCommand = effectCmd({

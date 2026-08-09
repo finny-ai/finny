@@ -33,8 +33,8 @@ if (import.meta.main) {
     process.exit(3)
   }
   const fixture = parsed.values.fixture
-  if (fixture && !["negative", "strategy_drift", "midstream_failure"].includes(fixture)) {
-    process.stderr.write("--fixture must be negative, strategy_drift, or midstream_failure\n")
+  if (fixture && !["negative", "strategy_drift", "midstream_failure", "positive_qualification"].includes(fixture)) {
+    process.stderr.write("--fixture must be negative, strategy_drift, midstream_failure, or positive_qualification\n")
     process.exit(3)
   }
   const result = await runHeadlessHarnessPromise({
@@ -45,7 +45,7 @@ if (import.meta.main) {
     outputDir: output,
     repository: repo,
     timeoutMs,
-    fixtureMode: fixture as "negative" | "strategy_drift" | "midstream_failure" | undefined,
+    fixtureMode: fixture as "negative" | "strategy_drift" | "midstream_failure" | "positive_qualification" | undefined,
     collectorEndpoint: parsed.values.collector,
   })
   process.stdout.write(`${result.bundlePath}\n`)

@@ -7,6 +7,10 @@ export const HarnessStageName = z.enum([
   "validated",
   "backtested",
   "reviewable",
+  "experiment_planned",
+  "holdout_approved",
+  "qualified",
+  "review_packet_ready",
 ])
 export type HarnessStageName = z.infer<typeof HarnessStageName>
 
@@ -38,6 +42,7 @@ export const HeadlessScenarioV1 = z.object({
   requiredFinalFields: z.array(z.string()),
   allowedRecoveries: z.array(z.string()),
   observabilityRequired: z.boolean(),
+  approvals: z.object({ sealedHoldout: z.boolean() }).optional(),
 })
 export type HeadlessScenarioV1 = z.infer<typeof HeadlessScenarioV1>
 
@@ -54,7 +59,7 @@ export const HarnessStatus = z.enum([
 ])
 export type HarnessStatus = z.infer<typeof HarnessStatus>
 
-export const FixtureScriptMode = z.enum(["negative", "strategy_drift", "midstream_failure"])
+export const FixtureScriptMode = z.enum(["negative", "strategy_drift", "midstream_failure", "positive_qualification"])
 export type FixtureScriptMode = z.infer<typeof FixtureScriptMode>
 
 export const ContractViolation = z.object({
