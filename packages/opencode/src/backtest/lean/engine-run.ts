@@ -209,30 +209,29 @@ export async function runLeanEngineInRunner(input: {
   }
 
   // Canonical artifact set consumed by the strict run publisher.
-  const writeCsv = async (name: string, rows: Array<Record<string, unknown>>) => {
-    if (rows.length === 0) {
-      await fs.writeFile(path.join(input.tmpDir, name), "", "utf8")
-      return
-    }
-    const headers = Object.keys(rows[0]!)
+  const writeCsv = async (name: string, rows: Array<Record<string, unknown>>, headers: string[]) => {
     const lines = rows.map((row) => headers.map((h) => String(row[h] ?? "")).join(","))
     await fs.writeFile(path.join(input.tmpDir, name), [headers.join(","), ...lines].join("\n") + "\n", "utf8")
   }
   await writeCsv(
     "orders.csv",
     parsed.orders.map((o) => ({ orderId: o.orderId, symbol: o.symbol, type: o.type, status: o.status, quantity: o.quantity, price: o.price ?? "", tag: o.tag, time: o.time })),
+    ["orderId", "symbol", "type", "status", "quantity", "price", "tag", "time"],
   )
   await writeCsv(
     "fills.csv",
     parsed.fills.map((f) => ({ orderId: f.orderId, symbol: f.symbol, direction: f.direction, quantity: f.quantity, price: f.price, fee: f.fee, time: f.time })),
+    ["orderId", "symbol", "direction", "quantity", "price", "fee", "time"],
   )
   await writeCsv(
     "rejections.csv",
     parsed.rejections.map((r) => ({ orderId: r.orderId, symbol: r.symbol, type: r.type, status: r.status, quantity: r.quantity, price: r.price ?? "", tag: r.tag, time: r.time })),
+    ["orderId", "symbol", "type", "status", "quantity", "price", "tag", "time"],
   )
   await writeCsv(
     "equity.csv",
     parsed.equityCurve.map((p) => ({ timestamp: p.timestamp, equity: p.equity })),
+    ["timestamp", "equity"],
   )
   await fs.writeFile(path.join(input.tmpDir, "results.json"), JSON.stringify(v2, null, 2), "utf8")
   await fs.writeFile(path.join(input.tmpDir, "trades.csv"), JSON.stringify(v2.trades, null, 2), "utf8")
