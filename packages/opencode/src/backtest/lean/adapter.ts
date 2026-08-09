@@ -144,7 +144,7 @@ TFM="net\${SDK_MAJOR}.0"
   echo '    <Compile Include="/build/**/*.cs" />'
   for dll in \$DLLS; do
     name=\$(basename "\$dll")
-    echo "    <Reference Include=\\"\$name\\"><HintPath>\$dll</HintPath></Reference>"
+    echo "    <Reference Include=\\"\$name\\"><HintPath>\$dll</HintPath><Private>false</Private></Reference>"
   done
   echo '  </ItemGroup>'
   echo '</Project>'
