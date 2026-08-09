@@ -6,7 +6,20 @@ import {
   disconnectQcCredentials,
   qcConnectionState,
 } from "@/integration/quantconnect"
-import { runQcCloudBacktest, deployQcPaper, stopQcPaper, listPaperDeployments } from "@/integration/qc-cloud"
+import {
+  runQcCloudBacktest,
+  deployQcPaper,
+  deployQcLive,
+  stopQcPaper,
+  stopQcLive,
+  liquidateQcLive,
+  listPaperDeployments,
+  reconcileQcDeployments,
+  listQcProjects,
+  availableLiveNodes,
+  compileQcProject,
+  pushStrategyToQc,
+} from "@/integration/qc-cloud"
 import { Algorithm } from "@/algorithm"
 
 function print(value: unknown) {
@@ -25,6 +38,12 @@ export const QcCommand = cmd({
       .command(QcPaperDeployCommand)
       .command(QcPaperListCommand)
       .command(QcPaperStopCommand)
+      .command(QcLiveDeployCommand)
+      .command(QcLiveListCommand)
+      .command(QcLiveStopCommand)
+      .command(QcLiveLiquidateCommand)
+      .command(QcProjectsCommand)
+      .command(QcNodesCommand)
       .demandCommand(),
   async handler() {},
 })
@@ -118,6 +137,116 @@ const QcPaperStopCommand = effectCmd({
     const outcome = yield* Effect.promise(() => stopQcPaper(args["deployment-id"]))
     if (!outcome) throw new Error(`Deployment not found: ${args["deployment-id"]}`)
     print(outcome)
+  }),
+})
+
+const QcLiveDeployCommand = effectCmd({
+  command: "live-deploy <algorithm>",
+  describe: "deploy the strategy to QuantConnect Cloud live/paper execution",
+  builder: (yargs) =>
+    yargs
+      .positional("algorithm", { type: "string", demandOption: true })
+      .option("broker", {
+        type: "string",
+        choices: ["qc-paper", "alpaca", "binance"] as const,
+        default: "qc-paper",
+        describe: "brokerage module used by the QC live deployment",
+      })
+      .option("provider", {
+        type: "string",
+        describe: "stored brokerage account provider id (defaults to the first connected account)",
+      })
+      .option("node", { type: "string", describe: "explicit QC live node id; defaults to the first free node" })
+      .option("capital", { type: "number", default: 10000, describe: "starting cash for the QuantConnect Paper brokerage" })
+      .option("data-provider", { type: "string", describe: "QC data provider module id override" }),
+  handler: Effect.fn("Cli.qc.liveDeploy")(function* (args: any) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    const project = yield* Effect.promise(() => pushStrategyToQc({ algorithm }))
+    const compile = yield* Effect.promise(() =>
+      compileQcProject({ projectId: project.projectId }),
+    )
+    if (compile.state !== "BuildSuccess") {
+      print({
+        ok: false,
+        error: `QuantConnect compile failed (${compile.state})`,
+        logs: (compile.logs ?? []).slice(-10),
+      })
+      return
+    }
+    const nodes = yield* Effect.promise(() => availableLiveNodes(project.projectId))
+    const node = args.node ?? nodes.find((candidate) => !candidate.busy)?.id ?? nodes[0]?.id
+    if (!node) throw new Error("No live node available for this project; add one in QuantConnect first")
+    const outcome = yield* Effect.promise(() =>
+      deployQcLive({
+        algorithm,
+        projectId: project.projectId,
+        compileId: compile.compileId,
+        nodeId: node,
+        brokerKind: (args.broker === "qc-paper" ? "qc_paper" : args.broker) as "qc_paper" | "alpaca" | "binance",
+        capital: args.capital,
+        brokerProviderID: args.provider,
+        dataProviderId: args["data-provider"],
+      }),
+    )
+    print(outcome)
+  }),
+})
+
+const QcLiveListCommand = effectCmd({
+  command: "live-list",
+  describe: "list paper/live deployments, reconciling cloud status first",
+  handler: Effect.fn("Cli.qc.live.list")(function* () {
+    print(yield* Effect.promise(() => reconcileQcDeployments()))
+  }),
+})
+
+const QcLiveStopCommand = effectCmd({
+  command: "live-stop <project-id> <deployment-id>",
+  describe: "stop a QuantConnect Cloud live deployment",
+  builder: (yargs) =>
+    yargs
+      .positional("project-id", { type: "string", demandOption: true })
+      .positional("deployment-id", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.live.stop")(function* (args: { "project-id": string; "deployment-id": string }) {
+    const outcome = yield* Effect.promise(() =>
+      stopQcLive({ projectId: args["project-id"], deploymentId: args["deployment-id"] }),
+    )
+    if (!outcome) throw new Error(`Deployment not found: ${args["deployment-id"]}`)
+    print(outcome)
+  }),
+})
+
+const QcLiveLiquidateCommand = effectCmd({
+  command: "live-liquidate <project-id> <deployment-id>",
+  describe: "liquidate all positions and stop a QuantConnect Cloud live deployment",
+  builder: (yargs) =>
+    yargs
+      .positional("project-id", { type: "string", demandOption: true })
+      .positional("deployment-id", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.live.liquidate")(function* (args: { "project-id": string; "deployment-id": string }) {
+    const outcome = yield* Effect.promise(() =>
+      liquidateQcLive({ projectId: args["project-id"], deploymentId: args["deployment-id"] }),
+    )
+    if (!outcome) throw new Error(`Deployment not found: ${args["deployment-id"]}`)
+    print(outcome)
+  }),
+})
+
+const QcProjectsCommand = effectCmd({
+  command: "projects",
+  describe: "list QuantConnect projects owned by the connected account",
+  handler: Effect.fn("Cli.qc.projects")(function* () {
+    print(yield* Effect.promise(() => listQcProjects()))
+  }),
+})
+
+const QcNodesCommand = effectCmd({
+  command: "nodes <project-id>",
+  describe: "list available QuantConnect live nodes for a project",
+  builder: (yargs) => yargs.positional("project-id", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.nodes")(function* (args: { "project-id": string }) {
+    print(yield* Effect.promise(() => availableLiveNodes(args["project-id"])))
   }),
 })
 

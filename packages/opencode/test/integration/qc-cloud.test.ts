@@ -1,16 +1,32 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
+import path from "node:path"
 import { deployQcPaper, listPaperDeployments, pushStrategyToQc, stopQcPaper } from "../../src/integration/qc-cloud"
 import { isQcFixtureMode, qcConnectionState } from "../../src/integration/quantconnect"
 
 const originalFinnyHome = process.env.FINNY_HOME
+const originalXdgData = process.env.XDG_DATA_HOME
 const originalFixture = process.env.QC_FIXTURE
+const originalLedgerOverride = process.env.FINNY_QC_DEPLOYMENTS_FILE
 const cleanups: string[] = []
+
+function isolatedHome(): string {
+  const home = `/tmp/finny-qc-cloud-test-${Math.random().toString(36).slice(2)}`
+  process.env.FINNY_HOME = home
+  process.env.XDG_DATA_HOME = home
+  process.env.FINNY_QC_DEPLOYMENTS_FILE = path.join(home, "qc-paper-deployments.json")
+  cleanups.push(home)
+  return home
+}
 
 afterEach(async () => {
   while (cleanups.length) await fs.rm(cleanups.pop()!, { recursive: true, force: true })
   if (originalFinnyHome === undefined) delete process.env.FINNY_HOME
   else process.env.FINNY_HOME = originalFinnyHome
+  if (originalXdgData === undefined) delete process.env.XDG_DATA_HOME
+  else process.env.XDG_DATA_HOME = originalXdgData
+  if (originalLedgerOverride === undefined) delete process.env.FINNY_QC_DEPLOYMENTS_FILE
+  else process.env.FINNY_QC_DEPLOYMENTS_FILE = originalLedgerOverride
   if (originalFixture === undefined) delete process.env.QC_FIXTURE
   else process.env.QC_FIXTURE = originalFixture
 })
@@ -40,6 +56,7 @@ describe("QC cloud fixture mode (no credentials)", () => {
   })
 
   test("pushes strategies to deterministic fixture projects", async () => {
+    isolatedHome()
     process.env.QC_FIXTURE = "1"
     const first = await pushStrategyToQc({ algorithm: algorithm() })
     const second = await pushStrategyToQc({ algorithm: algorithm() })
@@ -49,10 +66,8 @@ describe("QC cloud fixture mode (no credentials)", () => {
   })
 
   test("records and stops paper deployments in the local ledger", async () => {
-    const home = `/tmp/finny-qc-cloud-test-${Math.random().toString(36).slice(2)}`
-    process.env.FINNY_HOME = home
+    isolatedHome()
     process.env.QC_FIXTURE = "1"
-    cleanups.push(home)
     const deploy = await deployQcPaper({ algorithm: algorithm() })
     expect(deploy.ok).toBe(true)
     expect(deploy.status).toBe("running")
