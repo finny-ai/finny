@@ -3081,6 +3081,7 @@ if __name__ == "__main__":
           startDate: start,
           endDate: end,
           walkForwardFolds: robustness.walkForwardFolds ?? 0,
+          runtimeProfileId: leanRuntime.profile.profileId === "lean_csharp" ? "lean_csharp" : "lean_python",
         })
         if (!leanOutcome.ok) {
           emit({

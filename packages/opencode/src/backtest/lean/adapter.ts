@@ -82,6 +82,50 @@ function truthy(value: string | undefined): boolean {
 }
 
 /**
+ * Deterministic MSBuild project + build script for Finny C# LEAN algorithms.
+ * The project references only assemblies baked into the pinned engine image
+ * (no NuGet restore, no network) and targets the highest SDK major found in
+ * the container, matching how LEAN itself resolves its runtime.
+ */
+export function csharpProjectScript(): string {
+  return `set -e
+LAUNCHER_DIR=/Lean/Launcher/bin/Debug
+[ -d "\$LAUNCHER_DIR" ] || LAUNCHER_DIR=/Lean/Launcher
+DLLS=\$(ls "\$LAUNCHER_DIR"/*.dll 2>/dev/null || true)
+SDK_MAJOR=\$(dotnet --list-sdks | sed -n 's/^\\([0-9]*\\)\\..*/\\1/p' | sort -n | tail -1)
+if [ -z "\$SDK_MAJOR" ]; then
+  echo "finny: no dotnet SDK in the pinned engine image" >&2
+  exit 2
+fi
+TFM="net\${SDK_MAJOR}.0"
+{
+  echo '<Project Sdk="Microsoft.NET.Sdk">'
+  echo '  <PropertyGroup>'
+  echo "    <TargetFramework>\$TFM</TargetFramework>"
+  echo '    <OutputType>Library</OutputType>'
+  echo '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>'
+  echo '    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>'
+  echo '    <Deterministic>true</Deterministic>'
+  echo '    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>'
+  echo '    <RestoreSources></RestoreSources>'
+  echo '    <NuGetAudit>false</NuGetAudit>'
+  echo '  </PropertyGroup>'
+  echo '  <ItemGroup>'
+  echo '    <Compile Include="/build/**/*.cs" />'
+  for dll in \$DLLS; do
+    name=\$(basename "\$dll")
+    echo "    <Reference Include=\\"\$name\\"><HintPath>\$dll</HintPath></Reference>"
+  done
+  echo '  </ItemGroup>'
+  echo '</Project>'
+} > /build/FinnyAlgorithm.csproj
+dotnet build /build/FinnyAlgorithm.csproj -c Release --nologo -v minimal -o /build/out
+test -f /build/out/Algorithm.dll
+echo "finny: csharp build ok"
+`
+}
+
+/**
  * Fail-closed LEAN execution adapter. No docker invocation happens unless the
  * feature flag, adapter certificate, pinned digest, and a supported platform
  * are all present. Any divergence surfaces as a typed failure; there is no
@@ -170,6 +214,19 @@ export class LeanAdapter implements LeanAdapterV1 {
     const mountScratch = path.join(relocated.root, "scratch")
     const mountSource = path.join(relocated.root, "source")
     const mountResults = relocated.resultsDir
+    const isCSharp = input.bundle.profile.profileId === "lean_csharp"
+    let mountAlgorithm = mountSource
+    if (isCSharp) {
+      const compiled = await this.compileCSharp({
+        env,
+        relocatedRoot: relocated.root,
+        mountScratch,
+      })
+      if (!compiled.ok) {
+        return failure("compile_failed", `C# algorithm build failed: ${compiled.error}`)
+      }
+      mountAlgorithm = compiled.buildOutDir
+    }
     // Container uid 10001 must be able to write results; host bind mounts on
     // macOS/CI do not map that uid, so widen dev scratch dirs. The production
     // posture uses uid-mapped volumes instead of 0777.
@@ -203,7 +260,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--mount",
       `type=bind,source=${mountScratch},target=/Lean/Data,readonly`,
       "--mount",
-      `type=bind,source=${mountSource},target=/Lean/Algorithm,readonly`,
+      `type=bind,source=${mountAlgorithm},target=/Lean/Algorithm,readonly`,
       "--mount",
       `type=bind,source=${mountResults},target=/Results`,
       "--mount",
@@ -282,6 +339,64 @@ export class LeanAdapter implements LeanAdapterV1 {
     } catch (error) {
       return failure("results_unparseable", `LEAN results could not be parsed: ${String(error)}`)
     }
+  }
+
+  private async compileCSharp(input: {
+    env: Record<string, string>
+    relocatedRoot: string
+    mountScratch: string
+  }): Promise<{ ok: true; buildOutDir: string } | { ok: false; error: string }> {
+    const buildDir = path.join(input.relocatedRoot, "build")
+    await fs.mkdir(buildDir, { recursive: true })
+    const buildOutDir = path.join(buildDir, "out")
+    await fs.mkdir(buildOutDir, { recursive: true })
+    await fs.chmod(buildDir, 0o777).catch(() => undefined)
+    await fs.chmod(buildOutDir, 0o777).catch(() => undefined)
+    const result = await Process.run(
+      [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "10001:10001",
+        "--entrypoint",
+        "sh",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "128",
+        "--memory",
+        "2g",
+        "--cpus",
+        "2",
+        "--mount",
+        `type=bind,source=${buildDir},target=/build`,
+        "--mount",
+        "type=tmpfs,destination=/tmp",
+        "--env",
+        "HOME=/build",
+        "--env",
+        "DOTNET_CLI_TELEMETRY_OPTOUT=1",
+        "--env",
+        "DOTNET_NOLOGO=1",
+        "--env",
+        "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
+        LEAN_PINNED_IMAGE_DIGEST,
+        "-c",
+        csharpProjectScript(),
+      ],
+      { nothrow: true, timeout: 10 * 60_000, env: input.env, inheritEnv: false },
+    )
+    if (result.code !== 0) {
+      const stderr = result.stderr.toString().trim().slice(0, 4000)
+      return { ok: false, error: `dotnet build exited ${result.code}: ${stderr || "no compiler output"}` }
+    }
+    return { ok: true, buildOutDir }
   }
 }
 

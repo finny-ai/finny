@@ -10,7 +10,7 @@ import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
 import { parseLeanResultJson } from "./lean-result-parse"
 import { buildCanonicalMetrics, buildWalkForwardSummary } from "./metrics"
 import { LeanAdapter } from "./adapter"
-import { readLeanSourceFile } from "./source-store"
+import { leanSourceDir } from "./source-store"
 import type { LeanBarScheduleV1 } from "./types"
 
 function csvTimestamps(csvPath: string): Promise<string[]> {
@@ -50,7 +50,9 @@ export async function runLeanEngineInRunner(input: {
   startDate: string
   endDate: string
   walkForwardFolds: number
+  runtimeProfileId?: "lean_python" | "lean_csharp"
 }): Promise<LeanEngineRunResult> {
+  const runtimeProfileId = input.runtimeProfileId ?? "lean_python"
   const assetClass = String(input.config.asset_class ?? "equity").toLowerCase().includes("crypto")
     ? "crypto_spot"
     : "equity"
@@ -64,17 +66,40 @@ export async function runLeanEngineInRunner(input: {
     fs.mkdir(scratchDir, { recursive: true }),
   ])
 
-  let mainPy: string
+  let sourceFiles: Array<{ path: string; content: string }>
   try {
-    mainPy = await readLeanSourceFile({ algorithm: input.algorithm, relativePath: "main.py" })
+    const root = await leanSourceDir(input.algorithm)
+    const walk = async (dir: string, prefix: string): Promise<Array<{ path: string; content: string }>> => {
+      const entries = await fs.readdir(dir, { withFileTypes: true })
+      const out: Array<{ path: string; content: string }> = []
+      for (const entry of entries) {
+        const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+        const full = path.join(dir, entry.name)
+        if (entry.isDirectory()) out.push(...(await walk(full, relative)))
+        else if (entry.isFile()) out.push({ path: relative, content: await fs.readFile(full, "utf8") })
+      }
+      return out
+    }
+    sourceFiles = await walk(root, "")
   } catch {
     return {
       ok: false,
       kind: "source_missing",
-      error: `LEAN source main.py is missing for ${input.algorithm.name} v${input.algorithm.version}`,
+      error: `LEAN source tree is missing for ${input.algorithm.name} v${input.algorithm.version}`,
     }
   }
-  await fs.writeFile(path.join(sourceDir, "main.py"), mainPy, "utf8")
+  if (sourceFiles.length === 0) {
+    return {
+      ok: false,
+      kind: "source_missing",
+      error: `LEAN source tree is empty for ${input.algorithm.name} v${input.algorithm.version}`,
+    }
+  }
+  for (const file of sourceFiles) {
+    const target = path.join(sourceDir, file.path)
+    await fs.mkdir(path.dirname(target), { recursive: true })
+    await fs.writeFile(target, file.content, "utf8")
+  }
 
   let timestamps: string[]
   try {
@@ -122,7 +147,7 @@ export async function runLeanEngineInRunner(input: {
     return { ok: false, kind: "data_bundle_invalid", error: `data bundle materialization failed: ${String(error)}` }
   }
 
-  const profile = runtimeProfileV1("lean_python")
+  const profile = runtimeProfileV1(runtimeProfileId)
   const executionProfile = leanExecutionProfileV1({
     assetClass,
     makerFeeBps: Number(input.config.execution?.maker_fee_bps ?? 0),
@@ -134,8 +159,12 @@ export async function runLeanEngineInRunner(input: {
     dataFeedWorkers: 1,
   })
   const source = strategySourceV1({
-    profileId: "lean_python",
-    files: [{ path: "main.py", sha256: crypto.createHash("sha256").update(mainPy).digest("hex"), bytes: Buffer.byteLength(mainPy, "utf8") }],
+    profileId: runtimeProfileId,
+    files: sourceFiles.map((file) => ({
+      path: file.path,
+      sha256: crypto.createHash("sha256").update(file.content).digest("hex"),
+      bytes: Buffer.byteLength(file.content, "utf8"),
+    })),
   })
 
   const adapter = new LeanAdapter()

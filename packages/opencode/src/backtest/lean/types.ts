@@ -100,6 +100,7 @@ export interface LeanAdapterFailureV1 {
     | "schedule_divergence"
     | "model_policy_violation"
     | "unsupported_order"
+    | "compile_failed"
     | "engine_crash"
     | "results_unparseable"
     | "resource_breach"
