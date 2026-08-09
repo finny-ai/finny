@@ -221,6 +221,7 @@ export class LeanAdapter implements LeanAdapterV1 {
         env,
         relocatedRoot: relocated.root,
         mountScratch,
+        sourceDir: input.sourceDir,
       })
       if (!compiled.ok) {
         return failure("compile_failed", `C# algorithm build failed: ${compiled.error}`)
@@ -345,11 +346,13 @@ export class LeanAdapter implements LeanAdapterV1 {
     env: Record<string, string>
     relocatedRoot: string
     mountScratch: string
+    sourceDir: string
   }): Promise<{ ok: true; buildOutDir: string } | { ok: false; error: string }> {
     const buildDir = path.join(input.relocatedRoot, "build")
     await fs.mkdir(buildDir, { recursive: true })
     const buildOutDir = path.join(buildDir, "out")
     await fs.mkdir(buildOutDir, { recursive: true })
+    await fs.cp(input.sourceDir, buildDir, { recursive: true }).catch(() => undefined)
     await fs.chmod(buildDir, 0o777).catch(() => undefined)
     await fs.chmod(buildOutDir, 0o777).catch(() => undefined)
     const result = await Process.run(
