@@ -138,13 +138,14 @@ function approved(answers: ReadonlyArray<Question.Answer>) {
 async function runLeanQualificationFlow(input: {
   params: z.infer<typeof parameters>
   ctx: Tool.Context
+  bridge: EffectBridge.Shape
   candidate: Awaited<ReturnType<typeof Algorithm.resolve>> & {}
   evidence: Awaited<ReturnType<typeof requireVerifiedDataExtractorEvidenceForSession>>
   question: Question.Interface
   holdoutQuestion: typeof holdoutQuestion
   approved: typeof approved
 }) {
-  const { params, ctx, candidate, evidence, question, holdoutQuestion, approved } = input
+  const { params, ctx, bridge, candidate, evidence, question, holdoutQuestion, approved } = input
   if (!evidence.ok) throw new Error("LEAN qualification requires verified evidence")
   const adapter = new LeanAdapter()
   const probe = adapter.probeReady()
@@ -230,11 +231,13 @@ async function runLeanQualificationFlow(input: {
     adapter,
     readHoldoutOpenEvents: () => readHoldoutOpenEventsV1(plan.planId),
     requestHoldoutApproval: async () => {
-      const response = await Effect.runPromise(question.askWithId({
-        sessionID: ctx.sessionID,
-        questions: [holdoutQuestion(plan.planId, plan.planHash, policy.policyId)],
-        tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
-      }))
+      const response = await bridge.promise(
+        question.askWithId({
+          sessionID: ctx.sessionID,
+          questions: [holdoutQuestion(plan.planId, plan.planHash, policy.policyId)],
+          tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
+        }),
+      )
       approvalRequestId = String(response.requestID)
       if (!approved(response.answers)) return false
       await recordHoldoutOpenEventForPlanV2({
@@ -307,6 +310,7 @@ export const QualifyCandidateTool = Tool.define<
               return runLeanQualificationFlow({
                 params,
                 ctx,
+                bridge,
                 candidate,
                 evidence,
                 question,

@@ -72,6 +72,8 @@ export interface LeanAdapterContextV1 {
   phase: LeanDataBundleV1["phase"]
   window: { start: string; end: string }
   seed: number
+  /** Starting cash for the LEAN launcher; never hard-coded. */
+  capital: number
   /** Host path to the strategy source tree, mounted read-only at /Lean/Algorithm. */
   sourceDir: string
   resultsDir: string

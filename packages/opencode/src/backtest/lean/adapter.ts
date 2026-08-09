@@ -41,6 +41,35 @@ async function resolveDockerHost(): Promise<string | undefined> {
   return dockerHostPromise
 }
 
+/**
+ * The overlay dev image publishes the launcher under bin/Debug while the
+ * production image publishes Release directly under /Lean/Launcher. The path
+ * is resolved from the pinned image once per process so both layouts work and
+ * an unrecognized image fails closed.
+ */
+let launcherPathPromise: Promise<string | undefined> | undefined
+async function resolveLauncherPath(env: Record<string, string>): Promise<string | undefined> {
+  launcherPathPromise ??= (async () => {
+    const probe = await Process.run(
+      [
+        "docker",
+        "run",
+        "--rm",
+        "--entrypoint",
+        "sh",
+        LEAN_PINNED_IMAGE_DIGEST,
+        "-c",
+        'for p in /Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll /Lean/Launcher/QuantConnect.Lean.Launcher.dll; do [ -f "$p" ] && echo "$p" && exit 0; done; exit 1',
+      ],
+      { nothrow: true, timeout: 30_000, env, inheritEnv: false },
+    )
+    if (probe.code !== 0) return undefined
+    const first = probe.stdout.toString().trim().split("\n")[0]
+    return first || undefined
+  })()
+  return launcherPathPromise
+}
+
 async function dockerEnv(): Promise<Record<string, string>> {
   const host = await resolveDockerHost()
   return host ? { ...DOCKER_BASE_ENV, DOCKER_HOST: host } : DOCKER_BASE_ENV
@@ -171,6 +200,13 @@ export class LeanAdapter implements LeanAdapterV1 {
     }
 
     const env = await dockerEnv()
+    const launcherPath = await resolveLauncherPath(env)
+    if (!launcherPath) {
+      return failure(
+        "image_unavailable",
+        "pinned image exposes no QuantConnect.Lean.Launcher.dll under /Lean/Launcher",
+      )
+    }
     const docker = await Process.run(["docker", "version", "--format", "{{.Server.Version}}"], {
       nothrow: true,
       timeout: 15_000,
@@ -191,6 +227,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       )
     }
 
+    const launcherDir = launcherPath.slice(0, launcherPath.lastIndexOf("/"))
     // Offline, read-only, capability-dropped execution with controller-owned
     // limits. The pinned image runs the LEAN launcher directly; never the CLI.
     const launcher = buildLeanLauncherConfig({
@@ -198,7 +235,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       assetFamily: input.dataBundle.assetFamily,
       startDate: input.window.start,
       endDate: input.window.end,
-      cash: 10000,
+      cash: input.capital,
       algorithmTypeName: "Main",
       algorithmLanguage: input.bundle.profile.profileId === "lean_csharp" ? "CSharp" : "Python",
       algorithmLocation:
@@ -207,6 +244,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       resultsFolder: "/Results",
       seed: input.seed,
       dataFeedWorkers: input.bundle.executionProfile.dataFeedWorkers,
+      launcherDir,
     })
     await fs.writeFile(`${input.scratchDir}/lean-config.json`, launcher.json, "utf8")
     const relocated = await relocateForDocker({
@@ -217,6 +255,8 @@ export class LeanAdapter implements LeanAdapterV1 {
     const mountScratch = path.join(relocated.root, "scratch")
     const mountSource = path.join(relocated.root, "source")
     const mountResults = relocated.resultsDir
+    const mountStorage = path.join(relocated.root, "storage")
+    await fs.mkdir(mountStorage, { recursive: true })
     const isCSharp = input.bundle.profile.profileId === "lean_csharp"
     let mountAlgorithm = mountSource
     if (isCSharp) {
@@ -237,6 +277,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     await Promise.all([
       fs.chmod(mountScratch, 0o777).catch(() => undefined),
       fs.chmod(mountResults, 0o777).catch(() => undefined),
+      fs.chmod(mountStorage, 0o777).catch(() => undefined),
     ])
     const cmd = [
       "docker",
@@ -268,7 +309,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--mount",
       `type=bind,source=${mountResults},target=/Results`,
       "--mount",
-      `type=bind,source=${mountScratch},target=/Lean/Storage`,
+      `type=bind,source=${mountStorage},target=/Lean/Storage`,
       "--mount",
       "type=tmpfs,destination=/tmp",
       "--mount",
@@ -280,7 +321,7 @@ export class LeanAdapter implements LeanAdapterV1 {
       "--env",
       "HOME=/tmp",
       LEAN_PINNED_IMAGE_DIGEST,
-      "/Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll",
+      launcherPath,
       "--config",
       "/Lean/Launcher/lean-config.json",
     ]
@@ -295,7 +336,11 @@ export class LeanAdapter implements LeanAdapterV1 {
       const stderr = result.stderr.toString().trim().slice(0, 4000)
       return failure("engine_crash", `LEAN engine exited ${result.code}: ${stderr}`)
     }
-    await fs.cp(mountResults, input.resultsDir, { recursive: true }).catch(() => undefined)
+    try {
+      await fs.cp(mountResults, input.resultsDir, { recursive: true })
+    } catch (error) {
+      return failure("results_unparseable", `LEAN results could not be collected: ${String(error)}`)
+    }
 
     // Artifact parsing is performed by the canonical result mapper; the
     // adapter only asserts the expected files exist.
@@ -318,6 +363,9 @@ export class LeanAdapter implements LeanAdapterV1 {
           resultPath = candidate
           break
         } catch {}
+      }
+      if (!resultPath) {
+        return failure("results_unparseable", `LEAN produced no result artifact in ${input.resultsDir}`)
       }
       return {
         ok: true,

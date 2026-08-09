@@ -21,7 +21,11 @@ export function buildLeanLauncherConfig(input: {
   resultsFolder: string
   seed: number
   dataFeedWorkers: number
+  /** Launcher assembly directory; the overlay image uses bin/Debug, the
+   *  production image publishes Release directly under /Lean/Launcher. */
+  launcherDir?: string
 }): { config: Record<string, unknown>; json: string; configHash: string } {
+  const launcherDir = input.launcherDir ?? "/Lean/Launcher/bin/Debug"
   const config: Record<string, unknown> = {
     environment: "backtesting",
     "algorithm-id": "Main",
@@ -69,7 +73,7 @@ export function buildLeanLauncherConfig(input: {
     },
   }
   if (input.algorithmLanguage === "Python") {
-    config["python-additional-paths"] = ["/Lean/Launcher/bin/Debug", "/Lean/Algorithm"]
+    config["python-additional-paths"] = [launcherDir, "/Lean/Algorithm"]
   }
   const json = `${JSON.stringify(config, null, 2)}\n`
   return { config, json, configHash: sha256Text(json) }

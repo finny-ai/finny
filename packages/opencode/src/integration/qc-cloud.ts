@@ -298,7 +298,9 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
   }
   await appendDeployment(record)
   const status = await waitForLiveTerminal(credentials, { projectId: input.projectId, deployId: deploymentId }, input.abort)
-  if (!isLiveTerminal(status.status) && status.status !== "InQueue" && status.status !== "Initializing") {
+  const failed = status.status === "DeployError" || status.status === "RuntimeError" || status.status === "Invalid"
+  if (failed) {
+    await qcLiveStop(credentials, { projectId: input.projectId, deployId: deploymentId }).catch(() => undefined)
     const updated = await updateDeployment(deploymentId, { status: "stopped", error: status.message })
     return {
       ok: false,
@@ -310,7 +312,8 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
       ...(updated ? { record: updated } : {}),
     }
   }
-  return { ok: true, mode: "cloud", deploymentId, status: "running", projectId: String(input.projectId) }
+  const running = status.status === "Running" || status.status === "InQueue" || status.status === "Initializing"
+  return { ok: true, mode: "cloud", deploymentId, status: running ? "running" : "stopped", projectId: String(input.projectId) }
 }
 
 async function waitForLiveTerminal(

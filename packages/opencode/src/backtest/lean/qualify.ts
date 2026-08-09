@@ -26,6 +26,8 @@ import {
   type QualificationPolicyV1,
 } from "../qualification-policy"
 import { qualifyCandidateV1, type QualificationBlockerV1 } from "../qualification"
+import { qualificationHash } from "../qualification-policy"
+import { ExperimentPlanV2CompileError } from "../experiment-plan"
 import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST, leanExecutionProfileV1 } from "./contracts"
 import { buildLeanLauncherConfig } from "./engine-config"
 import { materializeLeanDataBundle } from "./materialize"
@@ -127,9 +129,21 @@ function windowsFromBars(input: { timestamps: string[]; warmupBars: number }): E
   const total = input.timestamps.length
   const warmupCount = Math.min(input.warmupBars, total)
   const usable = Math.max(0, total - warmupCount)
+  if (usable < 3) {
+    throw new ExperimentPlanV2CompileError(
+      "insufficient_bars",
+      `authoritative schedule has ${total} bars (${usable} usable after ${warmupCount} warmup); at least 3 usable bars are required to fill exploratory, validation, and confirmatory windows`,
+    )
+  }
   const validation = Math.max(1, Math.floor(usable * 0.2))
   const confirmatory = Math.max(1, Math.floor(usable * 0.2))
-  const exploratory = Math.max(1, usable - validation - confirmatory)
+  const exploratory = usable - validation - confirmatory
+  if (exploratory < 1) {
+    throw new ExperimentPlanV2CompileError(
+      "insufficient_bars",
+      `authoritative schedule cannot fill a non-empty exploratory window after validation and confirmatory split`,
+    )
+  }
   const slice = (start: number, count: number): ExperimentWindowV1 => {
     const bars = input.timestamps.slice(start, start + count)
     return {
@@ -211,8 +225,10 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
     request: requiredRequest(input.request),
     candidate: {
       candidateId: input.candidate.algorithmId,
-      codeHash: crypto.createHash("sha256").update(input.candidate.code).digest("hex"),
-      configHash: crypto.createHash("sha256").update(input.candidate.config ?? "").digest("hex"),
+      // Must match the executionIdentity hashes used by the qualification
+      // tool's resume check (qualificationHash of the stable representation).
+      codeHash: qualificationHash(input.candidate.code),
+      configHash: qualificationHash(input.candidate.config ?? ""),
       warmupBars,
       declaredSearchBudget: Number(config.declared_search_budget ?? config.optimization_budget ?? 1),
     },
@@ -443,6 +459,7 @@ export async function executeLeanQualificationV2(input: {
           phase,
           window: { start: window.start, end: window.end },
           seed: input.plan.planHash ? Number.parseInt(input.plan.planHash.slice(0, 8), 16) : 0,
+          capital: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
           sourceDir: await leanSourceDir(input.candidate),
           resultsDir: `/tmp/finny-lean-qualify/${input.plan.planId}/${phase}`,
           scratchDir: `/tmp/finny-lean-qualify/${input.plan.planId}/scratch-${phase}`,
@@ -451,7 +468,7 @@ export async function executeLeanQualificationV2(input: {
         canonicalize: (result) =>
           canonicalizeLeanArtifacts({
             artifacts: result.artifacts,
-            startingEquity: 10000,
+            startingEquity: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
             engineVersion: `lean-${input.plan.runtime.leanCommit.slice(0, 8)}`,
           }),
       })

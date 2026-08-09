@@ -93,4 +93,33 @@ describe("canonical metrics", () => {
     expect(v2.data_quality.n_bars).toBe(100)
     expect(v2.drawdown.max_drawdown).toBe(0)
   })
+
+  test("tracks the deepest drawdown on a declining curve", () => {
+    const curve = [
+      { timestamp: "2026-01-01T00:00:00Z", equity: 10000 },
+      { timestamp: "2026-01-02T00:00:00Z", equity: 10000 },
+      { timestamp: "2026-01-03T00:00:00Z", equity: 9000 },
+      { timestamp: "2026-01-04T00:00:00Z", equity: 9500 },
+      { timestamp: "2026-01-05T00:00:00Z", equity: 8000 },
+      { timestamp: "2026-01-06T00:00:00Z", equity: 10500 },
+    ]
+    const v2 = buildCanonicalMetrics({
+      equityCurve: curve,
+      fills: [],
+      orders: [],
+      rejections: [],
+      startingEquity: 10000,
+      seed: 42,
+      interval: "1d",
+      startTs: "2026-01-01T00:00:00Z",
+      endTs: "2026-01-06T23:59:59Z",
+      symbols: ["SPY"],
+      ohlcvRows: 6,
+      engineVersion: "lean-test",
+    })
+    expect(v2.drawdown.max_drawdown).toBeCloseTo(-0.2, 10)
+    expect(v2.drawdown.max_dd_duration_bars).toBe(3)
+    expect(v2.drawdown.max_dd_recovery_bars).toBe(1)
+    expect(v2.drawdown.current_drawdown).toBe(0)
+  })
 })
