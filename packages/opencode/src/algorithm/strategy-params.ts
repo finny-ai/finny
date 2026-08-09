@@ -20,7 +20,7 @@ export const StrategyParams = z.object({
         .object({
           schema: z.literal("finny.runtime_profile"),
           version: z.literal(1),
-          profileId: z.enum(["finny_python", "lean_python", "lean_csharp"]),
+          profileId: z.enum(["finny_python", "lean_python", "lean_csharp", "qc_cloud"]),
           profileHash: z.string().regex(/^[a-f0-9]{64}$/i),
         })
         .optional(),
