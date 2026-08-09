@@ -47,6 +47,7 @@ import { LocationServiceMap } from "@opencode-ai/core/location-layer"
 import { PluginBoot } from "@opencode-ai/core/plugin/boot"
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
+import { McpRobinhood } from "@/mcp/robinhood"
 import {
   FUND_MANAGER_AGENT,
   FUND_RUNTIME_MODEL,
@@ -203,6 +204,22 @@ export const layer = Layer.effect(
         const finnyPaperApprovalPrompt = Permission.fromConfig({
           finny_paper_approve: "ask",
         })
+        // `research_brief_approve` is a permission id, not a tool, so it is absent
+        // from the tool bundles and would otherwise fall through to their `"*": "deny"`.
+        // The Research→Build handoff is a user decision, so it must prompt.
+        const finnyResearchBriefApprovalPrompt = Permission.fromConfig({
+          research_brief_approve: "ask",
+        })
+        const finnyRobinhoodMcpPolicy = Permission.fromConfig(McpRobinhood.permissionConfig())
+        const finnyRobinhoodUserDenials = user.filter(
+          (rule) => rule.action === "deny" && McpRobinhood.isServerToolID(rule.permission),
+        )
+        // A mechanical clamp inside finny_workspace_edit applies silently; only a
+        // window/interval change the user has to own reaches this permission, and
+        // the tool bundle's blanket deny would otherwise turn that into a dead end.
+        const finnyWorkspaceEditPrompt = Permission.fromConfig({
+          finny_workspace_edit_identity: "ask",
+        })
 
         const finnyBuildTools = [
           "question",
@@ -237,6 +254,7 @@ export const layer = Layer.effect(
           "edit",
           "todowrite",
           "finny_workspace_prepare",
+          "finny_workspace_edit",
           "finny_algorithm_scaffold",
           "finny_algorithm_save",
           "finny_algorithm_get",
@@ -529,12 +547,16 @@ export const layer = Layer.effect(
                 question: "allow",
               }),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               finnyStrategySandbox,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
               finnySessionWorkspaceAccess,
               finnySecretReadDeny,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
+              finnyWorkspaceEditPrompt,
             ),
             mode: "primary",
             native: true,
@@ -560,9 +582,12 @@ export const layer = Layer.effect(
                 question: "allow",
               }),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               finnyTemplateReadAccess,
               finnySessionDataReadAccess,
               finnyPaperApprovalPrompt,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,
@@ -580,6 +605,9 @@ export const layer = Layer.effect(
               finnyFileSystemSandbox,
               finnyToolBundle(finnyResearchTools, ["data_extractor", "news_agent", "researcher"]),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
+              finnyResearchBriefApprovalPrompt,
             ),
             mode: "primary",
             native: true,
@@ -596,6 +624,8 @@ export const layer = Layer.effect(
               finnyFileSystemSandbox,
               finnyToolBundle(finnyChatTools, ["news_agent", "researcher"]),
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
             ),
             mode: "primary",
             native: true,
@@ -612,6 +642,8 @@ export const layer = Layer.effect(
               defaults,
               finnyFileSystemSandbox,
               user,
+              finnyRobinhoodMcpPolicy,
+              finnyRobinhoodUserDenials,
               Permission.fromConfig({
                 question: "allow",
                 edit: "deny",

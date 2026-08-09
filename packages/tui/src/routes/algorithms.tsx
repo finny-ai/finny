@@ -71,8 +71,19 @@ export function Algorithms() {
     const m1 = code.match(/SYMBOL\s*=\s*["']([^"']+)["']/)
     if (m1) return m1[1]
     const stop = new Set([
-      "INTRADAY", "HYBRID", "MOMENTUM", "MEAN", "REVERSION", "BREAKOUT",
-      "STRATEGY", "ALGO", "V1", "V2", "V3", "V4", "V5",
+      "INTRADAY",
+      "HYBRID",
+      "MOMENTUM",
+      "MEAN",
+      "REVERSION",
+      "BREAKOUT",
+      "STRATEGY",
+      "ALGO",
+      "V1",
+      "V2",
+      "V3",
+      "V4",
+      "V5",
     ])
     for (const t of (algo.name || "").toUpperCase().split(/[-_\s.]+/)) {
       if (!t || stop.has(t)) continue
@@ -89,28 +100,39 @@ export function Algorithms() {
     return "1min"
   }
 
+  const strictRunId = (algo: Algorithm.Info) =>
+    history
+      .list()
+      .find(
+        (entry) =>
+          entry.algorithmId === algo.algorithmId &&
+          typeof entry.results.runId === "string" &&
+          entry.results.runId.length > 0,
+      )?.results.runId
+
   const startRun = async (algo: Algorithm.Info, runMode: RunMode) => {
     // Local terminal run. The runner still enforces validation,
     // eligibility, credential, and duplicate-run checks.
     const liveCfg = parseConfig(algo.config)
     const liveEquity = liveCfg.equity_usd ?? liveCfg.risk?.starting_equity_usd
+    const runId = strictRunId(algo)
+    if (!runId) {
+      await DialogAlert.show(
+        dialog,
+        "Live Run Failed",
+        "No exact strict backtest run is available. Run and approve finny_backtest before starting paper or live trading.",
+      )
+      return
+    }
     const params = await DialogLiveConfirm.show(dialog, algo, {
       runMode,
+      runId,
       symbol: guessSymbolForAlgo(algo),
       interval: guessIntervalForAlgo(algo) as any,
       brokerKind: liveCfg.brokerage,
       equityUsd: liveEquity,
     })
     if (!params) return
-    const runId = history.list().find((entry) =>
-      entry.algorithmId === algo.algorithmId &&
-      typeof entry.results.runId === "string" &&
-      entry.results.runId.length > 0
-    )?.results.runId
-    if (!runId) {
-      await DialogAlert.show(dialog, "Live Run Failed", "No exact strict backtest run is available. Run and approve finny_backtest before starting paper or live trading.")
-      return
-    }
     // Immediately start the run (returns fast with a "starting" state)
     // and open the live dialog so the user sees setup progress live.
     try {
@@ -121,14 +143,12 @@ export function Algorithms() {
         interval: params.interval,
         accountProviderID: params.accountProviderID,
         brokerKind: params.brokerKind,
+        executionMode: runMode,
+        ...(params.challengeId ? { challengeId: params.challengeId, realMoneyAcknowledgement: true } : {}),
       })
       DialogLiveRun.show(dialog, run.id)
       const label =
-        params.brokerKind === "robinhood"
-          ? "Robinhood shadow run"
-          : runMode === "live"
-            ? "Live run"
-            : "Paper trading"
+        params.brokerKind === "robinhood" ? "Robinhood live run" : runMode === "live" ? "Live run" : "Paper trading"
       toast.show({
         message: `${label} starting: ${algo.name} · ${params.symbol}`,
         variant: "info",
@@ -285,7 +305,7 @@ export function Algorithms() {
     }
   }
 
-  const openRunMode = (algo: Algorithm.Info) => {
+  const openRunMode = async (algo: Algorithm.Info) => {
     dialog.replace(() => (
       <DialogSelect
         title={`Run ${algo.name}`}
@@ -302,9 +322,9 @@ export function Algorithms() {
           ...(showLiveRun
             ? [
                 {
-                  title: "Live",
+                  title: "Trade Live",
                   value: "live" as const,
-                  description: "Use a live brokerage account",
+                  description: "Use a compatible live brokerage account",
                   onSelect: () => {
                     void startRun(algo, "live")
                   },
@@ -354,7 +374,11 @@ export function Algorithms() {
   }
 
   const deleteAlgo = async (algo: Algorithm.Info) => {
-    const confirmed = await DialogAlert.confirm(dialog, "Delete Algorithm", `Delete "${algo.name}"? This cannot be undone.`)
+    const confirmed = await DialogAlert.confirm(
+      dialog,
+      "Delete Algorithm",
+      `Delete "${algo.name}"? This cannot be undone.`,
+    )
     if (!confirmed) return
     try {
       await Algorithm.remove(algo.algorithmId)
@@ -425,11 +449,7 @@ export function Algorithms() {
           <Card title=" Your library ">
             <Show
               when={list().length > 0}
-              fallback={
-                <text fg={theme.textMuted}>
-                  No algorithms yet. Use /build to create one.
-                </text>
-              }
+              fallback={<text fg={theme.textMuted}>No algorithms yet. Use /build to create one.</text>}
             >
               <scrollbox flexGrow={1} minHeight={0} scrollbarOptions={{ visible: true }}>
                 <box flexDirection="column" gap={1}>
@@ -445,9 +465,7 @@ export function Algorithms() {
                             setSelectedId(algo.algorithmId)
                           }}
                         >
-                          <text fg={isActive() ? theme.primary : theme.textMuted}>
-                            {isActive() ? "▎ " : "  "}
-                          </text>
+                          <text fg={isActive() ? theme.primary : theme.textMuted}>{isActive() ? "▎ " : "  "}</text>
                           <box flexDirection="column" flexGrow={1}>
                             <text fg={theme.text} attributes={isActive() ? 1 : 0}>
                               {algo.name}
@@ -470,11 +488,7 @@ export function Algorithms() {
           <Card title=" Source ">
             <Show
               when={selected()}
-              fallback={
-                <text fg={theme.textMuted}>
-                  Select an algorithm to view its source.
-                </text>
-              }
+              fallback={<text fg={theme.textMuted}>Select an algorithm to view its source.</text>}
             >
               {(algo) => (
                 <box flexDirection="column" gap={1} flexGrow={1} minHeight={0}>
@@ -514,7 +528,7 @@ export function Algorithms() {
                       paddingLeft={2}
                       paddingRight={2}
                       backgroundColor={theme.primary}
-                      onMouseUp={() => openRunMode(algo())}
+                      onMouseUp={() => void openRunMode(algo())}
                     >
                       <text fg={theme.background} attributes={TextAttributes.BOLD}>
                         Run

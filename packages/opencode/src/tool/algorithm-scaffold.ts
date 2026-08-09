@@ -52,12 +52,14 @@ export const AlgorithmScaffoldTool = Tool.define(
               } as ScaffoldMetadata,
             }
           }
-          await ctx.ask({
-            permission: "finny_algorithm_scaffold",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "finny_algorithm_scaffold",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const code = Templates.get(params.template_type)
           const result = await Validate.run(code, scaffoldValidationOptions(params.template_type))

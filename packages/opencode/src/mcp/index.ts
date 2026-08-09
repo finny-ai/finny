@@ -32,6 +32,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
+import { McpRobinhood } from "./robinhood"
 import path from "node:path"
 
 const DEFAULT_TIMEOUT = 30_000
@@ -67,6 +68,11 @@ export const Failed = NamedError.create("MCPFailed", {
 export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP.NotFoundError", {
   name: Schema.String,
 }) {}
+
+export class ManagedLifecycleError extends Schema.TaggedErrorClass<ManagedLifecycleError>()(
+  "MCP.ManagedLifecycleError",
+  { name: Schema.String },
+) {}
 
 type MCPClient = Client
 
@@ -131,18 +137,25 @@ interface State {
   config: Record<string, ConfigMCPV1.Info>
   status: Record<string, Status>
   clients: Record<string, MCPClient>
+  /** Model-visible catalog. Robinhood is reduced to its read-only allowlist. */
   defs: Record<string, MCPToolDef[]>
+  /** Authenticated catalog retained only for trusted daemon integrations. */
+  rawDefs: Record<string, MCPToolDef[]>
+  managedRobinhood: boolean
 }
 
 export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
+  readonly robinhood: () => Effect.Effect<McpRobinhood.Metadata | undefined>
+  /** Trusted daemon-only broker access; never projected into model tools. */
+  readonly robinhoodBroker?: () => Effect.Effect<McpRobinhood.BrokerAccess | undefined>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly tools: () => Effect.Effect<Record<string, Tool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: () => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
   readonly add: (name: string, mcp: ConfigMCPV1.Info) => Effect.Effect<{ status: Record<string, Status> | Status }>
-  readonly connect: (name: string) => Effect.Effect<void, NotFoundError>
-  readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError>
+  readonly connect: (name: string) => Effect.Effect<void, NotFoundError | ManagedLifecycleError>
+  readonly disconnect: (name: string) => Effect.Effect<void, NotFoundError | ManagedLifecycleError>
   readonly getPrompt: (
     clientName: string,
     name: string,
@@ -154,11 +167,14 @@ export interface Interface {
   ) => Effect.Effect<Awaited<ReturnType<MCPClient["readResource"]>> | undefined>
   readonly startAuth: (
     mcpName: string,
-  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string }, NotFoundError>
-  readonly authenticate: (mcpName: string) => Effect.Effect<Status, NotFoundError>
-  readonly finishAuth: (mcpName: string, authorizationCode: string) => Effect.Effect<Status, NotFoundError>
-  readonly removeAuth: (mcpName: string) => Effect.Effect<void>
-  readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean, NotFoundError>
+  ) => Effect.Effect<{ authorizationUrl: string; oauthState: string }, NotFoundError | ManagedLifecycleError>
+  readonly authenticate: (mcpName: string) => Effect.Effect<Status, NotFoundError | ManagedLifecycleError>
+  readonly finishAuth: (
+    mcpName: string,
+    authorizationCode: string,
+  ) => Effect.Effect<Status, NotFoundError | ManagedLifecycleError>
+  readonly removeAuth: (mcpName: string) => Effect.Effect<void, ManagedLifecycleError>
+  readonly supportsOAuth: (mcpName: string) => Effect.Effect<boolean, NotFoundError | ManagedLifecycleError>
   readonly hasStoredTokens: (mcpName: string) => Effect.Effect<boolean>
   readonly getAuthStatus: (mcpName: string) => Effect.Effect<AuthStatus>
 }
@@ -332,8 +348,8 @@ export const layer = Layer.effect(
       )
     })
 
-    const create = Effect.fn("MCP.create")(
-      function* (key: string, mcp: ConfigMCPV1.Info) {
+    const create = Effect.fn("MCP.create")(function* (key: string, mcp: ConfigMCPV1.Info, managedRobinhood = false) {
+      return yield* Effect.gen(function* () {
         if (mcp.enabled === false) {
           return DISABLED_RESULT
         }
@@ -342,12 +358,16 @@ export const layer = Layer.effect(
           mcp.type === "remote"
             ? yield* connectRemote(key, mcp as ConfigMCPV1.Info & { type: "remote" })
             : yield* connectLocal(key, mcp as ConfigMCPV1.Info & { type: "local" })
+        const safeStatus: Status =
+          managedRobinhood && status.status === "failed"
+            ? { status: "failed", error: "Runner-local Robinhood MCP broker unavailable." }
+            : status
 
         if (!mcpClient) {
-          if (status.status !== "connected" && status.status !== "disabled") {
-            yield* Effect.logWarning("server unavailable", { key, type: mcp.type, status: status.status })
+          if (safeStatus.status !== "connected" && safeStatus.status !== "disabled") {
+            yield* Effect.logWarning("server unavailable", { key, type: mcp.type, status: safeStatus.status })
           }
-          return { status } satisfies CreateResult
+          return { status: safeStatus } satisfies CreateResult
         }
 
         return yield* Effect.gen(function* () {
@@ -355,22 +375,34 @@ export const layer = Layer.effect(
           if (!listed) {
             return yield* Effect.fail(new Error("Failed to get tools"))
           }
-          return { mcpClient, status, defs: listed } satisfies CreateResult
+          return {
+            mcpClient,
+            status: safeStatus,
+            defs: listed,
+          } satisfies CreateResult
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore, Effect.andThen(Effect.failCause(cause))),
           ),
         )
-      },
-      Effect.map((result): CreateResult => result),
-      Effect.catchCause((cause) => {
-        if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
-        const error = Cause.squash(cause)
-        return Effect.succeed<CreateResult>({
-          status: { status: "failed", error: error instanceof Error ? error.message : String(error) },
-        })
-      }),
-    )
+      }).pipe(
+        Effect.map((result): CreateResult => result),
+        Effect.catchCause((cause) => {
+          if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
+          const error = Cause.squash(cause)
+          return Effect.succeed<CreateResult>({
+            status: {
+              status: "failed",
+              error: managedRobinhood
+                ? "Runner-local Robinhood MCP broker unavailable."
+                : error instanceof Error
+                  ? error.message
+                  : String(error),
+            },
+          })
+        }),
+      )
+    })
     const cfgSvc = yield* Config.Service
 
     const descendants = Effect.fnUntraced(
@@ -397,7 +429,14 @@ export const layer = Layer.effect(
       Effect.catch(() => Effect.succeed([] as number[])),
     )
 
-    function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
+    function watch(
+      s: State,
+      name: string,
+      client: MCPClient,
+      bridge: EffectBridge.Shape,
+      mcp: ConfigMCPV1.Info,
+      managedRobinhood: boolean,
+    ) {
       client.setNotificationHandler(LoggingMessageNotificationSchema, (notification) =>
         bridge.promise(serverLog(name, notification.params)),
       )
@@ -406,11 +445,12 @@ export const layer = Layer.effect(
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
-        const listed = await bridge.promise(McpCatalog.defs(client, timeout))
+        const listed = await bridge.promise(McpCatalog.defs(client, mcp.timeout))
         if (!listed) return
         if (s.clients[name] !== client || s.status[name]?.status !== "connected") return
 
-        s.defs[name] = listed
+        s.rawDefs[name] = listed
+        s.defs[name] = McpRobinhood.isServer(name, mcp, managedRobinhood) ? McpRobinhood.filterTools(listed) : listed
         await bridge.promise(events.publish(ToolsChanged, { server: name }).pipe(Effect.ignore))
       })
     }
@@ -437,12 +477,31 @@ export const layer = Layer.effect(
       Effect.fn("MCP.state")(function* () {
         const cfg = yield* cfgSvc.get()
         const bridge = yield* EffectBridge.make()
-        const config = cfg.mcp ?? {}
+        const managed = McpRobinhood.deployment(process.env)
+        if (managed.error) yield* Effect.logWarning(managed.error)
+        const storedRobinhood = managed.managed ? undefined : yield* auth.get(McpRobinhood.SERVER_NAME)
+        const recoveredRobinhood =
+          !managed.managed &&
+          !cfg.mcp?.[McpRobinhood.SERVER_NAME] &&
+          storedRobinhood?.tokens &&
+          storedRobinhood.serverUrl === McpRobinhood.OFFICIAL_URL
+            ? ({ type: "remote", url: McpRobinhood.OFFICIAL_URL, enabled: true } as const)
+            : undefined
+        const config = {
+          ...(cfg.mcp ?? {}),
+          ...(recoveredRobinhood ? { [McpRobinhood.SERVER_NAME]: recoveredRobinhood } : {}),
+          ...(managed.config ? { [McpRobinhood.SERVER_NAME]: managed.config } : {}),
+        }
         const s: State = {
-          config: {},
+          config:
+            managed.config || recoveredRobinhood
+              ? { [McpRobinhood.SERVER_NAME]: managed.config ?? recoveredRobinhood! }
+              : {},
           status: {},
           clients: {},
           defs: {},
+          rawDefs: {},
+          managedRobinhood: managed.managed,
         }
 
         yield* Effect.forEach(
@@ -454,17 +513,35 @@ export const layer = Layer.effect(
                 return
               }
 
+              const managedRobinhood = s.managedRobinhood && key === McpRobinhood.SERVER_NAME
+              if (
+                (key === McpRobinhood.SERVER_NAME && !McpRobinhood.isServer(key, mcp, managedRobinhood)) ||
+                (key !== McpRobinhood.SERVER_NAME && McpRobinhood.isOfficialEndpoint(mcp))
+              ) {
+                s.status[key] = {
+                  status: "failed",
+                  error: managedRobinhood
+                    ? "Runner-managed Robinhood MCP lifecycle is Platform-owned."
+                    : "The official Robinhood MCP requires the reserved canonical server name.",
+                }
+                yield* Effect.logWarning("Ignoring noncanonical or untrusted Robinhood MCP config")
+                return
+              }
+
               if (mcp.enabled === false) {
                 s.status[key] = { status: "disabled" }
                 return
               }
 
-              const result = yield* create(key, mcp)
+              const result = yield* create(key, mcp, managedRobinhood)
               s.status[key] = result.status
               if (result.mcpClient) {
                 s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
+                s.rawDefs[key] = result.defs!
+                s.defs[key] = McpRobinhood.isServer(key, mcp, managedRobinhood)
+                  ? McpRobinhood.filterTools(result.defs!)
+                  : result.defs!
+                watch(s, key, result.mcpClient, bridge, mcp, managedRobinhood)
               }
             }),
           { concurrency: "unbounded" },
@@ -500,6 +577,7 @@ export const layer = Layer.effect(
     function closeClient(s: State, name: string) {
       const client = s.clients[name]
       delete s.defs[name]
+      delete s.rawDefs[name]
       if (!client) return Effect.void
       return Effect.tryPromise(() => client.close()).pipe(Effect.ignore)
     }
@@ -509,14 +587,16 @@ export const layer = Layer.effect(
       name: string,
       client: MCPClient,
       listed: MCPToolDef[],
-      timeout?: number,
+      mcp: ConfigMCPV1.Info,
+      managedRobinhood: boolean,
     ) {
       const bridge = yield* EffectBridge.make()
       yield* closeClient(s, name)
       s.status[name] = { status: "connected" }
       s.clients[name] = client
-      s.defs[name] = listed
-      watch(s, name, client, bridge, timeout)
+      s.rawDefs[name] = listed
+      s.defs[name] = McpRobinhood.isServer(name, mcp, managedRobinhood) ? McpRobinhood.filterTools(listed) : listed
+      watch(s, name, client, bridge, mcp, managedRobinhood)
       return s.status[name]
     })
 
@@ -539,14 +619,61 @@ export const layer = Layer.effect(
       return result
     })
 
+    const robinhood = Effect.fn("MCP.robinhood")(function* () {
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* cfgSvc.get()
+      const config = { ...(cfg.mcp ?? {}), ...s.config }
+      const names = [
+        McpRobinhood.SERVER_NAME,
+        ...Object.keys(config).filter((name) => name !== McpRobinhood.SERVER_NAME),
+      ]
+
+      for (const name of names) {
+        const mcp = config[name]
+        if (!mcp || !isMcpConfigured(mcp)) continue
+        const managedRobinhood = s.managedRobinhood && name === McpRobinhood.SERVER_NAME
+        if (!McpRobinhood.isServer(name, mcp, managedRobinhood)) continue
+        return McpRobinhood.metadata({
+          managed: managedRobinhood,
+          status: s.status[name]?.status,
+        })
+      }
+
+      return undefined
+    })
+
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
       return s.clients
     })
 
+    const robinhoodBroker = Effect.fn("MCP.robinhoodBroker")(function* () {
+      const s = yield* InstanceState.get(state)
+      const cfg = yield* cfgSvc.get()
+      const configured = s.config[McpRobinhood.SERVER_NAME] ?? cfg.mcp?.[McpRobinhood.SERVER_NAME]
+      if (!configured || !isMcpConfigured(configured)) return undefined
+      const managed = s.managedRobinhood
+      if (!McpRobinhood.isServer(McpRobinhood.SERVER_NAME, configured, managed)) return undefined
+      if (s.status[McpRobinhood.SERVER_NAME]?.status !== "connected") return undefined
+      const client = s.clients[McpRobinhood.SERVER_NAME]
+      const definitions = s.rawDefs[McpRobinhood.SERVER_NAME]
+      if (!client || !definitions) return undefined
+      const timeout = requestTimeout(s, McpRobinhood.SERVER_NAME, configured, cfg.experimental?.mcp_timeout)
+      return {
+        definitions: definitions.map((definition) => ({ name: definition.name, inputSchema: definition.inputSchema })),
+        callTool: (name: McpRobinhood.ExecutionTool, args: Record<string, unknown>) => {
+          if (!McpRobinhood.EXECUTION_TOOLS.includes(name)) {
+            return Promise.reject(new Error(`Robinhood broker tool ${name} is not allowlisted.`))
+          }
+          return withTimeout(client.callTool({ name, arguments: args }), timeout ?? DEFAULT_TIMEOUT)
+        },
+      } satisfies McpRobinhood.BrokerAccess
+    })
+
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
-      const result = yield* create(name, mcp)
+      const managedRobinhood = s.managedRobinhood && name === McpRobinhood.SERVER_NAME
+      const result = yield* create(name, mcp, managedRobinhood)
 
       s.status[name] = result.status
       if (!result.mcpClient) {
@@ -555,22 +682,49 @@ export const layer = Layer.effect(
         return result.status
       }
 
-      return yield* storeClient(s, name, result.mcpClient, result.defs!, mcp.timeout)
+      return yield* storeClient(s, name, result.mcpClient, result.defs!, mcp, managedRobinhood)
+    })
+
+    const assertPlatformOwnedLifecycle = Effect.fnUntraced(function* (name: string) {
+      if (name !== McpRobinhood.SERVER_NAME) return
+      const s = yield* InstanceState.get(state)
+      if (s.managedRobinhood) return yield* new ManagedLifecycleError({ name })
     })
 
     const add = Effect.fn("MCP.add")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
+      if (name === McpRobinhood.SERVER_NAME && s.managedRobinhood) {
+        s.status[name] = {
+          status: "failed",
+          error: "Runner-managed Robinhood MCP lifecycle is Platform-owned.",
+        }
+        yield* Effect.logWarning("Ignoring runtime replacement of the runner-managed Robinhood MCP server")
+        return { status: s.status }
+      }
+      if (
+        (name === McpRobinhood.SERVER_NAME && !McpRobinhood.isServer(name, mcp)) ||
+        (name !== McpRobinhood.SERVER_NAME && McpRobinhood.isOfficialEndpoint(mcp))
+      ) {
+        s.status[name] = {
+          status: "failed",
+          error: "The official Robinhood MCP requires the reserved canonical server name.",
+        }
+        yield* Effect.logWarning("Ignoring noncanonical or untrusted Robinhood MCP config")
+        return { status: s.status }
+      }
       s.config[name] = mcp
       yield* createAndStore(name, mcp)
       return { status: s.status }
     })
 
     const connect = Effect.fn("MCP.connect")(function* (name: string) {
+      yield* assertPlatformOwnedLifecycle(name)
       const mcp = yield* requireMcpConfig(name)
       yield* createAndStore(name, { ...mcp, enabled: true })
     })
 
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
+      yield* assertPlatformOwnedLifecycle(name)
       yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
       yield* closeClient(s, name)
@@ -583,6 +737,14 @@ export const layer = Layer.effect(
       return s.config[name]?.timeout ?? staticTimeout ?? fallback
     }
 
+    function isRobinhoodClient(s: State, name: string, configured: McpEntry | undefined) {
+      return (
+        configured !== undefined &&
+        isMcpConfigured(configured) &&
+        McpRobinhood.isServer(name, configured, s.managedRobinhood && name === McpRobinhood.SERVER_NAME)
+      )
+    }
+
     const tools = Effect.fn("MCP.tools")(function* () {
       const result: Record<string, Tool> = {}
       const s = yield* InstanceState.get(state)
@@ -593,14 +755,15 @@ export const layer = Layer.effect(
 
       for (const [clientName, client] of Object.entries(s.clients)) {
         if (s.status[clientName]?.status !== "connected") continue
-        const mcpConfig = config[clientName]
+        const mcpConfig = s.config[clientName] ?? config[clientName]
         const listed = s.defs[clientName]
         if (!listed) {
           yield* Effect.logWarning("missing cached tools for connected server", { clientName })
           continue
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
-        for (const mcpTool of listed) {
+        const defs = isRobinhoodClient(s, clientName, mcpConfig) ? McpRobinhood.filterTools(listed) : listed
+        for (const mcpTool of defs) {
           const key = McpCatalog.sanitize(clientName) + "_" + McpCatalog.sanitize(mcpTool.name)
           result[key] = McpCatalog.convertTool(mcpTool, client, timeout)
         }
@@ -616,7 +779,10 @@ export const layer = Layer.effect(
       return Effect.gen(function* () {
         const cfg = yield* cfgSvc.get()
         return yield* Effect.forEach(
-          Object.entries(s.clients).filter(([name]) => s.status[name]?.status === "connected"),
+          Object.entries(s.clients).filter(([name]) => {
+            if (s.status[name]?.status !== "connected") return false
+            return !isRobinhoodClient(s, name, s.config[name] ?? cfg.mcp?.[name])
+          }),
           ([clientName, client]) =>
             McpCatalog.fetch(
               clientName,
@@ -650,6 +816,10 @@ export const layer = Layer.effect(
         return undefined
       }
       const cfg = yield* cfgSvc.get()
+      if (isRobinhoodClient(s, clientName, s.config[clientName] ?? cfg.mcp?.[clientName])) {
+        yield* Effect.logWarning(`blocked Robinhood ${label}`)
+        return undefined
+      }
       return yield* Effect.tryPromise({
         try: () => fn(client, requestTimeout(s, clientName, cfg.mcp?.[clientName], cfg.experimental?.mcp_timeout)),
         catch: (error) => error,
@@ -689,11 +859,17 @@ export const layer = Layer.effect(
 
     const getMcpConfig = Effect.fnUntraced(function* (mcpName: string) {
       const s = yield* InstanceState.get(state)
-      if (s.config[mcpName]) return s.config[mcpName]
-
-      const cfg = yield* cfgSvc.get()
-      const mcpConfig = cfg.mcp?.[mcpName]
+      const internal = s.config[mcpName]
+      const cfg = internal ? undefined : yield* cfgSvc.get()
+      const mcpConfig = internal ?? cfg?.mcp?.[mcpName]
       if (!mcpConfig || !isMcpConfigured(mcpConfig)) return undefined
+      const managedRobinhood = s.managedRobinhood && mcpName === McpRobinhood.SERVER_NAME
+      if (
+        (mcpName === McpRobinhood.SERVER_NAME && !McpRobinhood.isServer(mcpName, mcpConfig, managedRobinhood)) ||
+        (mcpName !== McpRobinhood.SERVER_NAME && McpRobinhood.isOfficialEndpoint(mcpConfig))
+      ) {
+        return undefined
+      }
       return mcpConfig
     })
 
@@ -704,6 +880,7 @@ export const layer = Layer.effect(
     })
 
     const startAuth = Effect.fn("MCP.startAuth")(function* (mcpName: string) {
+      yield* assertPlatformOwnedLifecycle(mcpName)
       const mcpConfig = yield* requireMcpConfig(mcpName)
       if (mcpConfig.type !== "remote") throw new Error(`MCP server ${mcpName} is not a remote server`)
       if (mcpConfig.oauth === false) throw new Error(`MCP server ${mcpName} has OAuth explicitly disabled`)
@@ -787,7 +964,14 @@ export const layer = Layer.effect(
 
         const s = yield* InstanceState.get(state)
         yield* auth.clearOAuthState(mcpName)
-        return yield* storeClient(s, mcpName, client, listed, mcpConfig.timeout)
+        return yield* storeClient(
+          s,
+          mcpName,
+          client,
+          listed,
+          mcpConfig,
+          s.managedRobinhood && mcpName === McpRobinhood.SERVER_NAME,
+        )
       }
 
       const callbackPromise = McpOAuthCallback.waitForCallback(result.oauthState, mcpName)
@@ -825,6 +1009,7 @@ export const layer = Layer.effect(
     })
 
     const finishAuth = Effect.fn("MCP.finishAuth")(function* (mcpName: string, authorizationCode: string) {
+      yield* assertPlatformOwnedLifecycle(mcpName)
       yield* requireMcpConfig(mcpName)
       const transport = pendingOAuthTransports.get(mcpName)
       if (!transport) throw new Error(`No pending OAuth flow for MCP server: ${mcpName}`)
@@ -849,12 +1034,14 @@ export const layer = Layer.effect(
     })
 
     const removeAuth = Effect.fn("MCP.removeAuth")(function* (mcpName: string) {
+      yield* assertPlatformOwnedLifecycle(mcpName)
       yield* auth.remove(mcpName)
       McpOAuthCallback.cancelPending(mcpName)
       pendingOAuthTransports.delete(mcpName)
     })
 
     const supportsOAuth = Effect.fn("MCP.supportsOAuth")(function* (mcpName: string) {
+      yield* assertPlatformOwnedLifecycle(mcpName)
       const mcpConfig = yield* requireMcpConfig(mcpName)
       return mcpConfig.type === "remote" && mcpConfig.oauth !== false
     })
@@ -873,6 +1060,8 @@ export const layer = Layer.effect(
 
     return Service.of({
       status,
+      robinhood,
+      robinhoodBroker,
       clients,
       tools,
       prompts,

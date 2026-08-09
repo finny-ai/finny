@@ -26,9 +26,7 @@ export function DialogBrokerage() {
         value: spec.kind as BrokerKind,
         description:
           spec.kind === "robinhood"
-            ? count > 0
-              ? `${count} account${count === 1 ? "" : "s"} · manage RHX connector`
-              : "Set up the pinned RHX connector"
+            ? "Official OAuth · manage connection"
             : count > 0
               ? `${count} account${count === 1 ? "" : "s"}`
               : "No accounts — pick to add one",

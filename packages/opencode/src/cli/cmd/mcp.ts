@@ -395,7 +395,15 @@ export const McpLogoutCommand = effectCmd({
       return
     }
 
-    yield* MCP.Service.use((mcp) => mcp.removeAuth(serverName))
+    const failure = yield* MCP.Service.use((mcp) => mcp.removeAuth(serverName)).pipe(
+      Effect.as(undefined),
+      Effect.catchTag("MCP.ManagedLifecycleError", (error) => Effect.succeed(error)),
+    )
+    if (failure) {
+      prompts.log.error(failure.message)
+      prompts.outro("Done")
+      return
+    }
     prompts.log.success(`Removed OAuth credentials for ${serverName}`)
     prompts.outro("Done")
   }),

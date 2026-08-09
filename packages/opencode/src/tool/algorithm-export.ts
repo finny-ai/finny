@@ -58,12 +58,14 @@ export const AlgorithmExportTool = Tool.define(
         }
         const destPath = path.resolve(expanded)
 
-        await ctx.ask({
-          permission: "finny_algorithm_export",
-          patterns: [destPath],
-          always: ["*"],
-          metadata: { destPath },
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_algorithm_export",
+            patterns: [destPath],
+            always: ["*"],
+            metadata: { destPath },
+          }),
+        )
 
         // Resolve algorithmId from name if needed; pick version row.
         let algo: Algorithm.Info | null = null

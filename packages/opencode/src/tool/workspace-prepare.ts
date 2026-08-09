@@ -608,12 +608,14 @@ export const WorkspacePrepareTool = Tool.define<
             }
           }
 
-          await ctx.ask({
-            permission: "finny_workspace_prepare",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "finny_workspace_prepare",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const prompt = promptFromParams(effectiveParams, userText)
           if (!prompt.trim()) {
@@ -742,16 +744,18 @@ export const WorkspacePrepareTool = Tool.define<
               }
           // Models cannot self-approve Research→Build handoffs. Approval is a user decision.
           if (params.transition === "approved") {
-            await ctx.ask({
-              permission: "research_brief_approve",
-              patterns: ["*"],
-              always: ["*"],
-              metadata: {
-                workspaceSlug: prepared.slug,
-                workspacePath,
-                requestContext,
-              },
-            })
+            await Effect.runPromise(
+              ctx.ask({
+                permission: "research_brief_approve",
+                patterns: ["*"],
+                always: ["*"],
+                metadata: {
+                  workspaceSlug: prepared.slug,
+                  workspacePath,
+                  requestContext,
+                },
+              }),
+            )
           }
           const researchStatus =
             params.researchBrief || params.transition

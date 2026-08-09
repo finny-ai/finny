@@ -7,11 +7,12 @@ import { Card } from "./card"
 import { maskKey } from "@/live/alpaca-accounts"
 import { BrokerRegistry, type BrokerAccount, type BrokerKind, type BrokerSpec } from "@/live/brokers"
 import { RobinhoodManager } from "./dialog-robinhood"
+import { createRobinhoodIntegrationClient } from "../util/robinhood-integration"
 
 function brokerSubtitle(spec: BrokerSpec): string {
   if (spec.kind === "alpaca") return "Stocks · ETFs · Crypto"
   if (spec.kind === "binance") return "Crypto spot · USDT pairs"
-  if (spec.kind === "robinhood") return "Stocks/ETFs beta · Crypto official"
+  if (spec.kind === "robinhood") return "Official OAuth · Agentic live account"
   return spec.assetClasses.join(" · ")
 }
 
@@ -19,6 +20,7 @@ export function SettingsPanelPaperTrading() {
   const { theme } = useTheme()
   const sdk = useSDK()
   const toast = useToast()
+  const robinhood = createRobinhoodIntegrationClient(sdk)
 
   const allSpecs = BrokerRegistry.specs()
   const [activeKind, setActiveKind] = createSignal<BrokerKind>(allSpecs[0]?.kind ?? "alpaca")
@@ -26,6 +28,7 @@ export function SettingsPanelPaperTrading() {
 
   const [allAccounts, setAllAccounts] = createSignal<BrokerAccount[]>([])
   const [busy, setBusy] = createSignal(false)
+  const [robinhoodConnected, setRobinhoodConnected] = createSignal(false)
 
   const accountsForKind = (kind: BrokerKind) => allAccounts().filter((a) => a.brokerKind === kind)
 
@@ -37,8 +40,17 @@ export function SettingsPanelPaperTrading() {
     }
   }
 
+  const refreshRobinhood = async () => {
+    try {
+      setRobinhoodConnected((await robinhood.status()).connected)
+    } catch {
+      setRobinhoodConnected(false)
+    }
+  }
+
   onMount(() => {
     refreshAccounts()
+    refreshRobinhood()
   })
 
   const removeAccount = async (account: BrokerAccount) => {
@@ -65,6 +77,7 @@ export function SettingsPanelPaperTrading() {
               {(spec) => {
                 const isActive = () => activeKind() === spec.kind
                 const count = () => accountsForKind(spec.kind).length
+                const connected = () => (spec.kind === "robinhood" ? robinhoodConnected() : count() > 0)
                 return (
                   <box
                     flexDirection="column"
@@ -80,9 +93,9 @@ export function SettingsPanelPaperTrading() {
                       ◆ {spec.displayName}
                     </text>
                     <text fg={theme.textMuted}>{brokerSubtitle(spec)}</text>
-                    <Show when={count() > 0} fallback={<text fg={theme.textMuted}>not connected</text>}>
+                    <Show when={connected()} fallback={<text fg={theme.textMuted}>Not connected</text>}>
                       <text fg={theme.success} attributes={TextAttributes.BOLD}>
-                        ✓ {count()} account{count() !== 1 ? "s" : ""}
+                        {spec.kind === "robinhood" ? "✓ Connected" : `✓ ${count()} account${count() !== 1 ? "s" : ""}`}
                       </text>
                     </Show>
                   </box>
@@ -93,7 +106,7 @@ export function SettingsPanelPaperTrading() {
         </Card>
       </box>
 
-      {/* Right pane — Robinhood has a dedicated credentialless connector flow. */}
+      {/* Right pane — Robinhood has a dedicated official OAuth flow. */}
       <box flexGrow={1} minHeight={0}>
         <Show
           when={activeKind() === "robinhood"}
@@ -143,7 +156,7 @@ export function SettingsPanelPaperTrading() {
           }
         >
           <Card title=" Robinhood ">
-            <RobinhoodManager onChanged={() => void refreshAccounts()} />
+            <RobinhoodManager onChanged={() => void Promise.all([refreshAccounts(), refreshRobinhood()])} />
           </Card>
         </Show>
       </box>

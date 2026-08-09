@@ -1,5 +1,6 @@
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
 import { MCP } from "@/mcp"
@@ -17,7 +18,7 @@ import { Effect } from "effect"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
-import { PartID } from "./schema"
+import { MessageID, PartID, SessionID } from "./schema"
 import { EffectBridge } from "@/effect/bridge"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
@@ -25,6 +26,49 @@ import { runTelemetryAttributes, sessionTelemetryAttributes, withTelemetrySpan }
 import { runToolHookLifecycle } from "./tool-hook-lifecycle"
 import { contextPhaseExecutionBlock, type ContextPhaseGate } from "@/task/strategy-context"
 import { effectiveFundRuntimePermission } from "@/agent/fund-policy"
+import { McpRobinhood } from "@/mcp/robinhood"
+
+const robinhoodMcpPermission = Permission.fromConfig(McpRobinhood.permissionConfig())
+
+export function mcpInvocationPermission(
+  toolID: string,
+  effectivePermission: PermissionV1.Ruleset,
+):
+  | { readonly action: "inherit"; readonly ruleset: PermissionV1.Ruleset }
+  | { readonly action: "ask"; readonly ruleset: PermissionV1.Ruleset }
+  | { readonly action: "deny"; readonly ruleset: PermissionV1.Ruleset } {
+  if (!McpRobinhood.isServerToolID(toolID)) return { action: "inherit", ruleset: effectivePermission }
+  if (!McpRobinhood.isToolID(toolID)) return { action: "deny", ruleset: robinhoodMcpPermission }
+  if (Permission.evaluate(toolID, "*", effectivePermission).action === "deny") {
+    return { action: "deny", ruleset: effectivePermission }
+  }
+  return { action: "ask", ruleset: robinhoodMcpPermission }
+}
+
+export function requestMcpPermission(input: {
+  readonly toolID: string
+  readonly permission: Permission.Interface
+  readonly effectivePermission: PermissionV1.Ruleset
+  readonly sessionID: SessionID
+  readonly messageID: MessageID
+  readonly callID: string
+}) {
+  const decision = mcpInvocationPermission(input.toolID, input.effectivePermission)
+  if (decision.action === "deny") {
+    return Effect.die(new PermissionV1.DeniedError({ ruleset: decision.ruleset }))
+  }
+  return input.permission
+    .ask({
+      permission: input.toolID,
+      metadata: {},
+      patterns: [input.toolID],
+      always: decision.action === "ask" ? [] : [input.toolID],
+      sessionID: input.sessionID,
+      tool: { messageID: input.messageID, callID: input.callID },
+      ruleset: decision.ruleset,
+    })
+    .pipe(Effect.orDie)
+}
 
 export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   agent: Agent.Info
@@ -83,15 +127,23 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           },
         }
       }),
+    // `Tool.Context.ask` is typed `Effect.Effect<void>`, so tool bodies are entitled
+    // to run it standalone. Promise-shaped tools do exactly that via
+    // `Effect.runPromise`, which starts a fresh root fiber with an empty context —
+    // `permission.ask` then dies with "InstanceRef not provided". Routing through
+    // the bridge re-provides the captured instance/workspace refs so the effect is
+    // genuinely self-contained for both `yield*` and `Effect.runPromise` callers.
     ask: (req) =>
-      permission
-        .ask({
-          ...req,
-          sessionID: input.session.id,
-          tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: effectivePermission,
-        })
-        .pipe(Effect.orDie),
+      run.run(
+        permission
+          .ask({
+            ...req,
+            sessionID: input.session.id,
+            tool: { messageID: input.processor.message.id, callID: options.toolCallId },
+            ruleset: effectivePermission,
+          })
+          .pipe(Effect.orDie),
+      ),
   })
 
   const definitions =
@@ -190,7 +242,14 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
     const requestMcpTool = (runtimeArgs: any, opts: ToolExecutionOptions, ctx: Tool.Context) =>
       Effect.gen(function* () {
-        yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
+        yield* requestMcpPermission({
+          toolID: key,
+          permission,
+          effectivePermission,
+          sessionID: input.session.id,
+          messageID: input.processor.message.id,
+          callID: opts.toolCallId,
+        })
         return yield* Effect.promise(() => execute(runtimeArgs, opts))
       }).pipe(
         withTelemetrySpan("finny.tool.execute", {

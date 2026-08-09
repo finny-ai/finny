@@ -65,6 +65,8 @@ export interface DialogSelectOption<T = any> {
   category?: string
   categoryView?: JSX.Element
   disabled?: boolean
+  /** Render the option as unavailable while keeping the reason visible in the list. */
+  unavailable?: boolean
   bg?: RGBA
   gutter?: DialogSelectGutter
   margin?: JSX.Element
@@ -270,7 +272,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
       return
     }
     const option = selected()
-    if (!option) return
+    if (!option || option.unavailable) return
     option.onSelect?.(dialog)
     props.onSelect?.(option)
   }
@@ -564,7 +566,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                             setFocusedAction(undefined)
                           }}
                           onMouseUp={() => {
-                            if (props.locked) return
+                            if (props.locked || option.unavailable) return
                             option.onSelect?.(dialog)
                             props.onSelect?.(option)
                           }}
@@ -609,7 +611,7 @@ export function DialogSelect<T>(props: DialogSelectProps<T>) {
                               description={option.description !== category ? option.description : undefined}
                               active={active()}
                               current={current()}
-                              muted={actionFocused()}
+                              muted={actionFocused() || option.unavailable}
                               gutter={option.gutter}
                             />
                           </box>

@@ -369,12 +369,14 @@ export const PortfolioBacktestTool = Tool.define(
     parameters,
     execute: (params: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_portfolio_backtest",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_portfolio_backtest",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const totalWeight = params.holdings.reduce((s, h) => s + h.weight, 0)
         if (totalWeight <= 0) {

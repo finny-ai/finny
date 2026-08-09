@@ -67,6 +67,7 @@ import { readActiveBrokerKind } from "@/live/brokers/active"
 import { BrokerRegistry } from "@/live/brokers"
 import { renderRobinhoodIntegrationContext } from "@/live/brokers/robinhood"
 import { RobinhoodIntegration } from "@/integration/robinhood"
+import { McpRobinhood } from "@/mcp/robinhood"
 import { ensurePrimaryBuildWorkflow } from "@/algorithm/build-workflow/bind"
 import { StrategyContext } from "@/task/strategy-context"
 import { ProviderPreflight } from "./provider-preflight"
@@ -1657,6 +1658,8 @@ export const layer = Layer.effect(
                 ? StrategyContext.unlaunchedRequiredContextRoles(activeTurnWorkflow, contextTasks)
                 : []
             const contextLaunchRequired = unlaunchedRequiredRoles.length > 0
+            const includeMcpTools =
+              !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired
             const contextDefinitions = StrategyContext.filterContextPhaseTools(capabilityDefinitions, {
               pendingCount: pendingContext.length,
               launchRequired: contextLaunchRequired,
@@ -1673,7 +1676,7 @@ export const layer = Layer.effect(
               messages: msgs,
               promptOps,
               definitions: turnDefinitions,
-              includeMcpTools: !isFundRuntimeAgent(agent.name) && pendingContext.length === 0 && !contextLaunchRequired,
+              includeMcpTools,
               strategyContextGate: {
                 unlaunchedRequiredRoles,
                 pendingTasks: pendingContext,
@@ -1762,6 +1765,10 @@ export const layer = Layer.effect(
                 const handoff = yield* Effect.promise(() => inspectResearchBriefForBuildHandoff(algoDir(workspace)))
                 if (handoff.buildReady && handoff.brief) system.push(renderResearchBriefHandoff(handoff.brief))
               }
+            }
+            if (includeMcpTools) {
+              const robinhood = yield* mcp.robinhood()
+              if (robinhood) system.push(McpRobinhood.renderContext(robinhood))
             }
             const activeBrokerKind = protectedFundRuntime
               ? undefined

@@ -61,8 +61,10 @@ describe("pending strategy-context capability surface", () => {
     expect(promptSource).toContain("filterContextPhaseTools(capabilityDefinitions")
     expect(promptSource).toContain("strategyContextGate: {")
     expect(toolsSource).toContain("contextPhaseExecutionBlock(item.id, input.strategyContextGate)")
-    expect(promptSource).toContain("includeMcpTools: pendingContext.length === 0 && !contextLaunchRequired")
-    expect(toolsSource).toContain('input.includeMcpTools === false ? {} : yield* mcp.tools()')
+    expect(promptSource).toContain("const includeMcpTools =")
+    expect(promptSource).toContain("includeMcpTools,")
+    expect(promptSource).toContain("if (includeMcpTools)")
+    expect(toolsSource).toContain("input.includeMcpTools === false ? {} : yield* mcp.tools()")
   })
 })
 
@@ -79,9 +81,7 @@ describe("required strategy-context roles", () => {
     expect(requiresConcurrentContextKickoff(delegatedWorkflow)).toBe(true)
     expect(unmetRequiredContextRoles(delegatedWorkflow)).toEqual(["data_extractor", "news_agent"])
     expect(
-      unlaunchedRequiredContextRoles(delegatedWorkflow, [
-        { subagentType: "data_extractor", status: "running" },
-      ]),
+      unlaunchedRequiredContextRoles(delegatedWorkflow, [{ subagentType: "data_extractor", status: "running" }]),
     ).toEqual(["news_agent"])
   })
 
@@ -141,10 +141,12 @@ describe("required strategy-context roles", () => {
         status: "verified",
       })),
     } as BuildWorkflowState
-    expect(contextPhaseExecutionBlock("finny_algorithm_scaffold", {
-      unlaunchedRequiredRoles: unlaunchedRequiredContextRoles(verifiedWorkflow, []),
-      pendingTasks: [],
-    })).toBeUndefined()
+    expect(
+      contextPhaseExecutionBlock("finny_algorithm_scaffold", {
+        unlaunchedRequiredRoles: unlaunchedRequiredContextRoles(verifiedWorkflow, []),
+        pendingTasks: [],
+      }),
+    ).toBeUndefined()
   })
 
   test("execution gate blocks unsafe Finny actions without blocking safe overlap tools", () => {
@@ -234,7 +236,9 @@ describe("required strategy-context roles", () => {
     expect(requiredContextLaunchSystemFragment(["news_agent"])).toContain(
       "A readable artifact or completed child task does not satisfy this gate",
     )
-    expect(requiredContextLaunchSystemFragment(["news_agent"])).toContain("Call task_run or task_start now for news_agent")
+    expect(requiredContextLaunchSystemFragment(["news_agent"])).toContain(
+      "Call task_run or task_start now for news_agent",
+    )
     expect(requiredContextLaunchSystemFragment(["data_extractor", "news_agent"])).toContain(
       "Call task_batch_run once with every missing role",
     )

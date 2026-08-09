@@ -48,12 +48,14 @@ export const AlgorithmSetParamsTool = Tool.define(
     parameters,
     execute: (input: z.infer<typeof parameters>, ctx: Tool.Context) =>
       Effect.promise(async (): Promise<{ title: string; output: string; metadata: Record<string, unknown> }> => {
-        await ctx.ask({
-          permission: "finny_algorithm_set_params",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_algorithm_set_params",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const algo = await Algorithm.get(input.name)
         if (!algo) {

@@ -113,6 +113,7 @@ const mcp = Layer.succeed(
   MCP.Service,
   MCP.Service.of({
     status: () => Effect.succeed({}),
+    robinhood: () => Effect.succeed(undefined),
     clients: () => Effect.succeed({}),
     tools: () => Effect.succeed({}),
     prompts: () => Effect.succeed({}),

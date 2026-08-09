@@ -18,6 +18,15 @@ import { regionalMarketForTicker } from "@/data/regional-markets"
 
 export const WORKER_SHELL_POLICY_VERSION = 1 as const
 
+/** Runner control-plane secrets that no model-controlled child may inherit. */
+export const MODEL_CHILD_SECRET_ENV_KEYS = [
+  "FINNY_ROBINHOOD_MCP_URL",
+  "FINNY_SERVER_PASSWORD",
+  "OPENCODE_SERVER_PASSWORD",
+] as const
+
+const MODEL_CHILD_SECRET_ENV = new Set<string>(MODEL_CHILD_SECRET_ENV_KEYS)
+
 /** Runtime-only keys every Finny worker may need (no provider secrets). */
 export const WORKER_RUNTIME_ENV = [
   "PATH",
@@ -180,19 +189,32 @@ function pickEnvironment(env: NodeJS.ProcessEnv, allowed: ReadonlySet<string>) {
   return out
 }
 
+/**
+ * Remove exact runner-control secrets from a model-controlled child process.
+ * Matching is case-insensitive so the boundary remains valid on Windows.
+ */
+export function stripModelChildSecrets(env: NodeJS.ProcessEnv) {
+  const out: NodeJS.ProcessEnv = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (!MODEL_CHILD_SECRET_ENV.has(key.toUpperCase())) out[key] = value
+  }
+  return out
+}
+
 /** Runtime-only host environment with all provider and application secrets removed. */
 export function workerRuntimeEnv(env: NodeJS.ProcessEnv) {
-  return pickEnvironment(env, COMMON_RUNTIME_ENV)
+  return pickEnvironment(stripModelChildSecrets(env), COMMON_RUNTIME_ENV)
 }
 
 /**
  * Build the process environment for a shell tool invocation.
- * Non-workers receive the full merged env (primary agents, user shells).
+ * Non-workers receive the merged env minus runner control-plane secrets.
  * Workers receive only the allowlisted keys for that agent/request.
  */
 export function workerShellEnv(input: { agent: string; env: NodeJS.ProcessEnv; request?: Record<string, unknown> }) {
-  if (!isWorkerAgent(input)) return { ...input.env }
-  return pickEnvironment(input.env, workerEnvKeys(input))
+  const env = stripModelChildSecrets(input.env)
+  if (!isWorkerAgent(input)) return env
+  return pickEnvironment(env, workerEnvKeys(input))
 }
 
 const BLOCKED_ENVIRONMENT_ENUMERATION = [

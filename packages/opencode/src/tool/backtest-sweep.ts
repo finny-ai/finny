@@ -111,12 +111,14 @@ export const BacktestSweepTool = Tool.define(
     parameters: BacktestSweepParameters,
     execute: (input: z.infer<typeof BacktestSweepParameters>, ctx: Tool.Context) =>
       Effect.promise(async () => {
-        await ctx.ask({
-          permission: "finny_backtest_sweep",
-          patterns: ["*"],
-          always: ["*"],
-          metadata: {},
-        })
+        await Effect.runPromise(
+          ctx.ask({
+            permission: "finny_backtest_sweep",
+            patterns: ["*"],
+            always: ["*"],
+            metadata: {},
+          }),
+        )
 
         const algo = await Algorithm.get(input.algorithmName)
         if (!algo) {

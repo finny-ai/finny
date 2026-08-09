@@ -60,7 +60,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
         <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme.text} attributes={TextAttributes.BOLD}>
-              {r().brokerKind === "robinhood" ? "Live Account Data · Shadow Orders" : "Live"} · {r().algorithmName}
+              {r().brokerKind === "robinhood" ? "Robinhood Live" : "Live"} · {r().algorithmName}
             </text>
             <text fg={theme.textMuted} onMouseUp={close}>
               esc
@@ -125,15 +125,10 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
                 <For each={r().logs.slice(-80)}>
                   {(entry) => {
                     const color =
-                      entry.level === "error"
-                        ? theme.error
-                        : entry.level === "warn"
-                          ? theme.warning
-                          : theme.text
+                      entry.level === "error" ? theme.error : entry.level === "warn" ? theme.warning : theme.text
                     return (
                       <text fg={color}>
-                        <span style={{ fg: theme.textMuted }}>{formatRelativeLog(entry.ts)}</span>{" "}
-                        {entry.message}
+                        <span style={{ fg: theme.textMuted }}>{formatRelativeLog(entry.ts)}</span> {entry.message}
                       </text>
                     )
                   }}
@@ -144,12 +139,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
 
           <Show when={r().error}>
             {(err) => (
-              <box
-                paddingLeft={1}
-                paddingRight={1}
-                border={["left"]}
-                borderColor={theme.error}
-              >
+              <box paddingLeft={1} paddingRight={1} border={["left"]} borderColor={theme.error}>
                 <text fg={theme.error}>{err()}</text>
               </box>
             )}
@@ -164,12 +154,7 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
                 </box>
               }
             >
-              <box
-                paddingLeft={2}
-                paddingRight={2}
-                backgroundColor={theme.error}
-                onMouseUp={handleStop}
-              >
+              <box paddingLeft={2} paddingRight={2} backgroundColor={theme.error} onMouseUp={handleStop}>
                 <text fg={theme.background} attributes={TextAttributes.BOLD}>
                   ■ Stop
                 </text>

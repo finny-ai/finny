@@ -1,5 +1,7 @@
 import * as InstanceState from "@/effect/instance-state"
 import { LiveRunner } from "@/live/runner"
+import { RobinhoodExecution } from "@/live/robinhood-execution"
+import { MCP } from "@/mcp"
 import { Algorithm } from "@/algorithm"
 import { GlobalBus } from "@/bus/global"
 import { Effect } from "effect"
@@ -10,7 +12,7 @@ import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
 import { readApproval, strictRunDir } from "@/backtest/run-integrity"
 import { InstanceHttpApi } from "../api"
 import { ConflictError, LiveRunNotFoundError, LiveRunStartError } from "../errors"
-import type { StartPayload } from "../groups/live"
+import type { RobinhoodPreflightPayload, StartPayload } from "../groups/live"
 
 /**
  * Bridge LiveRunner's in-process listeners onto the GlobalBus so run updates
@@ -51,6 +53,7 @@ function ensureBridge() {
 export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handlers) =>
   Effect.gen(function* () {
     const database = yield* Database.Service
+    const mcp = yield* MCP.Service
     const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
       Effect.runPromise(Effect.provideService(effect, Database.Service, database))
     const releaseBridge = ensureBridge()
@@ -77,6 +80,55 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
       return run
     })
 
+    const workflowAuthority = async (algorithm: Algorithm.Info, runId: string) => {
+      const approval = await readApproval(strictRunDir(algorithm, runId), "paper_eligible")
+      const workflow = approval?.workflowId ? await runWorkflow(BuildWorkflowStore.get(approval.workflowId)) : undefined
+      return approval
+        ? controllerPaperApproval(workflow, {
+            algorithmId: algorithm.algorithmId,
+            algorithmVersion: algorithm.version,
+            runId,
+            identityHash: approval.identityHash,
+          })
+        : undefined
+    }
+
+    const robinhoodPreflight = Effect.fn("LiveHttpApi.robinhoodPreflight")(function* (ctx: {
+      payload: typeof RobinhoodPreflightPayload.Type
+    }) {
+      const access = mcp.robinhoodBroker ? yield* mcp.robinhoodBroker() : undefined
+      return yield* Effect.tryPromise({
+        try: async () => {
+          const algorithm = await Algorithm.getById(ctx.payload.algorithmId)
+          if (!algorithm)
+            throw new LiveRunner.StartRejectedError(`Algorithm ${ctx.payload.algorithmId} no longer exists.`)
+          return RobinhoodExecution.preflight(
+            {
+              algorithm,
+              runId: ctx.payload.runId,
+              symbol: ctx.payload.symbol,
+              interval: ctx.payload.interval,
+              executionMode: ctx.payload.executionMode,
+              accountProviderID: ctx.payload.accountProviderID,
+              controllerApproval: await workflowAuthority(algorithm, ctx.payload.runId),
+            },
+            {
+              access,
+              // Deliberately absent until an authenticated tools/list capture
+              // has been reviewed and checked in as an exact schema mapping.
+              mapping: undefined,
+            },
+          )
+        },
+        catch: (error) => {
+          if (error instanceof LiveRunner.StartRejectedError) {
+            return new LiveRunStartError({ message: error.message })
+          }
+          throw error
+        },
+      })
+    })
+
     const start = Effect.fn("LiveHttpApi.start")(function* (ctx: { payload: typeof StartPayload.Type }) {
       const dir = yield* InstanceState.directory
       return yield* Effect.tryPromise({
@@ -87,18 +139,7 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
               `Algorithm ${ctx.payload.algorithm.algorithmId} no longer exists; refresh before starting a run.`,
             )
           }
-          const approval = await readApproval(strictRunDir(algorithm, ctx.payload.runId), "paper_eligible")
-          const workflow = approval?.workflowId
-            ? await runWorkflow(BuildWorkflowStore.get(approval.workflowId))
-            : undefined
-          const authority = approval
-            ? controllerPaperApproval(workflow, {
-                algorithmId: algorithm.algorithmId,
-                algorithmVersion: algorithm.version,
-                runId: ctx.payload.runId,
-                identityHash: approval.identityHash,
-              })
-            : undefined
+          const authority = await workflowAuthority(algorithm, ctx.payload.runId)
           return LiveRunner.start({
             algorithm,
             runId: ctx.payload.runId,
@@ -109,6 +150,9 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
             directory: dir,
             controllerApproval: authority,
             activationReceipt: ctx.payload.activationReceipt,
+            executionMode: ctx.payload.executionMode,
+            challengeId: ctx.payload.challengeId,
+            realMoneyAcknowledgement: ctx.payload.realMoneyAcknowledgement,
           })
         },
         catch: (error) => {
@@ -150,6 +194,7 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
     })
 
     return handlers
+      .handle("robinhoodPreflight", robinhoodPreflight)
       .handle("list", list)
       .handle("get", get)
       .handle("start", start)

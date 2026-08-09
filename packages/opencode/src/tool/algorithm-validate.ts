@@ -48,12 +48,14 @@ export const AlgorithmValidateTool = Tool.define(
               } as ValidationMetadata,
             }
           }
-          await ctx.ask({
-            permission: "finny_algorithm_validate",
-            patterns: ["*"],
-            always: ["*"],
-            metadata: {},
-          })
+          await Effect.runPromise(
+            ctx.ask({
+              permission: "finny_algorithm_validate",
+              patterns: ["*"],
+              always: ["*"],
+              metadata: {},
+            }),
+          )
 
           const runtime = runtimeFromConfig(params.config)
           if (isLeanProfile(runtime.profile)) {
