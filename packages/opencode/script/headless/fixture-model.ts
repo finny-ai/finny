@@ -127,15 +127,15 @@ public class Main : QCAlgorithm
         Consolidate(_spy, TimeSpan.FromMinutes(5), OnConsolidated);
     }
 
-    private void OnConsolidated(IBaseDataBar bar)
+    private void OnConsolidated(IBaseData bar)
     {
-        _fast.Update(bar.EndTime, bar.Close);
-        _slow.Update(bar.EndTime, bar.Close);
+        _fast.Update(bar.EndTime, bar.Price);
+        _slow.Update(bar.EndTime, bar.Price);
         if (IsWarmingUp || !_fast.IsReady || !_slow.IsReady) return;
         var fastMa = _fast.Current.Value;
         var slowMa = _slow.Current.Value;
         var holdings = Portfolio[_spy].Quantity;
-        var price = bar.Close;
+        var price = bar.Price;
         var bullish = _previousFast.HasValue && _previousSlow.HasValue &&
                       _previousFast <= _previousSlow && fastMa > slowMa;
         var bearish = _previousFast.HasValue && _previousSlow.HasValue &&
