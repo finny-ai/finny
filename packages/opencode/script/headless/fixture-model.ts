@@ -172,7 +172,6 @@ const CONFIG = JSON.stringify({
   },
 })
 
-<<<<<<< HEAD
 const POSITIVE_STRATEGY = `from collections import deque
 
 class Strategy:
@@ -258,16 +257,6 @@ function capturedValue(text: string, field: string): string | undefined {
     .at(-1)
 }
 
-=======
-const LEAN_CONFIG = JSON.stringify({
-  symbol: "SPY",
-  asset_class: "equity",
-  interval: "5m",
-  required_history_bars: 24,
-  params: { fast: 8, slow: 24 },
-})
-
->>>>>>> 1c8363e16e (feat(lean): real engine execution, canonical metrics, and LEAN headless fixture)
 function providerConfig(url: string) {
   return {
     formatter: false,
