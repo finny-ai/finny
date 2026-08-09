@@ -28,6 +28,17 @@
         "turbo": "2.8.13",
       },
     },
+    "packages/algorithm": {
+      "name": "@finny-ai/algorithm",
+      "version": "0.1.0",
+      "dependencies": {
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
+      },
+    },
     "packages/app": {
       "name": "@opencode-ai/app",
       "version": "1.17.4",
@@ -236,6 +247,18 @@
         "@typescript/native-preview": "catalog:",
         "typescript": "catalog:",
         "wrangler": "4.50.0",
+      },
+    },
+    "packages/control-api": {
+      "name": "@finny-ai/control-api",
+      "version": "0.1.0",
+      "dependencies": {
+        "effect": "catalog:",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "typescript": "catalog:",
       },
     },
     "packages/core": {
@@ -1520,6 +1543,10 @@
     "@ff-labs/fff-bin-win32-x64": ["@ff-labs/fff-bin-win32-x64@0.9.4", "", { "os": "win32", "cpu": "x64" }, "sha512-Yd2Eyxj+slWv+0QDW9/xBpu9FXq+hwD0rXQD5184/88d+xwWCLKhEP2w8I6OO9XCg+kLT79UJb+k0WwXUtBtMw=="],
 
     "@ff-labs/fff-bun": ["@ff-labs/fff-bun@0.9.4", "", { "optionalDependencies": { "@ff-labs/fff-bin-darwin-arm64": "0.9.4", "@ff-labs/fff-bin-darwin-x64": "0.9.4", "@ff-labs/fff-bin-linux-arm64-gnu": "0.9.4", "@ff-labs/fff-bin-linux-arm64-musl": "0.9.4", "@ff-labs/fff-bin-linux-x64-gnu": "0.9.4", "@ff-labs/fff-bin-linux-x64-musl": "0.9.4", "@ff-labs/fff-bin-win32-arm64": "0.9.4", "@ff-labs/fff-bin-win32-x64": "0.9.4" }, "os": [ "linux", "win32", "darwin", ], "cpu": [ "x64", "arm64", ] }, "sha512-7HUraaK/g5dStAnuKAuzsXVOQvqqX0ylo5G+DxYwsCjCDc42bjoEAAHqz/3Sn3raUNw97KMoz87XR9QyrLEfVw=="],
+
+    "@finny-ai/algorithm": ["@finny-ai/algorithm@workspace:packages/algorithm"],
+
+    "@finny-ai/control-api": ["@finny-ai/control-api@workspace:packages/control-api"],
 
     "@finny-ai/core": ["@finny-ai/core@workspace:packages/finny-core"],
 
