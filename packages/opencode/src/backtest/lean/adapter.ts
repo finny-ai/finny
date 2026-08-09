@@ -401,8 +401,12 @@ export class LeanAdapter implements LeanAdapterV1 {
       { nothrow: true, timeout: 10 * 60_000, env: input.env, inheritEnv: false },
     )
     if (result.code !== 0) {
-      const stderr = result.stderr.toString().trim().slice(0, 4000)
-      return { ok: false, error: `dotnet build exited ${result.code}: ${stderr || "no compiler output"}` }
+      const stderr = result.stderr.toString().trim().slice(0, 2000)
+      const stdout = result.stdout.toString().trim().slice(-2000)
+      return {
+        ok: false,
+        error: `dotnet build exited ${result.code}: ${[stderr, stdout].filter(Boolean).join("\n").slice(0, 4000) || "no compiler output"}`,
+      }
     }
     return { ok: true, buildOutDir }
   }
