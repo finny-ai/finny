@@ -29,6 +29,7 @@ import { Api } from "@opencode-ai/server/api"
 import { GlobalApi } from "./groups/global"
 import { HealthApi } from "./groups/health"
 import { IntegrationsApi } from "./groups/integrations"
+import { QcApi } from "./groups/qc"
 import { Authorization } from "./middleware/authorization"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -69,6 +70,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ProjectApi)
   .addHttpApi(ProjectCopyApi)
   .addHttpApi(PtyApi)
+  .addHttpApi(QcApi)
   .addHttpApi(QuestionApi)
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)
