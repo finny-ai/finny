@@ -836,10 +836,16 @@ export const AlgorithmSaveTool = Tool.define(
                   targetBrokerage: params.targetBrokerage,
                   saveMode: params.saveMode,
                 })
-                if (params.runtimeProfile === "lean_python") {
+                if (params.runtimeProfile === "lean_python" || params.runtimeProfile === "lean_csharp") {
+                  const files = leanSourceFiles ?? []
+                  if (files.length !== 1) {
+                    throw new Error(
+                      `${params.runtimeProfile} v1 requires exactly one source file; multi-file content delivery is not supported yet`,
+                    )
+                  }
                   await writeLeanSourceFile({
                     algorithm: { algorithmId: algo.algorithmId, version: algo.version },
-                    relativePath: "main.py",
+                    relativePath: files[0]!.path,
                     content: params.code,
                   })
                 }

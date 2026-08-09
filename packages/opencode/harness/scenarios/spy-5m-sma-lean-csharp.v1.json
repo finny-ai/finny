@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "1.0.0",
+  "id": "spy-5m-sma-lean-csharp.v1",
+  "prompt": "Build exactly one SPY 5-minute SMA crossover strategy using data from 2026-01-09 through 2026-07-08 as a lean_csharp runtime. Save one version and run one strict unified backtest. Do not pivot to another strategy family. Report return, Sharpe, max drawdown, eligibility, blockers, and one next step.",
+  "asOfDate": "2026-07-09",
+  "limits": {
+    "wallTimeMs": 2400000,
+    "modelTurns": 40,
+    "toolCalls": 50,
+    "subagents": 4
+  },
+  "request": {
+    "symbols": ["SPY"],
+    "assetClass": "equity",
+    "interval": "5m",
+    "strategyFamilies": ["sma-crossover"],
+    "startDate": "2026-01-09",
+    "endDate": "2026-07-08",
+    "runtime": "lean_csharp"
+  },
+  "artifactPolicy": {
+    "maxAlgorithms": 1,
+    "maxVersionsPerAlgorithm": 1,
+    "maxBacktests": 1
+  },
+  "requiredStages": [
+    "request_bound",
+    "evidence_ready",
+    "candidate_saved",
+    "validated",
+    "backtested",
+    "reviewable"
+  ],
+  "requiredFinalFields": ["return", "sharpe", "max drawdown", "eligibility", "next step"],
+  "allowedRecoveries": [],
+  "observabilityRequired": true
+}
