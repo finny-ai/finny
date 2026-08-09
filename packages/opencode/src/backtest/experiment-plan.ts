@@ -176,6 +176,21 @@ export function compileExperimentPlanV2(input: CompileExperimentPlanV2Input): Ex
       "LEAN v1 plans may not mix equity and crypto portfolios",
     )
   }
+  if (!input.windows) {
+    throw new ExperimentPlanV2CompileError(
+      "insufficient_bars",
+      "phase windows must be derived from the authoritative bar schedules before plan compilation",
+    )
+  }
+  for (const phase of ["warmup", "exploratory", "validation", "confirmatory"] as const) {
+    const window = input.windows[phase]
+    if (!window || window.bars <= 0 || !window.start) {
+      throw new ExperimentPlanV2CompileError(
+        "insufficient_bars",
+        `phase window ${phase} must contain at least one bar with a start timestamp`,
+      )
+    }
+  }
 
   const datasetCompositeHash = planDatasetCompositeHash(input.datasets)
   const draft: Omit<ExperimentPlanV2, "planId" | "planHash"> = {
@@ -195,13 +210,7 @@ export function compileExperimentPlanV2(input: CompileExperimentPlanV2Input): Ex
     qualificationPolicyId: input.qualificationPolicy.policyId,
     qualificationPolicyHash: input.qualificationPolicy.policyHash,
     sealedHoldoutPolicy: "single_approved_event",
-    windows:
-      input.windows ?? {
-        warmup: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-        exploratory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-        validation: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-        confirmatory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" },
-      },
+    windows: input.windows,
   }
   const hash = planHash(draft)
   return { ...draft, planId: `plan-${hash.slice(0, 24)}`, planHash: hash }
@@ -229,6 +238,12 @@ export function verifyExperimentPlanV2(plan: ExperimentPlanV2): string[] {
   if (plan.warmupBars < 0 || !Number.isInteger(plan.warmupBars)) errors.push("warmupBars must be a non-negative integer")
   if (plan.declaredSearchBudget <= 0 || !Number.isInteger(plan.declaredSearchBudget)) {
     errors.push("declaredSearchBudget must be a positive integer")
+  }
+  for (const phase of ["warmup", "exploratory", "validation", "confirmatory"] as const) {
+    const window = plan.windows[phase]
+    if (!window || window.bars <= 0 || !window.start) {
+      errors.push(`phase window ${phase} must contain at least one bar with a start timestamp`)
+    }
   }
   return errors
 }

@@ -532,12 +532,17 @@ export const AlgorithmSaveTool = Tool.define(
                     },
                   ]
                 : params.strategySource?.files
-            const source = derivedFiles
-              ? strategySourceV1({
-                  profileId: params.runtimeProfile,
-                  files: derivedFiles,
-                })
-              : undefined
+            let source: ReturnType<typeof strategySourceV1> | undefined
+            try {
+              source = derivedFiles
+                ? strategySourceV1({
+                    profileId: params.runtimeProfile,
+                    files: derivedFiles,
+                  })
+                : undefined
+            } catch (error) {
+              configIssues.push(`strategy source manifest is invalid: ${error instanceof Error ? error.message : String(error)}`)
+            }
             const sourceIssues = validateLeanSourceManifest(source, params.runtimeProfile)
             if (sourceIssues.length > 0) {
               configIssues.push(...sourceIssues)

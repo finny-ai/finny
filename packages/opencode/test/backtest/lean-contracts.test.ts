@@ -145,6 +145,13 @@ describe("LEAN runtime contracts", () => {
 })
 
 describe("ExperimentPlanV2", () => {
+  const windows = {
+    warmup: { start: "2026-01-01", end: "2026-01-01", bars: 24, sessions: 1, firstSessionId: "2026-01-01", lastSessionId: "2026-01-01" },
+    exploratory: { start: "2026-01-02", end: "2026-02-01", bars: 120, sessions: 20, firstSessionId: "2026-01-02", lastSessionId: "2026-02-01" },
+    validation: { start: "2026-02-02", end: "2026-02-22", bars: 40, sessions: 15, firstSessionId: "2026-02-02", lastSessionId: "2026-02-22" },
+    confirmatory: { start: "2026-02-23", end: "2026-03-31", bars: 40, sessions: 20, firstSessionId: "2026-02-23", lastSessionId: "2026-03-31" },
+  }
+
   test("compiles and verifies a valid LEAN plan", () => {
     const plan = compileExperimentPlanV2({
       request,
@@ -156,6 +163,7 @@ describe("ExperimentPlanV2", () => {
       declaredSearchBudget: 1,
       calendarPolicyVersion: "finny-calendars-2026.1",
       qualificationPolicy: policy as any,
+      windows,
     })
     expect(plan.planId).toMatch(/^plan-[a-f0-9]{24}$/)
     expect(plan.datasetCompositeHash).toMatch(/^[a-f0-9]{64}$/)
@@ -173,6 +181,7 @@ describe("ExperimentPlanV2", () => {
       declaredSearchBudget: 1,
       calendarPolicyVersion: "finny-calendars-2026.1",
       qualificationPolicy: policy as any,
+      windows,
     }
     expect(() => compileExperimentPlanV2({ ...base, datasets: [] })).toThrow(ExperimentPlanV2CompileError)
     const many = Array.from({ length: 21 }, (_, i) => dataset(`S${i}`))
@@ -193,10 +202,48 @@ describe("ExperimentPlanV2", () => {
       declaredSearchBudget: 1,
       calendarPolicyVersion: "finny-calendars-2026.1",
       qualificationPolicy: policy as any,
+      windows,
     })
     expect(verifyExperimentPlanV2({ ...plan, runtime: { ...plan.runtime, leanCommit: "abc" } })).not.toEqual([])
     expect(verifyExperimentPlanV2({ ...plan, orderPolicyVersion: 2 as any })).not.toEqual([])
     expect(verifyExperimentPlanV2({ ...plan, canonicalMetricsVersion: 2 as any })).not.toEqual([])
+  })
+
+  test("rejects plans without derived phase windows", () => {
+    expect(() =>
+      compileExperimentPlanV2({
+        request,
+        candidate: { candidateId: "cand-1", codeHash: "a".repeat(64), configHash: "b".repeat(64), warmupBars: 24, declaredSearchBudget: 1 },
+        runtime: runtime("lean_python"),
+        datasets: [dataset("SPY")],
+        interval: "1h",
+        warmupBars: 24,
+        declaredSearchBudget: 1,
+        calendarPolicyVersion: "finny-calendars-2026.1",
+        qualificationPolicy: policy as any,
+      }),
+    ).toThrow(/phase windows must be derived/)
+  })
+
+  test("verification rejects empty phase windows", () => {
+    const plan = compileExperimentPlanV2({
+      request,
+      candidate: { candidateId: "cand-1", codeHash: "a".repeat(64), configHash: "b".repeat(64), warmupBars: 24, declaredSearchBudget: 1 },
+      runtime: runtime("lean_python"),
+      datasets: [dataset("SPY")],
+      interval: "1h",
+      warmupBars: 24,
+      declaredSearchBudget: 1,
+      calendarPolicyVersion: "finny-calendars-2026.1",
+      qualificationPolicy: policy as any,
+      windows,
+    })
+    expect(
+      verifyExperimentPlanV2({
+        ...plan,
+        windows: { ...plan.windows, confirmatory: { start: "", end: "", bars: 0, sessions: 0, firstSessionId: "", lastSessionId: "" } },
+      }),
+    ).not.toEqual([])
   })
 })
 
