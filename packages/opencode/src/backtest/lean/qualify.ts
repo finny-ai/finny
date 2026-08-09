@@ -35,6 +35,7 @@ import type { LeanAdapterV1 } from "./runner"
 import type { LeanBarScheduleV1 } from "./types"
 import { runtimeForCandidate, type RuntimeConfigV1 } from "./select"
 import { leanSourceDir } from "./source-store"
+import { isLeanProfile } from "./contracts"
 
 const LEAN_ADAPTER_HASH = crypto
   .createHash("sha256")
@@ -168,7 +169,7 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
   policy: QualificationPolicyV1
 }): Promise<ExperimentPlanV2> {
   const runtime = runtimeForCandidate(input.candidate)
-  if (runtime.profile.profileId === "finny_python") throw new Error("candidate is not a LEAN runtime")
+  if (!isLeanProfile(runtime.profile)) throw new Error("candidate is not a LEAN runtime")
   const config = configRecord(input.candidate)
   const assetClass = assetClassFor(config, input.dataset)
   const csvText = await fs.readFile(input.dataset.csvPath, "utf8")

@@ -1,7 +1,11 @@
 import crypto from "node:crypto"
 
-/** Engine runtime identifiers known to the Finny backtest control plane. */
-export type FinnyRuntimeId = "finny_python" | "lean_python" | "lean_csharp"
+/**
+ * Engine runtime identifiers known to the Finny backtest control plane.
+ * qc_cloud is the QuantConnect Cloud track (firm-bring-your-own-QC): distinct
+ * schema and identity, never merged with local LEAN or engine_v2.
+ */
+export type FinnyRuntimeId = "finny_python" | "lean_python" | "lean_csharp" | "qc_cloud"
 
 export const LEAN_RUNTIME_IDS: readonly FinnyRuntimeId[] = ["lean_python", "lean_csharp"]
 
@@ -64,6 +68,10 @@ export function runtimeProfileV1(profileId: FinnyRuntimeId): RuntimeProfileV1 {
 
 export function isLeanProfile(profile: RuntimeProfileV1 | undefined | null): profile is RuntimeProfileV1 & { profileId: "lean_python" | "lean_csharp" } {
   return Boolean(profile && LEAN_RUNTIME_IDS.includes(profile.profileId))
+}
+
+export function isQcCloudProfile(profile: RuntimeProfileV1 | undefined | null): profile is RuntimeProfileV1 & { profileId: "qc_cloud" } {
+  return Boolean(profile && profile.profileId === "qc_cloud")
 }
 
 export function strategySourceTreeHash(files: StrategySourceV1["files"]): string {

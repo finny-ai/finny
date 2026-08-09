@@ -4,6 +4,7 @@ import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import type { Agent } from "@/agent/agent"
 import { EngineV2 } from "@/backtest/results"
 import { LeanAdapter } from "@/backtest/lean/adapter"
+import { qcCredentialPresentSync } from "@/integration/quantconnect"
 import { Permission } from "@/permission"
 import { PRICE_HISTORY_INTERVALS, PRICE_HISTORY_RETENTION } from "@/tool/price-history"
 import type { Tool } from "@/tool/tool"
@@ -109,7 +110,7 @@ const BACKTEST_METRICS = [
 ] as const
 
 export type LeanRuntimeAdvertisement = Array<{
-  profileId: "lean_python" | "lean_csharp"
+  profileId: "lean_python" | "lean_csharp" | "qc_cloud"
   availability: "available" | "unavailable"
   reasons: string[]
 }>
@@ -334,6 +335,7 @@ function backtestCapabilities(tools: CapabilityManifest["tools"]): Pick<Capabili
 
 function leanRuntimeReadiness(): LeanRuntimeAdvertisement {
   const probe = new LeanAdapter().probeReady()
+  const qcPresent = qcCredentialPresentSync()
   return [
     {
       profileId: "lean_python",
@@ -344,6 +346,13 @@ function leanRuntimeReadiness(): LeanRuntimeAdvertisement {
       profileId: "lean_csharp",
       availability: "unavailable",
       reasons: ["lean_csharp runtime is not part of the first release"],
+    },
+    {
+      profileId: "qc_cloud",
+      availability: qcPresent ? "available" : "unavailable",
+      reasons: qcPresent
+        ? []
+        : ["no QuantConnect credentials linked; run `opencode qc connect --user-id <id> --api-token <token>`"],
     },
   ]
 }
