@@ -1,5 +1,4 @@
 import { Schema } from "effect"
-import { Config } from "@/config/config"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { Provider } from "@/provider/provider"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
@@ -27,6 +26,7 @@ export const FinnyHomeArtifacts = Schema.Struct({
   algos: Schema.String,
   sessionWorkspaces: Schema.String,
   pythonEnv: Schema.String,
+  pythonEnvs: Schema.String,
   algorithms: Schema.String,
 })
 

@@ -5898,6 +5898,7 @@ export type ConfigFinnyHomeGetResponses = {
       algos: string
       sessionWorkspaces: string
       pythonEnv: string
+      pythonEnvs: string
       algorithms: string
     }
   }
@@ -5944,6 +5945,7 @@ export type ConfigFinnyHomeUpdateResponses = {
       algos: string
       sessionWorkspaces: string
       pythonEnv: string
+      pythonEnvs: string
       algorithms: string
     }
   }

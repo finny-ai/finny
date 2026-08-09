@@ -9,7 +9,6 @@ import {
   resolveWorkspacePythonEnv,
   isWorkspaceEnvReady,
   WORKSPACE_VENV,
-  SESSION_PREFLIGHT_PACKAGES,
 } from "../../src/python/session-env"
 import { Python } from "../../src/python/env"
 
@@ -45,11 +44,13 @@ describe("workspace session env", () => {
     ])
   })
 
-  test("uses .venv under the workspace directory", () => {
+  test("keeps the legacy .venv location available for reclaim discovery", () => {
     const ws = path.join(sandbox, "algos", "aapl-5m-strategy.abc123")
     expect(workspaceEnvDir(ws)).toBe(path.join(ws, WORKSPACE_VENV))
   })
 
+  // `workspaceEnvDir` still honours an explicit operator-pinned environment; it is
+  // now the legacy/reclaim discovery path, while resolution goes content-addressed.
   test("uses one explicit absolute production environment across workspaces", () => {
     const shared = path.join(sandbox, "shared-python")
     process.env.FINNY_SHARED_PYTHON_ENV = shared
@@ -64,44 +65,43 @@ describe("workspace session env", () => {
     )
   })
 
-  test(
-    "creates workspace venv and installs packages",
-    async () => {
-      const hasPython = await Bun.spawn(["python3", "--version"], { stdout: "ignore", stderr: "ignore" })
-        .exited.then((code) => code === 0)
-        .catch(() => false)
-      if (!hasPython) return
+  test("creates one content-addressed environment outside the workspace", async () => {
+    const hasPython = await Bun.spawn(["python3", "--version"], { stdout: "ignore", stderr: "ignore" })
+      .exited.then((code) => code === 0)
+      .catch(() => false)
+    if (!hasPython) return
 
-      const ensured = await ensureAlgoWorkspace("aapl-5m-strategy")
-      expect(await workspacePythonExists(ensured.dir)).toBe(false)
+    const ensured = await ensureAlgoWorkspace("aapl-5m-strategy")
+    expect(await workspacePythonExists(ensured.dir)).toBe(false)
 
-      const env = await resolveWorkspacePythonEnv(ensured.dir, [{ spec: "pytz", importCheck: "pytz" }])
-      expect(env.envDir).toBe(workspaceEnvDir(ensured.dir))
-      expect(env.python).toBe(Python.pythonBinForEnvDir(env.envDir))
-      expect(await workspacePythonExists(ensured.dir)).toBe(true)
+    const packages = [{ spec: "pytz", importCheck: "pytz" }]
+    const env = await resolveWorkspacePythonEnv(ensured.dir, packages)
+    expect(env.envDir).toBe(Python.sharedEnvDir(packages))
+    expect(env.python).toBe(Python.pythonBinForEnvDir(env.envDir))
+    expect(await workspacePythonExists(ensured.dir)).toBe(false)
 
-      const probe = await Bun.spawn([env.python, "-c", "import pytz"], { stdout: "ignore", stderr: "pipe" }).exited
-      expect(probe).toBe(0)
-    },
-    60_000,
-  )
+    const probe = await Bun.spawn([env.python, "-c", "import pytz"], { stdout: "ignore", stderr: "pipe" }).exited
+    expect(probe).toBe(0)
+  }, 60_000)
 
-  test("serializes concurrent setup for the same workspace env", async () => {
+  test("shares and serializes concurrent setup across workspaces with the same packages", async () => {
     const hasPython = await Bun.spawn(["python3", "--version"], { stdout: "ignore", stderr: "ignore" })
       .exited.then((code) => code === 0)
       .catch(() => false)
     if (!hasPython) return
 
     const ensured = await ensureAlgoWorkspace("spy-5m-momentum")
+    const second = await ensureAlgoWorkspace("qqq-5m-momentum")
     const packages = [{ spec: "pytz", importCheck: "pytz" }]
     const [a, b] = await Promise.all([
       resolveWorkspacePythonEnv(ensured.dir, packages),
-      resolveWorkspacePythonEnv(ensured.dir, packages),
+      resolveWorkspacePythonEnv(second.dir, packages),
     ])
     expect(a.python).toBe(b.python)
+    expect(a.envDir).toBe(Python.sharedEnvDir(packages))
   })
 
-  test("resolveSessionPythonEnv prefers bound workspace venv", async () => {
+  test("resolveSessionPythonEnv uses the shared package-set environment", async () => {
     const hasPython = await Bun.spawn(["python3", "--version"], { stdout: "ignore", stderr: "ignore" })
       .exited.then((code) => code === 0)
       .catch(() => false)
@@ -112,8 +112,9 @@ describe("workspace session env", () => {
     await resolveWorkspacePythonEnv(ensured.dir, [{ spec: "pytz", importCheck: "pytz" }])
 
     const { resolveSessionPythonEnv } = await import("../../src/python/session-env")
-    const env = await resolveSessionPythonEnv("ses_env1", [{ spec: "pytz", importCheck: "pytz" }])
-    expect(env.envDir).toBe(workspaceEnvDir(ensured.dir))
+    const packages = [{ spec: "pytz", importCheck: "pytz" }]
+    const env = await resolveSessionPythonEnv("ses_env1", packages)
+    expect(env.envDir).toBe(Python.sharedEnvDir(packages))
   })
 
   test("env marker invalidates when package specs change", async () => {
@@ -145,5 +146,5 @@ describe("workspace session env", () => {
       if (prevUv === undefined) delete process.env.FINNY_UV_BIN
       else process.env.FINNY_UV_BIN = prevUv
     }
-  })
+  }, 60_000)
 })

@@ -1,7 +1,7 @@
 import path from "node:path"
 import fs from "node:fs/promises"
 import { algoDir, getSessionWorkspace } from "@finny-ai/core/algo"
-import { Python, ensurePythonEnv, ensurePythonEnvAt } from "./env"
+import { Python, ensurePythonEnv } from "./env"
 
 export const WORKSPACE_VENV = ".venv"
 export { ENV_MARKER } from "./env"
@@ -40,23 +40,24 @@ export async function workspacePythonExists(workspacePath: string): Promise<bool
 }
 
 export async function isWorkspaceEnvReady(
-  workspacePath: string,
+  _workspacePath: string,
   packages: Python.PackageRequirement[],
 ): Promise<boolean> {
-  return Python.envMarkerValid(workspaceEnvDir(workspacePath), packages)
+  return Python.envMarkerValid(Python.sharedEnvDir(packages), packages)
 }
 
 export async function resolveWorkspacePythonEnv(
-  workspacePath: string,
+  _workspacePath: string,
   packages: Python.PackageRequirement[],
   onProgress: Python.ProgressCallback = () => {},
 ): Promise<Python.Environment> {
-  return ensurePythonEnvAt(workspaceEnvDir(workspacePath), packages, onProgress)
+  return ensurePythonEnv(packages, onProgress)
 }
 
 /**
- * Prefer the session-bound workspace `.venv` when present; otherwise fall back
- * to the shared managed env at `~/.local/share/finny/python-env`.
+ * Resolve every session to the content-addressed environment for its package
+ * set. Existing workspace `.venv` directories are intentionally left in place
+ * until the user runs the explicit reclaim command.
  */
 export async function resolveSessionPythonEnv(
   sessionID: string | undefined,
@@ -67,9 +68,6 @@ export async function resolveSessionPythonEnv(
     const slug = await getSessionWorkspace(sessionID).catch(() => null)
     if (slug) {
       const workspacePath = algoDir(slug)
-      if (await workspacePythonExists(workspacePath)) {
-        return ensurePythonEnvAt(workspaceEnvDir(workspacePath), packages, onProgress)
-      }
       return resolveWorkspacePythonEnv(workspacePath, packages, onProgress)
     }
   }

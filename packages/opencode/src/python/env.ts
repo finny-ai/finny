@@ -1,6 +1,8 @@
 // @codescene(disable-all) Managed Python env path/installer surface is intentionally string-heavy.
 import fs from "fs/promises"
+import fsSync from "node:fs"
 import path from "path"
+import { createHash, randomUUID } from "node:crypto"
 import { Process } from "@/util/process"
 import { Log } from "@/util/log"
 import { Global } from "@/global"
@@ -11,11 +13,8 @@ const IS_WIN = process.platform === "win32"
 export const ENV_MARKER = ".finny-env-ready.json"
 
 /**
- * Managed Python venv shared across the live runner and the backtest runner.
- * One venv lives at `$FINNY_HOME/python-env`; callers declare the
- * packages they need and {@link ensurePythonEnv} installs anything missing.
- *
- * Per-workspace envs use {@link ensurePythonEnvAt} with `<workspace>/.venv`.
+ * Managed Python venvs shared across the live runner and backtest runner.
+ * Package sets are content-addressed under `$FINNY_HOME/python-envs`.
  */
 export namespace Python {
   export interface PackageRequirement {
@@ -62,6 +61,33 @@ export namespace Python {
     return pipBinForEnvDir(managedEnvDir())
   }
 
+  export function sharedEnvsRoot(): string {
+    return finnyArtifactPath("pythonEnvs")
+  }
+
+  function canonicalPackages(packages: PackageRequirement[]): PackageRequirement[] {
+    const unique = new Map<string, PackageRequirement>()
+    for (const pkg of packages) {
+      const normalized = { spec: pkg.spec.trim(), importCheck: pkg.importCheck.trim() }
+      unique.set(packageKey(normalized), normalized)
+    }
+    return Array.from(unique.values()).sort((a, b) => packageKey(a).localeCompare(packageKey(b)))
+  }
+
+  export function packageSetHash(packages: PackageRequirement[]): string {
+    return createHash("sha256")
+      .update(JSON.stringify(canonicalPackages(packages)))
+      .digest("hex")
+  }
+
+  export function sharedEnvDir(packages: PackageRequirement[]): string {
+    return path.join(sharedEnvsRoot(), packageSetHash(packages))
+  }
+
+  export function sharedEnvBuildMarkerPath(envDir: string): string {
+    return `${envDir}.building.json`
+  }
+
   async function exists(filePath: string): Promise<boolean> {
     try {
       await fs.stat(filePath)
@@ -77,6 +103,216 @@ export namespace Python {
 
   function uvEnv(): NodeJS.ProcessEnv {
     return { ...process.env, UV_CACHE_DIR: uvCacheDir() }
+  }
+
+  const LOCK_RETRY_MS = 100
+  const LOCK_TIMEOUT_MS = 300_000
+  const LOCK_STALE_MS = 10 * 60_000
+
+  function processAlive(pid: number): boolean {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false
+    try {
+      process.kill(pid, 0)
+      return true
+    } catch (error: any) {
+      return error?.code === "EPERM"
+    }
+  }
+
+  async function removeStaleLock(lockDir: string): Promise<boolean> {
+    try {
+      const [ownerRaw, stat] = await Promise.all([
+        fs.readFile(path.join(lockDir, "owner.json"), "utf8").catch(() => ""),
+        fs.stat(lockDir),
+      ])
+      let owner: { pid: number; createdAt: string } | undefined
+      try {
+        const parsed: unknown = JSON.parse(ownerRaw || "{}")
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "pid" in parsed &&
+          typeof parsed.pid === "number" &&
+          "createdAt" in parsed &&
+          typeof parsed.createdAt === "string"
+        ) {
+          owner = { pid: parsed.pid, createdAt: parsed.createdAt }
+        }
+      } catch {}
+      if (!owner || Date.now() - stat.mtimeMs < LOCK_STALE_MS || processAlive(owner.pid)) return false
+      await fs.rm(lockDir, { recursive: true, force: true })
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  export async function withFilesystemEnvLock<T>(envDir: string, run: () => Promise<T>): Promise<T> {
+    const lockDir = `${envDir}.lock`
+    await fs.mkdir(path.dirname(envDir), { recursive: true })
+    const deadline = Date.now() + LOCK_TIMEOUT_MS
+    while (true) {
+      try {
+        await fs.mkdir(lockDir)
+        try {
+          await fs.writeFile(
+            path.join(lockDir, "owner.json"),
+            JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }) + "\n",
+            "utf8",
+          )
+        } catch (error) {
+          await fs.rm(lockDir, { recursive: true, force: true })
+          throw error
+        }
+        break
+      } catch (error: any) {
+        if (error?.code !== "EEXIST") throw error
+        if (await removeStaleLock(lockDir)) continue
+        if (Date.now() >= deadline) {
+          throw new Error(`Timed out waiting for Python environment lock: ${lockDir}`, { cause: error })
+        }
+        await Bun.sleep(LOCK_RETRY_MS)
+      }
+    }
+    try {
+      return await run()
+    } finally {
+      await fs.rm(lockDir, { recursive: true, force: true })
+    }
+  }
+
+  const leasedEnvs = new Map<string, string>()
+  let leaseCleanupRegistered = false
+
+  function cleanupLeasesSync(): void {
+    for (const lease of leasedEnvs.values()) {
+      try {
+        fsSync.unlinkSync(lease)
+      } catch {}
+    }
+  }
+
+  async function acquireEnvLease(envDir: string): Promise<void> {
+    if (leasedEnvs.has(envDir)) return
+    const leasesDir = path.join(envDir, ".finny-env-leases")
+    await fs.mkdir(leasesDir, { recursive: true })
+    const lease = path.join(leasesDir, String(process.pid))
+    await fs
+      .writeFile(lease, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }) + "\n", {
+        flag: "wx",
+      })
+      .catch(async (error: any) => {
+        if (error?.code !== "EEXIST") throw error
+        await fs.utimes(lease, new Date(), new Date())
+      })
+    leasedEnvs.set(envDir, lease)
+    if (!leaseCleanupRegistered) {
+      process.once("exit", cleanupLeasesSync)
+      leaseCleanupRegistered = true
+    }
+  }
+
+  export async function hasLiveEnvLease(envDir: string): Promise<boolean> {
+    const leasesDir = path.join(envDir, ".finny-env-leases")
+    let entries: import("node:fs").Dirent[]
+    try {
+      entries = await fs.readdir(leasesDir, { withFileTypes: true })
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return false
+      throw error
+    }
+    for (const entry of entries) {
+      if (!entry.isFile() || !/^\d+$/.test(entry.name)) continue
+      const pid = Number(entry.name)
+      const recognized = await fs
+        .readFile(path.join(leasesDir, entry.name), "utf8")
+        .then((raw) => {
+          const parsed: unknown = JSON.parse(raw)
+          return (
+            typeof parsed === "object" &&
+            parsed !== null &&
+            "pid" in parsed &&
+            parsed.pid === pid &&
+            "createdAt" in parsed &&
+            typeof parsed.createdAt === "string"
+          )
+        })
+        .catch(() => false)
+      if (!recognized || processAlive(pid)) return true
+      await fs.unlink(path.join(leasesDir, entry.name)).catch(() => undefined)
+    }
+    return false
+  }
+
+  async function readSharedBuildMarker(
+    envDir: string,
+  ): Promise<{ envDir: string; packageSetHash: string } | undefined> {
+    try {
+      const parsed: unknown = JSON.parse(await fs.readFile(sharedEnvBuildMarkerPath(envDir), "utf8"))
+      if (typeof parsed !== "object" || parsed === null) return undefined
+      if (!("envDir" in parsed) || parsed.envDir !== envDir) return undefined
+      if (!("packageSetHash" in parsed) || typeof parsed.packageSetHash !== "string") return undefined
+      return { envDir: parsed.envDir, packageSetHash: parsed.packageSetHash }
+    } catch {
+      return undefined
+    }
+  }
+
+  async function prepareSharedEnvDir(envDir: string, packages: PackageRequirement[]): Promise<void> {
+    const expectedHash = packageSetHash(packages)
+    const buildMarker = sharedEnvBuildMarkerPath(envDir)
+    let stat: import("node:fs").Stats | undefined
+    try {
+      stat = await fs.lstat(envDir)
+    } catch (error: any) {
+      if (error?.code !== "ENOENT") throw error
+    }
+    if (!stat) {
+      const interrupted = await readSharedBuildMarker(envDir)
+      if (interrupted?.packageSetHash === expectedHash) return
+      if (await exists(buildMarker)) {
+        throw new Error(`Refusing to overwrite an unrecognized Python environment build marker: ${buildMarker}`)
+      }
+      await fs.writeFile(
+        buildMarker,
+        JSON.stringify({
+          envDir,
+          packageSetHash: expectedHash,
+          pid: process.pid,
+          createdAt: new Date().toISOString(),
+        }) + "\n",
+        { encoding: "utf8", flag: "wx" },
+      )
+      return
+    }
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      throw new Error(`Refusing to use non-directory or symlinked shared Python environment path: ${envDir}`)
+    }
+    const marker = await readEnvMarker(envDir)
+    if (marker) {
+      if (packageSetHash(marker.packages) !== expectedHash || marker.python !== pythonBinForEnvDir(envDir)) {
+        throw new Error(`Refusing to modify shared Python environment with a mismatched Finny marker: ${envDir}`)
+      }
+      await fs.unlink(buildMarker).catch(() => undefined)
+      return
+    }
+    const interrupted = await readSharedBuildMarker(envDir)
+    if (!interrupted || interrupted.packageSetHash !== expectedHash) {
+      throw new Error(
+        `Refusing to modify unrecognized data at shared Python environment path: ${envDir}. ` +
+          "Move it aside or inspect it before retrying.",
+      )
+    }
+    const quarantine = `${envDir}.incomplete-${Date.now()}-${randomUUID().slice(0, 8)}`
+    await fs.rename(envDir, quarantine)
+    await fs.unlink(buildMarker)
+    await fs.writeFile(
+      buildMarker,
+      JSON.stringify({ envDir, packageSetHash: expectedHash, pid: process.pid, createdAt: new Date().toISOString() }) +
+        "\n",
+      { encoding: "utf8", flag: "wx" },
+    )
+    log.warn("preserved interrupted Python environment build", { envDir, quarantine })
   }
 
   async function detectUv(): Promise<string | undefined> {
@@ -102,9 +338,31 @@ export namespace Python {
   export async function readEnvMarker(envDir: string): Promise<EnvMarker | undefined> {
     try {
       const raw = await fs.readFile(envMarkerPath(envDir), "utf8")
-      const parsed = JSON.parse(raw) as EnvMarker
-      if (!parsed?.python || !Array.isArray(parsed.packages)) return undefined
-      return parsed
+      const parsed: unknown = JSON.parse(raw)
+      if (typeof parsed !== "object" || parsed === null) return undefined
+      if (!("installer" in parsed) || (parsed.installer !== "uv" && parsed.installer !== "pip")) return undefined
+      if (!("python" in parsed) || typeof parsed.python !== "string" || !parsed.python) return undefined
+      if (!("verifiedAt" in parsed) || typeof parsed.verifiedAt !== "string") return undefined
+      if (
+        !("packages" in parsed) ||
+        !Array.isArray(parsed.packages) ||
+        !parsed.packages.every(
+          (pkg) =>
+            typeof pkg === "object" &&
+            pkg !== null &&
+            "spec" in pkg &&
+            typeof pkg.spec === "string" &&
+            "importCheck" in pkg &&
+            typeof pkg.importCheck === "string",
+        )
+      )
+        return undefined
+      return {
+        installer: parsed.installer,
+        python: parsed.python,
+        packages: parsed.packages,
+        verifiedAt: parsed.verifiedAt,
+      }
     } catch {
       return undefined
     }
@@ -244,13 +502,26 @@ export namespace Python {
     if (installer === "uv") {
       const uv = await detectUv()
       if (uv) {
-        const result = await Process.run([uv, "pip", "install", "--python", pyBin, ...specs], {
-          nothrow: true,
-          timeout: 240_000,
-          env: uvEnv(),
-        })
+        const envDir = path.dirname(path.dirname(pyBin))
+        const hardlink =
+          (await Promise.all([fs.stat(envDir), fs.stat(uvCacheDir())]).then(
+            ([envStat, cacheStat]) => envStat.dev === cacheStat.dev,
+            () => false,
+          )) && !IS_WIN
+        const result = await Process.run(
+          [uv, "pip", "install", "--python", pyBin, ...(hardlink ? ["--link-mode", "hardlink"] : []), ...specs],
+          {
+            nothrow: true,
+            timeout: 240_000,
+            env: uvEnv(),
+          },
+        )
         if (result.code === 0) {
-          log.info("packages installed with uv", { packages: specs, envDir: path.dirname(pyBin) })
+          log.info("packages installed with uv", {
+            packages: specs,
+            envDir,
+            linkMode: hardlink ? "hardlink" : "default",
+          })
           return
         }
         const stderr = result.stderr.toString().trim()
@@ -288,9 +559,9 @@ export namespace Python {
    * env directory. Without this, two cold callers could race through
    * `createVenv` and `pipInstall` against the same directory, occasionally
    * corrupting the env or producing flaky "module not found" errors.
-   * Cross-process locking (e.g. when multiple finny instances run
-   * concurrently) is intentionally not handled here — callers in that
-   * scenario should retry or run `Python.reset()`.
+   * This low-level helper serializes within one process. Shared managed
+   * callers enter through {@link ensurePythonEnv}, which adds a cross-process
+   * filesystem lock and an active-use lease.
    */
   const queues = new Map<string, Promise<void>>()
 
@@ -318,6 +589,8 @@ export namespace Python {
     return withEnvQueue(envDir, async () => {
       let installer: "uv" | "pip" = "pip"
       if (await envMarkerValid(envDir, packages)) {
+        const now = new Date()
+        await fs.utimes(envMarkerPath(envDir), now, now)
         onProgress("Using existing Python environment…")
         return { python: pyBin, pip: pipBin, envDir }
       }
@@ -353,7 +626,45 @@ export namespace Python {
     packages: PackageRequirement[],
     onProgress: ProgressCallback = () => {},
   ): Promise<Environment> {
-    return ensurePythonEnvAt(managedEnvDir(), packages, onProgress)
+    if (isLockedHarnessEnv(managedEnvDir())) {
+      return ensurePythonEnvAt(managedEnvDir(), packages, onProgress)
+    }
+    const canonical = canonicalPackages(packages)
+    const envDir = sharedEnvDir(canonical)
+    return withFilesystemEnvLock(envDir, async () => {
+      await prepareSharedEnvDir(envDir, canonical)
+      const env = await ensurePythonEnvAt(envDir, canonical, onProgress)
+      await acquireEnvLease(envDir)
+      await fs.unlink(sharedEnvBuildMarkerPath(envDir)).catch(() => undefined)
+      return env
+    })
+  }
+
+  export async function resetSharedPythonEnv(packages: PackageRequirement[]): Promise<void> {
+    const canonical = canonicalPackages(packages)
+    const envDir = sharedEnvDir(canonical)
+    await withFilesystemEnvLock(envDir, async () => {
+      const ownLease = leasedEnvs.get(envDir)
+      if (ownLease) {
+        await fs.unlink(ownLease).catch(() => undefined)
+        leasedEnvs.delete(envDir)
+      }
+      if (await hasLiveEnvLease(envDir)) {
+        throw new Error(
+          `Refusing to reset a shared Python environment that is active in another Finny process: ${envDir}`,
+        )
+      }
+      const marker = await readEnvMarker(envDir)
+      if (!marker) return
+      if (
+        packageSetHash(marker.packages) !== packageSetHash(canonical) ||
+        marker.python !== pythonBinForEnvDir(envDir)
+      ) {
+        throw new Error(`Refusing to reset a shared Python environment with a mismatched Finny marker: ${envDir}`)
+      }
+      await fs.rm(envDir, { recursive: true })
+      queues.delete(envDir)
+    })
   }
 
   export async function reset(envDir: string = managedEnvDir()): Promise<void> {

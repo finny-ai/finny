@@ -28,6 +28,7 @@ export interface FinnyHomeArtifactPaths {
   algos: string
   sessionWorkspaces: string
   pythonEnv: string
+  pythonEnvs: string
   algorithms: string
 }
 
@@ -152,6 +153,7 @@ export function finnyHomeArtifacts(home: string = resolveFinnyHome().path): Finn
     algos: path.join(home, "algos"),
     sessionWorkspaces: path.join(home, "session-workspaces"),
     pythonEnv: path.join(home, "python-env"),
+    pythonEnvs: path.join(home, "python-envs"),
     algorithms: path.join(home, "algorithms"),
   }
 }
