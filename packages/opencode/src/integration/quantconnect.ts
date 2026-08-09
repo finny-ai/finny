@@ -4,6 +4,7 @@ import path from "node:path"
 
 export const QC_PROVIDER_ID = "quantconnect"
 export const QC_AUTHENTICATE_URL = "https://www.quantconnect.com/api/v2/authenticate"
+export const QC_API_BASE = "https://www.quantconnect.com/api/v2"
 
 export interface QcCredentials {
   userId: string
@@ -18,9 +19,15 @@ export interface QcVerifiedIdentity {
 
 export interface QcConnectionState {
   connected: boolean
+  /** True when running without real QC credentials against the local fixture path. */
+  fixture?: boolean
   userId?: string
   name?: string
   error?: string
+}
+
+export function isQcFixtureMode(): boolean {
+  return process.env.QC_FIXTURE === "1" || process.env.FINNY_QC_FIXTURE === "1"
 }
 
 export async function readQcCredentials(): Promise<QcCredentials | null> {
@@ -71,6 +78,13 @@ export async function disconnectQcCredentials(): Promise<void> {
 }
 
 export async function qcConnectionState(): Promise<QcConnectionState> {
+  if (isQcFixtureMode()) {
+    return {
+      connected: false,
+      fixture: true,
+      name: "QuantConnect fixture (no credentials required)",
+    }
+  }
   const credentials = await readQcCredentials()
   if (!credentials) return { connected: false }
   try {
