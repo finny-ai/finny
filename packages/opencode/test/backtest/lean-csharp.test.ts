@@ -11,6 +11,7 @@ describe("LEAN C# compile project", () => {
     expect(first).toContain("<Compile Include=\"/build/**/*.cs\" />")
     expect(first).toContain("<AssemblyName>Algorithm</AssemblyName>")
     expect(first).toContain("HintPath")
+    expect(first).toContain("<Private>false</Private>")
     // No package restore, deterministic output.
     expect(first).toContain("RestoreSources></RestoreSources>")
     expect(first).toContain("Deterministic")
