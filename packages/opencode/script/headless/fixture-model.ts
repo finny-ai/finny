@@ -104,6 +104,7 @@ const LEAN_STRATEGY_CSHARP = `using System;
 using QuantConnect;
 using QuantConnect.Algorithm;
 using QuantConnect.Data;
+using QuantConnect.Data.Market;
 using QuantConnect.Indicators;
 
 public class Main : QCAlgorithm
@@ -127,15 +128,15 @@ public class Main : QCAlgorithm
         Consolidate(_spy, TimeSpan.FromMinutes(5), OnConsolidated);
     }
 
-    private void OnConsolidated(IBaseData bar)
+    private void OnConsolidated(TradeBar bar)
     {
-        _fast.Update(bar.EndTime, bar.Price);
-        _slow.Update(bar.EndTime, bar.Price);
+        _fast.Update(bar.EndTime, bar.Close);
+        _slow.Update(bar.EndTime, bar.Close);
         if (IsWarmingUp || !_fast.IsReady || !_slow.IsReady) return;
         var fastMa = _fast.Current.Value;
         var slowMa = _slow.Current.Value;
         var holdings = Portfolio[_spy].Quantity;
-        var price = bar.Price;
+        var price = bar.Close;
         var bullish = _previousFast.HasValue && _previousSlow.HasValue &&
                       _previousFast <= _previousSlow && fastMa > slowMa;
         var bearish = _previousFast.HasValue && _previousSlow.HasValue &&
