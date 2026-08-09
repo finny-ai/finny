@@ -69,3 +69,30 @@ spot crypto), minute/hour/daily, market/limit/stop-market orders, Finny-led
 sweeps and walk-forward trials (LEAN's standalone optimizer deferred),
 local Docker execution with a hosted-compatible job contract, and no dynamic
 or fundamental universes.
+
+## Algorithm control plane
+
+Algorithms are first-class control-surface objects, not just chat artifacts.
+The `algo` CLI exposes the full lifecycle so a firm can store, inspect, and
+operate strategies without an agent conversation:
+
+- `algo list` / `algo show <name>` / `algo versions <name>` — browse saved
+  algorithms and every immutable version.
+- `algo add --name X --file strategy.py --runtime-profile lean_python` — store
+  an algorithm from a file. Runtime profiles are honored: `finny_python`
+  (default engine_v2), `lean_python` (real QCAlgorithm `main.py` persisted as
+  the version's LEAN source), and `lean_csharp` (source-manifest required).
+  `--save-mode version --docs-mode replace` bumps an existing version.
+- `algo validate` / `algo backtest` — runtime-aware: LEAN candidates skip the
+  Shape-C AST validator and run the pinned container through the same strict
+  gate as the chat flow.
+- `algo open <name>` — the navigation verb: prints the version directory,
+  backtest store, review packets, and LEAN source tree, and reveals the
+  version directory in the OS file manager.
+
+Every stored version keeps the same contract as a chat save: config hash,
+runtime profile, source manifest, mission/risk documents, and run identity.
+The QuantConnect Cloud track (posting strategies to QC projects/backtests/live
+deployments for firms that bring their own QC entitlements) extends this
+control plane with `qc_cloud` deployment verbs and its own result schema;
+it never merges into the local LEAN or engine_v2 schemas.
