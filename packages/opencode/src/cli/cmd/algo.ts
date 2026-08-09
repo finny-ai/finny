@@ -1,5 +1,6 @@
 import type { Argv } from "yargs"
 import { Effect } from "effect"
+import crypto from "node:crypto"
 import { cmd } from "./cmd"
 import { effectCmd, fail } from "../effect-cmd"
 import { Algorithm } from "@/algorithm"
@@ -7,6 +8,14 @@ import { Validate } from "@/algorithm/validate"
 import { BacktestRunner } from "@/backtest/runner"
 import { BROKER_KINDS } from "@/live/brokers/types"
 import { Filesystem } from "@/util/filesystem"
+import path from "node:path"
+import fs from "node:fs/promises"
+import { finnyArtifactPath } from "@finny-ai/core/prefs"
+import { Process } from "@/util/process"
+import { embedRuntimeConfig, runtimeForCandidate, validateLeanSourceManifest } from "@/backtest/lean/select"
+import { strategySourceV1 } from "@/backtest/lean/contracts"
+import { isLeanProfile } from "@/backtest/lean/contracts"
+import { writeLeanSourceFile } from "@/backtest/lean/source-store"
 import { applyPythonEnvReclaim, planPythonEnvReclaim } from "@/python/reclaim"
 
 type SavedAlgorithm = Awaited<ReturnType<typeof Algorithm.resolve>> extends infer T ? Exclude<T, null> : never
@@ -202,6 +211,7 @@ export const AlgoCommand = cmd({
     yargs
       .command(AlgoListCommand)
       .command(AlgoShowCommand)
+      .command(AlgoOpenCommand)
       .command(AlgoVersionsCommand)
       .command(AlgoAddCommand)
       .command(AlgoValidateCommand)
@@ -329,6 +339,14 @@ const algoAddOptionSpecs = [
     },
   ],
   ["language", { type: "string", default: "python", describe: "strategy language" }],
+  [
+    "runtime-profile",
+    {
+      type: "string",
+      choices: ["finny_python", "lean_python", "lean_csharp"] as const,
+      describe: "execution runtime; lean_python stores a real QCAlgorithm main.py",
+    },
+  ],
   ["reasoning", { type: "string", describe: "inline reasoning markdown" }],
   ["reasoning-file", { type: "string", describe: "path to reasoning markdown" }],
   ["mission-file", { type: "string", describe: "path to mission.md" }],
@@ -368,13 +386,26 @@ const handleAlgoAdd = Effect.fn("Cli.algo.add")(function* (args) {
   try {
     const payload = yield* Effect.promise(() => loadAlgorithmPayload(args))
     const params = backtestParams(args)
+    const runtimeProfile = args["runtime-profile"]
+    const leanSourceFiles =
+      runtimeProfile === "lean_python"
+        ? [{ path: "main.py", sha256: crypto.createHash("sha256").update(payload.code).digest("hex"), bytes: Buffer.byteLength(payload.code, "utf8") }]
+        : undefined
+    if (runtimeProfile === "lean_python") {
+      const source = strategySourceV1({ profileId: "lean_python", files: leanSourceFiles! })
+      const issues = validateLeanSourceManifest(source, "lean_python")
+      if (issues.length) throw new Error(issues.join("; "))
+    }
+    const config = runtimeProfile
+      ? embedRuntimeConfig({ config: payload.config, profileId: runtimeProfile, sourceFiles: leanSourceFiles })
+      : payload.config
     const saved = yield* Effect.promise(() =>
       Algorithm.save({
         name: args.name,
         code: payload.code,
         language: args.language,
         description: args.description,
-        config: payload.config,
+        config,
         reasoning: payload.reasoning,
         mission: payload.mission,
         prefs: payload.prefs,
@@ -385,6 +416,15 @@ const handleAlgoAdd = Effect.fn("Cli.algo.add")(function* (args) {
         targetBrokerage: args["target-brokerage"],
       }),
     )
+    if (runtimeProfile === "lean_python") {
+      yield* Effect.promise(() =>
+        writeLeanSourceFile({
+          algorithm: { algorithmId: saved.algorithmId, version: saved.version },
+          relativePath: "main.py",
+          content: payload.code,
+        }),
+      )
+    }
     const resolved = (yield* Effect.promise(() => requireAlgorithm(saved.algorithmId, saved.version))) as SavedAlgorithm
     const validation = yield* Effect.promise(() => maybeValidation(resolved, args.validate))
     const backtest = yield* Effect.promise(() => maybeBacktest(resolved, args.backtest, params))
@@ -421,11 +461,77 @@ const AlgoValidateCommand = effectCmd({
       }),
   handler: Effect.fn("Cli.algo.validate")(function* (args) {
     const algorithm = yield* Effect.promise(() => requireAlgorithm(args.algorithm, args["algo-version"]))
+    const runtime = runtimeForCandidate(algorithm)
+    if (isLeanProfile(runtime.profile)) {
+      const issues = validateLeanSourceManifest(runtime.source, runtime.profile.profileId)
+      print({
+        algorithm: { name: algorithm.name, version: algorithm.version, algorithmId: algorithm.algorithmId },
+        valid: issues.length === 0,
+        runtime: runtime.profile.profileId,
+        issues,
+      })
+      return
+    }
     const result = yield* Effect.promise(() => Validate.run(algorithm.code, { config: algorithm.config }))
     print({
       algorithm: { name: algorithm.name, version: algorithm.version, algorithmId: algorithm.algorithmId },
       ...summarizeValidation(result),
     })
+  }),
+})
+
+const AlgoOpenCommand = effectCmd({
+  command: "open <algorithm>",
+  describe: "open a saved algorithm's control surface (version dir, review packets)",
+  builder: (yargs) =>
+    yargs
+      .positional("algorithm", {
+        type: "string",
+        demandOption: true,
+        describe: "algorithm name or ID",
+      })
+      .option("algo-version", {
+        type: "number",
+        describe: "specific version to open",
+      })
+      .option("reveal", {
+        type: "boolean",
+        default: true,
+        describe: "reveal the version directory in the OS file manager",
+      }),
+  handler: Effect.fn("Cli.algo.open")(function* (args) {
+    const algorithm = yield* Effect.promise(() => requireAlgorithm(args.algorithm, args["algo-version"]))
+    const versionDir = path.join(finnyArtifactPath("algorithms"), algorithm.algorithmId, `v${String(algorithm.version).padStart(2, "0")}`)
+    const reviewsDir = path.join(finnyArtifactPath("algorithms"), algorithm.algorithmId, "reviews")
+    const backtestsDir = path.join(finnyArtifactPath("algos"), "..", "backtests")
+    let reviewPackets: string[] = []
+    try {
+      reviewPackets = (yield* Effect.promise(() => fs.readdir(reviewsDir, { recursive: true }))).filter((f) =>
+        f.endsWith("review.html"),
+      )
+    } catch {}
+    const runtime = runtimeForCandidate(algorithm)
+    const info = {
+      algorithm: {
+        name: algorithm.name,
+        version: algorithm.version,
+        algorithmId: algorithm.algorithmId,
+        runtime: runtime.profile.profileId,
+        language: algorithm.language,
+      },
+      versionDir,
+      backtestsDir,
+      reviewPackets,
+      leanSource: isLeanProfile(runtime.profile) ? path.join(versionDir, "source") : undefined,
+    }
+    print(info)
+    if (args.reveal) {
+      const target = versionDir
+      const reveal = yield* Effect.promise(() => Process.run(["open", target], { nothrow: true, timeout: 10_000 }))
+      if (reveal.code !== 0) {
+        print({ revealFailed: reveal.stderr.toString().trim() })
+      }
+    }
   }),
 })
 
