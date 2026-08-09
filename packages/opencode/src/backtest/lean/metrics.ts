@@ -56,7 +56,7 @@ function drawdowns(curve: Array<{ timestamp: string; equity: number }>): {
           duration_bars: duration,
           recovery_bars: index - ddTrough,
         })
-        if (ddDepth > maxDrawdown) {
+        if (ddDepth < maxDrawdown) {
           maxDrawdown = ddDepth
           maxDdDurationBars = duration
           maxDdRecoveryBars = index - ddTrough
@@ -75,7 +75,8 @@ function drawdowns(curve: Array<{ timestamp: string; equity: number }>): {
     }
   })
   const last = curve.at(-1)
-  const lastPeak = Math.max(...curve.map((p) => p.equity))
+  let lastPeak = -Infinity
+  for (const point of curve) if (point.equity > lastPeak) lastPeak = point.equity
   currentDrawdown = lastPeak > 0 && last ? (last.equity - lastPeak) / lastPeak : 0
   if (ddStart >= 0 && ddTrough >= 0) {
     top.push({
@@ -87,7 +88,7 @@ function drawdowns(curve: Array<{ timestamp: string; equity: number }>): {
       recovery_bars: null,
     })
     ddDurations.push(ddTrough - ddStart)
-    if (ddDepth > maxDrawdown) {
+    if (ddDepth < maxDrawdown) {
       maxDrawdown = ddDepth
       maxDdDurationBars = ddTrough - ddStart
       maxDdRecoveryBars = null

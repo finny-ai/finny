@@ -194,6 +194,7 @@ export async function runLeanEngineInRunner(input: {
     phase: "exploratory",
     window: { start: input.startDate, end: input.endDate },
     seed: input.seed,
+    capital: input.capital,
     sourceDir,
     resultsDir,
     scratchDir,
@@ -285,7 +286,9 @@ export async function runLeanEngineInRunner(input: {
 
   const results: BacktestRunner.Results = {
     totalReturn: v2.total_return,
-    maxDrawdown: v2.max_drawdown,
+    // engine_v2 reports drawdown as a positive magnitude; match that sign so
+    // shared gates and fixtures stay engine-neutral.
+    maxDrawdown: Math.abs(v2.max_drawdown),
     annualizedVolatility: v2.ann_vol,
     sharpeRatio: v2.ann_sharpe,
     endingEquity: v2.ending_equity,

@@ -176,6 +176,84 @@ describe("QC client", () => {
 })
 
 describe("QC cloud track", () => {
+  test("reports a running QC deployment as ok and keeps the ledger running", async () => {
+    tempHome()
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      [QC_PROVIDER_ID]: { type: "api", key: "cf17c7b00ceb48f3ac6fca5f8a48a6e2", metadata: { userId: "1001200" } },
+    })
+    const seen: string[] = []
+    mockQc((apiPath) => {
+      seen.push(apiPath)
+      if (apiPath === "/live/create") return { success: true, live: { deployId: "L-run-1", projectId: 42, status: "InQueue" } }
+      if (apiPath === "/live/read") return { success: true, live: { deployId: "L-run-1", projectId: 42, status: "Running" } }
+      throw new Error(`unexpected ${apiPath}`)
+    })
+    const algorithm = {
+      algorithmId: "00000000-0000-4000-8000-000000000010",
+      userId: "u1",
+      name: "live-running",
+      version: 1,
+      status: "saved",
+      code: "class X(QCAlgorithm): pass",
+      language: "python",
+      time_created: Date.now(),
+      time_updated: Date.now(),
+    }
+    const outcome = await deployQcLive({
+      algorithm: algorithm as any,
+      projectId: "42",
+      compileId: "c1",
+      nodeId: "LN-MICRO",
+      brokerKind: "qc_paper",
+      capital: 10000,
+    })
+    expect(outcome.ok).toBe(true)
+    expect(outcome.status).toBe("running")
+    const ledger = await listPaperDeployments()
+    expect(ledger.find((entry) => entry.deploymentId === "L-run-1")?.status).toBe("running")
+  })
+
+  test("fails closed on a RuntimeError deployment and stops the remote run", async () => {
+    tempHome()
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      [QC_PROVIDER_ID]: { type: "api", key: "cf17c7b00ceb48f3ac6fca5f8a48a6e2", metadata: { userId: "1001200" } },
+    })
+    const seen: string[] = []
+    mockQc((apiPath) => {
+      seen.push(apiPath)
+      if (apiPath === "/live/create") return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "InQueue" } }
+      if (apiPath === "/live/read") {
+        return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "RuntimeError", message: "strategy crashed" } }
+      }
+      if (apiPath === "/live/stop") return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "Stopped" } }
+      throw new Error(`unexpected ${apiPath}`)
+    })
+    const algorithm = {
+      algorithmId: "00000000-0000-4000-8000-000000000011",
+      userId: "u1",
+      name: "live-error",
+      version: 1,
+      status: "saved",
+      code: "class X(QCAlgorithm): pass",
+      language: "python",
+      time_created: Date.now(),
+      time_updated: Date.now(),
+    }
+    const outcome = await deployQcLive({
+      algorithm: algorithm as any,
+      projectId: "42",
+      compileId: "c1",
+      nodeId: "LN-MICRO",
+      brokerKind: "qc_paper",
+      capital: 10000,
+    })
+    expect(outcome.ok).toBe(false)
+    expect(outcome.status).toBe("stopped")
+    expect(seen).toContain("/live/stop")
+    const ledger = await listPaperDeployments()
+    expect(ledger.find((entry) => entry.deploymentId === "L-err-1")?.status).toBe("stopped")
+  })
+
   test("runs the real backtest flow end to end with mapped statistics", async () => {
     process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
       [QC_PROVIDER_ID]: { type: "api", key: "cf17c7b00ceb48f3ac6fca5f8a48a6e2", metadata: { userId: "1001200" } },
