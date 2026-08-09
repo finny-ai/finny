@@ -103,6 +103,7 @@ TFM="net\${SDK_MAJOR}.0"
   echo '  <PropertyGroup>'
   echo "    <TargetFramework>\$TFM</TargetFramework>"
   echo '    <OutputType>Library</OutputType>'
+  echo '    <AssemblyName>Algorithm</AssemblyName>'
   echo '    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>'
   echo '    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>'
   echo '    <Deterministic>true</Deterministic>'
@@ -119,7 +120,9 @@ TFM="net\${SDK_MAJOR}.0"
   echo '  </ItemGroup>'
   echo '</Project>'
 } > /build/FinnyAlgorithm.csproj
-dotnet build /build/FinnyAlgorithm.csproj -c Release --nologo -v minimal -o /build/out
+# dotnet may exit 1 on the workload-verification check when the SDK dir is
+# read-only even after a successful build; the artifact is the gate.
+dotnet build /build/FinnyAlgorithm.csproj -c Release --nologo -v minimal -o /build/out || true
 test -f /build/out/Algorithm.dll
 echo "finny: csharp build ok"
 `
@@ -389,6 +392,8 @@ export class LeanAdapter implements LeanAdapterV1 {
         "DOTNET_NOLOGO=1",
         "--env",
         "DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1",
+        "--env",
+        "DOTNET_CLI_WORKLOAD_UPDATE_NOTIFY_DISABLE=1",
         LEAN_PINNED_IMAGE_DIGEST,
         "-c",
         csharpProjectScript(),

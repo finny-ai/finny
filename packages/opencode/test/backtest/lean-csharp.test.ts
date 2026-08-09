@@ -9,11 +9,12 @@ describe("LEAN C# compile project", () => {
     // The project must reference only baked-in engine assemblies, never NuGet.
     expect(first).toContain("RestoreSources")
     expect(first).toContain("<Compile Include=\"/build/**/*.cs\" />")
+    expect(first).toContain("<AssemblyName>Algorithm</AssemblyName>")
     expect(first).toContain("HintPath")
     // No package restore, deterministic output.
     expect(first).toContain("RestoreSources></RestoreSources>")
     expect(first).toContain("Deterministic")
-    expect(first).toContain("dotnet build /build/FinnyAlgorithm.csproj -c Release --nologo -v minimal -o /build/out")
+    expect(first).toContain("dotnet build /build/FinnyAlgorithm.csproj -c Release --nologo -v minimal -o /build/out || true")
     expect(first).toContain("test -f /build/out/Algorithm.dll")
   })
 
