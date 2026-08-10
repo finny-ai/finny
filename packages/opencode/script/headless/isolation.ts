@@ -16,21 +16,32 @@ const SECRET_ENV_ALLOWLIST = [
   "FINNY_LICENSE_KEY",
 ] as const
 
+// Probe sockets are closed before fixture services bind their assigned ports.
+// Keep the selected numbers reserved for this harness process so concurrent
+// isolations cannot receive the same just-released ephemeral port.
+const reservedPorts = new Set<number>()
+
 async function freePort(): Promise<number> {
-  return await new Promise((resolve, reject) => {
-    const server = net.createServer()
-    server.unref()
-    server.on("error", reject)
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address()
-      if (!address || typeof address === "string") {
-        server.close()
-        reject(new Error("could not allocate port"))
-        return
-      }
-      server.close((error) => (error ? reject(error) : resolve(address.port)))
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const port = await new Promise<number>((resolve, reject) => {
+      const server = net.createServer()
+      server.unref()
+      server.on("error", reject)
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address()
+        if (!address || typeof address === "string") {
+          server.close()
+          reject(new Error("could not allocate port"))
+          return
+        }
+        server.close((error) => (error ? reject(error) : resolve(address.port)))
+      })
     })
-  })
+    if (reservedPorts.has(port)) continue
+    reservedPorts.add(port)
+    return port
+  }
+  throw new Error("could not allocate a unique port")
 }
 
 export type HarnessIsolation = {
