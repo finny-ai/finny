@@ -149,9 +149,57 @@ class TestSessionAggregate:
             assert report.extra_timestamp_count == 0
 
     def test_regional_symbols_keep_native_timestamps(self):
+        # Provider-level note: fetch() rejects regional suffixes (e.g.
+        # RELIANCE.NS) via _is_equity_symbol before aggregation, so this
+        # exercises the calendar guard in _session_aggregate directly.
         feed = _feed_minutes(REGULAR_DAYS[0])
         out = _session_aggregate(feed, "RELIANCE.NS", "2024-01-02", "2024-01-02", "1h")
         assert out is feed  # passthrough, no re-binning
+
+    def test_duplicate_identical_rows_are_deduped(self):
+        feed = _feed_minutes(REGULAR_DAYS[0])
+        feed = feed[feed["timestamp"] >= _utc("2024-01-02", 9, 30)].head(2)
+        dup = pd.concat([feed, feed.iloc[[0]]], ignore_index=True)  # byte-identical 09:30 bar
+        out = _session_aggregate(dup, "SPY", "2024-01-02", "2024-01-02", "1h")
+        assert len(out) == 1
+        expected_volume = feed["volume"].iloc[0] + feed["volume"].iloc[1]
+        assert out["volume"].iloc[0] == pytest.approx(expected_volume)
+
+    def test_duplicate_conflicting_rows_fail_closed(self):
+        feed = _feed_minutes(REGULAR_DAYS[0]).head(1)
+        conflicting = feed.copy()
+        conflicting.loc[conflicting.index[0], "volume"] = conflicting["volume"].iloc[0] + 1.0
+        dup = pd.concat([feed, conflicting], ignore_index=True)
+        with pytest.raises(RuntimeError, match="conflicting duplicate bars"):
+            _session_aggregate(dup, "SPY", "2024-01-02", "2024-01-02", "1h")
+
+    def test_incomplete_trailing_bucket_omitted_at_timestamp_end(self):
+        feed = _feed_minutes(REGULAR_DAYS[0])  # full 1m day, incl. extended hours
+        end = "2024-01-02T15:45:00+00:00"  # 10:45 ET: the 10:30 bucket has 15 min
+        out = _session_aggregate(feed, "SPY", "2024-01-02", end, "1h")
+
+        expected = _expected("1h", "2024-01-02", end)
+        assert set(expected) == {_utc("2024-01-02", 9, 30), _utc("2024-01-02", 10, 30)}
+        assert set(out["timestamp"]) == {_utc("2024-01-02", 9, 30)}  # 10:30 omitted
+
+        report = analyze(
+            out, "1h", "equity", provider="alpaca",
+            requested_start="2024-01-02", requested_end=end,
+        )
+        assert report.coverage_pct == pytest.approx(0.5)
+        assert _utc("2024-01-02", 10, 30).isoformat() in report.missing_timestamps
+
+    def test_dst_shifts_utc_labels(self):
+        jan = _session_aggregate(
+            _feed_minutes("2024-01-02"), "SPY", "2024-01-02", "2024-01-02", "1h"
+        )
+        jul = _session_aggregate(
+            _feed_minutes("2024-07-10"), "SPY", "2024-07-10", "2024-07-10", "1h"
+        )
+        assert jan["timestamp"].iloc[0] == _utc("2024-01-02", 9, 30)  # 14:30Z (EST)
+        assert jul["timestamp"].iloc[0] == _utc("2024-07-10", 9, 30)  # 13:30Z (EDT)
+        assert jan["timestamp"].iloc[0].hour == 14
+        assert jul["timestamp"].iloc[0].hour == 13
 
 
 class TestAlpacaProviderFetch:
@@ -203,9 +251,55 @@ class TestAlpacaProviderFetch:
 
         assert all(params["timeframe"] == "1Min" for params in seen)
         assert all(params["symbols"] == "SPY" for params in seen)
+        assert seen[1]["page_token"] == "p2"
         assert len(df) == 28
         assert set(df["timestamp"]) == set(_expected("1h", "2024-01-02", "2024-01-05"))
         assert df["volume"].iloc[0] == pytest.approx(sum(range(570, 630)))
+
+    def test_fetch_30m_keeps_native_timeframe(self, monkeypatch):
+        monkeypatch.setenv("ALPACA_API_KEY_ID", "test-key")
+        monkeypatch.setenv("ALPACA_API_SECRET_KEY", "test-secret")
+        rows = [
+            {"t": "2024-01-02T14:30:00+00:00", "o": "100", "h": "110", "l": "90", "c": "105", "v": "1000"},
+            {"t": "2024-01-02T15:00:00+00:00", "o": "105", "h": "115", "l": "95", "c": "110", "v": "2000"},
+        ]
+        session, seen = self._fake_session(rows, pages=1)
+
+        with patch("requests.Session", return_value=session):
+            df = AlpacaProvider().fetch("SPY", "2024-01-02", "2024-01-05", "30m")
+
+        assert seen[0]["timeframe"] == "30Min"
+        assert len(df) == 2  # native bars pass through unaggregated
+
+    def test_fetch_option_symbol_keeps_native_bars(self, monkeypatch):
+        monkeypatch.setenv("ALPACA_API_KEY_ID", "test-key")
+        monkeypatch.setenv("ALPACA_API_SECRET_KEY", "test-secret")
+        rows = [
+            {"t": "2024-01-02T15:00:00+00:00", "o": "1.0", "h": "1.2", "l": "0.9", "c": "1.1", "v": "50"},
+        ]
+        seen = []
+
+        class FakeResponse:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict:
+                return {"bars": {"SPY260619C00500000": rows}, "next_page_token": None}
+
+        def fake_get(url: str, params: dict, headers: dict, timeout: int):
+            seen.append((url, params))
+            return FakeResponse()
+
+        session = MagicMock()
+        session.get.side_effect = fake_get
+
+        with patch("requests.Session", return_value=session):
+            df = AlpacaProvider().fetch("SPY/20260619/500C", "2024-01-02", "2024-01-05", "1h")
+
+        url, params = seen[0]
+        assert "/v1beta1/options/bars" in url
+        assert params["timeframe"] == "1Hour"  # no granular 1m reconstruction
+        assert len(df) == 1
 
     def test_fetch_daily_keeps_native_bars(self, monkeypatch):
         monkeypatch.setenv("ALPACA_API_KEY_ID", "test-key")
