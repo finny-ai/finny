@@ -13,11 +13,29 @@ import sys
 import re
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 
 from .base import fetch_end_bound_utc
+from ...assets import resolve_asset_spec
+from ..calendars import ExpectedTimestampRequest, expected_timestamps, is_nyse_half_day
+from ...options.calendar import is_trading_day
+from ..quality import expected_step
 
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
+
+# Alpaca stamps intraday bars on wall-clock grids (hourly bars land on whole
+# hours, and the IEX feed includes extended-hours bars), while strict
+# qualification expects bars on the Finny regular-session grid (09:30, 10:30,
+# ... ET). For US equity intraday windows the provider therefore fetches 1m
+# bars and deterministically re-bins them onto the expected session grid.
+# Values match _TIMEFRAME_MAP's pandas-style timeframe names.
+_GRANULAR_SESSION_INTERVALS = {"1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour"}
+
+# Regional listings (XNSE, XTSE, ...) are provider-observed by the strict
+# engine because their exchange calendars are not implemented; their native
+# timestamps must be preserved.
+_SESSION_GRID_CALENDARS = {"US_EQUITIES", "XNYS"}
 
 _TIMEFRAME_MAP: Dict[str, str] = {
     "1min": "1Min",
@@ -52,6 +70,84 @@ def _headers() -> Optional[Dict[str, str]]:
 
 def _is_equity_symbol(symbol: str) -> bool:
     return "/" not in symbol and "-" not in symbol and symbol.strip().isalpha()
+
+
+def _session_aggregate(
+    df: pd.DataFrame,
+    symbol: str,
+    start: str,
+    end: str,
+    interval: str,
+) -> pd.DataFrame:
+    """Re-bin 1m bars onto the exact expected XNYS session grid.
+
+    Bars are bucketed into [expected_ts, expected_ts + interval) for every
+    timestamp the strict calendar expects (09:30-anchored, regular session
+    only). Extended-hours bars and bars that fall outside the grid are
+    dropped, and each bucket aggregates open=first / high=max / low=min /
+    close=last / volume=sum, deterministically.
+
+    The grid is generated with the same requested bounds the caller passes to
+    ``fetch``, so the returned timestamps are exactly the ones the strict
+    coverage gate validates against.
+    """
+    asset_spec = resolve_asset_spec({"symbol": symbol, "asset_class": "equity"})
+    if str(asset_spec.calendar).upper() not in _SESSION_GRID_CALENDARS:
+        return df
+    step = expected_step(interval)
+    expected = expected_timestamps(
+        ExpectedTimestampRequest(
+            requested_start=start,
+            requested_end=end,
+            interval=interval,
+            asset_class="equity",
+            calendar_id=asset_spec.calendar,
+        )
+    )
+    if len(expected) == 0:
+        return df.iloc[0:0]
+    if df.empty:
+        return df
+
+    frame = df.sort_values("timestamp").reset_index(drop=True)
+    ts = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
+    pos = expected.searchsorted(ts, side="right") - 1
+    bin_start = expected[pos.clip(min=0)]
+    # The final bucket of each session is partial-width (e.g. 15:30-16:00 ET
+    # for a 1h grid), so bars must also fall inside the regular session:
+    # after-hours bars stamped after the exchange close belong to no bucket.
+    local = ts.tz_convert("America/New_York")
+    minutes = local.hour * 60 + local.minute
+    day_close = np.array(
+        [
+            13 * 60 if is_nyse_half_day(day) else 16 * 60
+            for day in local.date
+        ]
+    )
+    in_session = (
+        np.array([is_trading_day(day) for day in local.date])
+        & (minutes >= 9 * 60 + 30)
+        & (minutes < day_close)
+    )
+    valid = (pos >= 0) & (ts >= bin_start) & (ts < bin_start + step) & in_session
+    frame = frame.loc[valid].copy()
+    if frame.empty:
+        return frame[["timestamp", "open", "high", "low", "close", "volume"]]
+
+    frame["_bin"] = expected[pos[valid]]
+    aggregated = (
+        frame.groupby("_bin", sort=True)
+        .agg(
+            open=("open", "first"),
+            high=("high", "max"),
+            low=("low", "min"),
+            close=("close", "last"),
+            volume=("volume", "sum"),
+        )
+        .reset_index()
+        .rename(columns={"_bin": "timestamp"})
+    )
+    return aggregated[["timestamp", "open", "high", "low", "close", "volume"]]
 
 
 def _to_alpaca_option_symbol(symbol: str) -> Optional[str]:
@@ -93,6 +189,16 @@ class AlpacaProvider:
         if not is_option and not _is_equity_symbol(sym):
             raise RuntimeError("alpaca provider currently supports equities and options only")
         request_sym = option_sym or sym
+
+        # US equity intraday: fetch 1m bars and re-bin onto the strict session
+        # grid (see _session_aggregate). Options and daily bars keep the
+        # provider's native timestamps.
+        granular_session = (
+            not is_option
+            and _TIMEFRAME_MAP.get(interval, interval) in _GRANULAR_SESSION_INTERVALS
+        )
+        if granular_session:
+            timeframe = "1Min"
 
         # Alpaca's `end` filter is inclusive of the instant; back off a
         # microsecond from the exclusive bound so a date-only end covers its
@@ -167,4 +273,6 @@ class AlpacaProvider:
             {"open": "float64", "high": "float64", "low": "float64",
              "close": "float64", "volume": "float64"}
         )
+        if granular_session:
+            df = _session_aggregate(df, sym, start, end, interval)
         return df
