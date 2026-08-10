@@ -306,6 +306,22 @@ export const QualifyCandidateTool = Tool.define<
               })
             }
             const leanRuntime = runtimeForCandidate(candidate)
+            if (leanRuntime.issues.length > 0) {
+              return blocked({
+                code: "candidate_invalid",
+                field: "runtime",
+                message: `runtime declaration is invalid: ${leanRuntime.issues.join("; ")}`,
+                next: "repair and resave the candidate with an explicit supported runtime profile",
+              })
+            }
+            if (leanRuntime.profile.profileId === "qc_cloud") {
+              return blocked({
+                code: "candidate_invalid",
+                field: "runtime",
+                message: "qc_cloud candidates cannot use the local qualification executor",
+                next: "run the explicit QC Cloud workflow; no local engine fallback is permitted",
+              })
+            }
             if (isLeanProfile(leanRuntime.profile)) {
               return runLeanQualificationFlow({
                 params,

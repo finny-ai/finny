@@ -64,8 +64,33 @@ describe("LEAN runtime contracts", () => {
   test("runtime profiles hash deterministically and default to finny_python", () => {
     expect(runtimeProfileV1("lean_python")).toEqual(runtimeProfileV1("lean_python"))
     expect(runtimeProfileV1("lean_python").profileHash).not.toBe(runtimeProfileV1("finny_python").profileHash)
-    expect(runtimeFromConfig(undefined).profile.profileId).toBe("finny_python")
-    expect(runtimeFromConfig('{"runtime":{"profile":{"profileId":"lean_csharp"}}}').profile.profileId).toBe("lean_csharp")
+    expect(runtimeFromConfig(undefined)).toMatchObject({
+      profile: { profileId: "finny_python" },
+      explicitlyConfigured: false,
+      issues: [],
+    })
+    expect(runtimeFromConfig('{"runtime":{"profile":{"profileId":"lean_csharp"}}}')).toMatchObject({
+      profile: { profileId: "lean_csharp" },
+      explicitlyConfigured: true,
+      issues: [],
+    })
+  })
+
+  test("explicit invalid and cloud runtimes never coerce to the local Finny engine", () => {
+    expect(runtimeFromConfig('{"runtime":{"profile":{"profileId":"lean_pythno"}}}').issues).toEqual([
+      'unsupported runtime profile "lean_pythno"',
+    ])
+    expect(runtimeFromConfig('{"runtime":{"profile":{"profileId":"qc_cloud"}}}')).toMatchObject({
+      profile: { profileId: "qc_cloud" },
+      explicitlyConfigured: true,
+      issues: [],
+    })
+    const valid = runtimeProfileV1("lean_python")
+    expect(
+      runtimeFromConfig(
+        JSON.stringify({ runtime: { profile: { ...valid, profileHash: "0".repeat(64) } } }),
+      ).issues,
+    ).toEqual(["runtime profile hash does not match profile lean_python"])
   })
 
   test("strategy source manifests reject unsafe paths", () => {

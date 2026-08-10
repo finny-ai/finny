@@ -11,6 +11,13 @@ import {
 export interface RuntimeConfigV1 {
   profile: RuntimeProfileV1
   source?: StrategySourceV1
+  /**
+   * Runtime declarations are additive for legacy candidates, but once a
+   * candidate explicitly declares one it must never be coerced back to the
+   * default engine. Callers must fail closed when this list is non-empty.
+   */
+  issues: string[]
+  explicitlyConfigured: boolean
 }
 
 export function runtimeFromConfig(configJson: string | undefined | null): RuntimeConfigV1 {
@@ -18,25 +25,45 @@ export function runtimeFromConfig(configJson: string | undefined | null): Runtim
   try {
     config = JSON.parse(configJson ?? "{}") as Record<string, any>
   } catch {
-    config = {}
+    return {
+      profile: runtimeProfileV1("finny_python"),
+      issues: ["candidate config is not valid JSON; runtime selection cannot be trusted"],
+      explicitlyConfigured: false,
+    }
   }
   const runtime = config?.runtime
-  if (runtime && typeof runtime === "object") {
+  if (runtime !== undefined) {
+    if (!runtime || typeof runtime !== "object" || Array.isArray(runtime)) {
+      return {
+        profile: runtimeProfileV1("finny_python"),
+        issues: ["runtime must be an object containing a supported runtime profile"],
+        explicitlyConfigured: true,
+      }
+    }
     const nested = runtime.profile && typeof runtime.profile === "object" ? runtime.profile : undefined
     const rawProfileId = nested?.profileId ?? runtime.profileId
-    const profileId: FinnyRuntimeId = rawProfileId === "lean_python" || rawProfileId === "lean_csharp"
-      ? rawProfileId
-      : "finny_python"
+    const supported: readonly FinnyRuntimeId[] = ["finny_python", "lean_python", "lean_csharp", "qc_cloud"]
+    const profileId = typeof rawProfileId === "string" && supported.includes(rawProfileId as FinnyRuntimeId)
+      ? (rawProfileId as FinnyRuntimeId)
+      : undefined
+    if (!profileId) {
+      return {
+        profile: runtimeProfileV1("finny_python"),
+        issues: [`unsupported runtime profile ${JSON.stringify(rawProfileId ?? null)}`],
+        explicitlyConfigured: true,
+      }
+    }
+    const expectedProfile = runtimeProfileV1(profileId)
+    const suppliedProfileHash = nested?.profileHash ?? runtime.profileHash
+    const issues: string[] = []
+    if (suppliedProfileHash !== undefined && suppliedProfileHash !== expectedProfile.profileHash) {
+      issues.push(`runtime profile hash does not match profile ${profileId}`)
+    }
     const profile: RuntimeProfileV1 = {
       schema: "finny.runtime_profile",
       version: 1,
       profileId,
-      profileHash:
-        typeof nested?.profileHash === "string"
-          ? nested.profileHash
-          : typeof runtime.profileHash === "string"
-            ? runtime.profileHash
-            : runtimeProfileV1(profileId).profileHash,
+      profileHash: expectedProfile.profileHash,
     }
     const source =
       nested?.source && typeof nested.source === "object"
@@ -44,9 +71,9 @@ export function runtimeFromConfig(configJson: string | undefined | null): Runtim
         : runtime.source && typeof runtime.source === "object"
           ? (runtime.source as StrategySourceV1)
           : undefined
-    return { profile, source }
+    return { profile, source, issues, explicitlyConfigured: true }
   }
-  return { profile: runtimeProfileV1("finny_python") }
+  return { profile: runtimeProfileV1("finny_python"), issues: [], explicitlyConfigured: false }
 }
 
 export function runtimeForCandidate(candidate: Pick<Algorithm.Info, "config">): RuntimeConfigV1 {
@@ -78,7 +105,9 @@ export function embedRuntimeConfig(input: {
 }
 
 export function isLeanCandidate(candidate: Pick<Algorithm.Info, "config">): boolean {
-  return isLeanProfile(runtimeForCandidate(candidate).profile)
+  const runtime = runtimeForCandidate(candidate)
+  if (runtime.issues.length > 0) throw new Error(runtime.issues.join("; "))
+  return isLeanProfile(runtime.profile)
 }
 
 export function validateLeanSourceManifest(source: StrategySourceV1 | undefined, profileId: string): string[] {
