@@ -4,14 +4,26 @@ import crypto from "node:crypto"
 import type { Algorithm } from "@/algorithm"
 import type { BacktestRunner } from "../runner"
 import type { EngineV2 } from "../results"
-import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST, leanExecutionProfileV1, runtimeProfileV1, strategySourceV1 } from "./contracts"
+import {
+  LEAN_PINNED_COMMIT,
+  LEAN_PINNED_IMAGE_DIGEST,
+  leanExecutionProfileV1,
+  runtimeProfileV1,
+  sha256Text,
+  strategySourceV1,
+} from "./contracts"
 import { materializeLeanDataBundle } from "./materialize"
 import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
 import { parseLeanResultJson } from "./lean-result-parse"
 import { buildCanonicalMetrics, buildWalkForwardSummary } from "./metrics"
 import { LeanAdapter } from "./adapter"
+import { buildLeanLauncherConfig } from "./engine-config"
 import { leanSourceDir } from "./source-store"
+import { runtimeForCandidate } from "./select"
 import type { LeanBarScheduleV1 } from "./types"
+import type { RunIdentityV1 } from "../run-integrity-core"
+
+const LEAN_ADAPTER_HASH = sha256Text("finny-lean-adapter-v1")
 
 function csvTimestamps(csvPath: string): Promise<string[]> {
   return fs.readFile(csvPath, "utf8").then((text) => {
@@ -29,7 +41,7 @@ function csvTimestamps(csvPath: string): Promise<string[]> {
 }
 
 export type LeanEngineRunResult =
-  | { ok: true; results: BacktestRunner.Results; v2: EngineV2.Results }
+  | { ok: true; results: BacktestRunner.Results; v2: EngineV2.Results; runtimeIdentity?: RunIdentityV1["runtimeIdentity"] }
   | { ok: false; kind: "engine_crash" | "results_unparseable" | "data_bundle_invalid" | "source_missing" | "internal"; error: string }
 
 /**
@@ -147,7 +159,19 @@ export async function runLeanEngineInRunner(input: {
     return { ok: false, kind: "data_bundle_invalid", error: `data bundle materialization failed: ${String(error)}` }
   }
 
-  const profile = runtimeProfileV1(runtimeProfileId)
+  const runtimeConfig = runtimeForCandidate(input.algorithm)
+  const profile = runtimeConfig.profile.profileId === runtimeProfileId ? runtimeConfig.profile : runtimeProfileV1(runtimeProfileId)
+  const runtimeSource =
+    runtimeConfig.source && runtimeConfig.source.profileId === runtimeProfileId
+      ? runtimeConfig.source
+      : strategySourceV1({
+          profileId: runtimeProfileId,
+          files: sourceFiles.map((file) => ({
+            path: file.path,
+            sha256: crypto.createHash("sha256").update(file.content).digest("hex"),
+            bytes: Buffer.byteLength(file.content, "utf8"),
+          })),
+        })
   const executionProfile = leanExecutionProfileV1({
     assetClass,
     makerFeeBps: Number(input.config.execution?.maker_fee_bps ?? 0),
@@ -158,14 +182,21 @@ export async function runLeanEngineInRunner(input: {
     shortingEnabled: false,
     dataFeedWorkers: 1,
   })
-  const source = strategySourceV1({
-    profileId: runtimeProfileId,
-    files: sourceFiles.map((file) => ({
-      path: file.path,
-      sha256: crypto.createHash("sha256").update(file.content).digest("hex"),
-      bytes: Buffer.byteLength(file.content, "utf8"),
-    })),
-  })
+  const source = runtimeSource
+  const launcherConfigHash = buildLeanLauncherConfig({
+    profile: executionProfile,
+    assetFamily: assetClass,
+    startDate: input.startDate,
+    endDate: input.endDate,
+    cash: input.capital,
+    algorithmTypeName: "Main",
+    algorithmLanguage: runtimeProfileId === "lean_csharp" ? "CSharp" : "Python",
+    algorithmLocation: runtimeProfileId === "lean_csharp" ? "/Lean/Algorithm/Algorithm.dll" : "/Lean/Algorithm/main.py",
+    dataFolder: "/Lean/Data",
+    resultsFolder: "/Results",
+    seed: input.seed,
+    dataFeedWorkers: executionProfile.dataFeedWorkers,
+  }).configHash
 
   const adapter = new LeanAdapter()
   const outcome = await adapter.run({
@@ -186,9 +217,13 @@ export async function runLeanEngineInRunner(input: {
         sbomSha256: "",
         provenanceSha256: "",
       },
-      leanConfigHash: "",
-      adapterHash: "",
-      runtimeHash: "",
+      leanConfigHash: launcherConfigHash,
+      adapterHash: LEAN_ADAPTER_HASH,
+      runtimeHash: sha256Text(
+        [profile.profileHash, source.sourceTreeHash, executionProfile.executionProfileHash, launcherConfigHash, LEAN_ADAPTER_HASH].join(
+          "|",
+        ),
+      ),
     },
     dataBundle,
     phase: "exploratory",
@@ -356,5 +391,16 @@ export async function runLeanEngineInRunner(input: {
     },
     v2,
   }
-  return { ok: true, results, v2 }
+  const runtimeIdentity: RunIdentityV1["runtimeIdentity"] = {
+    profileId: runtimeProfileId,
+    profileHash: profile.profileHash,
+    sourceTreeHash: source.sourceTreeHash,
+    adapterHash: LEAN_ADAPTER_HASH,
+    executionProfileHash: executionProfile.executionProfileHash,
+    imageDigest: LEAN_PINNED_IMAGE_DIGEST,
+    leanCommit: LEAN_PINNED_COMMIT,
+    leanConfigHash: launcherConfigHash,
+    architecture: process.arch === "arm64" ? "linux/arm64" : "linux/amd64",
+  }
+  return { ok: true, results, v2, runtimeIdentity }
 }

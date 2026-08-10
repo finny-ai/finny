@@ -235,17 +235,49 @@ export function buildWalkForwardSummary(input: {
   folds: number
 }): EngineV2.WalkForwardSummary {
   const bars = input.timestamps.length
-  const usable = Math.max(1, bars - input.warmupBars)
-  const testLen = Math.max(1, Math.floor(usable / (input.folds + 1)))
-  const trainLen = Math.max(1, usable - testLen)
-  const startIndex = Math.min(input.warmupBars, bars - 1)
+  if (!Number.isSafeInteger(input.folds) || input.folds < 1) {
+    throw new Error("walk-forward folds must be a positive integer")
+  }
+  if (!Number.isSafeInteger(input.warmupBars) || input.warmupBars < 0) {
+    throw new Error("walk-forward warmupBars must be a non-negative integer")
+  }
+  for (let index = 0; index < input.timestamps.length; index++) {
+    const current = Date.parse(input.timestamps[index]!)
+    if (!Number.isFinite(current)) throw new Error(`walk-forward timestamp ${index} is invalid`)
+    if (index > 0) {
+      const previous = Date.parse(input.timestamps[index - 1]!)
+      if (current <= previous) throw new Error("walk-forward timestamps must be strictly increasing")
+    }
+  }
+
+  const startIndex = Math.min(input.warmupBars, bars)
+  const usable = bars - startIndex
+  const segmentCount = input.folds + 1
+  if (usable < segmentCount) {
+    throw new Error(
+      `walk-forward requires at least ${segmentCount} usable bars for ${input.folds} non-overlapping folds; received ${usable}`,
+    )
+  }
+  const baseSegmentLength = Math.floor(usable / segmentCount)
+  const remainder = usable % segmentCount
+  const segmentLengths = Array.from(
+    { length: segmentCount },
+    (_, index) => baseSegmentLength + (index < remainder ? 1 : 0),
+  )
+  const segmentStarts: number[] = []
+  let cursor = startIndex
+  for (const length of segmentLengths) {
+    segmentStarts.push(cursor)
+    cursor += length
+  }
   const foldList: EngineV2.WalkForwardFold[] = []
 
   for (let f = 0; f < input.folds; f++) {
     const trainStartIndex = startIndex
-    const trainEndIndex = Math.min(bars - 1, startIndex + trainLen - 1)
-    const testStartIndex = Math.min(bars - 1, trainEndIndex + 1)
-    const testEndIndex = Math.min(bars - 1, testStartIndex + testLen - 1)
+    const testSegment = f + 1
+    const testStartIndex = segmentStarts[testSegment]!
+    const testEndIndex = testStartIndex + segmentLengths[testSegment]! - 1
+    const trainEndIndex = testStartIndex - 1
     const trainStart = input.timestamps[trainStartIndex]!
     const trainEnd = input.timestamps[trainEndIndex]!
     const testStart = input.timestamps[testStartIndex]!
@@ -263,17 +295,17 @@ export function buildWalkForwardSummary(input: {
     const oosBars = testEndIndex - testStartIndex + 1
     foldList.push({
       fold: f + 1,
-      train_start: trainStart.slice(0, 10),
-      train_end: trainEnd.slice(0, 10),
-      test_start: testStart.slice(0, 10),
-      test_end: testEnd.slice(0, 10),
+      train_start: trainStart,
+      train_end: trainEnd,
+      test_start: testStart,
+      test_end: testEnd,
       is_sharpe: sharpeOf(trainReturns),
       oos_sharpe: sharpeOf(testReturns),
       is_return: isReturn,
       oos_return: oosReturn,
       oos_trades: oosTrades,
       oos_bars: oosBars,
-      oos_coverage: oosBars > 0 ? 1 : 0,
+      oos_coverage: testCurve.length >= 2 ? 1 : 0,
       oos_max_drawdown: drawdowns(testCurve).maxDrawdown,
       ruined: oosReturn <= 0,
       selected_params: null,

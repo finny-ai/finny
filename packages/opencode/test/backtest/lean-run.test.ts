@@ -184,6 +184,7 @@ describe("LEAN phase run facade", () => {
           artifacts: result.artifacts,
           startingEquity: 10000,
           engineVersion: "lean",
+          runtimeProfileId: "lean_python",
         }),
     })
     expect(outcome.ok).toBe(true)
@@ -213,6 +214,7 @@ describe("LEAN phase run facade", () => {
           artifacts: result.artifacts,
           startingEquity: 10000,
           engineVersion: "lean",
+          runtimeProfileId: "lean_python",
         }),
     })
     expect(outcome.ok).toBe(false)

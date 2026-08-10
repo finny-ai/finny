@@ -28,6 +28,7 @@ import {
   normalizeSymbol as normalizeRequestSymbol,
 } from "@/agent/request-identity"
 import * as RunIntegrity from "./run-integrity"
+import type { RunIdentityV1 } from "./run-integrity-core"
 import { qualifyCandidateV1 } from "./qualification"
 import { qualificationInputForResearch, type QualificationInputV1 } from "./qualification-policy"
 import { CentralSync } from "@/algorithm/central-sync"
@@ -2542,6 +2543,7 @@ if __name__ == "__main__":
     dataQualityMode: "strict" | "repair_outliers"
     qualification?: QualificationInputV1
     datasetSnapshotId?: string
+    runtimeIdentity?: RunIdentityV1["runtimeIdentity"]
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2598,12 +2600,16 @@ if __name__ == "__main__":
     const current = await RunIntegrity.currentAlgorithmHashes(input.algorithm)
     const processedDataPath = path.join(input.tmpDir, PROCESSED_OHLCV_CSV)
     const executionProfile = input.results.v2?.execution_config ?? input.config.execution ?? {}
-    const engineTree = await RunIntegrity.directoryTreeManifest(path.join(input.tmpDir, "engine_v2"))
+    const engineTreeRoot = input.runtimeIdentity
+      ? path.join(input.tmpDir, "lean-engine")
+      : path.join(input.tmpDir, "engine_v2")
+    const engineTree = await RunIntegrity.directoryTreeManifest(engineTreeRoot)
     await RunIntegrity.publishStrictRun({
       finalDir: base,
       runId: input.runId,
       productLabel: input.results.productLabel ?? "Crucible 2.0",
       identity: {
+        ...(input.runtimeIdentity ? { runtimeIdentity: input.runtimeIdentity } : {}),
         algorithmId: input.algorithm.algorithmId,
         algorithmVersion: version,
         strategyHash: current.strategyHash,
@@ -2840,6 +2846,20 @@ if __name__ == "__main__":
     }
 
     const leanRuntime = runtimeForCandidate(algorithm)
+    if (leanRuntime.issues.length > 0) {
+      return {
+        ok: false,
+        error: `Invalid runtime declaration: ${leanRuntime.issues.join("; ")}. Engine fallback is disabled.`,
+        kind: "config_invalid",
+      }
+    }
+    if (leanRuntime.profile.profileId === "qc_cloud") {
+      return {
+        ok: false,
+        error: "qc_cloud candidates must use the explicit QC Cloud workflow; local engine fallback is disabled.",
+        kind: "config_invalid",
+      }
+    }
     const isLeanRun = isLeanProfile(leanRuntime.profile)
     const validation = isLeanRun
       ? ({ valid: true, errors: [], warnings: [] } as unknown as Awaited<ReturnType<typeof Validate.run>>)
@@ -3069,6 +3089,7 @@ if __name__ == "__main__":
         FINNY_SEED: String(effectiveSeed),
       }
       let results: Results | undefined
+      let leanRuntimeIdentity: RunIdentityV1["runtimeIdentity"] | undefined
       if (isLeanRun) {
         const leanOutcome = await runLeanEngineInRunner({
           tmpDir,
@@ -3099,6 +3120,7 @@ if __name__ == "__main__":
           return { ok: false, error: `LEAN engine failed: ${leanOutcome.error}`, kind: leanOutcome.kind }
         }
         results = leanOutcome.results
+        leanRuntimeIdentity = leanOutcome.runtimeIdentity
       } else if (engineMode === "strict_v2") {
         const engineArgs = [
           pythonCmd,
@@ -3276,6 +3298,7 @@ if __name__ == "__main__":
             qualification,
             datasetSnapshotId:
               preparedData.provenance.mode === "provider_fetch" ? preparedData.provenance.snapshot_id : undefined,
+            runtimeIdentity: leanRuntimeIdentity,
           })
         } else {
           // Qualification evidence and the schema-v4 risk contract remain

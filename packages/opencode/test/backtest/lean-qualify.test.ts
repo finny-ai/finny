@@ -26,6 +26,7 @@ function tmpHome() {
   const dir = `/tmp/finny-lean-qualify-test-${Math.random().toString(36).slice(2)}`
   process.env.FINNY_HOME = dir
   cleanups.push(dir)
+  fs.mkdir(dir, { recursive: true })
   return dir
 }
 
@@ -40,7 +41,7 @@ function plan() {
       requestedEnd: "2026-01-31",
     },
     candidate: {
-      candidateId: "cand-lean",
+      candidateId: "01234567-89ab-cdef-0123-456789abcdef",
       codeHash: "c".repeat(64),
       configHash: "d".repeat(64),
       warmupBars: 1,
@@ -120,7 +121,7 @@ describe("LEAN qualification executor", () => {
 
   function candidate(): Algorithm.Info {
     return {
-      algorithmId: "cand-lean",
+      algorithmId: "01234567-89ab-cdef-0123-456789abcdef",
       userId: "u",
       name: "lean-test",
       code: "class Main(QCAlgorithm): pass",
@@ -133,13 +134,34 @@ describe("LEAN qualification executor", () => {
     }
   }
 
+  async function realCsv(home: string): Promise<string> {
+    const lines = ["timestamp,open,high,low,close,volume"]
+    for (let day = 1; day <= 31; day++) {
+      for (let hour = 0; hour < 24; hour++) {
+        const ts = `2026-01-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:00:00Z`
+        lines.push(`${ts},100,101,99,100.5,1000`)
+      }
+    }
+    const csvPath = `${home}/spy.csv`
+    await fs.writeFile(csvPath, lines.join("\n") + "\n", "utf8")
+    return csvPath
+  }
+
   test("fails closed on adapter failure with a typed blocker and no fallback", async () => {
-    tmpHome()
+    const home = tmpHome()
     const compiled = plan()
+    let observedScratch: string | undefined
+    let dataTreePresent = false
+    await fs.mkdir(`${home}/algorithms/01234567-89ab-cdef-0123-456789abcdef/v01/source`, { recursive: true })
+    await fs.writeFile(
+      `${home}/algorithms/01234567-89ab-cdef-0123-456789abcdef/v01/source/main.py`,
+      "class Main(QCAlgorithm): pass\n",
+      "utf8",
+    )
     const outcome = await executeLeanQualificationV2({
       candidate: candidate(),
       dataset: {
-        csvPath: "/nonexistent.csv",
+        csvPath: await realCsv(home),
         csvSha256: "b".repeat(64),
         manifestPath: "/nonexistent.json",
         manifestSha256: "m".repeat(64),
@@ -155,12 +177,24 @@ describe("LEAN qualification executor", () => {
       plan: compiled,
       policy: DEFAULT_QUALIFICATION_POLICY_V1,
       executionIdentity: { codeHash: "c".repeat(64), configHash: "d".repeat(64) },
-      adapter: adapterThatFails(),
+      adapter: {
+        profileId: "lean_python",
+        probeReady: () => ({ ready: true, reasons: [] }),
+        run: async (input) => {
+          observedScratch = input.scratchDir
+          dataTreePresent = (await fs.stat(`${input.scratchDir}/equity/usa/hour/spy.zip`).catch(() => null)) !== null
+          return { ok: false as const, kind: "image_unavailable", error: "pinned image missing" }
+        },
+      },
       readHoldoutOpenEvents: () => Promise.resolve([]),
       requestHoldoutApproval: async () => true,
     })
     expect(outcome.ok).toBe(false)
     expect(outcome.completedPhases).toEqual([])
     expect(outcome.blocker?.code).toBe("quality_gates_failed")
+    // The qualification executor must materialize the real LEAN on-disk data
+    // tree (not just a bundle manifest) before the adapter is invoked.
+    expect(observedScratch).toBeDefined()
+    expect(dataTreePresent).toBe(true)
   })
 })
