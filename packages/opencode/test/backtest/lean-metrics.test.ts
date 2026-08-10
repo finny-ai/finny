@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { buildCanonicalMetrics } from "../../src/backtest/lean/metrics"
+import { buildCanonicalMetrics, buildWalkForwardSummary } from "../../src/backtest/lean/metrics"
 import { parseLeanResultJson } from "../../src/backtest/lean/lean-result-parse"
 
 describe("LEAN result parsing", () => {
@@ -58,6 +58,86 @@ describe("LEAN result parsing", () => {
     expect(parsed.fills).toHaveLength(1)
     expect(parsed.fills[0]!.price).toBe(100)
     expect(parsed.equityCurve).toHaveLength(2)
+  })
+
+  test("parses the real BacktestResultPacket array format with epoch seconds", () => {
+    // Real LEAN BacktestResultPacket output: Strategy Equity is a candlestick
+    // series whose values are [epochSeconds, open, high, low, close] arrays.
+    const packet = JSON.stringify({
+      orders: {
+        "1": {
+          orderId: 1,
+          symbol: { value: "SPY" },
+          type: "Market",
+          status: 3,
+          quantity: 100,
+          price: 100,
+          tag: "",
+          time: "2026-01-09T05:00:00Z",
+        },
+      },
+      orderEvents: [
+        {
+          orderId: 1,
+          symbol: { value: "SPY" },
+          status: "Filled",
+          direction: "Buy",
+          fillQuantity: 100,
+          fillPrice: 100,
+          orderFee: { value: 1 },
+          utcTime: "2026-01-09T05:00:00Z",
+        },
+      ],
+      charts: {
+        "Strategy Equity": {
+          series: {
+            Equity: {
+              values: [
+                [1767934800, 10000, 10000, 10000, 10000],
+                [1783540800, 6169.4757, 6170.6515, 6169.4757, 6169.6515],
+              ],
+            },
+          },
+        },
+      },
+    })
+    const parsed = parseLeanResultJson({
+      text: packet,
+      summaryText: JSON.stringify({ statistics: { "End Equity": "6169.65", "Net Profit": "-38.303%" } }),
+    })
+    expect(parsed.equityCurve).toEqual([
+      { timestamp: "2026-01-09T05:00:00.000Z", equity: 10000 },
+      { timestamp: "2026-07-08T20:00:00.000Z", equity: 6169.6515 },
+    ])
+    expect(parsed.fills).toHaveLength(1)
+    expect(parsed.fills[0]!.fee).toBe(1)
+  })
+})
+
+describe("walk-forward folds", () => {
+  test("uses distinct non-overlapping test windows with an expanding train window", () => {
+    const timestamps = Array.from({ length: 60 }, (_, i) => {
+      const date = new Date(Date.UTC(2026, 0, 1, 14, 30) + i * 86_400_000)
+      return date.toISOString()
+    })
+    const curve = timestamps.map((timestamp, i) => ({ timestamp, equity: 10000 + i }))
+    const summary = buildWalkForwardSummary({
+      equityCurve: curve,
+      fills: [],
+      timestamps,
+      warmupBars: 4,
+      folds: 3,
+    })
+    expect(summary.folds).toHaveLength(3)
+    const testWindows = summary.folds.map((f) => `${f.test_start}->${f.test_end}`)
+    expect(new Set(testWindows).size).toBe(3)
+    const trainEnds = summary.folds.map((f) => f.train_end)
+    const testStarts = summary.folds.map((f) => f.test_start)
+    for (let i = 0; i < summary.folds.length; i++) {
+      expect(Date.parse(trainEnds[i]!)).toBeLessThan(Date.parse(testStarts[i]!))
+    }
+    expect(Date.parse(summary.folds[0]!.test_start)).toBeGreaterThan(Date.parse(summary.folds[0]!.train_end))
+    expect(Date.parse(summary.folds[1]!.test_start)).toBeGreaterThan(Date.parse(summary.folds[1]!.train_end))
   })
 })
 

@@ -14,6 +14,7 @@ export interface LeanPhaseRunOutcome {
   ok: true
   result: CrucibleResultV1
   artifactsDir: string
+  runtimeProfileId: CrucibleResultV1["runtimeProfileId"]
 }
 
 export interface LeanPhaseRunFailure {
@@ -94,5 +95,5 @@ export async function runLeanPhase(input: {
     `${JSON.stringify(result, null, 2)}\n`,
     "utf8",
   )
-  return { ok: true, result, artifactsDir: context.resultsDir }
+  return { ok: true, result, artifactsDir: context.resultsDir, runtimeProfileId: context.bundle.profile.profileId }
 }

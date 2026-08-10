@@ -1,5 +1,6 @@
 import crypto from "node:crypto"
 import fs from "node:fs/promises"
+import path from "node:path"
 import type { Algorithm } from "@/algorithm"
 import type { RequestSpec } from "@/agent/request-spec"
 import type { VerifiedDatasetRef } from "@/data/data-extractor-evidence"
@@ -31,6 +32,7 @@ import { ExperimentPlanV2CompileError } from "../experiment-plan"
 import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST, leanExecutionProfileV1 } from "./contracts"
 import { buildLeanLauncherConfig } from "./engine-config"
 import { materializeLeanDataBundle } from "./materialize"
+import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
 import { canonicalizeLeanArtifacts } from "./parse"
 import { runLeanPhase } from "./run"
 import type { LeanAdapterV1 } from "./runner"
@@ -413,7 +415,9 @@ export async function executeLeanQualificationV2(input: {
 
     const window = input.plan.windows[phase]
     let outcome: Awaited<ReturnType<typeof runLeanPhase>>
+    let phaseRoot: string | undefined
     try {
+      phaseRoot = await fs.mkdtemp(path.join("/tmp", "finny-lean-qualify"))
       const csvText = await fs.readFile(input.dataset.csvPath, "utf8")
       const schedule = scheduleFromCsv({
         csvText,
@@ -428,7 +432,18 @@ export async function executeLeanQualificationV2(input: {
         schedules: [schedule],
         window: { start: window.start, end: window.end },
         warmupBars: input.plan.warmupBars,
-        outputDir: "/tmp/finny-lean-qualify",
+        outputDir: phaseRoot,
+      })
+      // Materialize the actual LEAN on-disk data tree the pinned engine will
+      // mount. The bundle manifest alone is not a runnable data bundle.
+      const scratchDir = path.join(phaseRoot, "scratch")
+      await fs.mkdir(scratchDir, { recursive: true })
+      await writeLeanMarketData({
+        rows: parseFinnyOhlcv(csvText),
+        symbol: input.dataset.identity.actualSymbol,
+        assetClass: input.plan.datasets[0]?.assetClass ?? "equity",
+        interval: input.plan.interval,
+        dataDir: scratchDir,
       })
       const runtimeConfig = runtimeForCandidate(input.candidate)
       outcome = await runLeanPhase({
@@ -461,8 +476,8 @@ export async function executeLeanQualificationV2(input: {
           seed: input.plan.planHash ? Number.parseInt(input.plan.planHash.slice(0, 8), 16) : 0,
           capital: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
           sourceDir: await leanSourceDir(input.candidate),
-          resultsDir: `/tmp/finny-lean-qualify/${input.plan.planId}/${phase}`,
-          scratchDir: `/tmp/finny-lean-qualify/${input.plan.planId}/scratch-${phase}`,
+          resultsDir: path.join(phaseRoot, "results"),
+          scratchDir,
         },
         dataBundle,
         canonicalize: (result) =>
@@ -470,6 +485,7 @@ export async function executeLeanQualificationV2(input: {
             artifacts: result.artifacts,
             startingEquity: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
             engineVersion: `lean-${input.plan.runtime.leanCommit.slice(0, 8)}`,
+            runtimeProfileId: runtimeConfig.profile.profileId,
           }),
       })
     } catch (error) {
@@ -480,15 +496,18 @@ export async function executeLeanQualificationV2(input: {
         `fix the ${phase} data/runtime blocker and retry`,
       )
       await ledger.block({ ...identity, phase, blocker: failed })
+      if (phaseRoot) await fs.rm(phaseRoot, { recursive: true, force: true }).catch(() => undefined)
       return { ok: false, completedPhases: [...completedPhases], blocker: failed }
     }
     if (!outcome.ok) {
       const failed = blocker("quality_gates_failed", phase, `${phase} execution failed: ${outcome.error}`, `fix the ${phase} execution blocker and retry`)
       await ledger.block({ ...identity, phase, blocker: failed })
+      if (phaseRoot) await fs.rm(phaseRoot, { recursive: true, force: true }).catch(() => undefined)
       return { ok: false, completedPhases: [...completedPhases], blocker: failed }
     }
     finalResult = leanResultsToRunResult(outcome.result)
     await ledger.complete({ ...identity, phase, attemptId: claim.attemptId, result: finalResult })
+    if (phaseRoot) await fs.rm(phaseRoot, { recursive: true, force: true }).catch(() => undefined)
     completedPhases.push(phase)
   }
 

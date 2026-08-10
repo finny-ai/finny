@@ -9,6 +9,7 @@ export function canonicalizeLeanArtifacts(input: {
   artifacts: LeanRunArtifactsV1
   startingEquity: number
   engineVersion: string
+  runtimeProfileId: CrucibleResultV1["runtimeProfileId"]
 }): CrucibleResultV1 {
   const stats = (input.artifacts.rawStatistics ?? {}) as Record<string, unknown>
   const num = (key: string): number => {
@@ -25,7 +26,7 @@ export function canonicalizeLeanArtifacts(input: {
   return {
     schema: "finny.crucible_result",
     version: 1,
-    runtimeProfileId: "lean_python",
+    runtimeProfileId: input.runtimeProfileId,
     startingEquity: input.startingEquity,
     endingEquity,
     totalReturn: num("Net Profit"),

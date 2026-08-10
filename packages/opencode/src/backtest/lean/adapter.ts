@@ -80,11 +80,17 @@ async function dockerEnv(): Promise<Record<string, string>> {
  * so every run is relocated under the user home before mounting and the
  * results are copied back afterwards.
  */
+interface LeanDockerRelocation {
+  root: string
+  resultsDir: string
+}
+
 async function relocateForDocker(input: {
   sourceDir: string
   scratchDir: string
   resultsDir: string
-}): Promise<{ root: string; resultsDir: string }> {
+  runRoot?: string
+}): Promise<LeanDockerRelocation> {
   // The harness isolates $HOME into a temp tree that colima cannot mount.
   // Bun's os.userInfo() mirrors $HOME, so derive the macOS account home from
   // USER; other platforms keep the regular home resolution.
@@ -92,17 +98,40 @@ async function relocateForDocker(input: {
     process.platform === "darwin" && process.env.USER
       ? `/Users/${process.env.USER}`
       : os.userInfo().homedir || os.homedir()
-  const root = path.join(realHome, ".finny-lean-runs", crypto.randomBytes(6).toString("hex"))
-  await fs.mkdir(path.join(root, "scratch"), { recursive: true })
-  await fs.mkdir(path.join(root, "source"), { recursive: true })
-  await fs.mkdir(path.join(root, "results"), { recursive: true })
-  await fs.cp(input.scratchDir, path.join(root, "scratch"), { recursive: true })
-  await fs.cp(input.sourceDir, path.join(root, "source"), { recursive: true })
-  await Promise.all([
-    fs.chmod(path.join(root, "scratch"), 0o777).catch(() => undefined),
-    fs.chmod(path.join(root, "results"), 0o777).catch(() => undefined),
-  ])
-  return { root, resultsDir: path.join(root, "results") }
+  const base = input.runRoot ?? path.join(realHome, ".finny-lean-runs")
+  const root = path.join(base, crypto.randomBytes(6).toString("hex"))
+  try {
+    await fs.mkdir(path.join(root, "scratch"), { recursive: true })
+    await fs.mkdir(path.join(root, "source"), { recursive: true })
+    await fs.mkdir(path.join(root, "results"), { recursive: true })
+    await fs.cp(input.scratchDir, path.join(root, "scratch"), { recursive: true })
+    await fs.cp(input.sourceDir, path.join(root, "source"), { recursive: true })
+    await Promise.all([
+      fs.chmod(path.join(root, "scratch"), 0o777).catch(() => undefined),
+      fs.chmod(path.join(root, "results"), 0o777).catch(() => undefined),
+    ])
+    return { root, resultsDir: path.join(root, "results") }
+  } catch (error) {
+    await fs.rm(root, { recursive: true, force: true }).catch(() => undefined)
+    throw error
+  }
+}
+
+/**
+ * Relocate one run into a Docker-mountable directory and remove every copied
+ * source/data/result byte after the callback settles, including typed failures
+ * and thrown errors. `runRoot` exists for hermetic tests and hosted workers.
+ */
+export async function withLeanDockerRelocation<T>(
+  input: { sourceDir: string; scratchDir: string; resultsDir: string; runRoot?: string },
+  run: (relocated: LeanDockerRelocation) => Promise<T>,
+): Promise<T> {
+  const relocated = await relocateForDocker(input)
+  try {
+    return await run(relocated)
+  } finally {
+    await fs.rm(relocated.root, { recursive: true, force: true })
+  }
 }
 
 function truthy(value: string | undefined): boolean {
@@ -247,150 +276,152 @@ export class LeanAdapter implements LeanAdapterV1 {
       launcherDir,
     })
     await fs.writeFile(`${input.scratchDir}/lean-config.json`, launcher.json, "utf8")
-    const relocated = await relocateForDocker({
+    const startedAt = new Date().toISOString()
+    return await withLeanDockerRelocation({
       sourceDir: input.sourceDir,
       scratchDir: input.scratchDir,
       resultsDir: input.resultsDir,
-    })
-    const mountScratch = path.join(relocated.root, "scratch")
-    const mountSource = path.join(relocated.root, "source")
-    const mountResults = relocated.resultsDir
-    const mountStorage = path.join(relocated.root, "storage")
-    await fs.mkdir(mountStorage, { recursive: true })
-    const isCSharp = input.bundle.profile.profileId === "lean_csharp"
-    let mountAlgorithm = mountSource
-    if (isCSharp) {
-      const compiled = await this.compileCSharp({
+    }, async (relocated) => {
+      const mountScratch = path.join(relocated.root, "scratch")
+      const mountSource = path.join(relocated.root, "source")
+      const mountResults = relocated.resultsDir
+      const mountStorage = path.join(relocated.root, "storage")
+      await fs.mkdir(mountStorage, { recursive: true })
+      const isCSharp = input.bundle.profile.profileId === "lean_csharp"
+      let mountAlgorithm = mountSource
+      if (isCSharp) {
+        const compiled = await this.compileCSharp({
+          env,
+          relocatedRoot: relocated.root,
+          mountScratch,
+          sourceDir: input.sourceDir,
+        })
+        if (!compiled.ok) {
+          return failure("compile_failed", `C# algorithm build failed: ${compiled.error}`)
+        }
+        mountAlgorithm = compiled.buildOutDir
+      }
+      // Container uid 10001 must be able to write results; host bind mounts on
+      // macOS/CI do not map that uid, so widen dev scratch dirs. The production
+      // posture uses uid-mapped volumes instead of 0777.
+      await Promise.all([
+        fs.chmod(mountScratch, 0o777).catch(() => undefined),
+        fs.chmod(mountResults, 0o777).catch(() => undefined),
+        fs.chmod(mountStorage, 0o777).catch(() => undefined),
+      ])
+      const cmd = [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--user",
+        "10001:10001",
+        "--entrypoint",
+        "dotnet",
+        "--workdir",
+        "/tmp",
+        "--read-only",
+        "--cap-drop",
+        "ALL",
+        "--security-opt",
+        "no-new-privileges",
+        "--pids-limit",
+        "256",
+        "--memory",
+        "2g",
+        "--cpus",
+        "2",
+        "--mount",
+        `type=bind,source=${mountScratch},target=/Lean/Data,readonly`,
+        "--mount",
+        `type=bind,source=${mountAlgorithm},target=/Lean/Algorithm,readonly`,
+        "--mount",
+        `type=bind,source=${mountResults},target=/Results`,
+        "--mount",
+        `type=bind,source=${mountStorage},target=/Lean/Storage`,
+        "--mount",
+        "type=tmpfs,destination=/tmp",
+        "--mount",
+        `type=bind,source=${mountScratch}/lean-config.json,target=/Lean/Launcher/lean-config.json,readonly`,
+        "--env",
+        `FINNY_SEED=${input.seed}`,
+        "--env",
+        `FINNY_PHASE=${input.phase}`,
+        "--env",
+        "HOME=/tmp",
+        LEAN_PINNED_IMAGE_DIGEST,
+        launcherPath,
+        "--config",
+        "/Lean/Launcher/lean-config.json",
+      ]
+
+      const result = await Process.run(cmd, {
+        nothrow: true,
+        timeout: 20 * 60_000,
         env,
-        relocatedRoot: relocated.root,
-        mountScratch,
-        sourceDir: input.sourceDir,
+        inheritEnv: false,
       })
-      if (!compiled.ok) {
-        return failure("compile_failed", `C# algorithm build failed: ${compiled.error}`)
+      if (result.code !== 0) {
+        const stderr = result.stderr.toString().trim().slice(0, 4000)
+        return failure("engine_crash", `LEAN engine exited ${result.code}: ${stderr}`)
       }
-      mountAlgorithm = compiled.buildOutDir
-    }
-    // Container uid 10001 must be able to write results; host bind mounts on
-    // macOS/CI do not map that uid, so widen dev scratch dirs. The production
-    // posture uses uid-mapped volumes instead of 0777.
-    await Promise.all([
-      fs.chmod(mountScratch, 0o777).catch(() => undefined),
-      fs.chmod(mountResults, 0o777).catch(() => undefined),
-      fs.chmod(mountStorage, 0o777).catch(() => undefined),
-    ])
-    const cmd = [
-      "docker",
-      "run",
-      "--rm",
-      "--network",
-      "none",
-      "--user",
-      "10001:10001",
-      "--entrypoint",
-      "dotnet",
-      "--workdir",
-      "/tmp",
-      "--read-only",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--pids-limit",
-      "256",
-      "--memory",
-      "2g",
-      "--cpus",
-      "2",
-      "--mount",
-      `type=bind,source=${mountScratch},target=/Lean/Data,readonly`,
-      "--mount",
-      `type=bind,source=${mountAlgorithm},target=/Lean/Algorithm,readonly`,
-      "--mount",
-      `type=bind,source=${mountResults},target=/Results`,
-      "--mount",
-      `type=bind,source=${mountStorage},target=/Lean/Storage`,
-      "--mount",
-      "type=tmpfs,destination=/tmp",
-      "--mount",
-      `type=bind,source=${mountScratch}/lean-config.json,target=/Lean/Launcher/lean-config.json,readonly`,
-      "--env",
-      `FINNY_SEED=${input.seed}`,
-      "--env",
-      `FINNY_PHASE=${input.phase}`,
-      "--env",
-      "HOME=/tmp",
-      LEAN_PINNED_IMAGE_DIGEST,
-      launcherPath,
-      "--config",
-      "/Lean/Launcher/lean-config.json",
-    ]
+      try {
+        await fs.cp(mountResults, input.resultsDir, { recursive: true })
+      } catch (error) {
+        return failure("results_unparseable", `LEAN results could not be collected: ${String(error)}`)
+      }
 
-    const result = await Process.run(cmd, {
-      nothrow: true,
-      timeout: 20 * 60_000,
-      env,
-      inheritEnv: false,
+      // Artifact parsing is performed by the canonical result mapper; the
+      // adapter only asserts the expected files exist.
+      try {
+        const summaryCandidates = ["summary.json", "Main-summary.json"]
+        let summaryPath = ""
+        let summary = "{}"
+        for (const candidate of summaryCandidates) {
+          try {
+            summary = await fs.readFile(`${input.resultsDir}/${candidate}`, "utf8")
+            summaryPath = candidate
+            break
+          } catch {}
+        }
+        const resultCandidates = ["result.json", "Main.json"]
+        let resultPath = ""
+        for (const candidate of resultCandidates) {
+          try {
+            await fs.access(`${input.resultsDir}/${candidate}`)
+            resultPath = candidate
+            break
+          } catch {}
+        }
+        if (!resultPath) {
+          return failure("results_unparseable", `LEAN produced no result artifact in ${input.resultsDir}`)
+        }
+        return {
+          ok: true,
+          artifacts: {
+            schema: "finny.lean_run_artifacts",
+            version: 1,
+            orders: [],
+            fills: [],
+            rejections: [],
+            equityCurve: [],
+            rawStatistics: JSON.parse(summary || "{}"),
+            leanResultPath: resultPath ? `${input.resultsDir}/${resultPath}` : "",
+            leanSummaryPath: summaryPath ? `${input.resultsDir}/${summaryPath}` : "",
+          },
+          container: {
+            imageDigest: LEAN_PINNED_IMAGE_DIGEST,
+            leanCommit: LEAN_PINNED_COMMIT,
+            startedAt,
+            completedAt: new Date().toISOString(),
+            exitCode: result.code,
+          },
+        }
+      } catch (error) {
+        return failure("results_unparseable", `LEAN results could not be parsed: ${String(error)}`)
+      }
     })
-    if (result.code !== 0) {
-      const stderr = result.stderr.toString().trim().slice(0, 4000)
-      return failure("engine_crash", `LEAN engine exited ${result.code}: ${stderr}`)
-    }
-    try {
-      await fs.cp(mountResults, input.resultsDir, { recursive: true })
-    } catch (error) {
-      return failure("results_unparseable", `LEAN results could not be collected: ${String(error)}`)
-    }
-
-    // Artifact parsing is performed by the canonical result mapper; the
-    // adapter only asserts the expected files exist.
-    try {
-      const summaryCandidates = ["summary.json", "Main-summary.json"]
-      let summaryPath = ""
-      let summary = "{}"
-      for (const candidate of summaryCandidates) {
-        try {
-          summary = await fs.readFile(`${input.resultsDir}/${candidate}`, "utf8")
-          summaryPath = candidate
-          break
-        } catch {}
-      }
-      const resultCandidates = ["result.json", "Main.json"]
-      let resultPath = ""
-      for (const candidate of resultCandidates) {
-        try {
-          await fs.access(`${input.resultsDir}/${candidate}`)
-          resultPath = candidate
-          break
-        } catch {}
-      }
-      if (!resultPath) {
-        return failure("results_unparseable", `LEAN produced no result artifact in ${input.resultsDir}`)
-      }
-      return {
-        ok: true,
-        artifacts: {
-          schema: "finny.lean_run_artifacts",
-          version: 1,
-          orders: [],
-          fills: [],
-          rejections: [],
-          equityCurve: [],
-          rawStatistics: JSON.parse(summary || "{}"),
-          leanResultPath: resultPath ? `${input.resultsDir}/${resultPath}` : "",
-          leanSummaryPath: summaryPath ? `${input.resultsDir}/${summaryPath}` : "",
-        },
-        container: {
-          imageDigest: LEAN_PINNED_IMAGE_DIGEST,
-          leanCommit: LEAN_PINNED_COMMIT,
-          startedAt: new Date().toISOString(),
-          completedAt: new Date().toISOString(),
-          exitCode: result.code,
-        },
-      }
-    } catch (error) {
-      return failure("results_unparseable", `LEAN results could not be parsed: ${String(error)}`)
-    }
   }
 
   private async compileCSharp(input: {

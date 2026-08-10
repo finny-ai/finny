@@ -543,6 +543,21 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
           }
         }
         const candidateRuntime = runtimeForCandidate(algo)
+        if (candidateRuntime.issues.length > 0) {
+          return {
+            title: "Backtest blocked — runtime declaration invalid",
+            output: `BLOCKED: ${candidateRuntime.issues.join("; ")}. Runtime selection fails closed; Finny will not substitute engine_v2.`,
+            metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
+          }
+        }
+        if (candidateRuntime.profile.profileId === "qc_cloud") {
+          return {
+            title: "Backtest blocked — cloud runtime requires QC workflow",
+            output:
+              "BLOCKED: qc_cloud candidates cannot run through finny_backtest. Use the explicit QC Cloud backtest workflow; Finny will not substitute engine_v2.",
+            metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
+          }
+        }
         if (isLeanProfile(candidateRuntime.profile)) {
           const sourceIssues = validateLeanSourceManifest(candidateRuntime.source, candidateRuntime.profile.profileId)
           if (sourceIssues.length > 0) {
@@ -680,7 +695,7 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         })
 
         let riskBanner = ""
-        if (!isLeanProfile(runtimeForCandidate(algo).profile)) {
+        if (!isLeanProfile(candidateRuntime.profile)) {
           try {
             const v = await Validate.run(algo.code, {
               config: algo.config,
