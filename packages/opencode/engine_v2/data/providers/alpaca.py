@@ -24,13 +24,16 @@ from ..quality import expected_step
 
 _SUPPORTED = {"1m", "5m", "15m", "30m", "1h", "4h", "1d"}
 
-# Alpaca stamps intraday bars on wall-clock grids (hourly bars land on whole
-# hours, and the IEX feed includes extended-hours bars), while strict
+# Alpaca stamps hourly bars on wall-clock grids (top of the hour, including
+# the 08:00 ET pre-market and 16:00 ET post-close bars on IEX), while strict
 # qualification expects bars on the Finny regular-session grid (09:30, 10:30,
-# ... ET). For US equity intraday windows the provider therefore fetches 1m
-# bars and deterministically re-bins them onto the expected session grid.
-# Values match _TIMEFRAME_MAP's pandas-style timeframe names.
-_GRANULAR_SESSION_INTERVALS = {"1Min", "5Min", "15Min", "30Min", "1Hour", "4Hour"}
+# ... ET). Only intervals whose wall-clock grid genuinely misaligns with the
+# 09:30-anchored session (1h, 4h) are reconstructed from 1m bars. Native
+# 1m/5m/15m/30m bars already land on the session grid, so granular
+# reconstruction there would only multiply download size (and risk the
+# provider timeout) without fixing alignment. Values match _TIMEFRAME_MAP's
+# pandas-style timeframe names.
+_GRANULAR_SESSION_INTERVALS = {"1Hour", "4Hour"}
 
 # Regional listings (XNSE, XTSE, ...) are provider-observed by the strict
 # engine because their exchange calendars are not implemented; their native
@@ -89,12 +92,23 @@ def _session_aggregate(
 
     The grid is generated with the same requested bounds the caller passes to
     ``fetch``, so the returned timestamps are exactly the ones the strict
-    coverage gate validates against.
+    coverage gate validates against. A bucket is only emitted when its
+    session-truncated close (bin start + interval, or the exchange close on
+    half days) is at or before the exclusive fetch bound: a trailing bucket
+    cut short by an explicit timestamp end is omitted so strict coverage
+    fails closed instead of presenting a partial bar as complete.
     """
     asset_spec = resolve_asset_spec({"symbol": symbol, "asset_class": "equity"})
     if str(asset_spec.calendar).upper() not in _SESSION_GRID_CALENDARS:
         return df
     step = expected_step(interval)
+    raw_end = pd.to_datetime(end, utc=True)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", end):
+        exclusive_end = fetch_end_bound_utc(end)
+    else:
+        # Explicit timestamps are the caller's exclusive bound; the runner
+        # shaves one second off its completed-window cap, so restore it.
+        exclusive_end = raw_end + pd.Timedelta(seconds=1)
     expected = expected_timestamps(
         ExpectedTimestampRequest(
             requested_start=start,
@@ -111,6 +125,21 @@ def _session_aggregate(
 
     frame = df.sort_values("timestamp").reset_index(drop=True)
     ts = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
+    # Duplicate raw timestamps must not be silently merged: identical rows
+    # are deduped, conflicting rows fail closed (merging would hide the
+    # anomaly and double-count volume past the downstream duplicate gate).
+    dup_mask = ts.duplicated(keep=False)
+    if dup_mask.any():
+        dup_agg = frame.loc[dup_mask].groupby(ts[dup_mask], sort=False).nunique(dropna=False)
+        conflicting = dup_agg[dup_agg.gt(1).any(axis=1)]
+        if len(conflicting):
+            samples = [value.isoformat() for value in conflicting.index[:3]]
+            raise RuntimeError(
+                f"alpaca returned conflicting duplicate bars at {samples}"
+            )
+        frame = frame.loc[~ts.duplicated(keep="first")].reset_index(drop=True)
+        ts = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
+
     pos = expected.searchsorted(ts, side="right") - 1
     bin_start = expected[pos.clip(min=0)]
     # The final bucket of each session is partial-width (e.g. 15:30-16:00 ET
@@ -129,7 +158,28 @@ def _session_aggregate(
         & (minutes >= 9 * 60 + 30)
         & (minutes < day_close)
     )
-    valid = (pos >= 0) & (ts >= bin_start) & (ts < bin_start + step) & in_session
+    # Completeness: a bucket is valid only if its session-truncated close is
+    # covered by the exclusive fetch bound. Omitted buckets then surface as
+    # missing timestamps in the strict coverage gate. Computed once per grid
+    # timestamp, then mapped per bar through its bin position.
+    grid_day = expected.tz_convert("America/New_York").date
+    grid_close_utc = pd.DatetimeIndex(
+        [
+            pd.Timestamp(day.year, day.month, day.day, 13 if is_nyse_half_day(day) else 16, 0, tz="America/New_York").tz_convert("UTC")
+            for day in grid_day
+        ]
+    )
+    # min(bin_close, session_close) <= exclusive_end  <=>  either bound is
+    # covered; avoids numpy tz-naive comparisons.
+    bin_complete = ((expected + step) <= exclusive_end) | (grid_close_utc <= exclusive_end)
+    complete = bin_complete[pos.clip(min=0)]
+    valid = (
+        (pos >= 0)
+        & (ts >= bin_start)
+        & (ts < bin_start + step)
+        & in_session
+        & complete
+    )
     frame = frame.loc[valid].copy()
     if frame.empty:
         return frame[["timestamp", "open", "high", "low", "close", "volume"]]
