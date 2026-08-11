@@ -133,9 +133,9 @@ export async function pushStrategyToQc(input: {
           (sync.drift?.length ? sync.drift.join("; ") : "Resolve drift before running."),
       )
     }
-    return { mode: isQcFixtureMode() ? "fixture" : "cloud", projectId: String(link.projectId) }
+    return { mode: (await isQcFixtureMode()) ? "fixture" : "cloud", projectId: String(link.projectId) }
   }
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const hash = crypto.createHash("sha256").update(input.algorithm.algorithmId).digest("hex").slice(0, 24)
     return { mode: "fixture", projectId: `qc-fixture-${hash}` }
   }
@@ -195,7 +195,7 @@ export async function pushLinkedSourceToQc(input: {
   const { replaceRemoteFiles } = await import("./qc-sync")
   const local = await localSourceFilesForAlgorithm(input.algorithm)
   await replaceRemoteFiles(link.projectId, local, (relativePath) => readQcFileContent(input.algorithm, relativePath))
-  return { mode: isQcFixtureMode() ? "fixture" : "cloud", projectId: String(link.projectId) }
+  return { mode: (await isQcFixtureMode()) ? "fixture" : "cloud", projectId: String(link.projectId) }
 }
 
 export interface QcLiveDeployInput {
@@ -287,7 +287,7 @@ export async function buildQcBrokerageSettings(input: {
  * reconciled by polling /live/read until a terminal state.
  */
 export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDeployOutcome> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const project = { projectId: input.projectId }
     const deploymentId = `qc-deploy-${crypto.randomBytes(6).toString("hex")}`
     const record: QcPaperDeploymentRecord = {
@@ -373,7 +373,7 @@ export async function stopQcLive(input: {
   projectId: string
   deploymentId: string
 }): Promise<QcPaperDeployOutcome | null> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const updated = await updateDeployment(input.deploymentId, { status: "stopped", stoppedAt: new Date().toISOString() })
     if (!updated) return null
     return { ok: true, mode: "fixture", deploymentId: input.deploymentId, status: "stopped", projectId: input.projectId }
@@ -397,7 +397,7 @@ export async function liquidateQcLive(input: {
   projectId: string
   deploymentId: string
 }): Promise<QcPaperDeployOutcome | null> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const updated = await updateDeployment(input.deploymentId, { status: "stopped", stoppedAt: new Date().toISOString() })
     if (!updated) return null
     return { ok: true, mode: "fixture", deploymentId: input.deploymentId, status: "stopped", projectId: input.projectId }
@@ -418,7 +418,7 @@ export async function liquidateQcLive(input: {
 }
 
 export async function reconcileQcDeployments(): Promise<QcPaperDeploymentRecord[]> {
-  if (isQcFixtureMode()) return listPaperDeployments()
+  if ((await isQcFixtureMode())) return listPaperDeployments()
   const credentials = await readQcCredentials()
   if (!credentials) return listPaperDeployments()
   const ledger = await listPaperDeployments()
@@ -438,7 +438,7 @@ export async function reconcileQcDeployments(): Promise<QcPaperDeploymentRecord[
 }
 
 export async function listQcProjects(): Promise<Array<{ projectId: number; name: string; language: string; modified: string }>> {
-  if (isQcFixtureMode()) return []
+  if ((await isQcFixtureMode())) return []
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
   const projects = await qcProjectsRead(credentials)
@@ -451,14 +451,14 @@ export async function listQcProjects(): Promise<Array<{ projectId: number; name:
 }
 
 export async function deleteQcProject(projectId: string): Promise<void> {
-  if (isQcFixtureMode()) return
+  if ((await isQcFixtureMode())) return
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
   await qcProjectDelete(credentials, projectId)
 }
 
 export async function availableLiveNodes(projectId: string): Promise<Array<{ id: string; name: string; sku: string; busy: boolean }>> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     return [
       { id: "LN-MICRO", name: "L-MICRO", sku: "L-MICRO", busy: false },
       { id: "LN-L1-1", name: "L1-1", sku: "L1-1", busy: false },
@@ -474,7 +474,7 @@ export async function compileQcProject(input: {
   projectId: string
   abort?: AbortSignal
 }): Promise<{ compileId: string; state: string; logs?: string[] }> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     return { compileId: `qc-fixture-compile-${crypto.randomBytes(6).toString("hex")}`, state: "BuildSuccess" }
   }
   const credentials = await readQcCredentials()

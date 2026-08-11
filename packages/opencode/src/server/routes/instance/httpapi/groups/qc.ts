@@ -8,6 +8,14 @@ export const QcCredentialInput = Schema.Struct({
 
 export const QcStatusResponse = Schema.Struct({
   connected: Schema.Boolean,
+  fixture: Schema.optional(Schema.Boolean),
+  mode: Schema.optional(
+    Schema.Struct({
+      mode: Schema.Literals(["fixture", "cloud"]),
+      configured: Schema.Literals(["fixture", "cloud"]),
+      source: Schema.Literals(["env", "setting", "default"]),
+    }),
+  ),
   userId: Schema.optional(Schema.String),
   name: Schema.optional(Schema.String),
   error: Schema.optional(Schema.String),
@@ -17,6 +25,16 @@ export const QcConnectResponse = Schema.Struct({
   connected: Schema.Literal(true),
   userId: Schema.String,
   name: Schema.String,
+})
+
+export const QcModeResponse = Schema.Struct({
+  mode: Schema.Literals(["fixture", "cloud"]),
+  configured: Schema.Literals(["fixture", "cloud"]),
+  source: Schema.Literals(["env", "setting", "default"]),
+})
+
+export const QcModeRequest = Schema.Struct({
+  mode: Schema.Literals(["fixture", "cloud"]),
 })
 
 export const QcProjectSummary = Schema.Struct({
@@ -81,6 +99,30 @@ export const QcApi = HttpApi.make("qc").add(
       HttpApiEndpoint.get("status", "/qc/status", {
         success: QcStatusResponse,
       }),
+    )
+    .add(
+      HttpApiEndpoint.get("mode", "/qc/mode", {
+        success: QcModeResponse,
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "qc.mode",
+          summary: "Read the QC track mode",
+          description: "Local fixture vs QuantConnect Cloud, and where the effective mode came from.",
+        }),
+      ),
+    )
+    .add(
+      HttpApiEndpoint.post("setMode", "/qc/mode", {
+        payload: QcModeRequest,
+        success: QcModeResponse,
+        error: [HttpApiError.BadRequest],
+      }).annotateMerge(
+        OpenApi.annotations({
+          identifier: "qc.mode.set",
+          summary: "Switch the QC track mode",
+          description: "Persists the mode; env-var overrides still win for test/harness runs.",
+        }),
+      ),
     )
     .add(
       HttpApiEndpoint.delete("disconnect", "/qc/credentials", {

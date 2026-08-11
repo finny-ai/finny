@@ -5,6 +5,7 @@ import type {
   QcDeploymentRecordV1,
   QcProjectLinkV1,
   QcSourceSnapshotV1,
+  QcMode,
 } from "./qc-contracts"
 
 /**
@@ -37,6 +38,10 @@ function legacyDeploymentsFile(): string {
   return process.env.FINNY_QC_LEGACY_FILE ?? path.join(Global.Path.data, "qc-paper-deployments.json")
 }
 
+function qcModeFile(): string {
+  return path.join(controlRoot(), "qc-mode.json")
+}
+
 function snapshotFile(algorithmId: string, version: number): string {
   const safe = /^[0-9a-fA-F-]{8,64}$/.test(algorithmId) ? algorithmId : "invalid"
   return path.join(controlRoot(), "snapshots", safe, `v${String(version).padStart(2, "0")}.json`)
@@ -60,6 +65,28 @@ async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
   const tmp = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`)
   await fs.writeFile(tmp, JSON.stringify(value, null, 2), { mode: 0o600 })
   await fs.rename(tmp, file)
+}
+
+// ------------------------------------------------------------------ mode ----
+
+/**
+ * Durable QC track mode (local fixture vs QuantConnect Cloud). Defaults to
+ * `cloud`; environment variables are handled by the caller as a test-only
+ * override and never written here.
+ */
+/** Persisted mode, or null when the user has never chosen one. */
+export async function readQcModeSetting(): Promise<QcMode | null> {
+  const value = await readJson<{ mode?: unknown }>(qcModeFile())
+  return value?.mode === "fixture" || value?.mode === "cloud" ? value.mode : null
+}
+
+export async function getConfiguredQcMode(): Promise<QcMode> {
+  return (await readQcModeSetting()) ?? "cloud"
+}
+
+export async function setConfiguredQcMode(mode: QcMode): Promise<QcMode> {
+  await writeJsonAtomic(qcModeFile(), { schema: "finny.qc_mode", version: 1, mode, updatedAt: Date.now() })
+  return mode
 }
 
 // ---------------------------------------------------------------- links ----

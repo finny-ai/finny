@@ -32,7 +32,10 @@ describe("live HttpApi", () => {
       const dir = yield* tmpdirScoped({ git: true })
       const res = yield* requestInDirectory("/live", dir)
       expect(res.status).toBe(200)
-      expect(yield* res.json).toEqual([])
+      // QC deployments are account-level and intentionally visible in every
+      // project view; a fresh project must still have no Finny-hosted runs.
+      const runs = (yield* res.json) as Array<{ brokerKind?: string }>
+      expect(runs.filter((run) => run.brokerKind !== "qc")).toEqual([])
     }),
   )
 

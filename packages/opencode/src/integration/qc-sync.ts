@@ -44,7 +44,7 @@ export interface QcSyncDecision {
 export async function listLinkableProjects(): Promise<
   Array<{ projectId: number; name: string; language: QcProjectLanguage; modified: string }>
 > {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     return [
       { projectId: 24058693, name: "Finny Fixture Python", language: "python", modified: "2026-08-08T00:00:00Z" },
       { projectId: 24058694, name: "Finny Fixture CSharp", language: "csharp", modified: "2026-08-08T00:00:00Z" },
@@ -62,7 +62,7 @@ export async function listLinkableProjects(): Promise<
 }
 
 export async function remoteSourceFiles(projectId: number | string): Promise<QcSourceFile[]> {
-  if (isQcFixtureMode()) return []
+  if ((await isQcFixtureMode())) return []
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
   const files = await qcFilesRead(credentials, { projectId, includeLibraries: false })
@@ -150,7 +150,7 @@ export async function replaceRemoteFiles(
   files: QcSourceFile[],
   contentFor: (relativePath: string) => Promise<string>,
 ): Promise<void> {
-  if (isQcFixtureMode()) return
+  if ((await isQcFixtureMode())) return
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
   const current = await qcFilesRead(credentials, { projectId, includeLibraries: false })
@@ -211,7 +211,7 @@ export async function attachProject(input: {
     language: input.language ?? qcLanguageFromProject(undefined),
     leanVersionId: input.leanVersionId ?? 0,
     sync: {
-      state: isQcFixtureMode() || comparison.same ? ("in_sync" as const) : ("both_changed" as const),
+      state: (await isQcFixtureMode()) || comparison.same ? ("in_sync" as const) : ("both_changed" as const),
       lastSyncedAt: Date.now(),
       lastRemoteTreeHash: hash(finalRemote),
       lastLocalTreeHash: hash(finalLocal),
@@ -231,7 +231,7 @@ export async function attachProject(input: {
 }
 
 async function readRemoteContents(projectId: number | string): Promise<Array<{ path: string; content: string }>> {
-  if (isQcFixtureMode()) return []
+  if ((await isQcFixtureMode())) return []
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
   const files = await qcFilesRead(credentials, { projectId, includeLibraries: false })
@@ -267,7 +267,7 @@ export async function refreshLinkSync(algorithm: Algorithm.Info): Promise<QcSync
 
 /** Fail-closed preflight used before backtests and deployments. */
 export async function syncBeforeRun(algorithm: Algorithm.Info): Promise<QcSyncDecision> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const link = await getProjectLink(algorithm.algorithmId)
     if (!link) return { ok: false, error: "algorithm is not linked to a QuantConnect project" }
     return { ok: true, action: "in_sync", link }
