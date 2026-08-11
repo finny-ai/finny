@@ -20,6 +20,7 @@ import {
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
 import { strategySourceV1 } from "../backtest/lean/contracts"
 import { embedRuntimeConfig, runtimeForCandidate, validateLeanSourceManifest } from "../backtest/lean/select"
+import { setLeanEnabled } from "../backtest/lean/lean-config"
 import { writeLeanSourceFile } from "../backtest/lean/source-store"
 import { Database } from "@opencode-ai/core/database/database"
 import {
@@ -515,6 +516,10 @@ export const AlgorithmSaveTool = Tool.define(
               : []
           const configIssues: string[] = []
           if (params.runtimeProfile === "lean_python" || params.runtimeProfile === "lean_csharp") {
+            // An explicit LEAN save is consent: persist the native LEAN
+            // setting (with the certified adapter pin) so "use lean for
+            // backtesting" works without pre-configuration.
+            yield* Effect.promise(() => setLeanEnabled(true).catch(() => undefined))
             const previousRuntime = previousAlgorithm ? runtimeForCandidate(previousAlgorithm).profile.profileId : undefined
             if (params.saveMode === "version" && previousRuntime && previousRuntime !== params.runtimeProfile) {
               configIssues.push(
