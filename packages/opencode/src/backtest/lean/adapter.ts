@@ -198,7 +198,7 @@ export class LeanAdapter implements LeanAdapterV1 {
     const reasons: string[] = []
     if (!isLeanEnabledSync()) reasons.push("LEAN engine is disabled (enable it in Settings or with `lean enable`)")
     if (!isLeanCertifiedSync()) {
-      reasons.push("LEAN adapter certificate is not set (FINNY_LEAN_ADAPTER_CERT)")
+      reasons.push("LEAN adapter certificate is not configured")
     }
     if (process.platform === "win32") reasons.push("LEAN execution is unsupported on win32 for v1")
     if (LEAN_PINNED_IMAGE_DIGEST.startsWith("sha256:000000000000")) {
