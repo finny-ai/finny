@@ -51,6 +51,11 @@ import { memoMap } from "@opencode-ai/core/effect/memo-map"
 import { BackgroundJob } from "@/background/job"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { loadLeanConfig } from "@/backtest/lean/lean-config"
+
+// Load the persisted LEAN engine setting so sync consumers (capability
+// manifest, adapter probe) see the user's choice without hand-set env vars.
+void loadLeanConfig().catch(() => undefined)
 
 export const AppLayer = Layer.suspend(() =>
   Layer.mergeAll(

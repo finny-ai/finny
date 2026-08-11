@@ -1,5 +1,11 @@
-import { Flag } from "../../flag/flag"
 import { Process } from "../../util/process"
+import {
+  isLeanCertifiedSync,
+  isLeanEnabledSync,
+  LEAN_ADAPTER_CERT_ENV,
+  LEAN_ADAPTER_CERT_VALUE,
+  leanAdapterCertSync,
+} from "./lean-config"
 import {
   LEAN_IMAGE_REF,
   LEAN_PINNED_COMMIT,
@@ -14,8 +20,6 @@ import os from "node:os"
 import path from "node:path"
 import crypto from "node:crypto"
 
-const ADAPTER_CERT_ENV = "FINNY_LEAN_ADAPTER_CERT"
-const ADAPTER_CERT_VALUE = "finny-lean-adapter-cert-v1"
 const DOCKER_BASE_ENV = {
   PATH: process.env.PATH ?? "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin",
   HOME: process.env.HOME ?? "/tmp",
@@ -134,11 +138,6 @@ export async function withLeanDockerRelocation<T>(
   }
 }
 
-function truthy(value: string | undefined): boolean {
-  const normalized = value?.toLowerCase()
-  return normalized === "true" || normalized === "1"
-}
-
 /**
  * Deterministic MSBuild project + build script for Finny C# LEAN algorithms.
  * The project references only assemblies baked into the pinned engine image
@@ -197,8 +196,8 @@ export class LeanAdapter implements LeanAdapterV1 {
 
   probeReady(): { ready: boolean; reasons: string[] } {
     const reasons: string[] = []
-    if (!Flag.FINNY_LEAN_ENABLED) reasons.push("FINNY_LEAN_ENABLED feature flag is disabled")
-    if (process.env[ADAPTER_CERT_ENV] !== ADAPTER_CERT_VALUE) {
+    if (!isLeanEnabledSync()) reasons.push("LEAN engine is disabled (enable it in Settings or with `lean enable`)")
+    if (!isLeanCertifiedSync()) {
       reasons.push("LEAN adapter certificate is not set (FINNY_LEAN_ADAPTER_CERT)")
     }
     if (process.platform === "win32") reasons.push("LEAN execution is unsupported on win32 for v1")
@@ -500,7 +499,7 @@ function failure(
 }
 
 export function isLeanFeatureEnabled(): boolean {
-  return Flag.FINNY_LEAN_ENABLED && truthy(process.env[ADAPTER_CERT_ENV] === ADAPTER_CERT_VALUE ? "1" : undefined)
+  return isLeanEnabledSync() && isLeanCertifiedSync()
 }
 
 export const LEAN_IMAGE_IDENTITY = {

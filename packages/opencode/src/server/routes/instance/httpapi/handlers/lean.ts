@@ -1,0 +1,33 @@
+import { Effect } from "effect"
+import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
+import { LeanAdapter } from "@/backtest/lean/adapter"
+import { leanConfigStatus, setLeanEnabled, LEAN_ADAPTER_CERT_VALUE } from "@/backtest/lean/lean-config"
+import type { InstanceHttpApiType } from "../api"
+
+export function leanHandlers(api: InstanceHttpApiType) {
+  const toResponse = async (status: Awaited<ReturnType<typeof leanConfigStatus>>) => ({
+    enabled: status.enabled,
+    effective: status.effective,
+    source: status.source,
+    certified: status.adapterCert === LEAN_ADAPTER_CERT_VALUE,
+    readiness: new LeanAdapter().probeReady(),
+    ...(status.adapterCert ? { adapterCert: status.adapterCert } : {}),
+  })
+  return HttpApiBuilder.group(api, "lean", (handlers) =>
+    Effect.succeed(
+      handlers
+        .handle("status", () =>
+          Effect.promise(async () => toResponse(await leanConfigStatus())),
+        )
+        .handle("setEnabled", ({ payload }) =>
+          Effect.tryPromise({
+            try: async () => {
+              await setLeanEnabled(payload.enabled)
+              return toResponse(await leanConfigStatus())
+            },
+            catch: (error) => new HttpApiError.BadRequest({}),
+          }),
+        ),
+    ),
+  )
+}

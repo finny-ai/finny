@@ -104,6 +104,15 @@ local fixtures with no credentials — the same flow, no QC calls. The mode is
 persisted as a user setting and can be flipped any time; `QC_FIXTURE=1` /
 `FINNY_QC_FIXTURE=1` remain a test-only override that wins over the setting.
 
+The LEAN engine itself is native too: `lean enable|disable|status` (or
+Settings → Data Sources → LEAN engine) persists the choice in
+`lean-config.json` and pins the certified adapter certificate
+(`finny-lean-adapter-cert-v1`). `FINNY_LEAN_ENABLED` /
+`FINNY_LEAN_ADAPTER_CERT` remain test/harness overrides that win over the
+setting. The readiness probe reads the setting, so a fresh install shows
+exactly what is missing (Docker, pinned image, certificate, platform)
+instead of requiring hand-set environment variables.
+
 ### QC-Native control plane (PR #105)
 
 For firms that already run QuantConnect, Finny stays the control panel while
