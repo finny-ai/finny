@@ -30,6 +30,7 @@ import { GlobalApi } from "./groups/global"
 import { HealthApi } from "./groups/health"
 import { IntegrationsApi } from "./groups/integrations"
 import { QcApi } from "./groups/qc"
+import { LeanApi } from "./groups/lean"
 import { Authorization } from "./middleware/authorization"
 import { SchemaErrorMiddleware } from "./middleware/schema-error"
 
@@ -71,6 +72,7 @@ export const InstanceHttpApi = HttpApi.make("opencode-instance")
   .addHttpApi(ProjectCopyApi)
   .addHttpApi(PtyApi)
   .addHttpApi(QcApi)
+  .addHttpApi(LeanApi)
   .addHttpApi(QuestionApi)
   .addHttpApi(PermissionApi)
   .addHttpApi(ProviderApi)
