@@ -45,17 +45,24 @@ function deterministicCsv(profile: "negative" | "positive_qualification" = "nega
     // The positive profile is stationary and cyclical so buy-and-hold remains
     // flat while a causal crossover can produce repeated synthetic gains.
     // It exists only to exercise the legal qualification state machine.
-    const level = profile === "positive_qualification" ? center : center - index * 0.00035
+    // The positive waveform is intentionally the historical canonical series
+    // (amplitude 4.5 at the 510 level, no phase offset, volume 1M+): the
+    // qualification alpha-decay gate is fold-sensitive, and the canonical
+    // series is what the positive qualification contract was sealed against.
+    const level = profile === "positive_qualification" ? 510 : center - index * 0.00035
     const wave =
       profile === "positive_qualification"
-        ? center * 0.009 * Math.sin((2 * Math.PI * (index + seed)) / 24)
+        ? 4.5 * Math.sin((2 * Math.PI * index) / 24)
         : center *
           (0.0047 * Math.sin((index + (seed % 17)) / 23) + 0.0013 * Math.sin((index + (seed % 7)) / 7))
     const open = level + wave
-    const close = open + center * 0.00016 * Math.sin((index + seed) / 3)
-    const high = Math.max(open, close) + center * 0.00024
-    const low = Math.min(open, close) - center * 0.00024
-    const volume = Math.round(center * 2_000) + ((index + seed) % 97) * 1_000
+    const close = open + (profile === "positive_qualification" ? 0.08 * Math.sin(index / 3) : center * 0.00016 * Math.sin((index + seed) / 3))
+    const high = Math.max(open, close) + (profile === "positive_qualification" ? 0.12 : center * 0.00024)
+    const low = Math.min(open, close) - (profile === "positive_qualification" ? 0.12 : center * 0.00024)
+    const volume =
+      profile === "positive_qualification"
+        ? 1_000_000 + (index % 97) * 1_000
+        : Math.round(center * 2_000) + ((index + seed) % 97) * 1_000
     lines.push(
       `${new Date(timestamp).toISOString()},${open.toFixed(6)},${high.toFixed(6)},${low.toFixed(6)},${close.toFixed(6)},${volume}`,
     )
