@@ -4,26 +4,11 @@ import path from "node:path"
 import { expectedEvidenceTimestamps } from "../../src/data/dataset-evidence-calendar"
 import { normalizedCsvSemanticHash } from "../../src/data/dataset-evidence-v2"
 
-const SYMBOL = process.env.FINNY_HARNESS_SYMBOL ?? "SPY"
+const SYMBOL = "SPY"
 const INTERVAL = "5m"
 const START = "2026-01-09"
 const END = "2026-07-08"
-const FILE_STEM = `${SYMBOL}_5m_2026-01-09_2026-07-08`
-
-const BASE_PRICE: Record<string, number> = {
-  SPY: 510,
-  QQQ: 500,
-  AAPL: 230,
-  NVDA: 170,
-  TSLA: 350,
-  MSFT: 450,
-}
-
-function symbolSeed(symbol: string): number {
-  let seed = 7
-  for (const ch of symbol) seed = (seed * 31 + ch.charCodeAt(0)) % 100000
-  return seed
-}
+const FILE_STEM = "SPY_5m_2026-01-09_2026-07-08"
 
 function sha256(input: string | Uint8Array): string {
   return crypto.createHash("sha256").update(input).digest("hex")
@@ -39,30 +24,20 @@ function deterministicCsv(profile: "negative" | "positive_qualification" = "nega
     requestedEndInclusive: END,
   })
   let index = 0
-  const seed = symbolSeed(SYMBOL)
-  const center = BASE_PRICE[SYMBOL] ?? 200 + (seed % 400)
   for (const timestamp of expected) {
     // The positive profile is stationary and cyclical so buy-and-hold remains
     // flat while a causal crossover can produce repeated synthetic gains.
     // It exists only to exercise the legal qualification state machine.
-    // The positive waveform is intentionally the historical canonical series
-    // (amplitude 4.5 at the 510 level, no phase offset, volume 1M+): the
-    // qualification alpha-decay gate is fold-sensitive, and the canonical
-    // series is what the positive qualification contract was sealed against.
-    const level = profile === "positive_qualification" ? 510 : center - index * 0.00035
+    const center = profile === "positive_qualification" ? 510 : 510 - index * 0.00035
     const wave =
       profile === "positive_qualification"
         ? 4.5 * Math.sin((2 * Math.PI * index) / 24)
-        : center *
-          (0.0047 * Math.sin((index + (seed % 17)) / 23) + 0.0013 * Math.sin((index + (seed % 7)) / 7))
-    const open = level + wave
-    const close = open + (profile === "positive_qualification" ? 0.08 * Math.sin(index / 3) : center * 0.00016 * Math.sin((index + seed) / 3))
-    const high = Math.max(open, close) + (profile === "positive_qualification" ? 0.12 : center * 0.00024)
-    const low = Math.min(open, close) - (profile === "positive_qualification" ? 0.12 : center * 0.00024)
-    const volume =
-      profile === "positive_qualification"
-        ? 1_000_000 + (index % 97) * 1_000
-        : Math.round(center * 2_000) + ((index + seed) % 97) * 1_000
+        : 2.4 * Math.sin(index / 23) + 0.65 * Math.sin(index / 7)
+    const open = center + wave
+    const close = open + 0.08 * Math.sin(index / 3)
+    const high = Math.max(open, close) + 0.12
+    const low = Math.min(open, close) - 0.12
+    const volume = 1_000_000 + (index % 97) * 1_000
     lines.push(
       `${new Date(timestamp).toISOString()},${open.toFixed(6)},${high.toFixed(6)},${low.toFixed(6)},${close.toFixed(6)},${volume}`,
     )
@@ -121,7 +96,7 @@ export async function startFixtureMarketDataProvider(input: {
       if (url.pathname !== "/v1/materialize") return new Response("not found\n", { status: 404 })
 
       const output = url.searchParams.get("output_dir")
-      const algorithm = url.searchParams.get("algorithm") || `${SYMBOL.toLowerCase()}-sma-crossover`
+      const algorithm = url.searchParams.get("algorithm") || "spy-sma-crossover"
       const requestId = url.searchParams.get("request_id") || undefined
       const requestVersionRaw = url.searchParams.get("request_version")
       const requestVersion =
