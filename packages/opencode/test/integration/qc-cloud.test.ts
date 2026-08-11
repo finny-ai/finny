@@ -49,7 +49,7 @@ function algorithm() {
 describe("QC cloud fixture mode (no credentials)", () => {
   test("enables fixture mode and reports it in connection state", async () => {
     process.env.QC_FIXTURE = "1"
-    expect(isQcFixtureMode()).toBe(true)
+    expect(await isQcFixtureMode()).toBe(true)
     const state = await qcConnectionState()
     expect(state.fixture).toBe(true)
     expect(state.connected).toBe(false)

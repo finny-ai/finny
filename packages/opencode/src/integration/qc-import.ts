@@ -10,7 +10,7 @@ import { isQcFixtureMode, readQcCredentials } from "./quantconnect"
 export async function readRemoteContents(
   projectId: number | string,
 ): Promise<Array<{ path: string; content: string }>> {
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     return [{ path: "main.py", content: "class Main(QCAlgorithm):\n    def Initialize(self): pass\n" }]
   }
   const credentials = await readQcCredentials()

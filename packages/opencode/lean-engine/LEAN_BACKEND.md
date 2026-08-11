@@ -97,6 +97,13 @@ deployments for firms that bring their own QC entitlements) extends this
 control plane with `qc_cloud` deployment verbs and its own result schema;
 it never merges into the local LEAN or engine_v2 schemas.
 
+The QC track has a native mode switch (`qc mode local|cloud`, or Settings →
+QuantConnect): `cloud` talks to the client's real QuantConnect account, while
+`local` (fixture) runs the entire QC control plane against deterministic
+local fixtures with no credentials — the same flow, no QC calls. The mode is
+persisted as a user setting and can be flipped any time; `QC_FIXTURE=1` /
+`FINNY_QC_FIXTURE=1` remain a test-only override that wins over the setting.
+
 ### QC-Native control plane (PR #105)
 
 For firms that already run QuantConnect, Finny stays the control panel while

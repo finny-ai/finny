@@ -14,6 +14,25 @@ export type QcProjectLanguage = "python" | "csharp"
 
 export type QcSyncState = "in_sync" | "qc_changed" | "finny_changed" | "both_changed"
 
+/**
+ * QC track mode.
+ *
+ * `fixture` runs the whole QC control plane against deterministic local
+ * fixtures (no credentials, no QC Cloud calls) — ideal for development and
+ * testing the UI. `cloud` talks to the client's real QuantConnect account.
+ * The mode is a durable user setting; environment variables remain a
+ * test-only override.
+ */
+export type QcMode = "fixture" | "cloud"
+
+export type QcModeSource = "env" | "setting" | "default"
+
+export interface QcModeResolution {
+  mode: QcMode
+  configured: QcMode
+  source: QcModeSource
+}
+
 export interface QcSourceFile {
   path: string
   sha256: string

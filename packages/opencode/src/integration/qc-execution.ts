@@ -177,7 +177,7 @@ export async function reconcileManaged(): Promise<void> {
     if (record.ownership !== "managed") continue
     if (record.status !== "running" && record.status !== "starting") continue
     const state = states.get(record.deploymentId)
-    if (isQcFixtureMode()) {
+    if ((await isQcFixtureMode())) {
       // Fixture deployments stay "running" until explicitly stopped.
       await updateDeployment(record.deploymentId, { qcStatus: "Running", lastSyncedAt: Date.now() })
       await refreshState({ ...record, qcStatus: "Running", lastSyncedAt: Date.now() })
@@ -396,7 +396,7 @@ export async function startPaperDeployment(input: {
     qcStatus: "InQueue",
     liveUrl: qcProjectUrl(link.projectId),
     startedAt: Date.now(),
-    mode: isQcFixtureMode() ? ("fixture" as const) : ("cloud" as const),
+    mode: (await isQcFixtureMode()) ? ("fixture" as const) : ("cloud" as const),
     symbol,
     interval,
   }
@@ -408,7 +408,7 @@ export async function startPaperDeployment(input: {
   await refreshState(record as never)
   notify()
 
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const running = await updateDeployment(deploymentId, { status: "running", qcStatus: "Running" })
     if (running) await refreshState(running)
     notify()
@@ -492,7 +492,7 @@ export async function startPaperDeployment(input: {
 export async function stopDeployment(deploymentId: string): Promise<QcDeployResult> {
   const record = await getDeployment(deploymentId)
   if (!record) return { ok: false, error: `Deployment ${deploymentId} not found` }
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const updated = await updateDeployment(deploymentId, { status: "stopped", stoppedAt: Date.now(), qcStatus: "Stopped" })
     if (updated) await refreshState(updated)
     notify()
@@ -510,7 +510,7 @@ export async function stopDeployment(deploymentId: string): Promise<QcDeployResu
 export async function liquidateDeployment(deploymentId: string): Promise<QcDeployResult> {
   const record = await getDeployment(deploymentId)
   if (!record) return { ok: false, error: `Deployment ${deploymentId} not found` }
-  if (isQcFixtureMode()) {
+  if ((await isQcFixtureMode())) {
     const updated = await updateDeployment(deploymentId, { status: "stopped", stoppedAt: Date.now(), qcStatus: "Liquidated" })
     if (updated) await refreshState(updated)
     notify()
@@ -527,7 +527,7 @@ export async function liquidateDeployment(deploymentId: string): Promise<QcDeplo
 
 /** Discover QC deployments that predate Finny management (read-only). */
 export async function discoverExternalDeployments(): Promise<void> {
-  if (isQcFixtureMode()) return
+  if ((await isQcFixtureMode())) return
   const credentials = await readQcCredentials().catch(() => null)
   if (!credentials) return
   try {
