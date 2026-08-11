@@ -13,7 +13,7 @@ import { useTheme } from "./theme"
 import { useToast } from "../ui/toast"
 import { useRoute } from "./route"
 
-type BrokerKind = "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood"
+type BrokerKind = "alpaca" | "binance" | "ibkr" | "zerodha" | "saxo" | "questrade" | "futu" | "robinhood" | "qc"
 const BROKER_DISPLAY: Record<BrokerKind, string> = {
   alpaca: "Alpaca",
   binance: "Binance",
@@ -23,6 +23,7 @@ const BROKER_DISPLAY: Record<BrokerKind, string> = {
   questrade: "Questrade",
   futu: "Futu OpenD",
   robinhood: "Robinhood",
+  qc: "QuantConnect",
 }
 
 function isBrokerKind(value: unknown): value is BrokerKind {

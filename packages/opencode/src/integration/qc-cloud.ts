@@ -9,6 +9,9 @@ import { leanSourceDir } from "@/backtest/lean/source-store"
 import { readAlpacaCredentials, listAlpacaAccounts } from "@/live/brokers/alpaca"
 import { readBinanceCredentials, listBinanceAccounts } from "@/live/brokers/binance"
 import { readQcCredentials, isQcFixtureMode, QC_API_BASE, QC_PROVIDER_ID } from "./quantconnect"
+import { getProjectLink } from "./qc-store"
+import { syncBeforeRun, localSourceFilesForAlgorithm } from "./qc-sync"
+import { qcBacktestUrl } from "./qc-contracts"
 import {
   qcBacktestCreate,
   qcBacktestWait,
@@ -115,50 +118,84 @@ function sanitizeQcName(value: string): string {
 }
 
 /**
- * Recursively read every file of the saved LEAN strategy source tree so the
- * QC project receives the exact immutable bytes Finny hashed.
- */
-async function readQcSourceFiles(algorithm: Algorithm.Info): Promise<Array<{ path: string; content: string }>> {
-  const root = await leanSourceDir(algorithm)
-  const walk = async (dir: string, prefix: string): Promise<Array<{ path: string; content: string }>> => {
-    const entries = await fs.readdir(dir, { withFileTypes: true })
-    const out: Array<{ path: string; content: string }> = []
-    for (const entry of entries) {
-      const relative = prefix ? `${prefix}/${entry.name}` : entry.name
-      const full = path.join(dir, entry.name)
-      if (entry.isDirectory()) out.push(...(await walk(full, relative)))
-      else if (entry.isFile()) out.push({ path: relative, content: await fs.readFile(full, "utf8") })
-    }
-    return out
-  }
-  return walk(root, "")
-}
-
-/**
  * Push the saved strategy into a QC project (fixture: deterministic local id).
  */
 export async function pushStrategyToQc(input: {
   algorithm: Algorithm.Info
 }): Promise<{ mode: "fixture" | "cloud"; projectId: string }> {
+  const link = await getProjectLink(input.algorithm.algorithmId)
+  if (link) {
+    // A linked strategy must be source-synchronized before any remote action.
+    const sync = await syncBeforeRun(input.algorithm)
+    if (!sync.ok) {
+      throw new Error(
+        `QuantConnect project ${link.projectId} is not synchronized (${sync.action ?? "blocked"}). ` +
+          (sync.drift?.length ? sync.drift.join("; ") : "Resolve drift before running."),
+      )
+    }
+    return { mode: isQcFixtureMode() ? "fixture" : "cloud", projectId: String(link.projectId) }
+  }
   if (isQcFixtureMode()) {
     const hash = crypto.createHash("sha256").update(input.algorithm.algorithmId).digest("hex").slice(0, 24)
     return { mode: "fixture", projectId: `qc-fixture-${hash}` }
   }
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
-  const profileId = (input.algorithm as any).runtimeProfile?.profileId
-  const language = profileId === "lean_csharp" ? "csharp" : "python"
+  // Language comes from the linked project contract (or the saved runtime
+  // profile) — never from a nonexistent algorithm.runtimeProfile field.
+  const language = String((input.algorithm as any).language).toLowerCase() === "csharp" ? "csharp" : "python"
   const { projectId } = await qcProjectCreate(credentials, {
     name: sanitizeQcName(`Finny ${input.algorithm.name} v${input.algorithm.version}`),
     language,
   })
-  const files = isLeanProfile({ profileId } as any)
-    ? await readQcSourceFiles(input.algorithm)
+  const files = link
+    ? await linkedProjectSourceFiles({ algorithm: input.algorithm })
     : [{ path: "main.py", content: input.algorithm.code }]
   for (const file of files) {
     await qcFileCreate(credentials, { projectId, name: file.path, content: file.content })
   }
   return { mode: "cloud", projectId: String(projectId) }
+}
+
+async function readQcFileContent(algorithm: Algorithm.Info, relativePath: string): Promise<string> {
+  const { readLeanSourceFile } = await import("@/backtest/lean/source-store")
+  try {
+    return await readLeanSourceFile({ algorithm, relativePath })
+  } catch {
+    return ""
+  }
+}
+
+/** Language-aware source file set for a linked project (legacy helper). */
+export async function linkedProjectSourceFiles(input: {
+  algorithm: Algorithm.Info
+}): Promise<Array<{ path: string; content: string }>> {
+  const link = await getProjectLink(input.algorithm.algorithmId)
+  if (!link) return [{ path: "main.py", content: input.algorithm.code }]
+  const files = await localSourceFilesForAlgorithm(input.algorithm)
+  const resolved: Array<{ path: string; content: string }> = []
+  for (const file of files) {
+    resolved.push({ path: file.path, content: await readQcFileContent(input.algorithm, file.path) })
+  }
+  return resolved
+}
+
+export async function pushLinkedSourceToQc(input: {
+  algorithm: Algorithm.Info
+}): Promise<{ mode: "fixture" | "cloud"; projectId: string }> {
+  const link = await getProjectLink(input.algorithm.algorithmId)
+  if (!link) throw new Error("algorithm is not linked to a QuantConnect project")
+  const sync = await syncBeforeRun(input.algorithm)
+  if (!sync.ok) {
+    throw new Error(
+      `QuantConnect project ${link.projectId} is not synchronized (${sync.action ?? "blocked"}). ` +
+        (sync.drift?.length ? sync.drift.join("; ") : "Resolve drift before deploying."),
+    )
+  }
+  const { replaceRemoteFiles } = await import("./qc-sync")
+  const local = await localSourceFilesForAlgorithm(input.algorithm)
+  await replaceRemoteFiles(link.projectId, local, (relativePath) => readQcFileContent(input.algorithm, relativePath))
+  return { mode: isQcFixtureMode() ? "fixture" : "cloud", projectId: String(link.projectId) }
 }
 
 export interface QcLiveDeployInput {
@@ -486,6 +523,8 @@ export async function runQcCloudBacktest(input: {
   startDate: string
   endDate: string
   walkForwardFolds: number
+  /** QC backtest parameters (GetParameter/get_parameter contract). */
+  parameters?: Record<string, string | number>
   abort?: AbortSignal
 }): Promise<QcBacktestOutcome> {
   const project = await pushStrategyToQc({ algorithm: input.algorithm })
@@ -543,6 +582,7 @@ export async function runQcCloudBacktest(input: {
       projectId: project.projectId,
       compileId: compile.compileId,
       name: sanitizeQcName(`finny ${input.algorithm.name} ${new Date().toISOString().slice(0, 16).replace(/[T:]/g, "-")}`),
+      ...(input.parameters ? { parameters: input.parameters } : {}),
     })
     const result = await qcBacktestWait(
       credentials,
@@ -570,6 +610,7 @@ export async function runQcCloudBacktest(input: {
         progress: result.progress,
         engine: "qc-cloud",
         mode: "cloud",
+        backtest_url: qcBacktestUrl(project.projectId, result.backtestId),
       },
     }
   } catch (error) {

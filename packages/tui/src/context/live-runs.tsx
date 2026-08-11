@@ -38,9 +38,12 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
     get(id: string): Run | undefined
     start(params: StartParams): Promise<Run>
     stop(id: string): Promise<void>
+    liquidate(id: string): Promise<void>
     remove(id: string): Promise<void>
     /** True while connected to the daemon's event stream. */
     connected(): boolean
+    /** Daemon base URL, when connected. */
+    url(): string | undefined
   },
   {
     /** Daemon base URL (from Daemon.ensure()). When absent, the context is inert. */
@@ -168,12 +171,18 @@ export const { use: useLiveRuns, provider: LiveRunsProvider } = createSimpleCont
       async stop(id: string) {
         await api<boolean>(`/live/${encodeURIComponent(id)}/stop`, { method: "POST" })
       },
+      async liquidate(id: string) {
+        await api<boolean>(`/live/${encodeURIComponent(id)}/liquidate`, { method: "POST" })
+      },
       async remove(id: string) {
         await api<boolean>(`/live/${encodeURIComponent(id)}`, { method: "DELETE" })
         setStore("runs", (rs) => rs.filter((r) => r.id !== id))
       },
       connected() {
         return store.connected
+      },
+      url() {
+        return props.url
       },
     }
   },

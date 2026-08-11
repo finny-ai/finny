@@ -14,6 +14,7 @@ import {
   readRobinhoodCredentials,
   robinhoodSpec,
 } from "./robinhood"
+import { qcSpec } from "./qc"
 
 export type {
   BrokerAccount,
@@ -37,6 +38,7 @@ const SPECS: Record<BrokerKind, BrokerSpec> = {
   ibkr: ibkrSpec,
   ...REGIONAL_BROKER_SPECS,
   robinhood: robinhoodSpec,
+  qc: qcSpec,
 }
 
 export namespace BrokerRegistry {
