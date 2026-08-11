@@ -4,6 +4,7 @@ import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "../ui/dialog"
 import { useLiveRuns, type Run } from "../context/live-runs"
 import { ModeBadge } from "./mode-badge"
+import { Link } from "../ui/link"
 
 function formatCurrency(value?: number): string {
   if (value === undefined || value === null || !isFinite(value)) return "—"
@@ -29,6 +30,12 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
   const handleStop = async () => {
     await live.stop(props.runId)
   }
+
+  const handleLiquidate = async () => {
+    await live.liquidate(props.runId)
+  }
+
+  const isQc = (run: Run) => (run as any).backend === "qc" || run.brokerKind === "qc"
 
   const close = () => dialog.clear()
 
@@ -60,7 +67,12 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
         <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
           <box flexDirection="row" justifyContent="space-between">
             <text fg={theme.text} attributes={TextAttributes.BOLD}>
-              {r().brokerKind === "robinhood" ? "Robinhood Live" : "Live"} · {r().algorithmName}
+              {r().brokerKind === "robinhood"
+                ? "Robinhood Live"
+                : isQc(r())
+                  ? "QuantConnect Paper"
+                  : "Live"}{" "}
+              · {r().algorithmName}
             </text>
             <text fg={theme.textMuted} onMouseUp={close}>
               esc
@@ -97,6 +109,27 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
               </text>
             </box>
           </box>
+
+          <Show when={isQc(r())}>
+            <box flexDirection="column" gap={1} paddingTop={1}>
+              <text fg={theme.textMuted}>
+                QC project {(r() as any).qc.projectId}
+                {(r() as any).qc.projectName ? ` (${(r() as any).qc.projectName})` : ""} · deployment{" "}
+                {(r() as any).qc.deploymentId}
+              </text>
+              <text fg={theme.textMuted}>
+                Ownership: {(r() as any).qc.ownership} · QC status: {(r() as any).qc.qcStatus ?? "—"}
+                {(r() as any).qc.lastSyncedAt
+                  ? ` · last synced ${new Date((r() as any).qc.lastSyncedAt).toLocaleTimeString()}`
+                  : ""}
+              </text>
+              <Show when={(r() as any).qc.liveUrl}>
+                <Link href={(r() as any).qc.liveUrl} fg={theme.primary}>
+                  Open in QuantConnect
+                </Link>
+              </Show>
+            </box>
+          </Show>
 
           <Show when={r().lastBar}>
             {(bar) => (
@@ -159,6 +192,13 @@ export function DialogLiveRun(props: DialogLiveRunProps) {
                   ■ Stop
                 </text>
               </box>
+              <Show when={isQc(r())}>
+                <box paddingLeft={2} paddingRight={2} backgroundColor={theme.warning} onMouseUp={handleLiquidate}>
+                  <text fg={theme.background} attributes={TextAttributes.BOLD}>
+                    ⚠ Liquidate
+                  </text>
+                </box>
+              </Show>
             </Show>
           </box>
         </box>

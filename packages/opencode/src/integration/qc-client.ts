@@ -256,6 +256,17 @@ export async function qcFileUpdate(
   })
 }
 
+export async function qcFileDelete(
+  credentials: QcCredentials,
+  input: { projectId: number | string; name: string },
+): Promise<void> {
+  await qcApiRequest({
+    path: "/files/delete",
+    credentials,
+    body: { projectId: projectIdOrThrow(input), name: input.name },
+  })
+}
+
 export async function qcFilesRead(
   credentials: QcCredentials,
   input: { projectId: number | string; name?: string; includeLibraries?: boolean },
@@ -375,6 +386,40 @@ export async function qcBacktestWait(
   )
 }
 
+export interface QcBacktestSummary {
+  backtestId: string
+  name?: string
+  status: string
+  progress: number
+  created?: string
+  parameterSet?: Record<string, unknown>
+  statistics?: Record<string, string | number>
+}
+
+export async function qcBacktestsList(
+  credentials: QcCredentials,
+  input: { projectId: number | string; includeStatistics?: boolean },
+): Promise<QcBacktestSummary[]> {
+  const body = await qcApiRequest({
+    path: "/backtests/list",
+    credentials,
+    body: {
+      projectId: projectIdOrThrow(input),
+      includeStatistics: input.includeStatistics ?? true,
+    },
+  })
+  const raw = Array.isArray(body.backtests) ? body.backtests : []
+  return raw.map((entry: Record<string, any>) => ({
+    backtestId: String(entry.backtestId ?? ""),
+    name: entry.name === null || entry.name === undefined ? undefined : String(entry.name),
+    status: String(entry.status ?? "In Progress..."),
+    progress: Number(entry.progress ?? 0),
+    created: entry.created === null || entry.created === undefined ? undefined : String(entry.created),
+    parameterSet: entry.parameterSet,
+    statistics: entry.statistics,
+  }))
+}
+
 export async function qcLiveCreate(
   credentials: QcCredentials,
   input: QcLiveCreateInput,
@@ -436,7 +481,7 @@ export async function qcLiveStop(
   input: { projectId: number | string; deployId: string },
 ): Promise<QcLiveDeployment | undefined> {
   const body = await qcApiRequest({
-    path: "/live/stop",
+    path: "/live/update/stop",
     credentials,
     body: { projectId: projectIdOrThrow(input), deployId: input.deployId },
   })
@@ -448,11 +493,156 @@ export async function qcLiveLiquidate(
   input: { projectId: number | string; deployId: string },
 ): Promise<QcLiveDeployment | undefined> {
   const body = await qcApiRequest({
-    path: "/live/liquidate",
+    path: "/live/update/liquidate",
     credentials,
     body: { projectId: projectIdOrThrow(input), deployId: input.deployId },
   })
   return body.live ? qcLiveFromBody(body, input.projectId) : undefined
+}
+
+export interface QcLiveLogsResult {
+  logs: string[]
+  length: number
+  deploymentOffset: number
+}
+
+export async function qcLiveLogsRead(
+  credentials: QcCredentials,
+  input: {
+    projectId: number | string
+    algorithmId: string
+    startLine: number
+    endLine: number
+    deploymentLogs?: boolean
+  },
+): Promise<QcLiveLogsResult> {
+  const body = await qcApiRequest({
+    path: "/live/logs/read",
+    credentials,
+    body: {
+      format: "json",
+      projectId: projectIdOrThrow(input),
+      algorithmId: input.algorithmId,
+      startLine: input.startLine,
+      endLine: input.endLine,
+      deploymentLogs: input.deploymentLogs ?? true,
+    },
+  })
+  return {
+    logs: Array.isArray(body.logs) ? body.logs.map(String) : [],
+    length: Number(body.length ?? 0),
+    deploymentOffset: Number(body.deploymentOffset ?? 0),
+  }
+}
+
+export interface QcLivePortfolioResult {
+  holdings: Record<string, { a: number; q: number; p: number; v: number; u: number; up: number }>
+  cash: Array<{ symbol: string; amount: number; conversionRate: number; valueInAccountCurrency: number }>
+}
+
+export async function qcLivePortfolioRead(
+  credentials: QcCredentials,
+  input: { projectId: number | string },
+): Promise<QcLivePortfolioResult> {
+  const body = await qcApiRequest({
+    path: "/live/portfolio/read",
+    credentials,
+    body: { projectId: projectIdOrThrow(input) },
+  })
+  const portfolio = (body.portfolio ?? {}) as Record<string, any>
+  const holdings: QcLivePortfolioResult["holdings"] = {}
+  for (const [symbolId, holding] of Object.entries(portfolio.holdings ?? {})) {
+    const raw = (holding ?? {}) as Record<string, any>
+    holdings[symbolId] = {
+      a: Number(raw.a ?? 0),
+      q: Number(raw.q ?? 0),
+      p: Number(raw.p ?? 0),
+      v: Number(raw.v ?? 0),
+      u: Number(raw.u ?? 0),
+      up: Number(raw.up ?? 0),
+    }
+  }
+  const rawCash = Array.isArray(portfolio.cash) ? portfolio.cash : [portfolio.cash].filter(Boolean)
+  const cash = rawCash.map((entry: Record<string, any>) => ({
+    symbol: String(entry.symbol ?? ""),
+    amount: Number(entry.amount ?? 0),
+    conversionRate: Number(entry.conversionRate ?? 1),
+    valueInAccountCurrency: Number(entry.valueInAccountCurrency ?? entry.amount ?? 0),
+  }))
+  return { holdings, cash }
+}
+
+export interface QcLiveOrder {
+  orderId?: string
+  symbol?: string
+  side?: string
+  quantity?: number
+  price?: number
+  status?: string
+  time?: string
+}
+
+export async function qcLiveOrdersRead(
+  credentials: QcCredentials,
+  input: { projectId: number | string; algorithmId?: string; start: number; end: number },
+): Promise<QcLiveOrder[]> {
+  const body = await qcApiRequest({
+    path: "/live/orders/read",
+    credentials,
+    body: {
+      projectId: projectIdOrThrow(input),
+      ...(input.algorithmId ? { algorithmId: input.algorithmId } : {}),
+      start: input.start,
+      end: input.end,
+    },
+  })
+  const raw = Array.isArray(body.orders) ? body.orders : []
+  return raw.map((entry: Record<string, any>) => ({
+    orderId: entry.orderId === null || entry.orderId === undefined ? undefined : String(entry.orderId),
+    symbol: entry.symbol === null || entry.symbol === undefined ? undefined : String(entry.symbol),
+    side: entry.side === null || entry.side === undefined ? undefined : String(entry.side),
+    quantity: entry.quantity === null || entry.quantity === undefined ? undefined : Number(entry.quantity),
+    price: entry.price === null || entry.price === undefined ? undefined : Number(entry.price),
+    status: entry.status === null || entry.status === undefined ? undefined : String(entry.status),
+    time: entry.time === null || entry.time === undefined ? undefined : String(entry.time),
+  }))
+}
+
+export interface QcLiveChartPoint {
+  x: number
+  y: number
+}
+
+export interface QcLiveChartResult {
+  name?: string
+  series: Array<{ name: string; unit?: string; values: QcLiveChartPoint[] }>
+}
+
+export async function qcLiveChartRead(
+  credentials: QcCredentials,
+  input: { projectId: number | string; name: string; count: number; start: number; end: number },
+): Promise<QcLiveChartResult> {
+  const body = await qcApiRequest({
+    path: "/live/chart/read",
+    credentials,
+    body: {
+      projectId: projectIdOrThrow(input),
+      name: input.name,
+      count: input.count,
+      start: input.start,
+      end: input.end,
+    },
+  })
+  const chart = (body.chart ?? {}) as Record<string, any>
+  const rawSeries = (chart.series ?? {}) as Record<string, any>
+  const series = Object.entries(rawSeries).map(([name, raw]) => {
+    const values = Object.entries((raw as Record<string, any>)?.values ?? {}).map(([x, y]) => ({
+      x: Number(x),
+      y: Number(y),
+    }))
+    return { name, unit: (raw as Record<string, any>)?.unit, values }
+  })
+  return { name: chart.name === undefined ? undefined : String(chart.name), series }
 }
 
 function qcLiveFromBody(body: Record<string, any>, fallbackProjectId?: number | string): QcLiveDeployment {

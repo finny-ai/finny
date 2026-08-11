@@ -165,6 +165,746 @@ public class Main : QCAlgorithm
 }
 `
 
+type StrategyFamilyId =
+  | "sma_crossover"
+  | "rsi_reversion"
+  | "bollinger_breakout"
+  | "macd_crossover"
+  | "roc_momentum"
+  | "donchian_breakout"
+
+interface HarnessStrategyPair {
+  id: StrategyFamilyId
+  name: string
+  family: string
+  strategyType: string
+  description: string
+  finny: string
+  lean: string
+  config: string
+  leanConfig: string
+}
+
+/**
+ * Six strategy families with byte-for-byte identical decision logic between
+ * the Finny engine_v2 API and the LEAN QCAlgorithm API. Both engines maintain
+ * the same deque of settled closes, compute the same indicator, and use the
+ * same sizing rule (95% of equity, whole shares, no stop). The only intended
+ * difference is the engine's own fill/timing model.
+ */
+const STRATEGY_LIBRARY: Record<StrategyFamilyId, HarnessStrategyPair> = {
+  sma_crossover: {
+    id: "sma_crossover",
+    name: "spy-sma-crossover",
+    family: "sma-crossover",
+    strategyType: "sma-crossover",
+    description: "SPY 5-minute 8/24 SMA crossover harness candidate",
+    finny: `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.fast = int(p.get("fast", 8))
+        self.slow = int(p.get("slow", 24))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.slow)
+        self.previous_fast = None
+        self.previous_slow = None
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.fast <= 0 or self.slow <= 0:
+            return
+        if len(self.prices) < self.slow:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        fast_ma = sum(values[-self.fast:]) / self.fast
+        slow_ma = sum(values) / self.slow
+        enter = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
+        exit_signal = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
+        self.previous_fast = fast_ma
+        self.previous_slow = slow_ma
+        position = self.broker.position(symbol)
+        if position == 0 and enter:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (exit_signal or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(120, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.fast = 8
+        self.slow = 24
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.slow)
+        self.previous_fast = None
+        self.previous_slow = None
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.fast <= 0 or self.slow <= 0:
+            return
+        if len(self.prices) < self.slow:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        fast_ma = sum(values[-self.fast:]) / self.fast
+        slow_ma = sum(values) / self.slow
+        enter = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
+        exit_signal = self.previous_fast is not None and self.previous_slow is not None and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
+        self.previous_fast = fast_ma
+        self.previous_slow = slow_ma
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and enter:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (exit_signal or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 24,
+      params: { fast: 8, slow: 24 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 24,
+      params: { fast: 8, slow: 24 },
+    }),
+  },
+  rsi_reversion: {
+    id: "rsi_reversion",
+    name: "spy-rsi-reversion",
+    family: "rsi-reversion",
+    strategyType: "rsi-reversion",
+    description: "SPY 5-minute RSI(14) mean-reversion harness candidate",
+    finny: `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 14))
+        self.lower = float(p.get("lower", 30))
+        self.upper = float(p.get("upper", 70))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.period + 1)
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.period <= 0 or self.lower >= self.upper:
+            return
+        if len(self.prices) < self.period + 1:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        gains = [max(values[i] - values[i - 1], 0) for i in range(1, len(values))]
+        losses = [max(values[i - 1] - values[i], 0) for i in range(1, len(values))]
+        avg_gain = sum(gains) / len(gains)
+        avg_loss = sum(losses) / len(losses)
+        if avg_gain + avg_loss > 1e-10:
+            rs = avg_gain / avg_loss if avg_loss > 1e-10 else float("inf")
+            rsi = 100 - 100 / (1 + rs)
+        else:
+            rsi = 50
+        position = self.broker.position(symbol)
+        if position == 0 and rsi < self.lower:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (rsi > self.upper or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(75, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.period = 14
+        self.lower = 30
+        self.upper = 70
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.period + 1)
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.period <= 0 or self.lower >= self.upper:
+            return
+        if len(self.prices) < self.period + 1:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        gains = [max(values[i] - values[i - 1], 0) for i in range(1, len(values))]
+        losses = [max(values[i - 1] - values[i], 0) for i in range(1, len(values))]
+        avg_gain = sum(gains) / len(gains)
+        avg_loss = sum(losses) / len(losses)
+        if avg_gain + avg_loss > 1e-10:
+            rs = avg_gain / avg_loss if avg_loss > 1e-10 else float("inf")
+            rsi = 100 - 100 / (1 + rs)
+        else:
+            rsi = 50
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and rsi < self.lower:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (rsi > self.upper or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 15,
+      params: { period: 14, lower: 30, upper: 70 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 15,
+      params: { period: 14, lower: 30, upper: 70 },
+    }),
+  },
+  bollinger_breakout: {
+    id: "bollinger_breakout",
+    name: "spy-bollinger-breakout",
+    family: "bollinger-breakout",
+    strategyType: "bollinger-breakout",
+    description: "SPY 5-minute Bollinger(20,2) breakout harness candidate",
+    finny: `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 20))
+        self.mult = float(p.get("mult", 2))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.period)
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.period <= 0 or self.mult <= 0:
+            return
+        if len(self.prices) < self.period:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        mean = sum(values) / self.period
+        variance = sum((v - mean) ** 2 for v in values) / (self.period - 1) if self.period > 1 else 0
+        std = variance ** 0.5
+        upper = mean + self.mult * std
+        lower = mean - self.mult * std
+        position = self.broker.position(symbol)
+        if position == 0 and settled > upper:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (settled < lower or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(100, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.period = 20
+        self.mult = 2
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.period)
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.period <= 0 or self.mult <= 0:
+            return
+        if len(self.prices) < self.period:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        mean = sum(values) / self.period
+        variance = sum((v - mean) ** 2 for v in values) / (self.period - 1) if self.period > 1 else 0
+        std = variance ** 0.5
+        upper = mean + self.mult * std
+        lower = mean - self.mult * std
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and bar.Close > upper:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (bar.Close < lower or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 20,
+      params: { period: 20, mult: 2 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 20,
+      params: { period: 20, mult: 2 },
+    }),
+  },
+  macd_crossover: {
+    id: "macd_crossover",
+    name: "spy-macd-crossover",
+    family: "macd-crossover",
+    strategyType: "macd-crossover",
+    description: "SPY 5-minute MACD(12,26,9) crossover harness candidate",
+    finny: `from collections import deque
+
+def ema_series(series, period):
+    k = 2 / (period + 1)
+    e = series[0]
+    out = [e]
+    for v in series[1:]:
+        e = v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.fast = int(p.get("fast", 12))
+        self.slow = int(p.get("slow", 26))
+        self.signal = int(p.get("signal", 9))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.slow + self.signal)
+        self.previous_dif = None
+        self.previous_signal = None
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.fast <= 0 or self.slow <= 0 or self.signal <= 0:
+            return
+        if len(self.prices) < self.slow + self.signal:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        fast_series = ema_series(values, self.fast)
+        slow_series = ema_series(values, self.slow)
+        dif_series = [a - b for a, b in zip(fast_series, slow_series)]
+        signal_series = ema_series(dif_series, self.signal)
+        dif = dif_series[-1]
+        signal = signal_series[-1]
+        enter = self.previous_dif is not None and self.previous_signal is not None and self.previous_dif <= self.previous_signal and dif > signal
+        exit_signal = self.previous_dif is not None and self.previous_signal is not None and self.previous_dif >= self.previous_signal and dif < signal
+        self.previous_dif = dif
+        self.previous_signal = signal
+        position = self.broker.position(symbol)
+        if position == 0 and enter:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (exit_signal or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+def ema_series(series, period):
+    k = 2 / (period + 1)
+    e = series[0]
+    out = [e]
+    for v in series[1:]:
+        e = v * k + e * (1 - k)
+        out.append(e)
+    return out
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(175, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.fast = 12
+        self.slow = 26
+        self.signal = 9
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.slow + self.signal)
+        self.previous_dif = None
+        self.previous_signal = None
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.fast <= 0 or self.slow <= 0 or self.signal <= 0:
+            return
+        if len(self.prices) < self.slow + self.signal:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        fast_series = ema_series(values, self.fast)
+        slow_series = ema_series(values, self.slow)
+        dif_series = [a - b for a, b in zip(fast_series, slow_series)]
+        signal_series = ema_series(dif_series, self.signal)
+        dif = dif_series[-1]
+        signal = signal_series[-1]
+        enter = self.previous_dif is not None and self.previous_signal is not None and self.previous_dif <= self.previous_signal and dif > signal
+        exit_signal = self.previous_dif is not None and self.previous_signal is not None and self.previous_dif >= self.previous_signal and dif < signal
+        self.previous_dif = dif
+        self.previous_signal = signal
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and enter:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (exit_signal or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 35,
+      params: { fast: 12, slow: 26, signal: 9 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 35,
+      params: { fast: 12, slow: 26, signal: 9 },
+    }),
+  },
+  roc_momentum: {
+    id: "roc_momentum",
+    name: "spy-roc-momentum",
+    family: "roc-momentum",
+    strategyType: "roc-momentum",
+    description: "SPY 5-minute ROC(10) momentum harness candidate",
+    finny: `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 10))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.period + 1)
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.period <= 0:
+            return
+        if len(self.prices) < self.period + 1:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        roc = settled / values[-self.period] - 1
+        position = self.broker.position(symbol)
+        if position == 0 and roc > 0:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (roc < 0 or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(55, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.period = 10
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.period + 1)
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.period <= 0:
+            return
+        if len(self.prices) < self.period + 1:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        roc = bar.Close / values[-self.period] - 1
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and roc > 0:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (roc < 0 or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 11,
+      params: { period: 10 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 11,
+      params: { period: 10 },
+    }),
+  },
+  donchian_breakout: {
+    id: "donchian_breakout",
+    name: "spy-donchian-breakout",
+    family: "donchian-breakout",
+    strategyType: "donchian-breakout",
+    description: "SPY 5-minute Donchian(20) channel breakout harness candidate",
+    finny: `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.period = int(p.get("period", 20))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.prices = deque(maxlen=self.period)
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        settled = bar["prev_close"]
+        if settled is None or open_px <= 0:
+            return
+        if self.period <= 0:
+            return
+        if len(self.prices) < self.period:
+            self.prices.append(settled)
+            return
+        values = list(self.prices)
+        upper = max(values)
+        lower = min(values)
+        position = self.broker.position(symbol)
+        if position == 0 and settled > upper:
+            qty = int((self.broker.equity() * 0.95) / open_px)
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (settled < lower or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))):
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.prices.append(settled)
+`,
+    lean: `from AlgorithmImports import *
+from collections import deque
+
+class Main(QCAlgorithm):
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(100, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.period = 20
+        self.stop_pct = 0.015
+        self.prices = deque(maxlen=self.period)
+        self.entry_price = None
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+
+    def OnConsolidated(self, bar):
+        if self.IsWarmingUp:
+            return
+        if self.period <= 0:
+            return
+        if len(self.prices) < self.period:
+            self.prices.append(bar.Close)
+            return
+        values = list(self.prices)
+        upper = max(values)
+        lower = min(values)
+        holdings = self.Portfolio[self.symbol].Quantity
+        if holdings == 0 and bar.Close > upper:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / bar.Close)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = bar.Close
+        elif holdings > 0 and (bar.Close < lower or (self.entry_price is not None and bar.Close <= self.entry_price * (1 - self.stop_pct))):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.prices.append(bar.Close)
+
+    def OnData(self, slice):
+        pass
+`,
+    config: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 20,
+      params: { period: 20 },
+      risk_contract: {
+        sizing_stop_distance_pct: 1.5,
+        protective_stop: { mode: "strategy_next_open" },
+        drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+        max_positions: 1,
+      },
+    }),
+    leanConfig: JSON.stringify({
+      symbol: "SPY",
+      asset_class: "equity",
+      interval: "5m",
+      required_history_bars: 20,
+      params: { period: 20 },
+    }),
+  },
+}
+
+function activeStrategyPair(): HarnessStrategyPair | undefined {
+  const id = process.env.FINNY_HARNESS_STRATEGY
+  if (!id) return undefined
+  const pair = STRATEGY_LIBRARY[id as StrategyFamilyId]
+  if (!pair) throw new Error(`FINNY_HARNESS_STRATEGY must be one of ${Object.keys(STRATEGY_LIBRARY).join(", ")}`)
+  return pair
+}
+
+function activeSymbol(): string {
+  return process.env.FINNY_HARNESS_SYMBOL ?? "SPY"
+}
+
 const CORE8 = [
   "market_universe",
   "timeframe_bar_interval",
@@ -176,7 +916,7 @@ const CORE8 = [
   "backtest_window_success_metric",
 ]
 
-function mission(strategyType: string, algorithmName = ALGORITHM_NAME): string {
+function mission(strategyType: string, algorithmName = ALGORITHM_NAME, symbol = "SPY"): string {
   return `---
 schema_version: 4
 name: ${algorithmName}
@@ -186,7 +926,7 @@ hypothesis: |
   A deterministic ${strategyType} rule can be evaluated without treating profitability as harness success.
 scope:
   asset_class: equities
-  universe: ["SPY"]
+  universe: ["${symbol}"]
   horizon: intraday
 strategy:
   bar_interval: "5m"
@@ -424,8 +1164,11 @@ function contextValue(text: string, field: string, fallback: string): string {
 }
 
 function dataDigest(context: string) {
-  const workspaceSlug = contextValue(context, "workspace_slug", ALGORITHM_NAME)
-  const algorithmName = contextValue(context, "requested_algorithm_name", ALGORITHM_NAME)
+  const pair = activeStrategyPair()
+  const symbol = activeSymbol()
+  const fallbackName = pair?.name ?? ALGORITHM_NAME
+  const workspaceSlug = contextValue(context, "workspace_slug", fallbackName)
+  const algorithmName = contextValue(context, "requested_algorithm_name", fallbackName)
   const requestId = contextValue(context, "request_id", "MISSING")
   const requestVersion = contextValue(context, "request_version", "MISSING")
   const requestContentHash = contextValue(context, "request_content_hash", "MISSING")
@@ -436,8 +1179,8 @@ function dataDigest(context: string) {
     `request_id: ${requestId}`,
     `request_version: ${requestVersion}`,
     `request_content_hash: ${requestContentHash}`,
-    "requested_symbol: SPY",
-    "actual_symbol: SPY",
+    `requested_symbol: ${symbol}`,
+    `actual_symbol: ${symbol}`,
     "requested_interval: 5m",
     "actual_interval: 5m",
     "requested_asset_class: equity",
@@ -446,7 +1189,7 @@ function dataDigest(context: string) {
     "requested_end: 2026-07-08",
     "actual_start: 2026-01-09T00:00:00.000Z",
     "actual_end: 2026-07-08T23:55:00.000Z",
-    "artifact_paths: stock/SPY_5m_2026-01-09_2026-07-08.csv, stock/SPY_5m_2026-01-09_2026-07-08.manifest.json",
+    `artifact_paths: stock/${symbol}_5m_2026-01-09_2026-07-08.csv, stock/${symbol}_5m_2026-01-09_2026-07-08.manifest.json`,
     "run_id: fixture-deterministic",
     "source: finny-harness-fixture",
     "coverage: complete",
@@ -474,8 +1217,9 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
   if (isData) {
     const turn = state.dataTurns++
     if (turn === 0) {
+      const pair = activeStrategyPair()
       const workdir = contextValue(text, "allowed_data_dir", ".")
-      const algorithm = contextValue(text, "requested_algorithm_name", ALGORITHM_NAME)
+      const algorithm = contextValue(text, "requested_algorithm_name", pair?.name ?? ALGORITHM_NAME)
       const requestId = contextValue(text, "request_id", "")
       const requestVersion = contextValue(text, "request_version", "")
       const requestContentHash = contextValue(text, "request_content_hash", "")
@@ -501,9 +1245,10 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     return { type: "text", text: dataDigest(text) }
   }
   if (isNews) {
+    const symbol = activeSymbol()
     return {
       type: "text",
-      text: "requested_symbol: SPY\nrequested_interval: 5m\nrequested_start: 2026-01-09\nrequested_end: 2026-07-08\nNo external catalyst claim is needed for this deterministic harness run.",
+      text: `requested_symbol: ${symbol}\nrequested_interval: 5m\nrequested_start: 2026-01-09\nrequested_end: 2026-07-08\nNo external catalyst claim is needed for this deterministic harness run.`,
     }
   }
 
@@ -511,23 +1256,28 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     return { type: "http_error", status: 400, body: { error: { message: "scripted mid-stream fixture failure" } } }
   }
   if (!calls.includes("finny_workspace_prepare")) {
+    const pair = activeStrategyPair()
+    const symbol = activeSymbol()
     return {
       type: "tool",
       name: "finny_workspace_prepare",
       arguments: {
-        algorithmName: ALGORITHM_NAME,
-        symbol: "SPY",
+        algorithmName: pair?.name ?? ALGORITHM_NAME,
+        symbol,
         assetClass: "equity",
         interval: "5m",
         startDate: "2026-01-09",
         endDate: "2026-07-08",
-        strategyIntent: "sma-crossover",
+        strategyIntent: pair?.family ?? "sma-crossover",
       },
     }
   }
   if (!calls.includes("task_batch_run") && !calls.includes("task")) {
+    const pair = activeStrategyPair()
+    const symbol = activeSymbol()
+    const algorithmName = pair?.name ?? ALGORITHM_NAME
     const dataPrompt =
-      "Data request context: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture."
+      `Data request context: algorithm ${algorithmName}; symbol ${symbol}; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Materialize and verify the configured harness fixture.`
     return {
       type: "tool",
       name: "task_batch_run",
@@ -537,7 +1287,7 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
           {
             description: "Record deterministic context",
             prompt:
-              "Context request: algorithm spy-sma-crossover; symbol SPY; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Do not use external sources.",
+              `Context request: algorithm ${algorithmName}; symbol ${symbol}; equity; interval 5m; start date 2026-01-09; end date 2026-07-08. Do not use external sources.`,
             subagent_type: "news_agent",
           },
         ],
@@ -545,20 +1295,26 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     }
   }
   if (!calls.includes("finny_algorithm_save")) {
-    const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
-    const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    const pair = activeStrategyPair()
+    const symbol = activeSymbol()
+    const strategyType = pair?.strategyType ?? (mode === "strategy_drift" ? "roc-momentum" : "sma-crossover")
+    const candidateName = pair?.name ?? (mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME)
     const isLeanCSharp = process.env.FINNY_HARNESS_LEAN_CSHARP === "1"
     const isLean = process.env.FINNY_HARNESS_LEAN === "1" || isLeanCSharp
     const leanProfile = isLeanCSharp ? "lean_csharp" : "lean_python"
-    const leanCode = isLeanCSharp ? LEAN_STRATEGY_CSHARP : LEAN_STRATEGY
-    const leanSourceFile = isLeanCSharp ? "Main.cs" : "main.py"
+    const leanCode = pair
+      ? pair.lean.replace('AddEquity("SPY"', `AddEquity("${symbol}"`)
+      : isLeanCSharp
+        ? LEAN_STRATEGY_CSHARP
+        : LEAN_STRATEGY
+    const leanSourceFile = pair ? "main.py" : isLeanCSharp ? "Main.cs" : "main.py"
     const leanSourceHash = crypto.createHash("sha256").update(leanCode).digest("hex")
     return {
       type: "tool",
       name: "finny_algorithm_save",
       arguments: {
         name: candidateName,
-        code: isLean ? leanCode : mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
+        code: isLean ? leanCode : pair ? pair.finny : mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
         saveMode: "new",
         language: isLeanCSharp ? "csharp" : "python",
         ...(isLean
@@ -579,12 +1335,19 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
               },
             }
           : {}),
-        description:
-          mode === "strategy_drift"
-            ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
-            : "Deterministic SPY 5-minute SMA crossover harness candidate",
-        config: isLean ? LEAN_CONFIG : mode === "positive_qualification" ? POSITIVE_CONFIG : CONFIG,
-        mission: mission(strategyType, candidateName),
+        description: pair?.description ?? (mode === "strategy_drift"
+          ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
+          : "Deterministic SPY 5-minute SMA crossover harness candidate"),
+        config: pair
+          ? isLean
+            ? JSON.stringify({ ...JSON.parse(pair.leanConfig), symbol })
+            : JSON.stringify({ ...JSON.parse(pair.config), symbol })
+          : isLean
+            ? LEAN_CONFIG
+            : mode === "positive_qualification"
+              ? POSITIVE_CONFIG
+              : CONFIG,
+        mission: mission(strategyType, candidateName, symbol),
         prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
         decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",
         reasoning:
@@ -598,7 +1361,8 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     return { type: "text", text: "BLOCKED: saved candidate ID was not returned." }
   }
   if (!calls.includes("finny_backtest")) {
-    const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    const pair = activeStrategyPair()
+    const candidateName = pair?.name ?? (mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME)
     return {
       type: "tool",
       name: "finny_backtest",

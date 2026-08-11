@@ -306,31 +306,163 @@ export function Algorithms() {
   }
 
   const openRunMode = async (algo: Algorithm.Info) => {
+    const cfg = parseConfig(algo.config)
+    const isQcAlgo = cfg.runtime?.profile?.profileId === "qc_cloud"
+    const qcApi = async <T,>(path: string, init?: RequestInit): Promise<T> => {
+      const base = liveRuns.url()
+      if (!base) throw new Error("Live daemon is not connected")
+      const res = await fetch(new URL(path, base), {
+        ...init,
+        headers: { "content-type": "application/json" },
+      })
+      if (!res.ok) {
+        const text = await res.text().catch(() => "")
+        throw new Error(`QC request failed (${res.status}): ${text}`)
+      }
+      return (await res.json()) as T
+    }
+    const linkQcProject = async () => {
+      try {
+        const projects = await qcApi<Array<{ projectId: number; name: string; language: string }>>("/qc/projects")
+        if (projects.length === 0) {
+          await DialogAlert.show(dialog, "QC Link", "No QuantConnect projects found. Connect QC credentials in Settings first.")
+          return
+        }
+        const doLink = async (selected: number) => {
+          dialog.clear()
+          try {
+            const state = await qcApi<{ linked: boolean; state?: string; drift?: string[] }>("/qc/link", {
+              method: "POST",
+              body: JSON.stringify({ algorithmId: algo.algorithmId, projectId: selected }),
+            })
+            toast.show({
+              message: state.linked
+                ? `Linked to QC project ${selected} (${state.state ?? "linked"}).`
+                : `QC link failed: ${state.drift?.join("; ") ?? "unknown"}`,
+              variant: state.linked ? "success" : "error",
+              duration: 6000,
+            })
+          } catch (e: any) {
+            await DialogAlert.show(dialog, "QC Link Failed", e?.message ?? "Unknown error")
+          }
+        }
+        dialog.replace(() => (
+          <DialogSelect
+            title="Link QuantConnect project"
+            skipFilter
+            options={projects.map((project) => ({
+              title: `${project.name} (${project.language})`,
+              value: project.projectId,
+              description: `Project ${project.projectId}`,
+              onSelect: () => {
+                void doLink(project.projectId)
+              },
+            }))}
+          />
+        ))
+      } catch (e: any) {
+        await DialogAlert.show(dialog, "QC Link Failed", e?.message ?? "Unknown error")
+      }
+    }
+    const syncQcProject = async () => {
+      try {
+        const state = await qcApi<{ linked: boolean; state?: string; drift?: string[] }>(
+          `/qc/link/${encodeURIComponent(algo.algorithmId)}`,
+        )
+        toast.show({
+          message: state.linked
+            ? `QC sync: ${state.state ?? "unknown"}${state.drift?.length ? ` — ${state.drift.join("; ")}` : ""}`
+            : "Not linked to a QuantConnect project.",
+          variant: state.state === "in_sync" ? "success" : state.linked ? "warning" : "error",
+          duration: 6000,
+        })
+      } catch (e: any) {
+        await DialogAlert.show(dialog, "QC Sync Failed", e?.message ?? "Unknown error")
+      }
+    }
+    const runQcComposite = async () => {
+      dialog.clear()
+      try {
+        const outcome = await qcApi<{
+          ok: boolean
+          error?: string
+          compositeVerdict?: string
+          backtestUrl?: string
+          cloudGates?: { passed: boolean; checks: Array<{ name: string; passed: boolean; detail: string }> }
+        }>("/qc/backtest", {
+          method: "POST",
+          body: JSON.stringify({ algorithmId: algo.algorithmId }),
+        })
+        if (!outcome.ok) {
+          await DialogAlert.show(dialog, "QC Composite Failed", outcome.error ?? "Unknown error")
+          return
+        }
+        const gates = (outcome.cloudGates?.checks ?? [])
+          .map((check) => `[${check.passed ? "PASS" : "FAIL"}] ${check.name}: ${check.detail}`)
+          .join("\n")
+        await DialogAlert.show(
+          dialog,
+          "QC Composite",
+          `Composite verdict: ${outcome.compositeVerdict}\n${gates}\n${outcome.backtestUrl ?? ""}`,
+        )
+      } catch (e: any) {
+        await DialogAlert.show(dialog, "QC Composite Failed", e?.message ?? "Unknown error")
+      }
+    }
     dialog.replace(() => (
       <DialogSelect
         title={`Run ${algo.name}`}
         skipFilter
         options={[
-          {
-            title: "Paper Trading",
-            value: "paper" as const,
-            description: "Use a paper or testnet brokerage account",
-            onSelect: () => {
-              void startRun(algo, "paper")
-            },
-          },
-          ...(showLiveRun
+          ...(isQcAlgo
             ? [
                 {
-                  title: "Trade Live",
-                  value: "live" as const,
-                  description: "Use a compatible live brokerage account",
+                  title: "QuantConnect: Run Composite Backtest",
+                  value: "qc-composite" as const,
+                  description: "QC Cloud + Crucible dual-engine evaluation",
                   onSelect: () => {
-                    void startRun(algo, "live")
+                    void runQcComposite()
+                  },
+                },
+                {
+                  title: "QuantConnect: Link Project",
+                  value: "qc-link" as const,
+                  description: "Bind this algorithm to an existing QC project",
+                  onSelect: () => {
+                    void linkQcProject()
+                  },
+                },
+                {
+                  title: "QuantConnect: Sync Status",
+                  value: "qc-sync" as const,
+                  description: "Check source drift against the linked project",
+                  onSelect: () => {
+                    void syncQcProject()
                   },
                 },
               ]
-            : []),
+            : [
+                {
+                  title: "Paper Trading",
+                  value: "paper" as const,
+                  description: "Use a paper or testnet brokerage account",
+                  onSelect: () => {
+                    void startRun(algo, "paper")
+                  },
+                },
+                ...(showLiveRun
+                  ? [
+                      {
+                        title: "Trade Live",
+                        value: "live" as const,
+                        description: "Use a compatible live brokerage account",
+                        onSelect: () => {
+                          void startRun(algo, "live")
+                        },
+                      },
+                    ]
+                  : []),
+              ]),
         ]}
       />
     ))

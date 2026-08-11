@@ -96,3 +96,41 @@ The QuantConnect Cloud track (posting strategies to QC projects/backtests/live
 deployments for firms that bring their own QC entitlements) extends this
 control plane with `qc_cloud` deployment verbs and its own result schema;
 it never merges into the local LEAN or engine_v2 schemas.
+
+### QC-Native control plane (PR #105)
+
+For firms that already run QuantConnect, Finny stays the control panel while
+QuantConnect remains the backtest/paper execution host:
+
+- Link an existing QC project to one Finny algorithm (`qc link`), or import a
+  project as a new Finny algorithm (`qc import`). Every Finny version keeps an
+  immutable `finny.qc_source_snapshot` so the QC Cloud and local Crucible
+  evaluations bind to the same exact bytes.
+- Source drift is detected before every backtest and deployment and is never
+  resolved silently: `in_sync` → continue; `qc_changed` → import QC as a new
+  Finny version; `finny_changed` → reviewed replacement of QC source;
+  `both_changed` → blocked. An explicit overwrite first captures the previous
+  remote tree under `qc-control/recovery/<project>/<timestamp>/`.
+- Qualification is composite: the local pinned-LEAN Crucible gauntlet
+  (walk-forward, robustness, consistency, alpha decay, sealed holdout) runs on
+  Finny-attested data, and the linked QC project independently runs a native
+  QC Cloud backtest with per-run parameters. Both must pass their own gates;
+  `finny.qc_composite_run_identity` binds both into one hash-complete run.
+  Exact numerical parity is never required because the data providers differ.
+- Paper approval is one human action: `finny_paper_approve` (or the
+  `/qc/deploy` control-plane verb) writes the immutable approval receipt and
+  starts the exact approved source on QC Paper. Deployment is idempotent by
+  (run identity hash, project, environment) and is blocked while another
+  deployment is active on the linked project.
+- QC deployments are durable daemon-owned records reconciled against the QC
+  API (`/live/read`, `/live/logs/read`, `/live/portfolio/read`,
+  `/live/orders/read`) at QC's documented snapshot cadence and streamed over
+  the existing `live.runs` SSE channel. The Portfolio page shows managed and
+  discovered (read-only) deployments with freshness timestamps; stop and
+  liquidate use the documented `/live/update/*` endpoints. Pre-existing QC
+  deployments stay read-only until adopted for management.
+
+Scope: fixed-symbol equities/ETFs and spot crypto for Python and C# projects.
+Options, futures, FX, dynamic universes, unsupported custom data, and
+live-money brokerage settings fail closed. The credentialed real-QC
+acceptance lane is separate from CI fixture/mock coverage.

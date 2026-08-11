@@ -10,7 +10,17 @@ const root = "/live"
 
 // Effect-Schema mirrors of the LiveRunner namespace TS interfaces. These must
 // stay in sync with packages/opencode/src/live/runner.ts.
-const BrokerKind = Schema.Literals(["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu", "robinhood"])
+const BrokerKind = Schema.Literals([
+  "alpaca",
+  "binance",
+  "ibkr",
+  "zerodha",
+  "saxo",
+  "questrade",
+  "futu",
+  "robinhood",
+  "qc",
+])
 const BrokerMode = Schema.Literals(["paper", "testnet", "live"])
 const RunStatus = Schema.Literals(["starting", "running", "stopped", "error"])
 
@@ -54,6 +64,18 @@ const ShadowProof = Schema.Struct({
   fatalErrors: Schema.Number,
 })
 
+const QcRunDetail = Schema.Struct({
+  projectId: Schema.Union([Schema.Number, Schema.String]),
+  projectName: Schema.optional(Schema.String),
+  deploymentId: Schema.String,
+  liveUrl: Schema.optional(Schema.String),
+  ownership: Schema.Literals(["managed", "external"]),
+  qcStatus: Schema.optional(Schema.String),
+  lastSyncedAt: Schema.optional(Schema.Number),
+  runIdentityHash: Schema.optional(Schema.String),
+  sourceTreeHash: Schema.optional(Schema.String),
+}).annotate({ identifier: "QcRunDetail" })
+
 export const Run = Schema.Struct({
   id: Schema.String,
   algorithmId: Schema.String,
@@ -72,6 +94,8 @@ export const Run = Schema.Struct({
   stoppedAt: Schema.optional(Schema.Number),
   error: Schema.optional(Schema.String),
   lastBar: Schema.optional(BarUpdate),
+  backend: Schema.optional(Schema.Literal("qc")),
+  qc: Schema.optional(QcRunDetail),
   equity: Schema.optional(Schema.Number),
   cash: Schema.optional(Schema.Number),
   positions: Schema.Record(Schema.String, Schema.Number),
@@ -257,6 +281,18 @@ export const LiveApi = HttpApi.make("live")
             identifier: "live.stop",
             summary: "Stop a live run",
             description: "Stop a running live/paper run.",
+          }),
+        ),
+        HttpApiEndpoint.post("liquidate", `${root}/:id/liquidate`, {
+          params: { id: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Whether the run was liquidated and stopped"),
+          error: [LiveRunNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "live.liquidate",
+            summary: "Liquidate a QC deployment",
+            description: "Liquidate all positions and stop a QuantConnect Paper deployment.",
           }),
         ),
         HttpApiEndpoint.delete("remove", `${root}/:id`, {

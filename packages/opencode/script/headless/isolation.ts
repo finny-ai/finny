@@ -84,7 +84,10 @@ export async function createIsolation(runId: string): Promise<HarnessIsolation> 
     FINNY_HOME: finnyHome,
     OPENCODE_DB: database,
     BUN_INSTALL_CACHE_DIR: path.join(xdgCache, "bun"),
-    UV_CACHE_DIR: path.join(xdgCache, "uv"),
+    // Test-only escape hatch: a shared warm uv cache makes repeated harness
+    // runs immune to PyPI throughput. Production callers leave it unset so
+    // every isolate still resolves packages into its own fresh cache.
+    UV_CACHE_DIR: process.env.FINNY_UV_CACHE_DIR ?? path.join(xdgCache, "uv"),
     OPENCODE_PURE: "1",
     OPENCODE_DISABLE_PROJECT_CONFIG: "1",
     OPENCODE_DISABLE_AUTOUPDATE: "1",
