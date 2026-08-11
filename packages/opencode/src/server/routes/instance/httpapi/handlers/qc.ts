@@ -5,6 +5,7 @@ import {
   connectQcCredentials,
   disconnectQcCredentials,
   qcConnectionState,
+  resolveQcMode,
 } from "@/integration/quantconnect"
 import {
   attachProject,
@@ -15,7 +16,7 @@ import {
   syncBeforeRun,
   unlinkProject,
 } from "@/integration/qc-sync"
-import { getProjectLink } from "@/integration/qc-store"
+import { getProjectLink, setConfiguredQcMode } from "@/integration/qc-store"
 import * as QcExecution from "@/integration/qc-execution"
 import {
   runQcCompositeQualification,
@@ -77,6 +78,16 @@ export function qcHandlers(api: InstanceHttpApiType) {
           }),
         )
         .handle("status", () => Effect.promise(() => qcConnectionState()))
+        .handle("mode", () => Effect.promise(() => resolveQcMode()))
+        .handle("setMode", ({ payload }) =>
+          Effect.tryPromise({
+            try: async () => {
+              await setConfiguredQcMode(payload.mode)
+              return resolveQcMode()
+            },
+            catch: (error) => new HttpApiError.BadRequest({}),
+          }),
+        )
         .handle("disconnect", () =>
           Effect.gen(function* () {
             yield* Effect.promise(() => disconnectQcCredentials())

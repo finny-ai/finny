@@ -5,7 +5,9 @@ import {
   connectQcCredentials,
   disconnectQcCredentials,
   qcConnectionState,
+  resolveQcMode,
 } from "@/integration/quantconnect"
+import { setConfiguredQcMode } from "@/integration/qc-store"
 import {
   runQcCloudBacktest,
   deployQcPaper,
@@ -46,6 +48,7 @@ export const QcCommand = cmd({
     yargs
       .command(QcConnectCommand)
       .command(QcStatusCommand)
+      .command(QcModeCommand)
       .command(QcDisconnectCommand)
       .command(QcBacktestCommand)
       .command(QcPaperDeployCommand)
@@ -473,7 +476,29 @@ const QcStatusCommand = effectCmd({
   command: "status",
   describe: "show whether QuantConnect API credentials are connected and valid",
   handler: Effect.fn("Cli.qc.status")(function* () {
-    print(yield* Effect.promise(() => qcConnectionState()))
+    const [state, mode] = yield* Effect.all([
+      Effect.promise(() => qcConnectionState()),
+      Effect.promise(() => resolveQcMode()),
+    ])
+    print({ ...state, mode })
+  }),
+})
+
+const QcModeCommand = effectCmd({
+  command: "mode [value]",
+  describe: "show or switch the QuantConnect track mode (local fixture vs QuantConnect Cloud)",
+  builder: (yargs) =>
+    yargs.positional("value", {
+      type: "string",
+      choices: ["local", "cloud"] as const,
+      describe: "local runs the QC control plane against deterministic fixtures; cloud talks to QuantConnect",
+    }),
+  handler: Effect.fn("Cli.qc.mode")(function* (args: { value?: "local" | "cloud" }) {
+    if (args.value) {
+      yield* Effect.promise(() => setConfiguredQcMode(args.value === "local" ? "fixture" : "cloud"))
+    }
+    const mode = yield* Effect.promise(() => resolveQcMode())
+    print(mode)
   }),
 })
 

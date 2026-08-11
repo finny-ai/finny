@@ -1,12 +1,19 @@
 import { Component, createSignal, Show, onMount } from "solid-js"
 import { ButtonV2 } from "@opencode-ai/ui/v2/button-v2"
 import { TextInputV2 } from "@opencode-ai/ui/v2/text-input-v2"
+import { SegmentedControlItemV2, SegmentedControlV2 } from "@opencode-ai/ui/v2/segmented-control-v2"
 import { SettingsListV2 } from "./parts/list"
 import { SettingsRowV2 } from "./parts/row"
 import { useServer } from "@/context/server"
 
 type QcStatus = {
   connected: boolean
+  fixture?: boolean
+  mode?: {
+    mode: "fixture" | "cloud"
+    configured: "fixture" | "cloud"
+    source: "env" | "setting" | "default"
+  }
   userId?: string
   name?: string
   error?: string
@@ -24,6 +31,7 @@ export const SettingsQuantConnectV2: Component = () => {
   const [apiToken, setApiToken] = createSignal("")
   const [busy, setBusy] = createSignal(false)
   const [error, setError] = createSignal<string | undefined>()
+  const [savingMode, setSavingMode] = createSignal(false)
 
   const request = async (path: string, init?: RequestInit) => {
     const current = server.current
@@ -81,8 +89,44 @@ export const SettingsQuantConnectV2: Component = () => {
     }
   }
 
+  const setMode = async (mode: "fixture" | "cloud") => {
+    setSavingMode(true)
+    setError(undefined)
+    try {
+      const response = await request("/qc/mode", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ mode }),
+      })
+      if (!response.ok) {
+        setError("Could not switch QuantConnect mode.")
+        return
+      }
+      await refresh()
+    } catch (cause) {
+      setError(String(cause))
+    } finally {
+      setSavingMode(false)
+    }
+  }
+
   return (
     <SettingsListV2>
+      <SettingsRowV2
+        title="QC track mode"
+        description="Local fixture runs the QC flow against deterministic local fixtures (no account needed). QuantConnect Cloud talks to your real QC account."
+      >
+        <SegmentedControlV2
+          value={status()?.mode?.mode ?? "cloud"}
+          onChange={(value) => value && setMode(value as "fixture" | "cloud")}
+          disabled={savingMode()}
+          aria-label="QuantConnect track mode"
+        >
+          <SegmentedControlItemV2 value="cloud">QuantConnect Cloud</SegmentedControlItemV2>
+          <SegmentedControlItemV2 value="fixture">Local fixture</SegmentedControlItemV2>
+        </SegmentedControlV2>
+      </SettingsRowV2>
+
       <SettingsRowV2 title="QuantConnect API credentials" description="Used for the QC Cloud track: data pulls, cloud backtests, and execution.">
         <Show
           when={status()?.connected}
@@ -93,6 +137,13 @@ export const SettingsQuantConnectV2: Component = () => {
           </span>
         </Show>
       </SettingsRowV2>
+
+      <Show when={status()?.fixture}>
+        <p class="text-xs">
+          Local fixture mode is active{status()?.mode?.source === "env" ? " (forced by environment variables)" : ""} —
+          no QC account is used.
+        </p>
+      </Show>
 
       <SettingsRowV2 title="User id" description="QuantConnect account user id (Account -> Organizations).">
         <TextInputV2 value={userId()} onInput={(event) => setUserId(event.currentTarget.value)} placeholder="1234567" />

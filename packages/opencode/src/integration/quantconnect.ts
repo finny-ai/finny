@@ -1,4 +1,6 @@
 import { Auth } from "@/auth"
+import { readQcModeSetting } from "./qc-store"
+import type { QcMode, QcModeResolution } from "./qc-contracts"
 import crypto from "node:crypto"
 import fs from "node:fs"
 import path from "node:path"
@@ -22,6 +24,8 @@ export interface QcConnectionState {
   connected: boolean
   /** True when running without real QC credentials against the local fixture path. */
   fixture?: boolean
+  /** Effective QC track mode and where it came from (env / setting / default). */
+  mode?: QcModeResolution
   userId?: string
   name?: string
   error?: string
@@ -83,8 +87,26 @@ export async function qcApiRequest(input: QcApiRequestInput): Promise<Record<str
   return body
 }
 
-export function isQcFixtureMode(): boolean {
-  return process.env.QC_FIXTURE === "1" || process.env.FINNY_QC_FIXTURE === "1"
+/**
+ * Resolve the effective QC track mode:
+ *
+ *   1. Environment override (QC_FIXTURE=1 / FINNY_QC_FIXTURE=1) — test and
+ *      harness tooling only; never persisted.
+ *   2. The durable user setting written by `qc mode` / Settings.
+ *   3. Default: `cloud` (the product behavior when credentials exist).
+ */
+export async function resolveQcMode(): Promise<QcModeResolution> {
+  if (process.env.QC_FIXTURE === "1" || process.env.FINNY_QC_FIXTURE === "1") {
+    return { mode: "fixture", configured: "fixture", source: "env" }
+  }
+  const configured = await readQcModeSetting()
+  if (configured) return { mode: configured, configured, source: "setting" }
+  return { mode: "cloud", configured: "cloud", source: "default" }
+}
+
+/** True when the effective QC track mode is the local fixture. */
+export async function isQcFixtureMode(): Promise<boolean> {
+  return (await resolveQcMode()).mode === "fixture"
 }
 
 export async function readQcCredentials(): Promise<QcCredentials | null> {
@@ -116,6 +138,11 @@ export async function verifyQcCredentials(input: QcCredentials): Promise<QcVerif
 }
 
 export async function connectQcCredentials(input: QcCredentials): Promise<QcVerifiedIdentity> {
+  if (await isQcFixtureMode()) {
+    throw new Error(
+      "QuantConnect is in local fixture mode. Switch to cloud mode first (Settings → QuantConnect → QuantConnect Cloud, or `qc mode cloud`).",
+    )
+  }
   const verified = await verifyQcCredentials(input)
   await Auth.set(QC_PROVIDER_ID, {
     type: "api",
@@ -130,21 +157,24 @@ export async function disconnectQcCredentials(): Promise<void> {
 }
 
 export async function qcConnectionState(): Promise<QcConnectionState> {
-  if (isQcFixtureMode()) {
+  const mode = await resolveQcMode()
+  if (mode.mode === "fixture") {
     return {
       connected: false,
       fixture: true,
+      mode,
       name: "QuantConnect fixture (no credentials required)",
     }
   }
   const credentials = await readQcCredentials()
-  if (!credentials) return { connected: false }
+  if (!credentials) return { connected: false, mode }
   try {
     const verified = await verifyQcCredentials(credentials)
-    return { connected: true, userId: verified.userId, name: verified.name }
+    return { connected: true, mode, userId: verified.userId, name: verified.name }
   } catch (error) {
     return {
       connected: false,
+      mode,
       userId: credentials.userId,
       error: error instanceof Error ? error.message : String(error),
     }
