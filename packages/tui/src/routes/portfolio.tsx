@@ -64,6 +64,8 @@ export function Portfolio() {
   const activeSpec = () => BrokerRegistry.getSpec(activeKind())
   const connected = () =>
     activeKind() === "robinhood" ? robinhoodConnected() : accountsForKind(activeKind()).length > 0
+  const isQcKind = () => activeKind() === "qc"
+  const qcRuns = () => liveRuns.runs().filter((run) => (run as any).backend === "qc" || run.brokerKind === "qc")
 
   const tabOptions = (): SegmentedOption<BrokerKind>[] =>
     allSpecs.map((s) => {
@@ -191,14 +193,67 @@ export function Portfolio() {
         {/* Brokerage tabs */}
         <SegmentedControl options={tabOptions()} value={activeKind()} onChange={setActiveKind} />
 
-        <Show when={totalAccounts() > 0}>
+        <Show when={totalAccounts() > 0 && !isQcKind()}>
           <text fg={theme.textMuted}>
             {totalAccounts()} account{totalAccounts() !== 1 ? "s" : ""} across {brokerCount()} brokerage
             {brokerCount() !== 1 ? "s" : ""}.
           </text>
         </Show>
 
+        {/* QuantConnect deployments panel */}
+        <Show when={isQcKind()}>
+          <box flexDirection="column" gap={1} flexShrink={0}>
+            <Show
+              when={qcRuns().length > 0}
+              fallback={
+                <text fg={theme.textMuted}>
+                  No QuantConnect deployments. Link a project from Algorithms and approve a run to deploy it to QC
+                  Paper.
+                </text>
+              }
+            >
+              <For each={qcRuns()}>
+                {(run) => (
+                  <box
+                    flexDirection="row"
+                    paddingLeft={1}
+                    paddingRight={1}
+                    gap={2}
+                    onMouseUp={() => DialogLiveRun.show(dialog, run.id)}
+                  >
+                    <text fg={run.status === "running" ? theme.success : theme.textMuted} attributes={TextAttributes.BOLD}>
+                      {run.status === "running" ? "●" : "○"}
+                    </text>
+                    <box width={24} flexShrink={0}>
+                      <text fg={theme.text} attributes={TextAttributes.BOLD}>
+                        {run.algorithmName}
+                      </text>
+                    </box>
+                    <box width={16} flexShrink={0}>
+                      <text fg={theme.textMuted}>{(run as any).qc?.ownership ?? "qc"}</text>
+                    </box>
+                    <box width={18} flexShrink={0}>
+                      <text fg={theme.textMuted}>project {(run as any).qc?.projectId ?? "—"}</text>
+                    </box>
+                    <box width={14} flexShrink={0}>
+                      <text fg={theme.text}>{(run as any).qc?.qcStatus ?? run.status}</text>
+                    </box>
+                    <box flexGrow={1}>
+                      <text fg={theme.textMuted}>
+                        {(run as any).qc?.lastSyncedAt
+                          ? `synced ${new Date((run as any).qc.lastSyncedAt).toLocaleTimeString()}`
+                          : "click to open"}
+                      </text>
+                    </box>
+                  </box>
+                )}
+              </For>
+            </Show>
+          </box>
+        </Show>
+
         {/* Active broker accounts */}
+        <Show when={!isQcKind()}>
         <box flexShrink={0}>
           <Card title={` ${activeSpec().displayName} accounts `}>
             <Show
@@ -281,6 +336,7 @@ export function Portfolio() {
             </Show>
           </Card>
         </box>
+        </Show>
       </box>
     </box>
   )

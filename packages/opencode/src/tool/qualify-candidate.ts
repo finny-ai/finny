@@ -33,6 +33,13 @@ import { LeanAdapter } from "../backtest/lean/adapter"
 import { isLeanProfile } from "../backtest/lean/contracts"
 import { compileLeanPlanV2FromActiveEvidence, executeLeanQualificationV2 } from "../backtest/lean/qualify"
 import { runtimeForCandidate } from "../backtest/lean/select"
+import { getProjectLink } from "@/integration/qc-store"
+import {
+  runQcCompositeQualification,
+  writeQcCompositeEvidence,
+  type QcLocalRunOutcome,
+} from "@/integration/qc-composite"
+import { strictRunDir } from "@/backtest/run-integrity-core"
 import {
   loadExperimentPlanV2,
   recordHoldoutOpenEventForPlanV2,
@@ -315,12 +322,93 @@ export const QualifyCandidateTool = Tool.define<
               })
             }
             if (leanRuntime.profile.profileId === "qc_cloud") {
-              return blocked({
-                code: "candidate_invalid",
-                field: "runtime",
-                message: "qc_cloud candidates cannot use the local qualification executor",
-                next: "run the explicit QC Cloud workflow; no local engine fallback is permitted",
+              const qcLink = await getProjectLink(candidate.algorithmId)
+              if (!qcLink) {
+                return blocked({
+                  code: "candidate_invalid",
+                  field: "runtime",
+                  message:
+                    "qc_cloud candidates must link a QuantConnect project (qc link) before composite qualification",
+                  next: "link the QC project and retry; no local engine fallback is permitted",
+                })
+              }
+              const localResult = await runLeanQualificationFlow({
+                params,
+                ctx,
+                bridge,
+                candidate,
+                evidence,
+                question,
+                holdoutQuestion,
+                approved,
               })
+              if (localResult.metadata?.qualified !== true) return localResult
+              // Local strict leg passed — the linked QC project must now
+              // independently pass its native-cloud gates.
+              const workflow = await runWorkflow(activeWorkflowForSession(ctx.sessionID))
+              const runId = workflow?.backtest?.runId ?? ""
+              const identityHash = workflow?.backtest?.identityHash ?? ""
+              let qcConfig: Record<string, any> = {}
+              try {
+                qcConfig = JSON.parse(candidate.config ?? "{}")
+              } catch {}
+              const localRef: QcLocalRunOutcome = {
+                ok: true,
+                runId,
+                identityHash,
+                runtimeHash: "",
+                engine: qcLink.language === "csharp" ? "lean_csharp" : "lean_python",
+                verdict: "recommended_for_paper",
+                metrics: {},
+              }
+              const composite = await runQcCompositeQualification({
+                algorithm: candidate,
+                interval: typeof qcConfig.interval === "string" ? qcConfig.interval : "5m",
+                capital:
+                  typeof qcConfig.equity_usd === "number"
+                    ? qcConfig.equity_usd
+                    : typeof qcConfig.risk?.starting_equity_usd === "number"
+                      ? qcConfig.risk.starting_equity_usd
+                      : 10000,
+                startDate: qcConfig.backtest?.start_date ?? "",
+                endDate: qcConfig.backtest?.end_date ?? "",
+                local: localRef,
+              })
+              if (!composite.ok || !composite.identity) {
+                return blocked({
+                  code: "qc_cloud_gates_failed",
+                  field: "cloud",
+                  message:
+                    composite.error ??
+                    "the QC Cloud leg of the composite qualification did not pass its independent gates",
+                  next: "inspect the QC Cloud backtest results and retry after resolving the failure",
+                })
+              }
+              if (runId) {
+                await writeQcCompositeEvidence({
+                  runDir: strictRunDir(candidate, runId),
+                  identity: composite.identity,
+                  outcome: composite,
+                })
+              }
+              return {
+                ...localResult,
+                output: JSON.stringify(
+                  {
+                    ...(JSON.parse(localResult.output) as Record<string, unknown>),
+                    composite: {
+                      projectId: composite.projectId,
+                      backtestId: composite.backtestId,
+                      backtestUrl: composite.backtestUrl,
+                      canonical: composite.canonical,
+                      cloudGates: composite.cloudGates,
+                      compositeVerdict: composite.compositeVerdict,
+                    },
+                  },
+                  null,
+                  2,
+                ),
+              }
             }
             if (isLeanProfile(leanRuntime.profile)) {
               return runLeanQualificationFlow({

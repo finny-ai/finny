@@ -20,6 +20,19 @@ import {
   compileQcProject,
   pushStrategyToQc,
 } from "@/integration/qc-cloud"
+import {
+  attachProject,
+  listLinkableProjects,
+  refreshLinkSync,
+  resolveDrift,
+  unlinkProject,
+} from "@/integration/qc-sync"
+import { getProjectLink } from "@/integration/qc-store"
+import * as QcExecution from "@/integration/qc-execution"
+import { readApproval, strictRunDir } from "@/backtest/run-integrity"
+import { controllerPaperApproval } from "@/algorithm/build-workflow/paper-approval"
+import { BuildWorkflowStore } from "@/algorithm/build-workflow/store"
+import { Database } from "@opencode-ai/core/database/database"
 import { Algorithm } from "@/algorithm"
 
 function print(value: unknown) {
@@ -44,6 +57,14 @@ export const QcCommand = cmd({
       .command(QcLiveLiquidateCommand)
       .command(QcProjectsCommand)
       .command(QcNodesCommand)
+      .command(QcLinkCommand)
+      .command(QcUnlinkCommand)
+      .command(QcSyncCommand)
+      .command(QcResolveDriftCommand)
+      .command(QcDeploymentsCommand)
+      .command(QcDeployCommand)
+      .command(QcStopDeploymentCommand)
+      .command(QcLiquidateDeploymentCommand)
       .demandCommand(),
   async handler() {},
 })
@@ -247,6 +268,168 @@ const QcNodesCommand = effectCmd({
   builder: (yargs) => yargs.positional("project-id", { type: "string", demandOption: true }),
   handler: Effect.fn("Cli.qc.nodes")(function* (args: { "project-id": string }) {
     print(yield* Effect.promise(() => availableLiveNodes(args["project-id"])))
+  }),
+})
+
+const QcLinkCommand = effectCmd({
+  command: "link <algorithm> <project-id>",
+  describe: "link a saved algorithm to an existing QuantConnect project",
+  builder: (yargs) =>
+    yargs
+      .positional("algorithm", { type: "string", demandOption: true })
+      .positional("project-id", { type: "number", demandOption: true })
+      .option("import-remote", {
+        type: "boolean",
+        describe: "adopt the QC project source as the algorithm source (default when the local tree is empty)",
+      }),
+  handler: Effect.fn("Cli.qc.link")(function* (args: { algorithm: string; "project-id": number; "import-remote"?: boolean }) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    const project = (yield* Effect.promise(() => listLinkableProjects())).find(
+      (item) => item.projectId === args["project-id"],
+    )
+    if (!project) throw new Error(`QuantConnect project ${args["project-id"]} not found or not readable`)
+    const result = yield* Effect.promise(() =>
+      attachProject({
+        algorithm,
+        projectId: project.projectId,
+        projectName: project.name,
+        language: project.language,
+        mode: args["import-remote"] ? "import_remote" : undefined,
+      }),
+    )
+    print({ linked: true, projectId: result.link.projectId, state: result.link.sync.state, imported: result.imported })
+  }),
+})
+
+const QcUnlinkCommand = effectCmd({
+  command: "unlink <algorithm>",
+  describe: "unlink an algorithm from its QuantConnect project",
+  builder: (yargs) => yargs.positional("algorithm", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.unlink")(function* (args: { algorithm: string }) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    print({ unlinked: yield* Effect.promise(() => unlinkProject(algorithm.algorithmId)) })
+  }),
+})
+
+const QcSyncCommand = effectCmd({
+  command: "sync <algorithm>",
+  describe: "refresh the QuantConnect project sync state for an algorithm",
+  builder: (yargs) => yargs.positional("algorithm", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.sync")(function* (args: { algorithm: string }) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    const decision = yield* Effect.promise(() => refreshLinkSync(algorithm))
+    const link = yield* Effect.promise(() => getProjectLink(algorithm.algorithmId))
+    print({
+      linked: Boolean(link),
+      state: link?.sync.state,
+      projectId: link?.projectId,
+      action: decision.action,
+      drift: decision.drift ?? [],
+    })
+  }),
+})
+
+const QcResolveDriftCommand = effectCmd({
+  command: "resolve-drift <algorithm>",
+  describe: "resolve QC source drift in one explicit direction",
+  builder: (yargs) =>
+    yargs
+      .positional("algorithm", { type: "string", demandOption: true })
+      .option("direction", {
+        type: "string",
+        choices: ["import_qc", "push_finny"] as const,
+        demandOption: true,
+        describe: "import_qc adopts the QC project source; push_finny overwrites QC with the Finny source",
+      }),
+  handler: Effect.fn("Cli.qc.resolveDrift")(function* (args: { algorithm: string; direction: "import_qc" | "push_finny" }) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    const decision = yield* Effect.promise(() => resolveDrift({ algorithm, direction: args.direction }))
+    if (!decision.ok) throw new Error(decision.error ?? "drift resolution failed")
+    print({ resolved: true, direction: args.direction })
+  }),
+})
+
+const QcDeploymentsCommand = effectCmd({
+  command: "deployments",
+  describe: "list QuantConnect Paper deployments (managed + discovered)",
+  handler: Effect.fn("Cli.qc.deployments")(function* () {
+    yield* Effect.promise(() => QcExecution.rehydrate())
+    print(
+      QcExecution.list().map((run) => ({
+        deploymentId: run.qc.deploymentId,
+        algorithmName: run.algorithmName,
+        projectId: run.qc.projectId,
+        status: run.status,
+        ownership: run.qc.ownership,
+        qcStatus: run.qc.qcStatus,
+        lastSyncedAt: run.qc.lastSyncedAt,
+        error: run.error,
+      })),
+    )
+  }),
+})
+
+const QcDeployCommand = effectCmd({
+  command: "deploy <algorithm>",
+  describe: "approve-and-deploy an approved run to QuantConnect Paper",
+  builder: (yargs) =>
+    yargs
+      .positional("algorithm", { type: "string", demandOption: true })
+      .option("run-id", { type: "string", demandOption: true, describe: "exact approved strict run id" })
+      .option("node", { type: "string", describe: "QC live node id (defaults to first free node)" })
+      .option("capital", { type: "number", describe: "starting cash for the QC Paper brokerage" }),
+  handler: Effect.fn("Cli.qc.deploy")(function* (args: { algorithm: string; "run-id": string; node?: string; capital?: number }) {
+    const algorithm = yield* Effect.promise(() => Algorithm.resolve(args.algorithm))
+    if (!algorithm) throw new Error(`Algorithm not found: ${args.algorithm}`)
+    const database = yield* Database.Service
+    const runWorkflow = <A, E>(effect: Effect.Effect<A, E, Database.Service>) =>
+      Effect.runPromise(Effect.provideService(effect, Database.Service, database))
+    const approval = yield* Effect.promise(() =>
+      readApproval(strictRunDir(algorithm, args["run-id"]), "paper_eligible"),
+    )
+    const workflow = approval?.workflowId
+      ? yield* Effect.promise(() => runWorkflow(BuildWorkflowStore.get(approval.workflowId)))
+      : undefined
+    const authority = approval
+      ? controllerPaperApproval(workflow, {
+          algorithmId: algorithm.algorithmId,
+          algorithmVersion: algorithm.version,
+          runId: args["run-id"],
+          identityHash: approval.identityHash,
+        })
+      : undefined
+    const outcome = yield* Effect.promise(() =>
+      QcExecution.startPaperDeployment({
+        algorithm,
+        runId: args["run-id"],
+        authority,
+        ...(args.node ? { nodeId: args.node } : {}),
+        ...(args.capital ? { capital: args.capital } : {}),
+      }),
+    )
+    print(outcome)
+  }),
+})
+
+const QcStopDeploymentCommand = effectCmd({
+  command: "deployment-stop <deployment-id>",
+  describe: "stop a QuantConnect Paper deployment",
+  builder: (yargs) => yargs.positional("deployment-id", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.deploymentStop")(function* (args: { "deployment-id": string }) {
+    print(yield* Effect.promise(() => QcExecution.stopDeployment(args["deployment-id"])))
+  }),
+})
+
+const QcLiquidateDeploymentCommand = effectCmd({
+  command: "deployment-liquidate <deployment-id>",
+  describe: "liquidate positions and stop a QuantConnect Paper deployment",
+  builder: (yargs) => yargs.positional("deployment-id", { type: "string", demandOption: true }),
+  handler: Effect.fn("Cli.qc.deploymentLiquidate")(function* (args: { "deployment-id": string }) {
+    print(yield* Effect.promise(() => QcExecution.liquidateDeployment(args["deployment-id"])))
   }),
 })
 

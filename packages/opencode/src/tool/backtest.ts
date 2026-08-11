@@ -47,6 +47,14 @@ import { normalizeInterval } from "@/agent/request-identity"
 import { LeanAdapter } from "@/backtest/lean/adapter"
 import { isLeanProfile } from "@/backtest/lean/contracts"
 import { runtimeForCandidate, validateLeanSourceManifest } from "@/backtest/lean/select"
+import { getProjectLink } from "@/integration/qc-store"
+import {
+  runQcCompositeQualification,
+  writeQcCompositeEvidence,
+  type QcCompositeOutcome,
+  type QcLocalRunOutcome,
+} from "@/integration/qc-composite"
+import { readJson, strictRunDir } from "@/backtest/run-integrity-core"
 
 export function backtestAttemptFingerprint(input: {
   params: unknown
@@ -550,11 +558,15 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
             metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
           }
         }
-        if (candidateRuntime.profile.profileId === "qc_cloud") {
+        const qcLink =
+          candidateRuntime.profile.profileId === "qc_cloud"
+            ? yield* Effect.promise(() => getProjectLink(algo.algorithmId))
+            : undefined
+        if (candidateRuntime.profile.profileId === "qc_cloud" && !qcLink) {
           return {
             title: "Backtest blocked — cloud runtime requires QC workflow",
             output:
-              "BLOCKED: qc_cloud candidates cannot run through finny_backtest. Use the explicit QC Cloud backtest workflow; Finny will not substitute engine_v2.",
+              "BLOCKED: qc_cloud candidates must first link a QuantConnect project (qc link) before running the composite QC Cloud + Crucible backtest. Finny will not substitute engine_v2.",
             metadata: { algorithmName: params.algorithmName, params: undefined, results: undefined },
           }
         }
@@ -924,6 +936,72 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         })
         const unified = computedUnified
         await finishTrial(quality.label === "failed" ? "failed" : "passed", quality.label, r)
+
+        // QC Cloud + Crucible composite: the local gauntlet above is the
+        // Finny audit leg; the linked QC project must independently pass its
+        // own native-cloud gates before the composite verdict is meaningful.
+        let compositeOutcome: QcCompositeOutcome | undefined
+        if (candidateRuntime.profile.profileId === "qc_cloud" && qcLink) {
+          const localRunId = r.runId ?? ""
+          let runIdentityHash = ""
+          let runtimeHash = ""
+          if (localRunId) {
+            try {
+              const runJson = await readJson<{
+                identityHash?: string
+                identity?: { runtimeIdentity?: { runtimeHash?: string; adapterHash?: string } }
+              }>({ file: path.join(strictRunDir(algo, localRunId), "run.json") })
+              runIdentityHash = runJson?.identityHash ?? ""
+              runtimeHash =
+                runJson?.identity?.runtimeIdentity?.runtimeHash ??
+                runJson?.identity?.runtimeIdentity?.adapterHash ??
+                ""
+            } catch {}
+          }
+          const localOutcome: QcLocalRunOutcome = {
+            ok: true,
+            runId: localRunId,
+            identityHash: runIdentityHash,
+            runtimeHash,
+            engine: qcLink.language === "csharp" ? "lean_csharp" : "lean_python",
+            verdict: unified.verdict,
+            metrics: {
+              totalReturn: r.totalReturn,
+              sharpe: r.sharpeRatio,
+              maxDrawdown: r.maxDrawdown,
+              totalTrades: r.totalTrades,
+            },
+          }
+          compositeOutcome = await runQcCompositeQualification({
+            algorithm: algo,
+            interval: params.interval,
+            capital: Number(params.capital) || 10000,
+            startDate: effectiveStartDate ?? "",
+            endDate: effectiveEndDate ?? "",
+            local: localOutcome,
+          })
+          if (!compositeOutcome.ok || !compositeOutcome.identity) {
+            await finishTrial("failed", compositeOutcome.error ?? "QC Cloud composite leg failed", r)
+            return {
+              title: "Backtest failed — QC Cloud composite",
+              output:
+                `Composite QC backtest of "${params.algorithmName}" failed:\n` +
+                `${compositeOutcome.error ?? "QC Cloud leg did not complete"}\n` +
+                `The local Crucible run completed, but composite qualification requires both engines to pass.`,
+              metadata: {
+                ...emptyMeta,
+                results: { ...r, v2: undefined },
+                compositeVerdict: "failed",
+              },
+            }
+          }
+          await writeQcCompositeEvidence({
+            runDir: strictRunDir(algo, localRunId),
+            identity: compositeOutcome.identity,
+            outcome: compositeOutcome,
+          })
+        }
+
         if (workflow && experiment) {
           const controllerVerdict =
             unified.verdict === "recommended_for_paper" || unified.verdict === "failed"
@@ -1174,6 +1252,30 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
         if (decay?.reasons?.length) lines.push(`Reasons: ${decay.reasons.join("; ")}`)
         lines.push(`────────────────────────────────────────────────────`)
 
+        if (compositeOutcome) {
+          const c = compositeOutcome
+          const pct = (v: number | undefined) => (v === undefined ? "N/A" : `${(v * 100).toFixed(2)}%`)
+          lines.push(``, `── QC CLOUD + CRUCIBLE COMPOSITE ───────────────────`)
+          lines.push(`QC project: ${c.projectId} | Mode: ${c.mode}`)
+          if (c.backtestUrl) lines.push(`QC backtest: ${c.backtestUrl}`)
+          if (c.backtestId) lines.push(`QC backtest ID: ${c.backtestId}`)
+          if (c.canonical) {
+            lines.push(
+              `QC Cloud (native data): return ${pct(c.canonical.total_return)} | Sharpe ${c.canonical.sharpe?.toFixed(3) ?? "N/A"} | MaxDD ${pct(c.canonical.max_drawdown)} | trades ${c.canonical.total_trades ?? "N/A"}`,
+            )
+          }
+          for (const check of c.cloudGates?.checks ?? []) {
+            lines.push(`  [${check.passed ? "PASS" : "FAIL"}] ${check.name}: ${check.detail}`)
+          }
+          lines.push(`Composite verdict: ${c.compositeVerdict}`)
+          if (c.compositeVerdict !== "recommended_for_paper") {
+            lines.push(
+              `Local Crucible verdict was ${unified.verdict}; paper eligibility requires both engines to pass independently.`,
+            )
+          }
+          lines.push(`────────────────────────────────────────────────────`)
+        }
+
         lines.push(
           ``,
           `── UNIFIED VERDICT ─────────────────────────────────`,
@@ -1343,6 +1445,16 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
             walkForward,
             verdict: unified.verdict,
             verdictReasons: unified.reasons,
+            compositeVerdict: compositeOutcome?.compositeVerdict ?? undefined,
+            composite: compositeOutcome
+              ? {
+                  projectId: compositeOutcome.projectId,
+                  backtestId: compositeOutcome.backtestId,
+                  backtestUrl: compositeOutcome.backtestUrl,
+                  canonical: compositeOutcome.canonical,
+                  cloudGates: compositeOutcome.cloudGates,
+                }
+              : undefined,
             consistencyLabel: r.v2?.consistency?.label,
             decayLabel: r.v2?.alpha_decay?.label,
             reviewPacket,

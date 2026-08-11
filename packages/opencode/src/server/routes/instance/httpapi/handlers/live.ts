@@ -4,6 +4,7 @@ import { RobinhoodExecution } from "@/live/robinhood-execution"
 import { MCP } from "@/mcp"
 import { Algorithm } from "@/algorithm"
 import { GlobalBus } from "@/bus/global"
+import * as QcExecution from "@/integration/qc-execution"
 import { Effect } from "effect"
 import { Database } from "@opencode-ai/core/database/database"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
@@ -28,13 +29,22 @@ let bridgeUnsubscribe: (() => void) | undefined
 function ensureBridge() {
   if (bridgeUnsubscribe) return bridgeUnsubscribe
   let knownDirs = new Set<string>()
-  bridgeUnsubscribe = LiveRunner.subscribeAll((runs) => {
+  const publish = (runs: LiveRunner.Run[]) => {
     const byDir = new Map<string, LiveRunner.Run[]>()
     for (const run of runs) {
       const dir = run.directory ?? "global"
       const list = byDir.get(dir) ?? []
       list.push(run)
       byDir.set(dir, list)
+    }
+    // QC deployments are account-level (no project directory): surface them
+    // in every known project view as well as the global view.
+    const qcRuns = runs.filter((run) => run.directory === undefined)
+    if (qcRuns.length > 0) {
+      for (const dir of knownDirs) {
+        const list = byDir.get(dir) ?? []
+        byDir.set(dir, [...list, ...qcRuns])
+      }
     }
     // A directory whose runs all went away still needs one empty update so the
     // client clears its store.
@@ -46,8 +56,20 @@ function ensureBridge() {
         payload: { type: "live.runs", properties: { runs: dirRuns } },
       })
     }
+  }
+  bridgeUnsubscribe = LiveRunner.subscribeAll((runs) => {
+    // QC deployments are account-level: surface them in every project view.
+    const qcRuns = QcExecution.list()
+    publish([...runs, ...qcRuns])
   })
-  return bridgeUnsubscribe
+  const qcUnsubscribe = QcExecution.subscribeAll((qcRuns) => {
+    publish([...LiveRunner.list(), ...qcRuns])
+  })
+  void QcExecution.ensureRunning().catch(() => undefined)
+  return () => {
+    bridgeUnsubscribe?.()
+    qcUnsubscribe()
+  }
 }
 
 export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handlers) =>
@@ -66,12 +88,14 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
 
     const list = Effect.fn("LiveHttpApi.list")(function* () {
       const dir = yield* InstanceState.directory
-      return LiveRunner.list().filter((r) => r.directory === dir)
+      return [...LiveRunner.list().filter((r) => r.directory === dir), ...QcExecution.list()]
     })
 
     const get = Effect.fn("LiveHttpApi.get")(function* (ctx: { params: { id: string } }) {
       const dir = yield* InstanceState.directory
       const run = LiveRunner.get(ctx.params.id)
+      const qcRun = QcExecution.get(ctx.params.id)
+      if (qcRun) return qcRun
       if (!run || run.directory !== dir) {
         return yield* Effect.fail(
           new LiveRunNotFoundError({ runID: ctx.params.id, message: `Live run not found: ${ctx.params.id}` }),
@@ -174,12 +198,40 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
     })
 
     const stop = Effect.fn("LiveHttpApi.stop")(function* (ctx: { params: { id: string } }) {
+      const qcRun = QcExecution.get(ctx.params.id)
+      if (qcRun) {
+        yield* Effect.promise(() => QcExecution.stopDeployment(qcRun.qc.deploymentId))
+        return true
+      }
+      yield* assertRunInDirectory(ctx.params.id)
+      yield* Effect.promise(() => LiveRunner.stop(ctx.params.id))
+      return true
+    })
+
+    const liquidate = Effect.fn("LiveHttpApi.liquidate")(function* (ctx: { params: { id: string } }) {
+      const qcRun = QcExecution.get(ctx.params.id)
+      if (qcRun) {
+        yield* Effect.promise(() => QcExecution.liquidateDeployment(qcRun.qc.deploymentId))
+        return true
+      }
+      // Local brokers stop without a separate liquidate verb in v1.
       yield* assertRunInDirectory(ctx.params.id)
       yield* Effect.promise(() => LiveRunner.stop(ctx.params.id))
       return true
     })
 
     const remove = Effect.fn("LiveHttpApi.remove")(function* (ctx: { params: { id: string } }) {
+      const qcRun = QcExecution.get(ctx.params.id)
+      if (qcRun) {
+        // QC deployments are durable records; removal is not exposed. External
+        // (pre-existing) QC runs stay read-only until adopted for management.
+        return yield* Effect.fail(
+          new ConflictError({
+            resource: `live:${ctx.params.id}`,
+            message: "QuantConnect deployments are durable records and cannot be removed from the run list.",
+          }),
+        )
+      }
       const run = yield* assertRunInDirectory(ctx.params.id)
       if (!LiveRunner.canRemoveStatus(run.status)) {
         return yield* Effect.fail(
@@ -199,6 +251,7 @@ export const liveHandlers = HttpApiBuilder.group(InstanceHttpApi, "live", (handl
       .handle("get", get)
       .handle("start", start)
       .handle("stop", stop)
+      .handle("liquidate", liquidate)
       .handle("remove", remove)
   }),
 )

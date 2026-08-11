@@ -11,11 +11,23 @@ import {
   verifyRunForAlgorithm,
   writePaperApproval,
 } from "../backtest/run-integrity"
+import { startPaperDeployment } from "@/integration/qc-execution"
+import { getProjectLink } from "@/integration/qc-store"
 import { Tool } from "./tool"
 
 const parameters = z.object({
   algorithmName: z.string().describe("Name of the saved algorithm whose exact recommended run should be approved for paper trading."),
   runId: z.string().min(1).describe("Immutable strict run id to approve. Approval never defaults to the newest run."),
+  qcDeployToProjectId: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Optional QuantConnect project id to deploy this exact approved run to QC Paper. Must equal the algorithm's linked project. One confirmation both writes the approval and starts the deployment.",
+    ),
+  qcNodeId: z.string().optional().describe("Optional QuantConnect live node id; defaults to the first free node."),
+  qcCapital: z.number().positive().optional().describe("Optional starting cash for the QuantConnect Paper brokerage (defaults to the run's effective configuration)."),
 })
 
 type ApprovalMetadata = {
@@ -23,6 +35,13 @@ type ApprovalMetadata = {
   runId?: string
   runPath?: string
   identityHash?: string
+  qcDeployment?: {
+    deploymentId?: string
+    projectId?: number | string
+    status?: string
+    error?: string
+    idempotent?: boolean
+  }
   errors?: string[]
 }
 
@@ -125,6 +144,69 @@ export const PaperApproveTool = Tool.define<typeof parameters, ApprovalMetadata,
         }
 
         const approved = await writePaperApproval({ dir, run, authority })
+        if (params.qcDeployToProjectId !== undefined) {
+          const link = await getProjectLink(algo.algorithmId)
+          if (!link) {
+            return {
+              title: "Paper approval saved, QC deployment refused",
+              output:
+                `Run ${run.runId} is paper_eligible, but the algorithm is not linked to a QuantConnect project. ` +
+                "Link the project (qc link) and retry the deployment with the same run.",
+              metadata: {
+                approved: true,
+                runId: run.runId,
+                runPath: path.join(dir, "run.json"),
+                identityHash: run.identityHash,
+                qcDeployment: { error: "algorithm is not linked to a QuantConnect project" },
+              } satisfies ApprovalMetadata,
+            }
+          }
+          if (link.projectId !== params.qcDeployToProjectId) {
+            return {
+              title: "Paper approval saved, QC deployment refused",
+              output:
+                `Run ${run.runId} is paper_eligible, but project ${params.qcDeployToProjectId} is not the linked project (${link.projectId}). ` +
+                "Deployments are only allowed against the linked project for the exact approved source.",
+              metadata: {
+                approved: true,
+                runId: run.runId,
+                runPath: path.join(dir, "run.json"),
+                identityHash: run.identityHash,
+                qcDeployment: {
+                  error: `project ${params.qcDeployToProjectId} does not match the linked project ${link.projectId}`,
+                },
+              } satisfies ApprovalMetadata,
+            }
+          }
+          const deployment = await startPaperDeployment({
+            algorithm: algo,
+            runId: run.runId,
+            authority,
+            nodeId: params.qcNodeId,
+            capital: params.qcCapital,
+          })
+          return {
+            title: deployment.ok ? "Paper approved and deployed to QC" : "Paper approved, QC deployment failed",
+            output:
+              `Run ${run.runId} is paper_eligible through immutable approval.json bound to identity ${run.identityHash}.` +
+              (deployment.ok
+                ? `\nQC Paper deployment ${deployment.deploymentId} is ${deployment.status} on project ${deployment.projectId}.`
+                : `\nQC Paper deployment failed: ${deployment.error}. Approval remains valid; retry the deployment with the same run.`),
+            metadata: {
+              approved: true,
+              runId: run.runId,
+              runPath: path.join(dir, "run.json"),
+              identityHash: run.identityHash,
+              qcDeployment: {
+                deploymentId: deployment.deploymentId,
+                projectId: deployment.projectId,
+                status: deployment.status,
+                ...(deployment.error ? { error: deployment.error } : {}),
+                ...(deployment.idempotent ? { idempotent: true } : {}),
+              },
+            } satisfies ApprovalMetadata,
+          }
+        }
         return {
           title: approved.created ? "Paper approved" : "Paper already approved",
           output: `Run ${run.runId} is paper_eligible through immutable approval.json bound to identity ${run.identityHash}.`,

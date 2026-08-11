@@ -225,7 +225,7 @@ describe("QC cloud track", () => {
       if (apiPath === "/live/read") {
         return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "RuntimeError", message: "strategy crashed" } }
       }
-      if (apiPath === "/live/stop") return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "Stopped" } }
+      if (apiPath === "/live/update/stop") return { success: true, live: { deployId: "L-err-1", projectId: 42, status: "Stopped" } }
       throw new Error(`unexpected ${apiPath}`)
     })
     const algorithm = {
@@ -249,7 +249,7 @@ describe("QC cloud track", () => {
     })
     expect(outcome.ok).toBe(false)
     expect(outcome.status).toBe("stopped")
-    expect(seen).toContain("/live/stop")
+    expect(seen).toContain("/live/update/stop")
     const ledger = await listPaperDeployments()
     expect(ledger.find((entry) => entry.deploymentId === "L-err-1")?.status).toBe("stopped")
   })

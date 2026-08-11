@@ -18,6 +18,7 @@ import { BrokerRegistry } from "@/live/brokers"
 import { runLeanEngineInRunner } from "./lean/engine-run"
 import { isLeanProfile } from "./lean/contracts"
 import { runtimeForCandidate } from "./lean/select"
+import { getProjectLink } from "@/integration/qc-store"
 import { evaluateBacktestQuality } from "./evaluation"
 import type { ExperimentReference } from "./experiment"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
@@ -2852,14 +2853,24 @@ if __name__ == "__main__":
         kind: "config_invalid",
       }
     }
-    if (leanRuntime.profile.profileId === "qc_cloud") {
+    const linkedQc =
+      leanRuntime.profile.profileId === "qc_cloud" ? await getProjectLink(algorithm.algorithmId) : undefined
+    if (leanRuntime.profile.profileId === "qc_cloud" && !linkedQc) {
       return {
         ok: false,
-        error: "qc_cloud candidates must use the explicit QC Cloud workflow; local engine fallback is disabled.",
+        error:
+          "qc_cloud candidates must link a QuantConnect project first (qc link) and use the composite QC workflow; local engine fallback is disabled.",
         kind: "config_invalid",
       }
     }
-    const isLeanRun = isLeanProfile(leanRuntime.profile)
+    const isLeanRun = isLeanProfile(leanRuntime.profile) || Boolean(linkedQc)
+    const leanProfileId: "lean_python" | "lean_csharp" = linkedQc
+      ? linkedQc.language === "csharp"
+        ? "lean_csharp"
+        : "lean_python"
+      : leanRuntime.profile.profileId === "lean_csharp"
+        ? "lean_csharp"
+        : "lean_python"
     const validation = isLeanRun
       ? ({ valid: true, errors: [], warnings: [] } as unknown as Awaited<ReturnType<typeof Validate.run>>)
       : await Validate.run(algorithm.code, { config: effectiveConfig })
@@ -3098,7 +3109,7 @@ if __name__ == "__main__":
           startDate: start,
           endDate: end,
           walkForwardFolds: robustness.walkForwardFolds ?? 0,
-          runtimeProfileId: leanRuntime.profile.profileId === "lean_csharp" ? "lean_csharp" : "lean_python",
+          runtimeProfileId: leanProfileId,
         })
         if (!leanOutcome.ok) {
           emit({
