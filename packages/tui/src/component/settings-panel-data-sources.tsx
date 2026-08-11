@@ -7,6 +7,7 @@ import { useToast } from "../ui/toast"
 import { Card } from "./card"
 import { SettingsPanelPaperTrading } from "./settings-panel-paper-trading"
 import { SettingsPanelWebSearch } from "./settings-panel-websearch"
+import { SettingsPanelQuantConnect } from "./settings-panel-quantconnect"
 
 type DataAgentInstructions = {
   path: "data-agent/instructions.md"
@@ -15,7 +16,7 @@ type DataAgentInstructions = {
   exists: boolean
 }
 
-type DataSourceSection = "instructions" | "brokerages" | "websearch"
+type DataSourceSection = "instructions" | "brokerages" | "websearch" | "quantconnect"
 
 const DATA_AGENT_INSTRUCTIONS_PATH = "data-agent/instructions.md"
 const SECTIONS: { id: DataSourceSection; label: string; description: string }[] = [
@@ -33,6 +34,11 @@ const SECTIONS: { id: DataSourceSection; label: string; description: string }[] 
     id: "websearch",
     label: "Web search",
     description: "Perplexity API key",
+  },
+  {
+    id: "quantconnect",
+    label: "QuantConnect",
+    description: "Mode, credentials, deployments",
   },
 ]
 
@@ -85,6 +91,9 @@ export function SettingsPanelDataSources(props: { initialSection?: DataSourceSec
         </Show>
         <Show when={section() === "websearch"}>
           <SettingsPanelWebSearch />
+        </Show>
+        <Show when={section() === "quantconnect"}>
+          <SettingsPanelQuantConnect />
         </Show>
       </box>
     </box>
