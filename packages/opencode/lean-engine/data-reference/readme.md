@@ -1,4 +1,4 @@
-![alt tag](https://raw.githubusercontent.com/QuantConnect/Lean/master/Documentation/logo.white.small.png) 
+![alt tag](https://raw.githubusercontent.com/QuantConnect/Lean/master/Documentation/logo.white.small.png)
 ## LEAN Data Formats
 
 ### Introduction ###
@@ -37,7 +37,7 @@ LEAN has a few core data types represented in all the asset classes we support. 
 
 ### Data Readers
 
-All data is parsed from disk via `Reader()` methods. The Reader takes a single line of the file and converts it the appropriate type. i.e. `TradeBar.Reader()` method is a factory which returns TradeBar objects. When implementing custom data, Readers are used 
+All data is parsed from disk via `Reader()` methods. The Reader takes a single line of the file and converts it the appropriate type. i.e. `TradeBar.Reader()` method is a factory which returns TradeBar objects. When implementing custom data, Readers are used
 
 
 ### Other Data Formats ###
