@@ -10,9 +10,10 @@ run path. See `LICENSE`/`NOTICE` handling below.
 `LEAN_COMMIT` is pinned in the Dockerfile to
 `c6cc3b743ed7b65d5e0b9fa2bfc18b7d3ac2aea0`. The TypeScript side pins the same
 commit in `src/backtest/lean/contracts.ts` (`LEAN_PINNED_COMMIT`) and the
-published image digest (`LEAN_PINNED_IMAGE_DIGEST`). The digest is a
-placeholder until the first certified image is published; the adapter refuses
-to run while it is a placeholder.
+published image digest (`LEAN_PINNED_IMAGE_DIGEST`). The certified digest is
+`sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652`;
+the adapter only refuses to run when the constant is still the
+`sha256:000000000000...` placeholder used before a certification lands.
 
 An engine upgrade is a dedicated PR that must update all of:
 

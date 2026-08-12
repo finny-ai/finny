@@ -514,7 +514,7 @@ export const BacktestTool = Tool.define<typeof BacktestParameters, BacktestToolM
 
     return {
     description:
-      "Run the full Crucible backtest gauntlet on a saved algorithm in one call: Crucible-owned market-data collection, strict quality validation, base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. Data Agent artifacts are optional strategy research and are not backtest inputs or prerequisites. For promotion qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
+      "Run the full backtest gauntlet on a saved algorithm in one call: market-data collection, strict quality validation, base backtest, walk-forward, Monte Carlo, regimes, consistency, alpha decay, deterministic verdict, and durability baseline. The runtime is the saved algorithm's declared profile and is never substituted: finny_python runs the Crucible engine_v2 path; lean_python/lean_csharp run the pinned native LEAN container with the strategySource file manifest (auto-derived from the saved code when a lean_python algorithm is saved without one); qc_cloud runs the composite local Crucible gauntlet plus the linked QuantConnect Cloud project. Data Agent artifacts are optional strategy research and are not backtest inputs or prerequisites. For promotion qualification, call qualify_candidate(candidateId, experimentPlanId); runtime code then owns every legal phase window and transition.",
     parameters: BacktestParameters,
     execute: (params: z.infer<typeof BacktestParameters>, ctx: Tool.Context) =>
       Effect.gen(function* () {

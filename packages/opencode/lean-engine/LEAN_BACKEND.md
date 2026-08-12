@@ -38,10 +38,12 @@ Every LEAN run:
 5. Feeds only canonical `CrucibleResultV1` fields into qualification gates;
    raw LEAN statistics are evidence-only and never promotable.
 
-The feature flag `FINNY_LEAN_ENABLED=1` plus the adapter certificate
-(`FINNY_LEAN_ADAPTER_CERT=finny-lean-adapter-cert-v1`) and a verified pinned
-image are all required before any execution. Everything else fails closed
-with a typed blocker; there is no engine fallback.
+LEAN is enabled by default — no environment activation is required. The
+adapter certificate (`finny-lean-adapter-cert-v1`) and the verified pinned
+image are required before any execution; `FINNY_LEAN_ENABLED=1` /
+`FINNY_LEAN_ADAPTER_CERT` exist only as test/harness overrides (see the
+control-plane section below). Everything else fails closed with a typed
+blocker; there is no engine fallback.
 
 ## Rollout gates
 
