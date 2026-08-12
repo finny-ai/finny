@@ -39,6 +39,7 @@ import {
 import { resolveWorkspacePrepareWindow, WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
+import { InvalidArgumentsError } from "../../src/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
 import { StrategyContext } from "@/task/strategy-context"
@@ -682,6 +683,49 @@ describe("tool.task", () => {
       expect(Exit.isFailure(crossMode)).toBe(true)
       expect(Exit.isFailure(oneItemBatch)).toBe(true)
       expect(launched).toBe(false)
+    }),
+  )
+
+  it.instance("lists the allowed keys when a hallucinated task key is rejected", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const batch = yield* TaskBatchRunTool
+      const batchDef = yield* batch.init()
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps() },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      const exit = yield* Effect.exit(
+        batchDef.execute(
+          {
+            tasks: [
+              {
+                description: "Inspect data",
+                prompt: "Inspect the data",
+                subagent_type: "data_extractor",
+                description_suffix: "",
+              },
+            ],
+          } as never,
+          context,
+        ),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+
+      const die = exit.cause.reasons.find(Cause.isDieReason)
+      const error = die?.defect
+      expect(error).toBeInstanceOf(InvalidArgumentsError)
+      const message = (error as InvalidArgumentsError).message
+      expect(message).toContain("description_suffix")
+      expect(message).toContain("Allowed keys: description, prompt, subagent_type")
     }),
   )
 

@@ -137,7 +137,9 @@ function wrap<Parameters extends ParameterSchema, Result extends Metadata>(
               (error) =>
                 new InvalidArgumentsError({
                   tool: id,
-                  detail: toolInfo.formatValidationError ? toolInfo.formatValidationError(error) : formatValidationError(error),
+                  detail: toolInfo.formatValidationError
+                    ? toolInfo.formatValidationError(error)
+                    : formatValidationError(error, toolInfo.jsonSchema),
                 }),
             ),
           )
@@ -208,13 +210,57 @@ function decoder<Parameters extends ParameterSchema>(schema: Parameters, options
   return Schema.decodeUnknownEffect(schema, options) as (args: unknown) => Effect.Effect<ParameterType<Parameters>, unknown>
 }
 
-function formatValidationError(error: unknown) {
+function formatValidationError(error: unknown, jsonSchema?: JSONSchema7 | undefined) {
   if (error instanceof z.ZodError) {
     return error.issues
       .map((issue) => `${issue.path.length ? issue.path.join(".") : "input"}: ${issue.message}`)
       .join("; ")
   }
-  return String(error)
+  const text = String(error)
+  // Excess-property rejections (parseOptions.onExcessProperty: "error") are
+  // the most self-correctable class of hallucinated tool calls: the model
+  // invented a key that does not exist. Resolve the rejected key's container
+  // in the tool's JSON schema and list the keys that do exist so the model can
+  // rewrite the call instead of guessing.
+  const excess = /Unexpected key[^\n]*\n\s*at (\[[^\n]+\])/.exec(text)
+  if (excess && jsonSchema) {
+    const keys = allowedKeysAtPath(jsonSchema, excess[1]!)
+    if (keys && keys.length > 0) return `${text}\nAllowed keys: ${keys.join(", ")}.`
+  }
+  return text
+}
+
+function excessPropertyPathTokens(renderedPath: string): string[] | undefined {
+  const tokens: string[] = []
+  const tokenRe = /\[("(?:[^"\\]|\\.)*"|-?\d+)\]/g
+  let match: RegExpExecArray | null
+  while ((match = tokenRe.exec(renderedPath))) {
+    const raw = match[1]!
+    tokens.push(raw.startsWith('"') ? (JSON.parse(raw) as string) : raw)
+  }
+  return tokens.length > 0 ? tokens : undefined
+}
+
+function allowedKeysAtPath(jsonSchema: JSONSchema7, renderedPath: string): string[] | undefined {
+  const tokens = excessPropertyPathTokens(renderedPath)
+  if (!tokens) return undefined
+  // The last token is the rejected key; its parent object lists the allowed keys.
+  let node: unknown = jsonSchema
+  for (const token of tokens.slice(0, -1)) {
+    if (typeof node !== "object" || node === null) return undefined
+    const record = node as Record<string, unknown>
+    if (/^\d+$/.test(token)) {
+      node = record.items
+    } else {
+      node = (record.properties as Record<string, unknown> | undefined)?.[token]
+    }
+    if (node === undefined) return undefined
+  }
+  if (typeof node !== "object" || node === null) return undefined
+  const properties = (node as Record<string, unknown>).properties
+  if (typeof properties !== "object" || properties === null) return undefined
+  const keys = Object.keys(properties)
+  return keys.length > 0 ? keys : undefined
 }
 
 function isZodType(value: unknown): value is z.ZodType {
