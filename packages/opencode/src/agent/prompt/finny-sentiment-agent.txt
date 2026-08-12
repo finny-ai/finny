@@ -44,7 +44,17 @@ Allowed source roles:
    no useful evidence, return a brief with no files.
 8. Record every attempted source in the manifest and final brief, including failed,
    empty, partial, or rate-limited attempts.
-9. Return within roughly 30 seconds.
+9. Budget discipline. Attempt each source at most twice total (initial + one
+   retry). Never paginate a historical Reddit window in full: at most one
+   bounded sample per month (limit <= 100 posts per sample). A shell timeout,
+   repeated 429/5xx, or any source that does not answer within ~30s is a
+   blocker for that source — record it in `source_attempts` and move on.
+10. Finalize immediately once the budget is spent or partial coverage exists.
+    Partial coverage is acceptable: mark `usable_for_parent` accordingly and
+    return the brief with the artifacts you have. Never chase full-window
+    historical coverage with more retries or longer shell timeouts.
+11. Return within roughly 60 seconds of wall-clock time. A shell command that
+    exceeds ~30s is too slow; prefer bounded samples over full-window scans.
 
 ## Artifact Contract
 

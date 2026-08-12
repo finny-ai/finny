@@ -75,6 +75,37 @@ import type { BuildWorkflowState } from "@/algorithm/build-workflow/types"
 export const EMPTY_SUBAGENT_RESULT_MARKER =
   "BLOCKED: subagent returned no usable output (final turn aborted or empty) — do not treat this as evidence."
 
+/**
+ * Wall-clock cap for a single child task run. Evidence subagents (especially
+ * sentiment/news) can stall on network calls, unbounded pagination, or slow
+ * shells; without a deadline a stuck child keeps `task_batch_run` from ever
+ * returning. On expiry the child session is cancelled and the task is
+ * terminalized as BLOCKED with whatever partial artifacts it produced.
+ */
+export const CHILD_TASK_WALL_CLOCK_DEADLINE_MS = 240_000
+
+/** Final text of a child task that exceeded the wall-clock deadline. */
+export const CHILD_TASK_DEADLINE_TEXT =
+  "BLOCKED: task exceeded the 4-minute wall-clock deadline and was terminalized with partial artifacts — do not treat this as evidence."
+
+/**
+ * Races the child run against the wall-clock deadline. When the child wins,
+ * the deadline arm is discarded. When the deadline fires first, the child run
+ * is interrupted, the child session is cancelled, and a BLOCKED result is
+ * returned so the parent flow records a blocked task instead of hanging.
+ */
+export function withChildTaskDeadline(
+  run: Effect.Effect<string, unknown>,
+  cancel: Effect.Effect<void>,
+): Effect.Effect<string, unknown> {
+  return Effect.raceFirst(
+    run,
+    Effect.sleep(CHILD_TASK_WALL_CLOCK_DEADLINE_MS).pipe(
+      Effect.flatMap(() => cancel.pipe(Effect.as(CHILD_TASK_DEADLINE_TEXT))),
+    ),
+  )
+}
+
 /** Final text of a subagent run; the BLOCKED marker when there is none. */
 export function finalTaskText(parts: ReadonlyArray<{ type: string; text?: string }>): string {
   const text = parts.findLast((item) => item.type === "text")?.text?.trim() ?? ""
@@ -1803,7 +1834,7 @@ const taskExecutor = Effect.gen(function* () {
       if (scriptedHarness) return yield* runTask()
       const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id, database)))
       if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
-      const exit = yield* Effect.exit(runTask())
+      const exit = yield* Effect.exit(withChildTaskDeadline(runTask(), ops.cancel(nextSession.id)))
       if (Exit.isSuccess(exit)) {
         const text = exit.value
         const status = taskResultStatus(text)

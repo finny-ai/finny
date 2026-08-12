@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import * as Ref from "effect/Ref"
+import * as TestClock from "effect/testing/TestClock"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -16,6 +18,8 @@ import { SessionStatus } from "@/session/status"
 
 import {
   completedIntradayWindow,
+  CHILD_TASK_DEADLINE_TEXT,
+  CHILD_TASK_WALL_CLOCK_DEADLINE_MS,
   evidenceDelegationBlock,
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalSpecialistTaskText,
@@ -29,6 +33,7 @@ import {
   TaskRunTool,
   TaskStartTool,
   TaskTool,
+  withChildTaskDeadline,
   type TaskPromptOps,
 } from "../../src/tool/task"
 import { resolveWorkspacePrepareWindow, WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
@@ -4458,6 +4463,42 @@ describe("tool.task", () => {
 
       expect((yield* jobs.get(child.id))?.status).toBe("cancelled")
       expect((yield* jobs.get(grandchild.id))?.status).toBe("cancelled")
+    }),
+  )
+})
+
+describe("child task wall-clock deadline", () => {
+  it.effect("returns the run result when the child finishes before the deadline", () =>
+    Effect.gen(function* () {
+      const text = yield* withChildTaskDeadline(Effect.succeed("done"), Effect.void)
+      expect(text).toBe("done")
+    }),
+  )
+
+  it.effect("terminalizes a stuck child as BLOCKED after the deadline and cancels it", () =>
+    Effect.gen(function* () {
+      const canceled = yield* Ref.make(false)
+      const fiber = yield* withChildTaskDeadline(
+        Effect.never,
+        Ref.set(canceled, true).pipe(Effect.asVoid),
+      ).pipe(Effect.forkChild)
+      yield* TestClock.adjust(CHILD_TASK_WALL_CLOCK_DEADLINE_MS + 1_000)
+      const text = yield* Fiber.join(fiber)
+      expect(text).toBe(CHILD_TASK_DEADLINE_TEXT)
+      expect(text).toMatch(/^BLOCKED:/)
+      expect(yield* Ref.get(canceled)).toBe(true)
+    }),
+  )
+
+  it.effect("does not cancel a child that finishes first", () =>
+    Effect.gen(function* () {
+      const canceled = yield* Ref.make(false)
+      const text = yield* withChildTaskDeadline(
+        Effect.succeed("fast result"),
+        Ref.set(canceled, true).pipe(Effect.asVoid),
+      )
+      expect(text).toBe("fast result")
+      expect(yield* Ref.get(canceled)).toBe(false)
     }),
   )
 })
