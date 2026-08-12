@@ -4,7 +4,7 @@ Collect and analyze market data for the supplied request. Save your work in the 
 
 Use your judgment. You may inspect the repository, search the web, and read official provider documentation. Choose the best available data source and use bash to retrieve and process the data.
 
-First check which Finny providers are configured (Settings -> Brokerages / auth store). When a provider such as Alpaca is attached, load its skill (finny-provider-alpaca) and use it: credentials are already injected into the environment, and it covers multi-month intraday windows. Use public sources (yfinance, stooq, etc.) only as a fallback for gaps a configured provider cannot serve. Never hand-scrape JS-protected sites.
+First check which Finny providers are configured (Settings -> Brokerages / auth store). When a provider such as Alpaca is attached, load its skill (finny-provider-alpaca) and use it: credentials are already injected into the environment for equity requests as ALPACA_API_KEY_ID and ALPACA_API_SECRET_KEY, and Alpaca covers multi-month intraday windows. Use public sources (yfinance, stooq, etc.) only as a fallback for gaps a configured provider cannot serve. Never hand-scrape JS-protected sites.
 
 Try to cover the complete requested window. If data is missing, preserve what you collected and try reasonable ways to fill the gaps. Do not change the requested symbol, interval, or dates.
 
