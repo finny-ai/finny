@@ -692,13 +692,18 @@ export const TaskRunParameters = Schema.Struct({ ...BaseParameterFields })
 const BatchTaskParameters = Schema.Struct({
   description: BaseParameterFields.description,
   prompt: BaseParameterFields.prompt,
-  subagent_type: BaseParameterFields.subagent_type,
+  subagent_type: Schema.optional(BaseParameterFields.subagent_type).annotate({
+    description:
+      "Optional when unambiguous: inferred from the description and prompt (data_extractor, news_agent, sec_agent, sentiment_agent, or researcher). Always include it for deterministic role routing.",
+  }),
 })
 
 export const TaskBatchRunParameters = Schema.Struct({
   tasks: Schema.Array(BatchTaskParameters).check(Schema.isLengthBetween(2, 4)).annotate({
     description:
-      "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
+      "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results. " +
+      "Each entry names a distinct subagent_type (data_extractor, news_agent, sec_agent, sentiment_agent, or researcher); " +
+      "if omitted, the type is inferred from the entry description and prompt.",
   }),
 })
 
@@ -706,6 +711,50 @@ type TaskStartParameters = Schema.Schema.Type<typeof TaskStartParameters>
 type TaskRunParameters = Schema.Schema.Type<typeof TaskRunParameters>
 type SingleTaskParameters = TaskStartParameters | TaskRunParameters
 type TaskBatchRunParameters = Schema.Schema.Type<typeof TaskBatchRunParameters>
+
+/**
+ * Infer a batch task's subagent type when the model omitted `subagent_type`.
+ * Only a single, unambiguous hint counts; otherwise the batch fails with an
+ * actionable message instead of a bare schema-validation error.
+ */
+const BATCH_SUBAGENT_TYPE_HINTS: ReadonlyArray<{ type: string; re: RegExp }> = [
+  { type: "data_extractor", re: /\bdata[\s_-]*extractor\b/i },
+  { type: "sec_agent", re: /\bsec[\s_-]*agent\b|\bedgar\b|\bfiling[s]?\b|\b(?:10-?[kq]|8-?k|form\s*4)\b/i },
+  { type: "sentiment_agent", re: /\bsentiment\b/i },
+  { type: "news_agent", re: /\bnews\b/i },
+  { type: "researcher", re: /\bresearcher\b/i },
+]
+
+export function inferBatchSubagentType(task: { description: string; prompt: string }): string | undefined {
+  const text = `${task.description}\n${task.prompt}`
+  const matches = BATCH_SUBAGENT_TYPE_HINTS.filter((hint) => hint.re.test(text)).map((hint) => hint.type)
+  const unique = [...new Set(matches)]
+  return unique.length === 1 ? unique[0]! : undefined
+}
+
+const VALID_BATCH_SUBAGENT_TYPES = ["data_extractor", "news_agent", "sec_agent", "sentiment_agent", "researcher"] as const
+
+export function resolveBatchSubagentType(task: {
+  description: string
+  prompt: string
+  subagent_type?: string
+}): string {
+  const explicit = task.subagent_type?.trim()
+  if (explicit) {
+    if (!finnySubagentType(explicit)) {
+      throw new Error(
+        `Unknown subagent_type "${explicit}" for task_batch_run. Valid types: ${VALID_BATCH_SUBAGENT_TYPES.join(", ")}.`,
+      )
+    }
+    return explicit
+  }
+  const inferred = inferBatchSubagentType(task)
+  if (inferred) return inferred
+  throw new Error(
+    `task_batch_run requires a subagent_type per task (${VALID_BATCH_SUBAGENT_TYPES.join(", ")}). ` +
+      "Add subagent_type to each entry, or make the description/prompt unambiguous (e.g. \"data extractor\", \"news brief\", \"SEC filings\", \"sentiment aggregate\").",
+  )
+}
 
 function closedJsonSchema(schema: Schema.Top, nestedArrayProperty?: string): JSONSchema7 {
   const json = ToolJsonSchema.fromSchema(schema)
@@ -2062,7 +2111,18 @@ const taskExecutor = Effect.gen(function* () {
   })
 
   const runBatch = Effect.fn("TaskTool.executeBatch")(function* (params: TaskBatchRunParameters, ctx: Tool.Context) {
-    const subagentTypes = params.tasks.map((task) => task.subagent_type)
+    // Resolve each entry's role before any validation or launch: an omitted
+    // subagent_type is inferred, and an unknown or ambiguous one fails with an
+    // actionable message instead of a bare schema-validation error.
+    const resolvedTasks = yield* Effect.all(
+      params.tasks.map((task) =>
+        Effect.try({
+          try: () => ({ ...task, subagent_type: resolveBatchSubagentType(task) }),
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        }),
+      ),
+    )
+    const subagentTypes = resolvedTasks.map((task) => task.subagent_type)
     if (new Set(subagentTypes).size !== subagentTypes.length) {
       return yield* Effect.fail(new Error("Task batch mode requires distinct subagent types"))
     }
@@ -2094,7 +2154,7 @@ const taskExecutor = Effect.gen(function* () {
       )
     ) {
       const bootstrapped = yield* Effect.promise(() =>
-        bootstrapWorkspace(ctx.sessionID, params.tasks.map((task) => task.prompt).join("\n\n")).catch(() => undefined),
+        bootstrapWorkspace(ctx.sessionID, resolvedTasks.map((task) => task.prompt).join("\n\n")).catch(() => undefined),
       )
       if (bootstrapped?.slug) {
         yield* Effect.promise(() => bindSessionWorkspace(ctx.sessionID, bootstrapped.slug).catch(() => {}))
@@ -2107,7 +2167,7 @@ const taskExecutor = Effect.gen(function* () {
     // belong to different symbols.
     const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
     const parentFacts = yield* Effect.promise(() => readRuntimeRequestFacts(ctx.sessionID))
-    const canonicalTask = params.tasks.find((task) => task.subagent_type === "data_extractor") ?? params.tasks[0]
+    const canonicalTask = resolvedTasks.find((task) => task.subagent_type === "data_extractor") ?? resolvedTasks[0]
     if (workspace && canonicalTask && !requestHasIdentity(parentFacts)) {
       yield* Effect.promise(() =>
         syncWorkspaceRequestContext({
@@ -2125,12 +2185,12 @@ const taskExecutor = Effect.gen(function* () {
       ({
         parentSessionId: ctx.sessionID,
         batch: true,
-        taskCount: params.tasks.length,
+        taskCount: resolvedTasks.length,
         subagentTypes,
         subagents,
       }) as TaskMetadata
     const updateRunningBatch =
-      (task: TaskBatchRunParameters["tasks"][number]) => (val: { title?: string; metadata?: TaskMetadata }) =>
+      (task: (typeof resolvedTasks)[number]) => (val: { title?: string; metadata?: TaskMetadata }) =>
         Effect.gen(function* () {
           const sessionId = val.metadata?.sessionId
           if (!sessionId) return
@@ -2147,7 +2207,7 @@ const taskExecutor = Effect.gen(function* () {
         })
 
     const exits = yield* Effect.all(
-      params.tasks.map((task) =>
+      resolvedTasks.map((task) =>
         Effect.exit(
           runSingle(
             task,
@@ -2166,7 +2226,7 @@ const taskExecutor = Effect.gen(function* () {
       },
     )
     const results = exits.map((exit, index) => {
-      const task = params.tasks[index]
+      const task = resolvedTasks[index]!
       if (Exit.isSuccess(exit)) {
         const state = exit.value.metadata.background === true ? ("running" as const) : ("completed" as const)
         return {

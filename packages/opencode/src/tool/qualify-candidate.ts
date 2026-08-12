@@ -161,7 +161,7 @@ async function runLeanQualificationFlow(input: {
       code: "lean_runtime_unavailable",
       field: "runtime",
       message: `LEAN runtime is not ready: ${probe.reasons.join("; ")}`,
-      next: "activate FINNY_LEAN_ENABLED, the adapter certificate, and the pinned engine image",
+      next: "enable the LEAN engine (Settings or `lean enable`), the adapter certificate, and the pinned engine image",
     })
   }
 

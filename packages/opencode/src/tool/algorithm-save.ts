@@ -407,8 +407,8 @@ const parameters = z.object({
     .optional()
     .describe(
       "Execution runtime for this version. Defaults to finny_python (existing engine_v2 path). " +
-        "lean_python/lean_csharp are opt-in LEAN runtimes that additionally require strategySource and stay " +
-        "non-promotable until the LEAN adapter certificate is active.",
+        "lean_python/lean_csharp are native LEAN runtimes (enabled by default, no env activation) that " +
+        "additionally require strategySource and stay non-promotable until the LEAN adapter certificate is active.",
     ),
   strategySource: z
     .object({

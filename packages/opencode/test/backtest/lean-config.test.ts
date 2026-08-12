@@ -42,13 +42,25 @@ afterEach(async () => {
 })
 
 describe("native LEAN engine config", () => {
-  test("defaults to disabled without any setting or env", async () => {
+  test("defaults to enabled and certified without any setting or env", async () => {
     isolatedHome()
     const status = await leanConfigStatus()
-    expect(status.enabled).toBe(false)
+    expect(status.enabled).toBe(true)
+    expect(status.adapterCert).toBe(LEAN_ADAPTER_CERT_VALUE)
+    expect(status.effective).toBe(true)
     expect(status.source).toBe("default")
+    expect(isLeanEnabledSync()).toBe(true)
+    expect(isLeanCertifiedSync()).toBe(true)
+    expect(new LeanAdapter().probeReady().ready).toBe(true)
+  })
+
+  test("explicit FINNY_LEAN_ENABLED=0 still force-disables the native default", async () => {
+    isolatedHome()
+    expect(isLeanEnabledSync()).toBe(true)
+    process.env.FINNY_LEAN_ENABLED = "0"
     expect(isLeanEnabledSync()).toBe(false)
     expect(new LeanAdapter().probeReady().ready).toBe(false)
+    expect(new LeanAdapter().probeReady().reasons.join(" ")).toContain("disabled")
   })
 
   test("enable persists and pins the certified adapter certificate", async () => {
