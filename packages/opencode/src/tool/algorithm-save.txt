@@ -12,6 +12,8 @@ Use this tool to save a trading algorithm to Finny's local storage. Every saved 
 - **docsMode**: Required with `saveMode: "version"`. Use `"inherit"` to snapshot the prior mission/preferences/risk unchanged, or `"replace"` to provide replacements. Decisions are append-only in either mode.
 - A successful save with advisory warnings is already valid and ready for backtesting. Do not create another version solely to clear an advisory warning; proceed with the requested backtest workflow.
 - **language**: Programming language, defaults to "python"
+- **runtimeProfile**: Execution runtime for this version. One of `finny_python` (default), `lean_python`, `lean_csharp`, or `qc_cloud`. See **Runtime profile** below.
+- **strategySource**: File manifest (`path`, `sha256`, `bytes`) for LEAN projects. Required for `lean_csharp`; auto-derived from `code` for `lean_python`. Do not pass it for `finny_python`.
 - **description**: A brief human-readable summary of what the strategy does
 - **config**: The config.json content as a string. For new algorithms this must include `symbol`, `asset_class`, `interval`, `required_history_bars`, and non-empty strategy knobs under `params`. The validator cross-references every strategy param against the strategy code, so do not declare params you do not use.
 - Finny generates the trusted strict-v2 backtest runner internally. Do not provide custom runner code.
@@ -53,6 +55,16 @@ You MUST decide explicitly. Versions cannot be split apart later — getting thi
 If you pass `saveMode: "new"` and the name is already taken, the tool returns an error with a suggested alternative name — do NOT retry with the same name.
 
 If you pass `saveMode: "version"` and no algorithm with that name exists yet, the tool returns an error — switch to `saveMode: "new"`.
+
+## Runtime profile
+
+`runtimeProfile` decides which engine executes this algorithm when backtested. Choose it from the user's request — do not guess or invent engine behavior:
+
+- **`finny_python`** (default, Crucible / engine_v2): the fully supported path. Use it whenever the user does not explicitly ask for LEAN or QuantConnect.
+- **`lean_python`** / **`lean_csharp`**: native LEAN runtimes. Use them only when the user explicitly asks for a real LEAN backtest or a QCAlgorithm project (Python `main.py` for `lean_python`, C# for `lean_csharp`). They are enabled by default — no environment activation is needed — and this save persists the LEAN-enabled setting automatically. `lean_python` derives `strategySource` from `code` (single file, saved as `main.py`); `lean_csharp` requires an explicit `strategySource` manifest. LEAN candidates skip the Shape-C validator but are **non-promotable in v1**: paper approval and live deployment stay blocked until the LEAN adapter certificate is active, so tell the user when their goal is paper-ready.
+- **`qc_cloud`**: QuantConnect Cloud track for firms that bring their own QC entitlements. Requires an active QuantConnect link (`qc mode cloud`); local fixture mode is test-only. Rarely the right default.
+
+Runtime is immutable per version: switching an existing algorithm from `finny_python` to a LEAN runtime (or between runtimes) is rejected unless you create a new algorithm with `saveMode: "new"`. If the user wants a different engine for the same strategy, save a new algorithm with the new runtime rather than a version bump.
 
 ## Directory Layout (on disk)
 Each algorithm is stored under `$FINNY_HOME/algorithms/<id>/` with this structure:
