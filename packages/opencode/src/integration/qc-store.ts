@@ -1,5 +1,6 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import crypto from "node:crypto"
 import { Global } from "@/global"
 import type {
   QcDeploymentRecordV1,
@@ -43,7 +44,11 @@ function qcModeFile(): string {
 }
 
 function snapshotFile(algorithmId: string, version: number): string {
-  const safe = /^[0-9a-fA-F-]{8,64}$/.test(algorithmId) ? algorithmId : "invalid"
+  // Never funnel non-conforming ids into one shared directory: two algorithms
+  // would silently overwrite each other's immutable snapshots.
+  const safe = /^[0-9a-fA-F-]{8,64}$/.test(algorithmId)
+    ? algorithmId
+    : crypto.createHash("sha256").update(algorithmId).digest("hex").slice(0, 40)
   return path.join(controlRoot(), "snapshots", safe, `v${String(version).padStart(2, "0")}.json`)
 }
 
@@ -223,7 +228,14 @@ export async function updateDeployment(
 ): Promise<QcDeploymentRecordV1 | null> {
   const record = await getDeployment(deploymentId)
   if (!record) return null
-  const updated = { ...record, ...patch, lastSyncedAt: patch.lastSyncedAt ?? Date.now() }
+  // lastSyncedAt means "last reconciled with QuantConnect"; only the
+  // reconciliation loop (or an explicit caller) stamps it. Status changes
+  // must not masquerade as fresh remote snapshots.
+  const updated = {
+    ...record,
+    ...patch,
+    ...(patch.lastSyncedAt === undefined ? {} : { lastSyncedAt: patch.lastSyncedAt }),
+  }
   await upsertDeployment(updated)
   return updated
 }

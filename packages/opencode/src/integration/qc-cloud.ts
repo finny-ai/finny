@@ -175,7 +175,7 @@ export async function linkedProjectSourceFiles(input: {
   const files = await localSourceFilesForAlgorithm(input.algorithm)
   const resolved: Array<{ path: string; content: string }> = []
   for (const file of files) {
-    resolved.push({ path: file.path, content: await readQcFileContent(input.algorithm, file.path) })
+    resolved.push({ path: file.path, content: (await readQcFileContent(input.algorithm, file.path)) ?? "" })
   }
   return resolved
 }
@@ -210,6 +210,11 @@ export interface QcLiveDeployInput {
   versionId?: number | string
   parameters?: Record<string, unknown>
   abort?: AbortSignal
+  /**
+   * Managed deployments are recorded in the durable qc-control ledger by the
+   * caller; this legacy paper ledger is only for the standalone QC CLI paths.
+   */
+  persistLegacy?: boolean
 }
 
 function liveUrl(projectId: number | string): string {
@@ -287,6 +292,7 @@ export async function buildQcBrokerageSettings(input: {
  * reconciled by polling /live/read until a terminal state.
  */
 export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDeployOutcome> {
+  const persistLegacy = input.persistLegacy ?? true
   if ((await isQcFixtureMode())) {
     const project = { projectId: input.projectId }
     const deploymentId = `qc-deploy-${crypto.randomBytes(6).toString("hex")}`
@@ -300,7 +306,7 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
       brokerKind: input.brokerKind,
       startedAt: new Date().toISOString(),
     }
-    await appendDeployment(record)
+    if (persistLegacy) await appendDeployment(record)
     return { ok: true, mode: "fixture", deploymentId, status: "running", projectId: project.projectId }
   }
   const credentials = await readQcCredentials()
@@ -333,7 +339,7 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
     startedAt: new Date().toISOString(),
     liveUrl: liveUrl(input.projectId),
   }
-  await appendDeployment(record)
+  if (persistLegacy) await appendDeployment(record)
   const status = await waitForLiveTerminal(credentials, { projectId: input.projectId, deployId: deploymentId }, input.abort)
   const failed = status.status === "DeployError" || status.status === "RuntimeError" || status.status === "Invalid"
   if (failed) {
@@ -426,7 +432,14 @@ export async function reconcileQcDeployments(): Promise<QcPaperDeploymentRecord[
   for (const entry of running) {
     const current = await qcLiveRead(credentials, { projectId: entry.projectId, deployId: entry.deploymentId })
     if (!current) continue
-    if (current.status === "Stopped" || current.status === "Liquidated" || current.status === "RuntimeError") {
+    if (
+      current.status === "Stopped" ||
+      current.status === "Liquidated" ||
+      current.status === "Deleted" ||
+      current.status === "RuntimeError" ||
+      current.status === "DeployError" ||
+      current.status === "Invalid"
+    ) {
       await updateDeployment(entry.deploymentId, {
         status: "stopped",
         stoppedAt: current.stopped ?? new Date().toISOString(),
@@ -548,18 +561,35 @@ export async function runQcCloudBacktest(input: {
     if (!outcome.ok) {
       return { ok: false, mode: "fixture", projectId: project.projectId, error: outcome.error }
     }
+    const totalReturn = outcome.v2.total_return
+    const drawdown = outcome.v2.max_drawdown
+    const netProfit = outcome.v2.ending_equity - input.capital
     return {
       ok: true,
       mode: "fixture",
       projectId: project.projectId,
       backtestId: `qc-fixture-bt-${crypto.randomBytes(6).toString("hex")}`,
       stats: {
-        total_return: outcome.v2.total_return,
+        // Percent units, matching the cloud leg's mapped statistics so the
+        // same field means the same thing in both modes.
+        total_return: totalReturn * 100,
         sharpe: outcome.v2.ann_sharpe,
-        max_drawdown: outcome.v2.max_drawdown,
+        max_drawdown: drawdown * 100,
         total_trades: outcome.v2.total_trades,
+        net_profit: netProfit,
+        equity: outcome.v2.ending_equity,
         engine: outcome.v2.engine_version,
         mode: "fixture",
+        // Canonical QC-style keys so canonicalizeQcStatistics() resolves the
+        // same numeric units the cloud leg's raw statistics produce.
+        raw: {
+          "Total Return": `${(totalReturn * 100).toFixed(2)}%`,
+          "Sharpe Ratio": String(outcome.v2.ann_sharpe),
+          "Drawdown": `${(drawdown * 100).toFixed(2)}%`,
+          "Total Trades": String(outcome.v2.total_trades),
+          "Net Profit": `${netProfit.toFixed(2)}`,
+          "Equity": `${outcome.v2.ending_equity.toFixed(2)}`,
+        },
       },
     }
   }

@@ -51,10 +51,15 @@ export async function runLeanPhase(input: {
       assetFamily: dataBundle.assetFamily,
       startDate: context.window.start,
       endDate: context.window.end,
-      cash: 10000,
+      // The artifact must mirror the launcher config the adapter executes so
+      // the persisted bundle/config.json is the hash-bound run config.
+      cash: context.capital,
       algorithmTypeName: "Main",
       algorithmLanguage: context.bundle.profile.profileId === "lean_csharp" ? "CSharp" : "Python",
-      algorithmLocation: context.bundle.profile.profileId === "lean_csharp" ? "Algorithm.dll" : "main.py",
+      algorithmLocation:
+        context.bundle.profile.profileId === "lean_csharp"
+          ? "/Lean/Algorithm/Algorithm.dll"
+          : "/Lean/Algorithm/main.py",
       dataFolder: "/Lean/Data",
       resultsFolder: "/Results",
       seed: context.seed,

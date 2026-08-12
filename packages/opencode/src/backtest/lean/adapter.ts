@@ -29,19 +29,26 @@ let dockerHostPromise: Promise<string | undefined> | undefined
 async function resolveDockerHost(): Promise<string | undefined> {
   const inherited = process.env.DOCKER_HOST
   if (inherited) return inherited
-  dockerHostPromise ??= (async () => {
-    const probe = await Process.run(
-      ["docker", "context", "ls", "--format", "{{.Name}}|{{.Current}}|{{.DockerEndpoint}}"],
-      { nothrow: true, timeout: 15_000, env: DOCKER_BASE_ENV, inheritEnv: false },
-    )
-    if (probe.code !== 0) return undefined
-    const current = probe.stdout
-      .toString()
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) => line.split("|")[1] === "true")
-    return current?.split("|")[2]
-  })()
+  // Only successful resolutions are cached: a transient probe failure must
+  // not permanently disable the Docker host for the rest of the process.
+  if (!dockerHostPromise) {
+    dockerHostPromise = (async () => {
+      const probe = await Process.run(
+        ["docker", "context", "ls", "--format", "{{.Name}}|{{.Current}}|{{.DockerEndpoint}}"],
+        { nothrow: true, timeout: 15_000, env: DOCKER_BASE_ENV, inheritEnv: false },
+      )
+      if (probe.code !== 0) return undefined
+      const current = probe.stdout
+        .toString()
+        .split("\n")
+        .map((line) => line.trim())
+        .find((line) => line.split("|")[1] === "true")
+      return current?.split("|")[2]
+    })()
+    const resolved = await dockerHostPromise
+    if (resolved === undefined) dockerHostPromise = undefined
+    return resolved
+  }
   return dockerHostPromise
 }
 
@@ -53,24 +60,31 @@ async function resolveDockerHost(): Promise<string | undefined> {
  */
 let launcherPathPromise: Promise<string | undefined> | undefined
 async function resolveLauncherPath(env: Record<string, string>): Promise<string | undefined> {
-  launcherPathPromise ??= (async () => {
-    const probe = await Process.run(
-      [
-        "docker",
-        "run",
-        "--rm",
-        "--entrypoint",
-        "sh",
-        LEAN_PINNED_IMAGE_DIGEST,
-        "-c",
-        'for p in /Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll /Lean/Launcher/QuantConnect.Lean.Launcher.dll; do [ -f "$p" ] && echo "$p" && exit 0; done; exit 1',
-      ],
-      { nothrow: true, timeout: 30_000, env, inheritEnv: false },
-    )
-    if (probe.code !== 0) return undefined
-    const first = probe.stdout.toString().trim().split("\n")[0]
-    return first || undefined
-  })()
+  // Only successful resolutions are cached: a transient failure (daemon
+  // restart, image pull in progress) must not poison later runs in-process.
+  if (!launcherPathPromise) {
+    launcherPathPromise = (async () => {
+      const probe = await Process.run(
+        [
+          "docker",
+          "run",
+          "--rm",
+          "--entrypoint",
+          "sh",
+          LEAN_PINNED_IMAGE_DIGEST,
+          "-c",
+          'for p in /Lean/Launcher/bin/Debug/QuantConnect.Lean.Launcher.dll /Lean/Launcher/QuantConnect.Lean.Launcher.dll; do [ -f "$p" ] && echo "$p" && exit 0; done; exit 1',
+        ],
+        { nothrow: true, timeout: 30_000, env, inheritEnv: false },
+      )
+      if (probe.code !== 0) return undefined
+      const first = probe.stdout.toString().trim().split("\n")[0]
+      return first || undefined
+    })()
+    const resolved = await launcherPathPromise
+    if (resolved === undefined) launcherPathPromise = undefined
+    return resolved
+  }
   return launcherPathPromise
 }
 

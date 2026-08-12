@@ -451,6 +451,9 @@ export async function startPaperDeployment(input: {
       nodeId: node,
       brokerKind: "qc_paper",
       capital,
+      // The managed record already lives in the durable qc-control ledger;
+      // skip the legacy CLI paper ledger to avoid duplicate bookkeeping.
+      persistLegacy: false,
     })
     if (!outcome.ok || !outcome.deploymentId) {
       const failed = await updateDeployment(deploymentId, {

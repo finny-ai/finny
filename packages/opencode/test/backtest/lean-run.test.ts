@@ -196,6 +196,27 @@ describe("LEAN phase run facade", () => {
     const results = JSON.parse(await fs.readFile(path.join(resultsDir, "results.json"), "utf8"))
     expect(results.schema).toBe("finny.crucible_result")
     expect(results.runKind).toBe("crucible_2_0")
+    // The persisted launcher config artifact must mirror the config the
+    // adapter executes: real capital, adapter-mounted location, same seed.
+    const artifact = JSON.parse(await fs.readFile(path.join(resultsDir, "bundle", "config.json"), "utf8"))
+    expect(artifact.parameters["finny-cash"]).toBe(10000)
+    expect(artifact.parameters["finny-seed"]).toBe(42)
+    expect(artifact["algorithm-location"]).toBe("/Lean/Algorithm/main.py")
+    const expected = buildLeanLauncherConfig({
+      profile,
+      assetFamily: "equity",
+      startDate: "2026-01-01",
+      endDate: "2026-01-15",
+      cash: 10000,
+      algorithmTypeName: "Main",
+      algorithmLanguage: "Python",
+      algorithmLocation: "/Lean/Algorithm/main.py",
+      dataFolder: "/Lean/Data",
+      resultsFolder: "/Results",
+      seed: 42,
+      dataFeedWorkers: 1,
+    })
+    expect(artifact).toEqual(JSON.parse(expected.json))
   })
 
   test("propagates typed adapter failures without fallback", async () => {

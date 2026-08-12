@@ -15,7 +15,9 @@ import { writeLeanSourceFile } from "../../src/backtest/lean/source-store"
 const originalFinnyHome = process.env.FINNY_HOME
 const originalXdgData = process.env.XDG_DATA_HOME
 const originalFixture = process.env.QC_FIXTURE
+const originalAuthContent = process.env.OPENCODE_AUTH_CONTENT
 const cleanups: string[] = []
+let originalFetch: typeof fetch
 
 function isolatedHome(): string {
   const home = `/tmp/finny-qc-sync-${Math.random().toString(36).slice(2)}`
@@ -36,8 +38,55 @@ afterEach(async () => {
   else process.env.XDG_DATA_HOME = originalXdgData
   if (originalFixture === undefined) delete process.env.QC_FIXTURE
   else process.env.QC_FIXTURE = originalFixture
+  if (originalAuthContent === undefined) delete process.env.OPENCODE_AUTH_CONTENT
+  else process.env.OPENCODE_AUTH_CONTENT = originalAuthContent
+  if (originalFetch) globalThis.fetch = originalFetch
   delete process.env.FINNY_QC_CONTROL_DIR
 })
+
+function mockCloudQc(input: {
+  projectId: number
+  language: string
+  files: Array<{ name: string; content: string }>
+}) {
+  originalFetch = globalThis.fetch
+  globalThis.fetch = (async (fetchInput: RequestInfo | URL, init?: RequestInit) => {
+    const apiPath = new URL(String(fetchInput)).pathname.replace(/\/api\/v2$/, "").replace(/\/api\/v2\//, "/")
+    if (apiPath === "/files/read") {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          files: input.files.map((file) => ({ name: file.name, content: file.content })),
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )
+    }
+    if (apiPath === "/projects/read") {
+      return new Response(
+        JSON.stringify({
+          success: true,
+          projects: [
+            {
+              projectId: input.projectId,
+              organizationId: "org-1",
+              name: "Project",
+              language: input.language,
+              ownerId: 1,
+              modified: "2026-08-08T00:00:00Z",
+              created: "2026-08-01T00:00:00Z",
+              leanVersionId: 17202,
+            },
+          ],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )
+    }
+    throw new Error(`unexpected QC API path ${apiPath}`)
+  }) as unknown as typeof fetch
+  process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+    quantconnect: { type: "api", key: "qc-token", metadata: { userId: "1001200" } },
+  })
+}
 
 function algorithm() {
   return {
@@ -130,5 +179,67 @@ describe("QC project linking (fixture mode)", () => {
     expect(files.length).toBe(1)
     expect(files[0]!.path).toBe("main.py")
     expect(files[0]!.sha256).toBe(sha256Text(algorithm().code))
+  })
+})
+
+describe("QC project linking (cloud mode)", () => {
+  test("links a C# project without an explicit language and resolves it from QC", async () => {
+    isolatedHome()
+    mockCloudQc({
+      projectId: 24058695,
+      language: "C#",
+      files: [{ name: "Main.cs", content: "class Main : QCAlgorithm { }\n" }],
+    })
+    const algo = algorithm()
+    const result = await attachProject({ algorithm: algo, projectId: 24058695, projectName: "CSharp Project" })
+    expect(result.link.language).toBe("csharp")
+    expect(result.link.sync.state).toBe("both_changed")
+    expect(result.imported).toBe(false)
+  })
+
+  test("drift from an unsynchronized link is not masked by the first refresh", async () => {
+    isolatedHome()
+    mockCloudQc({
+      projectId: 24058696,
+      language: "Py",
+      files: [{ name: "main.py", content: "class Main(QCAlgorithm):\n    def Initialize(self):\n        self.SetCash(50000)\n" }],
+    })
+    const algo = algorithm()
+    // Local tree differs from the remote tree (fallback main.py content).
+    const result = await attachProject({ algorithm: algo, projectId: 24058696, projectName: "Drift Project" })
+    expect(result.link.sync.state).toBe("both_changed")
+
+    const refreshed = await refreshLinkSync(algo)
+    // The first refresh must keep reporting the drift instead of claiming
+    // in_sync just because both sides were recorded as "the sync point".
+    expect(refreshed.ok).toBe(false)
+    expect(refreshed.action).toBe("blocked")
+    const link = await getProjectLink(algo.algorithmId)
+    expect(link?.sync.state).toBe("both_changed")
+  })
+
+  test("import_remote adopts the QC tree, language, and records in_sync", async () => {
+    isolatedHome()
+    mockCloudQc({
+      projectId: 24058697,
+      language: "C#",
+      files: [{ name: "Main.cs", content: "class Main : QCAlgorithm { }\n" }],
+    })
+    const algo = algorithm()
+    const result = await attachProject({
+      algorithm: algo,
+      projectId: 24058697,
+      projectName: "Import Project",
+      mode: "import_remote",
+    })
+    expect(result.imported).toBe(true)
+    expect(result.link.language).toBe("csharp")
+    expect(result.link.sync.state).toBe("in_sync")
+    const local = await localSourceFilesForAlgorithm(algo)
+    expect(local.some((file) => file.path === "Main.cs")).toBe(true)
+
+    const refreshed = await refreshLinkSync(algo)
+    expect(refreshed.ok).toBe(true)
+    expect(refreshed.action).toBe("in_sync")
   })
 })
