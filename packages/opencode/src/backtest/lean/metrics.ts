@@ -159,9 +159,64 @@ function matchTrades(fills: LeanFillRecord[]): ClosedTrade[] {
         remaining -= matched
         if (open.qty <= 0) queue.shift()
       }
+      // A flip that exceeds the open position opens a new position in the
+      // opposite direction; dropping the excess would mispair later fills
+      // and corrupt the trade ledger (win rate, fees, hold bars, exposure).
+      if (remaining > 0) {
+        queue.push({ qty: remaining, origQty: remaining, price: fill.price, ts, side, fee: (fill.fee * remaining) / qty })
+      }
     }
   }
   return trades
+}
+
+/**
+ * Per-bar gross notional ($) reconstructed from fills: the absolute signed
+ * position of every symbol valued at the last known fill price. Mirrors
+ * engine_v2's broker-book exposure history so the shared gates consume the
+ * same units (dollars, fraction of bars in market).
+ */
+function positionNotionalHistory(fills: LeanFillRecord[], curve: Array<{ timestamp: string; equity: number }>): number[] {
+  if (curve.length === 0) return []
+  const sorted = [...fills].sort((left, right) => Date.parse(left.time) - Date.parse(right.time))
+  const bySymbol = new Map<string, { qty: number; lastPrice: number }>()
+  const history: number[] = []
+  let index = 0
+  for (const point of curve) {
+    const barTs = Date.parse(point.timestamp)
+    while (index < sorted.length) {
+      const fill = sorted[index]!
+      const fillTs = Date.parse(fill.time)
+      if (!Number.isFinite(fillTs)) {
+        index += 1
+        continue
+      }
+      if (fillTs > barTs) break
+      const state = bySymbol.get(fill.symbol) ?? { qty: 0, lastPrice: 0 }
+      state.qty += /sell/i.test(fill.direction) ? -Math.abs(fill.quantity) : Math.abs(fill.quantity)
+      state.lastPrice = fill.price
+      bySymbol.set(fill.symbol, state)
+      index += 1
+    }
+    let gross = 0
+    for (const state of bySymbol.values()) gross += Math.abs(state.qty) * state.lastPrice
+    history.push(gross)
+  }
+  return history
+}
+
+/** Bars of the canonical curve spanned by a closed trade, exclusive of its
+ * entry instant and inclusive of its exit instant. */
+function holdBarsFor(entryTs: string, exitTs: string, curve: Array<{ timestamp: string; equity: number }>): number {
+  const entry = Date.parse(entryTs)
+  const exit = Date.parse(exitTs)
+  if (!Number.isFinite(entry) || !Number.isFinite(exit) || exit < entry) return 0
+  let bars = 0
+  for (const point of curve) {
+    const ts = Date.parse(point.timestamp)
+    if (Number.isFinite(ts) && ts > entry && ts <= exit) bars += 1
+  }
+  return bars
 }
 
 function dailyReturns(curve: Array<{ timestamp: string; equity: number }>): number[] {
@@ -398,7 +453,10 @@ export function buildCanonicalMetrics(input: {
   const painIndex = Math.abs(mean(painValues))
   const ulcerIndex = painValues.length > 0 ? Math.sqrt(mean(painValues.map((v) => v ** 2))) : 0
 
-  const trades = matchTrades(input.fills)
+  const trades = matchTrades(input.fills).map((trade) => ({
+    ...trade,
+    holdBars: holdBarsFor(trade.entryTs, trade.exitTs, curve),
+  }))
   const wins = trades.filter((t) => t.pnl > 0)
   const losses = trades.filter((t) => t.pnl <= 0)
   const winRate = trades.length > 0 ? wins.length / trades.length : 0
@@ -411,10 +469,11 @@ export function buildCanonicalMetrics(input: {
   const expectancy = trades.length > 0 ? mean(trades.map((t) => t.pnl)) : 0
   const kelly = payoffRatio > 0 ? winRate - (1 - winRate) / payoffRatio : 0
   const totalFees = input.fills.reduce((a, f) => a + f.fee, 0)
-  const turnover = input.fills.reduce((a, f) => a + Math.abs(f.quantity) * f.price, 0)
-  const maxGrossExposure = curve.length > 0 ? Math.max(1, Math.min(2, trades.length > 0 ? 1 : 0)) : 0
-  const totalBars = Math.max(1, input.ohlcvRows)
-  const barsInMarket = trades.reduce((a, t) => a + t.holdBars, 0)
+  const totalNotional = input.fills.reduce((a, f) => a + Math.abs(f.quantity) * f.price, 0)
+  const notionalHistory = positionNotionalHistory(input.fills, curve)
+  const timeInMarket = notionalHistory.length > 0 ? notionalHistory.filter((value) => value > 0).length / notionalHistory.length : 0
+  const avgGrossExposure = notionalHistory.length > 0 ? mean(notionalHistory) : 0
+  const maxGrossExposure = notionalHistory.length > 0 ? Math.max(...notionalHistory) : 0
   const monthly = monthlyReturns(curve)
   const pctPositiveMonths =
     Object.keys(monthly).length > 0
@@ -523,12 +582,15 @@ export function buildCanonicalMetrics(input: {
       trade_pvalue: null,
     },
     exposure: {
-      time_in_market_pct: totalBars > 0 ? Math.min(1, barsInMarket / totalBars) : 0,
-      avg_gross_exposure: maxGrossExposure,
-      avg_net_exposure: maxGrossExposure,
+      time_in_market_pct: timeInMarket,
+      avg_gross_exposure: avgGrossExposure,
+      avg_net_exposure: avgGrossExposure,
       max_gross_exposure: maxGrossExposure,
-      total_turnover: turnover,
-      turnover_per_year: spanDays > 0 ? (turnover / input.startingEquity) * (365.25 / spanDays) : 0,
+      // engine_v2 reports turnover as a fraction of starting equity; keep the
+      // LEAN canonical path in the same unit.
+      total_turnover: input.startingEquity > 0 ? totalNotional / input.startingEquity : 0,
+      turnover_per_year:
+        input.startingEquity > 0 && spanDays > 0 ? (totalNotional / input.startingEquity) * (365.25 / spanDays) : 0,
       total_fees: totalFees,
       fees_as_pct_return: totalReturn !== 0 ? totalFees / Math.abs(input.startingEquity * totalReturn) : null,
       total_funding: 0,

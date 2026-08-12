@@ -202,4 +202,73 @@ describe("canonical metrics", () => {
     expect(v2.drawdown.max_dd_recovery_bars).toBe(1)
     expect(v2.drawdown.current_drawdown).toBe(0)
   })
+
+  test("matches position flips without dropping the excess quantity", () => {
+    const curve = Array.from({ length: 9 }, (_, i) => ({
+      timestamp: `2026-01-0${i + 1}T00:00:00Z`,
+      equity: 10000,
+    }))
+    // Long 10, then sell 25: 10 close the long, 15 open a short. A later buy
+    // of 15 must close that short — not mispair as a new long.
+    const fills = [
+      { orderId: "1", symbol: "SPY", direction: "Buy", quantity: 10, price: 100, fee: 0.5, time: "2026-01-02T00:00:00Z", status: "Filled" },
+      { orderId: "2", symbol: "SPY", direction: "Sell", quantity: 25, price: 102, fee: 1.25, time: "2026-01-04T00:00:00Z", status: "Filled" },
+      { orderId: "3", symbol: "SPY", direction: "Buy", quantity: 15, price: 101, fee: 0.75, time: "2026-01-06T00:00:00Z", status: "Filled" },
+    ]
+    const v2 = buildCanonicalMetrics({
+      equityCurve: curve,
+      fills,
+      orders: [],
+      rejections: [],
+      startingEquity: 10000,
+      seed: 42,
+      interval: "1d",
+      startTs: "2026-01-01T00:00:00Z",
+      endTs: "2026-01-09T00:00:00Z",
+      symbols: ["SPY"],
+      ohlcvRows: 9,
+      engineVersion: "lean-test",
+    })
+    expect(v2.total_trades).toBe(2)
+    expect(v2.trades[0]!.side).toBe("long")
+    expect(v2.trades[0]!.qty).toBe(10)
+    expect(v2.trades[0]!.pnl).toBeCloseTo(20, 10)
+    expect(v2.trades[1]!.side).toBe("short")
+    expect(v2.trades[1]!.qty).toBe(15)
+    // Short entered at 102, covered at 101: profit on the short = 15 * 1.
+    expect(v2.trades[1]!.pnl).toBeCloseTo(15, 10)
+  })
+
+  test("derives hold bars, time in market, and exposure from fills and the curve", () => {
+    const curve = Array.from({ length: 21 }, (_, i) => ({
+      timestamp: `2026-01-${String(1 + i).padStart(2, "0")}T00:00:00Z`,
+      equity: 10000 * (1 + i * 0.001),
+    }))
+    const fills = [
+      { orderId: "1", symbol: "SPY", direction: "Buy", quantity: 10, price: 100, fee: 0.5, time: "2026-01-03T00:00:00Z", status: "Filled" },
+      { orderId: "2", symbol: "SPY", direction: "Sell", quantity: 10, price: 102, fee: 0.5, time: "2026-01-05T00:00:00Z", status: "Filled" },
+    ]
+    const v2 = buildCanonicalMetrics({
+      equityCurve: curve,
+      fills,
+      orders: [],
+      rejections: [],
+      startingEquity: 10000,
+      seed: 42,
+      interval: "1d",
+      startTs: "2026-01-01T00:00:00Z",
+      endTs: "2026-01-21T00:00:00Z",
+      symbols: ["SPY"],
+      ohlcvRows: 21,
+      engineVersion: "lean-test",
+    })
+    // Position is open on bars 01-03 and 01-04 (2 of 21 bars).
+    expect(v2.exposure.time_in_market_pct).toBeCloseTo(2 / 21, 10)
+    expect(v2.exposure.max_gross_exposure).toBeCloseTo(1000, 10)
+    expect(v2.exposure.avg_gross_exposure).toBeCloseTo(2000 / 21, 10)
+    // Turnover is a fraction of starting equity, matching engine_v2.
+    expect(v2.exposure.total_turnover).toBeCloseTo(2020 / 10000, 10)
+    expect(v2.trade.avg_hold_bars).toBe(2)
+    expect(v2.trade.longest_trade_bars).toBe(2)
+  })
 })
