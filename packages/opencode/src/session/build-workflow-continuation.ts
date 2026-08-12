@@ -164,6 +164,19 @@ function workflowShouldStopAutoIteration(input: ContinuationInput, workflow: Bui
 
 function iterationReminder(workflow: BuildWorkflowState) {
   const metricTrials = uniqueMetricTrials(workflow)
+  // Deadlock guard: if the candidate advanced past v1 but the experiment
+  // ledger accepted zero trials, iteration can never advance its own counter
+  // (the "Completed metric trials" mandate is unsatisfiable). Stop mandating
+  // save/backtest retries and hand control back to the user instead of
+  // re-issuing identical iteration orders forever.
+  if (workflow.candidate && workflow.candidate.version > 1 && metricTrials === 0) {
+    return [
+      "<system-reminder>",
+      `Durable Build workflow ${workflow.workflowId} reached candidate v${workflow.candidate.version} but the experiment ledger accepted zero trials.`,
+      "The auto-iteration loop cannot advance (no trial is recorded). Stop saving/backtesting, present the latest results honestly, and ask the user how to proceed.",
+      "</system-reminder>",
+    ].join("\n")
+  }
   const requiredAction = requiredIterationAction(workflow, metricTrials >= MIN_FAILED_METRIC_TRIALS)
   return [
     "<system-reminder>",
