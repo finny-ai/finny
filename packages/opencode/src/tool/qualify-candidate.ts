@@ -1,5 +1,6 @@
 import z from "zod"
 import { Effect } from "effect"
+import fs from "node:fs/promises"
 import { Question } from "@/question"
 import { Database } from "@opencode-ai/core/database/database"
 import { readRequestSpecForSession } from "@/agent/request-spec"
@@ -151,6 +152,12 @@ async function runLeanQualificationFlow(input: {
   question: Question.Interface
   holdoutQuestion: typeof holdoutQuestion
   approved: typeof approved
+  /**
+   * Local-leg LEAN profile for qc_cloud candidates (linked-project language).
+   * The local Crucible leg always runs the pinned LEAN engine; the plan and
+   * run identity must record the LEAN profile, never qc_cloud.
+   */
+  localProfileId?: "lean_python" | "lean_csharp"
 }) {
   const { params, ctx, bridge, candidate, evidence, question, holdoutQuestion, approved } = input
   if (!evidence.ok) throw new Error("LEAN qualification requires verified evidence")
@@ -180,6 +187,7 @@ async function runLeanQualificationFlow(input: {
       dataset: evidence.dataset,
       candidate,
       policy: DEFAULT_QUALIFICATION_POLICY_V1,
+      runtimeProfileOverride: input.localProfileId,
     })
     await saveExperimentPlanV2(plan, DEFAULT_QUALIFICATION_POLICY_V1)
     const strict = Boolean((evidence.dataset as any).qualificationAttestation)
@@ -341,8 +349,13 @@ export const QualifyCandidateTool = Tool.define<
                 question,
                 holdoutQuestion,
                 approved,
+                localProfileId: qcLink.language === "csharp" ? "lean_csharp" : "lean_python",
               })
               if (localResult.metadata?.qualified !== true) return localResult
+              let fixtureCsv = ""
+              try {
+                fixtureCsv = await fs.readFile(evidence.dataset.csvPath, "utf8")
+              } catch {}
               // Local strict leg passed — the linked QC project must now
               // independently pass its native-cloud gates.
               const workflow = await runWorkflow(activeWorkflowForSession(ctx.sessionID))
@@ -373,6 +386,7 @@ export const QualifyCandidateTool = Tool.define<
                 startDate: qcConfig.backtest?.start_date ?? "",
                 endDate: qcConfig.backtest?.end_date ?? "",
                 local: localRef,
+                fixtureCsv,
               })
               if (!composite.ok || !composite.identity) {
                 return blocked({

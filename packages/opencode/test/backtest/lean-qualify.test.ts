@@ -9,9 +9,11 @@ import {
 } from "../../src/backtest/experiment-plan-store"
 import { DEFAULT_QUALIFICATION_POLICY_V1 } from "../../src/backtest/qualification-policy"
 import { LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST } from "../../src/backtest/lean/contracts"
-import { executeLeanQualificationV2 } from "../../src/backtest/lean/qualify"
+import { compileLeanPlanV2FromActiveEvidence, executeLeanQualificationV2 } from "../../src/backtest/lean/qualify"
 import type { LeanAdapterV1 } from "../../src/backtest/lean/runner"
 import type { Algorithm } from "../../src/algorithm"
+import { buildLeanLauncherConfig } from "../../src/backtest/lean/engine-config"
+import { leanExecutionProfileV1, runtimeProfileV1, sha256Text } from "../../src/backtest/lean/contracts"
 
 const originalHome = process.env.FINNY_HOME
 const cleanups: string[] = []
@@ -197,4 +199,149 @@ describe("LEAN qualification executor", () => {
     expect(observedScratch).toBeDefined()
     expect(dataTreePresent).toBe(true)
   })
+
+  test("fails closed on an invalid runtime declaration without invoking the adapter", async () => {
+    const home = tmpHome()
+    const compiled = plan()
+    let adapterCalled = false
+    const outcome = await executeLeanQualificationV2({
+      candidate: {
+        ...candidate(),
+        config: JSON.stringify({
+          symbol: "SPY",
+          asset_class: "equity",
+          interval: "1h",
+          required_history_bars: 1,
+          runtime: { profile: { profileId: "bogus_engine" } },
+        }),
+      },
+      dataset: {
+        csvPath: await realCsv(home),
+        csvSha256: "b".repeat(64),
+        manifestSha256: "m".repeat(64),
+        identity: {
+          actualSymbol: "SPY",
+          actualAssetClass: "equity",
+          actualInterval: "1h",
+          actualStart: "2026-01-01",
+          actualEnd: "2026-01-31",
+        } as any,
+      } as any,
+      plan: compiled,
+      policy: DEFAULT_QUALIFICATION_POLICY_V1,
+      executionIdentity: { codeHash: "c".repeat(64), configHash: "d".repeat(64) },
+      adapter: {
+        profileId: "lean_python",
+        probeReady: () => ({ ready: true, reasons: [] }),
+        run: async () => {
+          adapterCalled = true
+          return { ok: false as const, kind: "image_unavailable", error: "unexpected" }
+        },
+      },
+      readHoldoutOpenEvents: () => Promise.resolve([]),
+      requestHoldoutApproval: async () => true,
+    })
+    expect(outcome.ok).toBe(false)
+    expect(outcome.blocker?.code).toBe("invalid_policy")
+    expect(adapterCalled).toBe(false)
+  })
+
+  test("qc_cloud candidates compile a local-leg LEAN plan from the linked-project language", async () => {
+    const home = tmpHome()
+    await fs.mkdir(home, { recursive: true })
+    const compiled = await compileLeanPlanV2FromActiveEvidence({
+      request: {
+        request_id: "req-qccloud",
+        request_version: 1,
+        content_hash: "a".repeat(64),
+        requested_interval: "1h",
+        requested_start: "2026-01-01",
+        requested_end: "2026-01-31",
+      } as any,
+      dataset: {
+        csvPath: await realCsv(home),
+        csvSha256: "b".repeat(64),
+        manifestSha256: "m".repeat(64),
+        identity: {
+          actualSymbol: "SPY",
+          actualAssetClass: "equity",
+          actualInterval: "1h",
+          actualStart: "2026-01-01",
+          actualEnd: "2026-01-31",
+        } as any,
+      } as any,
+      candidate: {
+        ...candidate(),
+        config: JSON.stringify({
+          symbol: "SPY",
+          asset_class: "equity",
+          interval: "1h",
+          required_history_bars: 1,
+          runtime: { profile: runtimeProfileV1("qc_cloud") },
+        }),
+      },
+      policy: DEFAULT_QUALIFICATION_POLICY_V1,
+      runtimeProfileOverride: "lean_csharp",
+    })
+    expect(compiled.runtime.profileId).toBe("lean_csharp")
+    // The plan binds the real per-version source tree, not an empty hash.
+    expect(compiled.runtime.sourceTreeHash).not.toBe(sha256Text(""))
+    // The plan-bound launcher config hash is the hash of the executed config:
+    // seed 0, adapter-matching location, and the plan's capital.
+    const executed = buildLeanLauncherConfig({
+      profile: leanExecutionProfileV1({
+        assetClass: "equity",
+        makerFeeBps: 0,
+        takerFeeBps: 0,
+        slippageBps: 0,
+        maxLeverage: 1,
+        maintenanceMarginPct: 0.5,
+        shortingEnabled: false,
+        dataFeedWorkers: 1,
+      }),
+      assetFamily: "equity",
+      startDate: compiled.datasets[0]!.actualStart,
+      endDate: compiled.datasets[0]!.actualEnd,
+      cash: 10000,
+      algorithmTypeName: "Main",
+      algorithmLanguage: "CSharp",
+      algorithmLocation: "/Lean/Algorithm/Algorithm.dll",
+      dataFolder: "/Lean/Data",
+      resultsFolder: "/Results",
+      seed: 0,
+      dataFeedWorkers: 1,
+    }).configHash
+    expect(compiled.runtime.leanConfigHash).toBe(executed)
+  })
+
+  test("qc_cloud candidates without a linked project still fail closed on the local-leg profile", async () => {
+    await expect(
+      compileLeanPlanV2FromActiveEvidence({
+        request: {
+          request_id: "req-qccloud2",
+          request_version: 1,
+          content_hash: "a".repeat(64),
+          requested_interval: "1h",
+          requested_start: "2026-01-01",
+          requested_end: "2026-01-31",
+        } as any,
+        dataset: {
+          csvPath: "/tmp/nonexistent.csv",
+          csvSha256: "b".repeat(64),
+          manifestSha256: "m".repeat(64),
+        } as any,
+        candidate: {
+          ...candidate(),
+          config: JSON.stringify({
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "1h",
+            runtime: { profile: runtimeProfileV1("qc_cloud") },
+          }),
+        },
+        policy: DEFAULT_QUALIFICATION_POLICY_V1,
+      }),
+    ).rejects.toThrow(/not a local LEAN runtime/)
+  })
+
 })

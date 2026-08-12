@@ -12,6 +12,8 @@ import {
 } from "./qc-contracts"
 import { getProjectLink } from "./qc-store"
 import { syncBeforeRun } from "./qc-sync"
+import { isQcFixtureMode } from "./quantconnect"
+import { strictRunDir } from "@/backtest/run-integrity-core"
 
 /**
  * QC Cloud + Crucible composite qualification.
@@ -84,7 +86,9 @@ export function evaluateCloudGates(
   const maxDrawdown = canonical.max_drawdown
   checks.push({
     name: "max_drawdown",
-    passed: maxDrawdown !== undefined && maxDrawdown <= gates.maxDrawdownPct,
+    // canonical.max_drawdown is negative (Finny convention); the gate is a
+    // positive magnitude cap, so compare |maxDrawdown| against the limit.
+    passed: maxDrawdown !== undefined && Math.abs(maxDrawdown) <= gates.maxDrawdownPct,
     detail: maxDrawdown === undefined ? "missing" : `${(maxDrawdown * 100).toFixed(2)}%`,
   })
   const sharpe = canonical.sharpe
@@ -146,6 +150,12 @@ export async function runQcCompositeQualification(input: {
   endDate: string
   local: QcLocalRunOutcome
   abort?: AbortSignal
+  /**
+   * OHLCV CSV for the fixture-mode cloud leg. Fixture mode runs the pinned
+   * local LEAN engine, so it needs real attested bars; when omitted the
+   * local run's processed_ohlcv.csv artifact is used.
+   */
+  fixtureCsv?: string
 }): Promise<QcCompositeOutcome> {
   const link = await getProjectLink(input.algorithm.algorithmId)
   if (!link) {
@@ -166,9 +176,29 @@ export async function runQcCompositeQualification(input: {
     config = JSON.parse(input.algorithm.config ?? "{}")
   } catch {}
   const symbol = typeof config.symbol === "string" ? config.symbol : ""
+  let fixtureCsv = input.fixtureCsv ?? ""
+  if (!fixtureCsv) {
+    try {
+      fixtureCsv = await fs.readFile(
+        path.join(strictRunDir(input.algorithm, input.local.runId), "processed_ohlcv.csv"),
+        "utf8",
+      )
+    } catch {
+      fixtureCsv = ""
+    }
+  }
+  if (!fixtureCsv && (await isQcFixtureMode())) {
+    return {
+      ok: false,
+      mode: "fixture",
+      projectId: String(link.projectId),
+      error:
+        "fixture composite requires attested OHLCV bars: the local run directory has no processed_ohlcv.csv and no fixtureCsv was supplied",
+    }
+  }
   const cloud = await runQcCloudBacktest({
     algorithm: input.algorithm,
-    ohlcvCsv: "",
+    ohlcvCsv: fixtureCsv,
     interval: input.interval,
     capital: input.capital,
     startDate: input.startDate,
@@ -224,6 +254,7 @@ export async function runQcCompositeQualification(input: {
         start_date: input.startDate,
         end_date: input.endDate,
         finny_run_id: input.local.runId,
+        finny_runtime: input.local.engine,
       },
       statistics: cloud.stats,
       backtestUrl: typeof cloud.stats.backtest_url === "string" ? cloud.stats.backtest_url : qcProjectUrl(link.projectId),

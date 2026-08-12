@@ -124,6 +124,17 @@ export async function readLocalFileContent(algorithm: Algorithm.Info, relativePa
   }
 }
 
+export async function readLocalFileContentOrNull(
+  algorithm: Algorithm.Info,
+  relativePath: string,
+): Promise<string | null> {
+  try {
+    return await readLeanSourceFile({ algorithm, relativePath })
+  } catch {
+    return null
+  }
+}
+
 /**
  * Capture the previous remote tree locally before an explicit overwrite so a
  * client can recover anything Finny replaced.
@@ -148,7 +159,7 @@ export async function captureRemoteTree(
 export async function replaceRemoteFiles(
   projectId: number | string,
   files: QcSourceFile[],
-  contentFor: (relativePath: string) => Promise<string>,
+  contentFor: (relativePath: string) => Promise<string | null>,
 ): Promise<void> {
   if ((await isQcFixtureMode())) return
   const credentials = await readQcCredentials()
@@ -162,8 +173,10 @@ export async function replaceRemoteFiles(
     }
   }
   for (const file of files) {
-    const content = await contentFor(file.path).catch(() => "")
-    if (content === "") continue
+    // null means the file is not available locally (skip); "" is a genuine
+    // empty file and must still be written so the remote tree matches.
+    const content = await contentFor(file.path).catch(() => null)
+    if (content === null) continue
     const existing = currentByPath.get(file.path)
     if (existing && existing.content === content) continue
     if (existing) {
@@ -187,6 +200,11 @@ export async function attachProject(input: {
   const existing = await getProjectLink(input.algorithm.algorithmId)
   if (existing && existing.projectId === input.projectId) return { link: existing }
 
+  // The link language drives the local LEAN leg engine (python vs csharp).
+  // Never default to python: a C# project linked without an explicit
+  // language would run the wrong engine under the wrong identity.
+  const language =
+    input.language ?? (await projectLanguage(input.projectId)) ?? qcLanguageFromProject(undefined)
   const local = await localSourceFilesForAlgorithm(input.algorithm)
   const remote = await remoteSourceFiles(input.projectId)
   const comparison = compareSourceTrees(local, remote)
@@ -200,6 +218,10 @@ export async function attachProject(input: {
   const finalLocal = await localSourceFilesForAlgorithm(input.algorithm)
   const finalRemote = remote
   const hash = (files: QcSourceFile[]) => sourceTreeHashForFiles(files)
+  // A link only records a sync point when the two trees actually agree (or
+  // the remote was adopted). Otherwise the sentinel hashes keep the drift
+  // visible on every refresh instead of masking it on the first check.
+  const synchronized = (await isQcFixtureMode()) || comparison.same || chooseRemote
   const link = {
     schema: "finny.qc_project_link" as const,
     version: 1 as const,
@@ -208,14 +230,14 @@ export async function attachProject(input: {
     projectId: input.projectId,
     projectName: input.projectName ?? String(input.projectId),
     organizationId: input.organizationId ?? "",
-    language: input.language ?? qcLanguageFromProject(undefined),
+    language,
     leanVersionId: input.leanVersionId ?? 0,
     sync: {
-      state: (await isQcFixtureMode()) || comparison.same ? ("in_sync" as const) : ("both_changed" as const),
-      lastSyncedAt: Date.now(),
-      lastRemoteTreeHash: hash(finalRemote),
-      lastLocalTreeHash: hash(finalLocal),
-      driftDetail: comparison.same ? [] : [...comparison.changed, ...comparison.added, ...comparison.removed],
+      state: synchronized ? ("in_sync" as const) : ("both_changed" as const),
+      lastSyncedAt: synchronized ? Date.now() : 0,
+      lastRemoteTreeHash: synchronized ? hash(finalRemote) : "",
+      lastLocalTreeHash: synchronized ? hash(finalLocal) : "",
+      driftDetail: synchronized ? [] : [...comparison.changed, ...comparison.added, ...comparison.removed],
     },
     linkedAt: Date.now(),
     time_updated: Date.now(),
@@ -228,6 +250,16 @@ export async function attachProject(input: {
   })
   await saveSourceSnapshot(snapshot)
   return { link, imported: chooseRemote }
+}
+
+async function projectLanguage(projectId: number): Promise<QcProjectLanguage | undefined> {
+  if (await isQcFixtureMode()) {
+    return (await listLinkableProjects()).find((project) => project.projectId === projectId)?.language
+  }
+  const credentials = await readQcCredentials()
+  if (!credentials) return undefined
+  const projects = await qcProjectsRead(credentials, projectId)
+  return qcLanguageFromProject(projects[0]?.language)
 }
 
 async function readRemoteContents(projectId: number | string): Promise<Array<{ path: string; content: string }>> {
@@ -250,11 +282,13 @@ export async function refreshLinkSync(algorithm: Algorithm.Info): Promise<QcSync
     lastSyncedLocalHash: link.sync.lastLocalTreeHash,
     lastSyncedRemoteHash: link.sync.lastRemoteTreeHash,
   })
+  // The synced-tree hashes are baselines that only an explicit resolveDrift
+  // (or attach) may move. Overwriting them on a drift refresh would make the
+  // drift disappear on the very next check, so backtests and deployments
+  // would silently run against unsynced source.
   await updateProjectLinkSync(algorithm.algorithmId, {
     state: drift.state,
-    lastSyncedAt: Date.now(),
-    lastRemoteTreeHash: sourceTreeHashForFiles(remote),
-    lastLocalTreeHash: sourceTreeHashForFiles(local),
+    ...(drift.state === "in_sync" ? { lastSyncedAt: Date.now() } : {}),
     driftDetail: drift.detail,
   })
   if (drift.state === "in_sync") return { ok: true, action: "in_sync", drift: [] }
@@ -295,7 +329,7 @@ export async function resolveDrift(input: {
     const current = await readRemoteContents(link.projectId)
     await captureRemoteTree(link.projectId, remoteSourceFilesForContents(current), current)
     await replaceRemoteFiles(link.projectId, local, (relativePath) =>
-      readLocalFileContent(input.algorithm, relativePath),
+      readLocalFileContentOrNull(input.algorithm, relativePath),
     )
   }
 
