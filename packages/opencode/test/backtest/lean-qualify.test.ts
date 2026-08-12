@@ -344,4 +344,43 @@ describe("LEAN qualification executor", () => {
     ).rejects.toThrow(/not a local LEAN runtime/)
   })
 
+  test("a negative required_history_bars fails closed instead of slicing windows from the end", async () => {
+    const home = tmpHome()
+    await fs.mkdir(home, { recursive: true })
+    await expect(
+      compileLeanPlanV2FromActiveEvidence({
+        request: {
+          request_id: "req-warmup",
+          request_version: 1,
+          content_hash: "a".repeat(64),
+          requested_interval: "1h",
+          requested_start: "2026-01-01",
+          requested_end: "2026-01-31",
+        } as any,
+        dataset: {
+          csvPath: await realCsv(home),
+          csvSha256: "b".repeat(64),
+          manifestSha256: "m".repeat(64),
+          identity: {
+            actualSymbol: "SPY",
+            actualAssetClass: "equity",
+            actualInterval: "1h",
+            actualStart: "2026-01-01",
+            actualEnd: "2026-01-31",
+          } as any,
+        } as any,
+        candidate: {
+          ...candidate(),
+          config: JSON.stringify({
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "1h",
+            required_history_bars: -5,
+            runtime: { profile: runtimeProfileV1("lean_python") },
+          }),
+        },
+        policy: DEFAULT_QUALIFICATION_POLICY_V1,
+      }),
+    ).rejects.toThrow(/warmupBars must be a non-negative integer/)
+  })
 })
