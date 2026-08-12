@@ -1,4 +1,5 @@
 import type { CrucibleResultV1, LeanRunArtifactsV1 } from "./types"
+import { leanStatisticNumber } from "./lean-result-parse"
 
 /**
  * Default canonicalizer from LEAN artifacts into CrucibleResultV1. Raw LEAN
@@ -12,14 +13,16 @@ export function canonicalizeLeanArtifacts(input: {
   runtimeProfileId: CrucibleResultV1["runtimeProfileId"]
 }): CrucibleResultV1 {
   const stats = (input.artifacts.rawStatistics ?? {}) as Record<string, unknown>
-  const num = (key: string): number => {
-    const value = stats[key]
-    const parsed = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""))
-    return Number.isFinite(parsed) ? parsed : 0
-  }
-  const endingEquity = num("Final Equity") || num("Ending Equity") || input.startingEquity
-  const totalTrades = Math.max(0, Math.round(num("Total Orders")))
-  const fees = num("Total Fees")
+  // LEAN statistics are formatted strings: percentages like "-38.303%",
+  // currency like "$220.00", and bare decimals for ratios/counts. The
+  // canonicalizer normalizes them into Finny's numeric units (fractions for
+  // returns/drawdowns/win rate, absolute dollars for fees/equity).
+  const stat = (key: string): number | undefined => leanStatisticNumber(stats[key])
+  // LEAN's StatisticsBuilder emits "End Equity" (e.g. "6169.65"); older
+  // packets used "Final Equity"/"Ending Equity", kept as fallbacks.
+  const endingEquity = stat("End Equity") ?? stat("Final Equity") ?? stat("Ending Equity") ?? input.startingEquity
+  const totalTrades = Math.max(0, Math.round(stat("Total Orders") ?? 0))
+  const fees = stat("Total Fees") ?? 0
   const navCurve = input.artifacts.equityCurve.length
     ? input.artifacts.equityCurve
     : [{ timestamp: new Date().toISOString(), equity: endingEquity }]
@@ -29,13 +32,16 @@ export function canonicalizeLeanArtifacts(input: {
     runtimeProfileId: input.runtimeProfileId,
     startingEquity: input.startingEquity,
     endingEquity,
-    totalReturn: num("Net Profit"),
-    maxDrawdown: num("Drawdown"),
-    annualizedVolatility: num("Annual Standard Deviation"),
-    sharpeRatio: num("Sharpe Ratio"),
+    totalReturn: stat("Net Profit") ?? 0,
+    // LEAN's Drawdown statistic is a positive magnitude (e.g. 0.3841 for a
+    // 38.41% peak-to-trough loss), matching the engine_v2 Results convention
+    // that the qualification gates consume.
+    maxDrawdown: stat("Drawdown") ?? 0,
+    annualizedVolatility: stat("Annual Standard Deviation") ?? 0,
+    sharpeRatio: stat("Sharpe Ratio") ?? 0,
     totalTrades,
-    winRate: totalTrades > 0 ? num("Win Rate") / 100 : 0,
-    profitFactor: stats["Profit-Loss Ratio"] === undefined ? null : num("Profit-Loss Ratio"),
+    winRate: totalTrades > 0 ? (stat("Win Rate") ?? 0) : 0,
+    profitFactor: stats["Profit-Loss Ratio"] === undefined ? null : (stat("Profit-Loss Ratio") ?? 0),
     fees,
     slippage: 0,
     exposure: 0,
