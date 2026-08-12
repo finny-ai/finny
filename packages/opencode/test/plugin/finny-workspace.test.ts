@@ -77,6 +77,15 @@ describe("workspace naming", () => {
     expect(deriveWorkspaceName(facts, "swing", "Trump-linked stocks")).toBe("djt-rum-geo-cxw-1d-swing")
   })
 
+  test("names a mixed-asset universe after the primary symbol only", () => {
+    // Regression: a BTC/USD + AAPL request produced the conflicting
+    // "btc-usd-aapl-1d-momentum" name whose embedded AAPL token contradicts
+    // the single crypto asset class; the workspace must be named for the
+    // primary symbol.
+    const facts = parseRequestFacts("research BTC/USD and AAPL with 1d bars")
+    expect(deriveWorkspaceName(facts, "momentum", "research BTC/USD and AAPL with 1d bars")).toBe("btc-1d-momentum")
+  })
+
   test("derives a name from the prompt when no symbol is present", () => {
     expect(deriveWorkspaceName({}, "options", "options algo")).toBe("options-algo-strategy")
     expect(derivePromptSlug("what is a sharpe ratio?")).toBe("what-sharpe-ratio")
@@ -109,6 +118,34 @@ describe("workspace naming", () => {
 })
 
 describe("bootstrapWorkspace (the prompt-in startup routine)", () => {
+  test("keeps the bound primary workspace when a multi-symbol request arrives", async () => {
+    // Regression: finny_workspace_prepare with symbols ["BTC/USD", "AAPL"]
+    // against an existing btc-algo binding used to derive a fresh
+    // "btc-usd-aapl-1d-momentum" workspace and rebind the session, splitting
+    // the workflow away from its own evidence directories. The workflow-owned
+    // primary workspace must win.
+    const first = await bootstrapWorkspace("ses_mixed_primary", "research BTC/USD and AAPL with daily bars")
+    expect(first).toBeDefined()
+    expect(first!.slug.startsWith("btc-1d-")).toBe(true)
+
+    const second = await bootstrapWorkspace("ses_mixed_primary", "research BTC/USD and AAPL with daily bars", {
+      requested_symbol: "BTC/USD",
+      requested_symbols: ["BTC/USD", "AAPL"],
+      requested_asset_class: "crypto",
+      requested_interval: "1d",
+    })
+    expect(second!.slug).toBe(first!.slug)
+    expect(second!.created).toBe(false)
+    expect(second!.rebound).toBe(false)
+  })
+
+  test("single-symbol identity changes still rebind to a fresh workspace", async () => {
+    const first = await bootstrapWorkspace("ses_single_switch", "build a SPY daily strategy")
+    const second = await bootstrapWorkspace("ses_single_switch", "build a QQQ daily strategy")
+    expect(second!.slug).not.toBe(first!.slug)
+    expect(second!.created).toBe(true)
+  })
+
   test("audit prompt keeps daily identity across workspace naming and request context", async () => {
     const prompt = "Build a daily AAPL strategy using a 20-day SMA and test it for leakage."
     const result = await bootstrapWorkspace("ses_issue_131", prompt)

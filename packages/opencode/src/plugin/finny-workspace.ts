@@ -9,7 +9,13 @@ import {
   isValidAlgoId,
 } from "@finny-ai/core/algo"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
-import { parseRequestFacts, workspaceMatchesRequest, type RequestFacts } from "../agent/request-identity"
+import {
+  assetClassForSymbol,
+  normalizeSymbol,
+  parseRequestFacts,
+  workspaceMatchesRequest,
+  type RequestFacts,
+} from "../agent/request-identity"
 import { syncWorkspaceRequestContext } from "../agent/finny-workspace-context"
 import { Log } from "../util/log"
 
@@ -161,8 +167,17 @@ function requestedSymbolParts(facts: RequestFacts): string[] {
 /** Kebab-case workspace name from request facts, e.g. "spy-15m-mean-reversion" or "options-algo-strategy". */
 export function deriveWorkspaceName(facts: RequestFacts, intent?: string, prompt = ""): string {
   const tail = intent ?? "strategy"
-  const symbol = requestedSymbolParts(facts)
-    .slice(0, 6)
+  let symbols = requestedSymbolParts(facts).slice(0, 6)
+  // A mixed-asset universe (BTC/USD crypto + AAPL equity) cannot be encoded in
+  // one workspace name without embedding a token that conflicts with the
+  // request's single asset class. Name the workspace for the primary symbol
+  // only; the rest of the universe stays request context.
+  if (symbols.length > 1) {
+    const classes = new Set(symbols.map((symbol) => assetClassForSymbol(symbol)).filter(Boolean))
+    if (classes.size > 1) symbols = symbols.slice(0, 1)
+  }
+  const symbol = symbols
+    .map((entry) => normalizeSymbol(entry) ?? entry)
     .join("-")
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -192,11 +207,19 @@ function slugMatchesRequest(slug: string, facts: RequestFacts): boolean {
   if (!workspaceMatchesRequest(slug, facts)) return false
   if (facts.requested_algorithm_name) return true
   const symbols = requestedSymbolParts(facts)
+    .map((symbol) => normalizeSymbol(symbol) ?? symbol)
     .map((symbol) => symbol.toLowerCase().replace(/[^a-z0-9]+/g, "-"))
     .filter(Boolean)
   if (symbols.length === 0) return true
   const base = (slug.split(".")[0] ?? slug).toLowerCase()
-  return symbols.every((symbol) => base.includes(symbol))
+  // Single-primary workspace semantics: the slug names the primary symbol's
+  // workspace. Auxiliary universe symbols (for example AAPL in a mixed
+  // BTC/USD + AAPL request) are request context, not workspace-name
+  // requirements. Requiring every universe symbol in the slug rebinds the
+  // session to a sibling workspace derived from the full universe and splits
+  // the workflow away from its own evidence directories (btc-algo vs
+  // btc-usd-aapl-1d-momentum).
+  return symbols.some((symbol) => base.includes(symbol))
 }
 
 function hasRequestIdentity(facts: RequestFacts): boolean {
