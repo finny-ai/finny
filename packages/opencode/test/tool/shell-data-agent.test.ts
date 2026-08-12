@@ -1232,4 +1232,26 @@ describe("tool.shell sentiment_agent write guard", () => {
       )
     }),
   )
+
+  live("rejects evidence-subagent bash timeouts above the 120s cap", () =>
+    Effect.gen(function* () {
+      const project = yield* tmpdirScoped()
+      const next = sentimentContext()
+      yield* sessionWorkspace(next, undefined, "aapl-sentiment")
+      yield* runIn(
+        project,
+        Effect.gen(function* () {
+          const err = yield* fail(
+            {
+              command: "echo should not run",
+              description: "Over-budget sentiment fetch",
+              timeout: 900_000,
+            },
+            next,
+          )
+          expect(err.message).toContain("exceeds the 120s cap for evidence subagents")
+        }),
+      )
+    }),
+  )
 })

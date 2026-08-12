@@ -1317,6 +1317,21 @@ export const ShellTool = Tool.define(
               if (params.timeout !== undefined && params.timeout < 0) {
                 throw new Error(`Invalid timeout value: ${params.timeout}. Timeout must be a positive number.`)
               }
+              const EVIDENCE_SUBAGENT_MAX_TIMEOUT_MS = 120_000
+              if (
+                params.timeout !== undefined &&
+                params.timeout > EVIDENCE_SUBAGENT_MAX_TIMEOUT_MS &&
+                (ctx.agent === "data_extractor" ||
+                  ctx.agent === "sec_agent" ||
+                  ctx.agent === "sentiment_agent" ||
+                  ctx.agent === "news_agent" ||
+                  ctx.agent === "researcher")
+              ) {
+                throw new Error(
+                  `Timeout ${params.timeout} ms exceeds the ${EVIDENCE_SUBAGENT_MAX_TIMEOUT_MS / 1000}s cap for evidence subagents. ` +
+                    "Split the work into smaller bounded steps (e.g. one bounded sample per month, fewer pages) and never paginate a full window in a single command.",
+                )
+              }
               const timeout = params.timeout ?? defaultTimeoutMs
               const ps = Shell.ps(shell)
               const env = yield* shellEnv(ctx, cwd)
