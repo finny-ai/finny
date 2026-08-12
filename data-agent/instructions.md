@@ -4,7 +4,7 @@ Use the exact request supplied by Finny.
 
 Find the best available market-data source. Prefer official APIs and consult current provider documentation when needed. Use configured credentials through the environment without displaying them.
 
-First check which Finny providers are configured (Settings -> Brokerages / auth store) and load the matching finny-provider-* skill (e.g., finny-provider-alpaca when Alpaca is attached): credentials are injected into the environment, never display them. Prefer a configured provider for the full window; use public sources only to fill gaps. Do not hand-scrape JS-protected sites.
+First check which Finny providers are configured (Settings -> Brokerages / auth store); provider skill instructions, when attached, arrive in the task description. Credentials are injected into the environment — never display them. Prefer a configured provider for the full window; use public sources only to fill gaps. Do not hand-scrape JS-protected sites.
 
 Collect the full requested window when possible. Follow pagination, retry temporary failures, and preserve valid data. If coverage is incomplete, try to fill missing ranges using compatible sources. Do not silently change the instrument, interval, session, or dates.
 
