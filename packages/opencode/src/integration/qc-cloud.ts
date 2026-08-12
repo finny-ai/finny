@@ -56,7 +56,9 @@ export interface QcPaperDeployOutcome {
   ok: boolean
   mode: "fixture" | "cloud"
   deploymentId: string
-  status: "running" | "stopped"
+  status: "starting" | "running" | "stopped"
+  /** Raw QuantConnect live status observed at launch-poll completion. */
+  qcStatus?: string
   projectId: string
   error?: string
   record?: QcPaperDeploymentRecord
@@ -67,7 +69,7 @@ export interface QcPaperDeploymentRecord {
   algorithmName: string
   algorithmVersion: number
   projectId: string
-  status: "running" | "stopped"
+  status: "starting" | "running" | "stopped"
   mode: "fixture" | "cloud"
   startedAt: string
   stoppedAt?: string
@@ -348,7 +350,9 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
     algorithmName: input.algorithm.name,
     algorithmVersion: input.algorithm.version,
     projectId: String(input.projectId),
-    status: "running",
+    // A deployment is only running once QuantConnect reports it as such; a
+    // queued deployment starts as "starting" and is promoted by reconcile.
+    status: "starting",
     mode: "cloud",
     brokerKind: input.brokerKind,
     startedAt: new Date().toISOString(),
@@ -356,6 +360,9 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
   }
   if (persistLegacy) await appendDeployment(record)
   const status = await waitForLiveTerminal(credentials, { projectId: input.projectId, deployId: deploymentId }, input.abort)
+  if (status.status === "Running") {
+    await updateDeployment(deploymentId, { status: "running" })
+  }
   const failed = status.status === "DeployError" || status.status === "RuntimeError" || status.status === "Invalid"
   if (failed) {
     await qcLiveStop(credentials, { projectId: input.projectId, deployId: deploymentId }).catch(() => undefined)
@@ -370,8 +377,21 @@ export async function deployQcLive(input: QcLiveDeployInput): Promise<QcPaperDep
       ...(updated ? { record: updated } : {}),
     }
   }
-  const running = status.status === "Running" || status.status === "InQueue" || status.status === "Initializing"
-  return { ok: true, mode: "cloud", deploymentId, status: running ? "running" : "stopped", projectId: String(input.projectId) }
+  // A poll timeout means the deployment never reached a terminal state or
+  // Running within the window; the last observed status is InQueue with a
+  // timeout message. Reporting "running" would misstate the deployment, so
+  // it stays "starting" until a later reconciliation observes Running.
+  const pending = status.status === "InQueue" || status.status === "Initializing" || status.status === "History"
+  const running = status.status === "Running"
+  return {
+    ok: true,
+    mode: "cloud",
+    deploymentId,
+    status: running ? "running" : pending ? "starting" : "stopped",
+    qcStatus: status.status,
+    projectId: String(input.projectId),
+    ...(status.message ? { error: status.message } : {}),
+  }
 }
 
 async function waitForLiveTerminal(
@@ -379,15 +399,19 @@ async function waitForLiveTerminal(
   input: { projectId: string; deployId: string },
   signal?: AbortSignal,
 ): Promise<QcLiveDeployment> {
-  const deadline = Date.now() + 10 * 60_000
-  while (Date.now() < deadline) {
+  const deadlineMs = Number(process.env.FINNY_QC_LIVE_WAIT_MS ?? 10 * 60_000)
+  const deadline = Date.now() + (Number.isFinite(deadlineMs) && deadlineMs > 0 ? deadlineMs : 10 * 60_000)
+  while (true) {
     signal?.throwIfAborted()
     const current = await qcLiveRead(credentials!, { projectId: input.projectId, deployId: input.deployId })
     if (!current) return { deployId: input.deployId, projectId: Number(input.projectId), status: "InQueue" }
     if (isLiveTerminal(current.status) || current.status === "Running") return current
-    await new Promise((resolve) => setTimeout(resolve, 5_000))
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      return { deployId: input.deployId, projectId: Number(input.projectId), status: "InQueue", message: "live status poll timed out" }
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(5_000, remaining)))
   }
-  return { deployId: input.deployId, projectId: Number(input.projectId), status: "InQueue", message: "live status poll timed out" }
 }
 
 export async function stopQcLive(input: {
@@ -443,10 +467,16 @@ export async function reconcileQcDeployments(): Promise<QcPaperDeploymentRecord[
   const credentials = await readQcCredentials()
   if (!credentials) return listPaperDeployments()
   const ledger = await listPaperDeployments()
-  const running = ledger.filter((entry) => entry.mode === "cloud" && entry.status === "running")
-  for (const entry of running) {
+  const active = ledger.filter(
+    (entry) => entry.mode === "cloud" && (entry.status === "running" || entry.status === "starting"),
+  )
+  for (const entry of active) {
     const current = await qcLiveRead(credentials, { projectId: entry.projectId, deployId: entry.deploymentId })
     if (!current) continue
+    // Promote a queued deployment only on an authoritative Running report.
+    if (current.status === "Running" && entry.status === "starting") {
+      await updateDeployment(entry.deploymentId, { status: "running" })
+    }
     if (
       current.status === "Stopped" ||
       current.status === "Liquidated" ||

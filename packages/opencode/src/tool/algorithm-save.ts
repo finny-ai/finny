@@ -552,6 +552,26 @@ export const AlgorithmSaveTool = Tool.define(
             if (sourceIssues.length > 0) {
               configIssues.push(...sourceIssues)
             }
+            // The v1 source store holds one file per version; a multi-file
+            // manifest must fail before Algorithm.save, otherwise the
+            // candidate persists with a manifest that can never match the
+            // mounted source tree.
+            if (derivedFiles && derivedFiles.length !== 1) {
+              configIssues.push(
+                `${params.runtimeProfile} v1 requires exactly one source file; multi-file content delivery is not supported yet`,
+              )
+            } else if (derivedFiles) {
+              // The single stored file's bytes are `code`; the manifest must
+              // describe those exact bytes or the run identity would bind a
+              // hash that never matches the mounted source.
+              const actualSha = createHash("sha256").update(params.code).digest("hex")
+              if (derivedFiles[0]!.sha256 !== actualSha) {
+                configIssues.push(
+                  `strategy source sha256 for ${derivedFiles[0]!.path} does not match the saved code bytes; ` +
+                    `manifest declares ${derivedFiles[0]!.sha256} but code hashes to ${actualSha}`,
+                )
+              }
+            }
           }
           if (missionRiskContract && documents.riskContract) {
             try {

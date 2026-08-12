@@ -115,6 +115,23 @@ describe("LEAN result parsing", () => {
 })
 
 describe("walk-forward folds", () => {
+  test("fails closed when the usable bars cannot fill the requested folds", () => {
+    const timestamps = Array.from({ length: 4 }, (_, i) => {
+      const date = new Date(Date.UTC(2026, 0, 1, 14, 30) + i * 86_400_000)
+      return date.toISOString()
+    })
+    const curve = timestamps.map((timestamp, i) => ({ timestamp, equity: 10000 + i }))
+    expect(() =>
+      buildWalkForwardSummary({
+        equityCurve: curve,
+        fills: [],
+        timestamps,
+        warmupBars: 2,
+        folds: 5,
+      }),
+    ).toThrow(/requires at least 6 usable bars/)
+  })
+
   test("uses distinct non-overlapping test windows with an expanding train window", () => {
     const timestamps = Array.from({ length: 60 }, (_, i) => {
       const date = new Date(Date.UTC(2026, 0, 1, 14, 30) + i * 86_400_000)

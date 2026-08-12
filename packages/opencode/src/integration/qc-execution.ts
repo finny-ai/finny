@@ -205,6 +205,11 @@ export async function reconcileManaged(): Promise<void> {
         ...(remoteEquity !== undefined ? { remoteEquity } : {}),
         ...(current.runtimeStatistics ? { remoteRuntimeStatistics: current.runtimeStatistics } : {}),
       }
+      // Promote a queued deployment to running only on an authoritative
+      // QuantConnect Running observation; nothing else may claim it.
+      if (current.status === "Running" && record.status === "starting") {
+        patch.status = "running"
+      }
       if (terminal) {
         Object.assign(patch, {
           status: current.status === "RuntimeError" || current.status === "DeployError" || current.status === "Invalid"
@@ -471,16 +476,20 @@ export async function startPaperDeployment(input: {
         error: outcome.error ?? "QuantConnect live deployment failed",
       }
     }
+    // A deployment that is still queued (InQueue after the launch poll) must
+    // not be stamped running: keep it "starting" so the reconcile loop is the
+    // only authority that promotes it once QuantConnect reports Running.
+    const launched = outcome.status === "running"
     const running = await updateDeployment(deploymentId, {
-      status: "running",
-      qcStatus: "Running",
+      status: launched ? "running" : "starting",
+      qcStatus: outcome.qcStatus ?? (launched ? "Running" : "InQueue"),
       compileId: compile.compileId,
       nodeId: node,
       liveUrl: qcProjectUrl(link.projectId),
     })
     if (running) await refreshState(running)
     notify()
-    return { ok: true, deploymentId, status: "running", projectId: link.projectId }
+    return { ok: true, deploymentId, status: launched ? "running" : "starting", projectId: link.projectId }
   } catch (error) {
     const failed = await updateDeployment(deploymentId, {
       status: "error",

@@ -274,13 +274,25 @@ export async function runLeanEngineInRunner(input: {
     v2.exposure.total_fees = statsFees
   }
   if (input.walkForwardFolds > 1 && timestamps.length > 0) {
-    v2.walk_forward = buildWalkForwardSummary({
-      equityCurve: parsed.equityCurve,
-      fills: parsed.fills,
-      timestamps,
-      warmupBars: Number(input.config.required_history_bars ?? 0),
-      folds: input.walkForwardFolds,
-    })
+    try {
+      v2.walk_forward = buildWalkForwardSummary({
+        equityCurve: parsed.equityCurve,
+        fills: parsed.fills,
+        timestamps,
+        warmupBars: Number(input.config.required_history_bars ?? 0),
+        folds: input.walkForwardFolds,
+      })
+    } catch (error) {
+      // A walk-forward window that cannot be partitioned (too few usable bars
+      // after warmup) is a data-shape failure, not a crash: the run already
+      // executed, but its robustness summary is undefined and must not be
+      // persisted as a generic internal error.
+      return {
+        ok: false,
+        kind: "data_bundle_invalid",
+        error: `LEAN walk-forward summary could not be computed: ${error instanceof Error ? error.message : String(error)}`,
+      }
+    }
   }
 
   // Canonical artifact set consumed by the strict run publisher.

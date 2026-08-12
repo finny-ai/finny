@@ -344,8 +344,11 @@ function leanRuntimeReadiness(): LeanRuntimeAdvertisement {
     },
     {
       profileId: "lean_csharp",
-      availability: "unavailable",
-      reasons: ["lean_csharp runtime is not part of the first release"],
+      // The C# surface (offline container compile + run, C# fixture, QC link
+      // language) ships with this release and uses the same pinned adapter,
+      // image, and readiness probe as lean_python.
+      availability: probe.ready ? "available" : "unavailable",
+      reasons: probe.reasons,
     },
     {
       profileId: "qc_cloud",

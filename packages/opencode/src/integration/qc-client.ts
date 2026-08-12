@@ -337,12 +337,23 @@ export async function qcCompileWait(
 
 export async function qcBacktestCreate(
   credentials: QcCredentials,
-  input: { projectId: number | string; compileId: string; name: string },
+  input: {
+    projectId: number | string
+    compileId: string
+    name: string
+    /** Strategy parameters surfaced through GetParameter/get_parameter in the QC backtest. */
+    parameters?: Record<string, unknown>
+  },
 ): Promise<{ backtestId: string }> {
   const body = await qcApiRequest({
     path: "/backtests/create",
     credentials,
-    body: { projectId: projectIdOrThrow(input), compileId: input.compileId, backtestName: input.name },
+    body: {
+      projectId: projectIdOrThrow(input),
+      compileId: input.compileId,
+      backtestName: input.name,
+      ...(input.parameters ? { parameters: input.parameters } : {}),
+    },
   })
   const backtest = Array.isArray(body.backtests) ? body.backtests[0] : body.backtest ?? body
   const backtestId = String(backtest?.backtestId ?? "")

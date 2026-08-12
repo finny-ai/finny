@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import {
   qcBacktestWait,
+  qcBacktestCreate,
   qcCompileWait,
   qcLiveCreate,
   qcProjectCreate,
@@ -22,6 +23,7 @@ const originalFinnyHome = process.env.FINNY_HOME
 const originalXdgData = process.env.XDG_DATA_HOME
 const originalAuthContent = process.env.OPENCODE_AUTH_CONTENT
 const originalLedgerOverride = process.env.FINNY_QC_DEPLOYMENTS_FILE
+const originalLiveWaitMs = process.env.FINNY_QC_LIVE_WAIT_MS
 const cleanups: string[] = []
 let originalFetch: typeof fetch
 
@@ -47,6 +49,8 @@ afterEach(async () => {
   else process.env.XDG_DATA_HOME = originalXdgData
   if (originalLedgerOverride === undefined) delete process.env.FINNY_QC_DEPLOYMENTS_FILE
   else process.env.FINNY_QC_DEPLOYMENTS_FILE = originalLedgerOverride
+  if (originalLiveWaitMs === undefined) delete process.env.FINNY_QC_LIVE_WAIT_MS
+  else process.env.FINNY_QC_LIVE_WAIT_MS = originalLiveWaitMs
   if (originalAuthContent === undefined) delete process.env.OPENCODE_AUTH_CONTENT
   else process.env.OPENCODE_AUTH_CONTENT = originalAuthContent
   delete process.env.QC_FIXTURE
@@ -139,6 +143,35 @@ describe("QC client", () => {
     const result = await qcBacktestWait(CREDENTIALS, { projectId: 11, backtestId: "bt1" }, { intervalMs: 1, timeoutMs: 5000 })
     expect(result.status).toBe("Completed.")
     expect(result.statistics?.["Sharpe Ratio"]).toBe("1.98")
+  })
+
+  test("forwards strategy parameters into the backtest create body", async () => {
+    let seenBody: Record<string, any> | undefined
+    mockQc((apiPath, body) => {
+      expect(apiPath).toBe("/backtests/create")
+      seenBody = body as Record<string, any>
+      return { success: true, backtests: [{ backtestId: "bt-params" }] }
+    })
+    const result = await qcBacktestCreate(CREDENTIALS, {
+      projectId: 11,
+      compileId: "c1",
+      name: "finny run",
+      parameters: { symbol: "SPY", interval: "5m", finny_run_id: "run-123" },
+    })
+    expect(result.backtestId).toBe("bt-params")
+    expect(seenBody?.parameters).toEqual({ symbol: "SPY", interval: "5m", finny_run_id: "run-123" })
+  })
+
+  test("omits the parameters field when none are supplied", async () => {
+    let seenBody: Record<string, any> | undefined
+    mockQc((apiPath, body) => {
+      expect(apiPath).toBe("/backtests/create")
+      seenBody = body as Record<string, any>
+      return { success: true, backtests: [{ backtestId: "bt-plain" }] }
+    })
+    await qcBacktestCreate(CREDENTIALS, { projectId: 11, compileId: "c1", name: "plain" })
+    expect(seenBody?.parameters).toBeUndefined()
+    expect(seenBody?.backtestName).toBe("plain")
   })
 
   test("builds keyed brokerage settings for live create", async () => {
@@ -252,6 +285,47 @@ describe("QC cloud track", () => {
     expect(seen).toContain("/live/update/stop")
     const ledger = await listPaperDeployments()
     expect(ledger.find((entry) => entry.deploymentId === "L-err-1")?.status).toBe("stopped")
+  })
+
+  test("does not claim running when the live status poll times out while queued", async () => {
+    tempHome()
+    process.env.OPENCODE_AUTH_CONTENT = JSON.stringify({
+      [QC_PROVIDER_ID]: { type: "api", key: "cf17c7b00ceb48f3ac6fca5f8a48a6e2", metadata: { userId: "1001200" } },
+    })
+    // Force the live-status poll to expire immediately so the queued
+    // deployment cannot be observed reaching Running.
+    process.env.FINNY_QC_LIVE_WAIT_MS = "1"
+    mockQc((apiPath) => {
+      if (apiPath === "/live/create") return { success: true, live: { deployId: "L-pend-1", projectId: 42, status: "InQueue" } }
+      if (apiPath === "/live/read") {
+        return { success: true, live: { deployId: "L-pend-1", projectId: 42, status: "InQueue" } }
+      }
+      throw new Error(`unexpected ${apiPath}`)
+    })
+    const algorithm = {
+      algorithmId: "00000000-0000-4000-8000-000000000012",
+      userId: "u1",
+      name: "live-pending",
+      version: 1,
+      status: "saved",
+      code: "class X(QCAlgorithm): pass",
+      language: "python",
+      time_created: Date.now(),
+      time_updated: Date.now(),
+    }
+    const outcome = await deployQcLive({
+      algorithm: algorithm as any,
+      projectId: "42",
+      compileId: "c1",
+      nodeId: "LN-MICRO",
+      brokerKind: "qc_paper",
+      capital: 10000,
+    })
+    expect(outcome.ok).toBe(true)
+    expect(outcome.status).toBe("starting")
+    expect(outcome.error).toMatch(/timed out/)
+    const ledger = await listPaperDeployments()
+    expect(ledger.find((entry) => entry.deploymentId === "L-pend-1")?.status).toBe("starting")
   })
 
   test("runs the real backtest flow end to end with mapped statistics", async () => {

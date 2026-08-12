@@ -50,6 +50,23 @@ const subagents = [
 ]
 
 describe("Finny capability manifest", () => {
+  test("advertises lean_python and lean_csharp with the same adapter readiness", () => {
+    const finny = agent("finny", {
+      "*": "deny",
+      finny_backtest: "allow",
+    })
+    const manifest = buildCapabilityManifest({ agent: finny, agents: subagents, tools: registry })
+    const runtimes = manifest.backtest?.runtimes ?? []
+    const python = runtimes.find((item) => item.profileId === "lean_python")
+    const csharp = runtimes.find((item) => item.profileId === "lean_csharp")
+    const qc = runtimes.find((item) => item.profileId === "qc_cloud")
+    // Both LEAN runtimes ship through the same pinned adapter and image, so
+    // their availability must never diverge.
+    expect(python?.availability).toBe(csharp?.availability)
+    expect(csharp?.availability).toBeDefined()
+    expect(qc?.availability).toBeDefined()
+  })
+
   test("advertises the engine-v2 metrics Gemini previously missed", () => {
     const finny = agent("finny", {
       "*": "deny",
