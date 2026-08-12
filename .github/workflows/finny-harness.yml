@@ -238,7 +238,6 @@ jobs:
         id: preflight
         run: >-
           bun packages/opencode/script/live-harness-signal.ts preflight
-          --scenario packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json
           --output .artifacts/live-preflight/preflight.json
       - name: Upload sanitized preflight evidence
         if: always()
@@ -296,7 +295,6 @@ jobs:
         run: >-
           bun --cwd packages/opencode run harness:headless --
           --ref ${{ github.sha }}
-          --scenario harness/scenarios/spy-5m-sma-crossover.v1.json
           --agent finny
           --model "${FINNY_HARNESS_MODEL}"
           --collector http://127.0.0.1:6006
@@ -307,7 +305,6 @@ jobs:
         run: >-
           bun packages/opencode/script/live-harness-signal.ts summarize
           --bundle .artifacts/headless
-          --scenario packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json
           --output .artifacts/live-signal.json
       - name: Upload evidence bundle
         if: always()

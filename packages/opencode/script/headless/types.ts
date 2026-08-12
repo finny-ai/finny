@@ -182,7 +182,8 @@ export type RunManifestV1 = z.infer<typeof RunManifestV1>
 
 export type HeadlessHarnessOptions = {
   ref: string
-  scenarioPath: string
+  /** Scenario object or path to a scenario JSON file. */
+  scenarioPath: string | HeadlessScenarioV1
   model: string
   agent: string
   outputDir: string
