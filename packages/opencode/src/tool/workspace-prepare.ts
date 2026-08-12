@@ -27,7 +27,7 @@ import {
 import { BuildWorkflowStore } from "../algorithm/build-workflow/store"
 import { ensureStructuredBuildWorkflow } from "../algorithm/build-workflow/bind"
 import { transitionWorkflowIdentity } from "../algorithm/build-workflow/lifecycle"
-import { isVagueStrategyBuild } from "../session/build-clarification"
+import { canonicalBuildDiscoveryQuestions, isVagueStrategyBuild } from "../session/build-clarification"
 import { lastCompletedXnysSessionDate } from "../data/dataset-evidence-calendar"
 import { Tool } from "./tool"
 
@@ -73,6 +73,22 @@ type WorkspacePrepareWindow = {
   startDate?: string
   endDate?: string
   error?: string
+}
+
+// Canonical bar intervals the backtest engine and provider layer support.
+// Durations (180d, 6m, 1y) are windows, not bar intervals, and must never be
+// recorded as the registered request interval.
+const SUPPORTED_BAR_INTERVALS = new Set(["1m", "5m", "15m", "30m", "1h", "4h", "1d"])
+
+export function workspacePrepareIntervalIssue(interval: string | undefined): string | undefined {
+  if (!interval) return undefined
+  const normalized = normalizeInterval(interval)
+  if (normalized && SUPPORTED_BAR_INTERVALS.has(normalized)) return undefined
+  return [
+    `Unsupported bar interval "${interval}".`,
+    `Valid bar intervals: ${[...SUPPORTED_BAR_INTERVALS].join(", ")}.`,
+    "Durations such as 180d or 6m describe the data window, not the bar interval; pass the window via startDate/endDate or duration instead.",
+  ].join(" ")
 }
 
 const TODO_SCAFFOLD = "# Todo\n\n"
@@ -250,15 +266,28 @@ function trustedQuestionAnswers(message: Tool.Context["messages"][number]): stri
         question && typeof question === "object" && "options" in question && Array.isArray(question.options)
           ? question.options
           : []
-      const expanded = values.map((value) => {
+      // Option descriptions are help text authored by the model or by the
+      // canonical discovery surface. Only the canonical discovery questions
+      // carry structured identity facts (absolute date windows, capital) in
+      // their descriptions; model-authored descriptions are prose that must
+      // never leak into request identity (e.g. "180d lookback on the research
+      // path" becoming the registered bar interval).
+      const canonicalQuestions = canonicalBuildDiscoveryQuestions()
+      const isCanonicalDiscoveryQuestion = canonicalQuestions.some((candidate) => candidate.question === label)
+      const canonicalDescription = (value: string): string | undefined => {
+        if (!isCanonicalDiscoveryQuestion) return undefined
         const option = options.find((candidate: unknown) => {
           if (!candidate || typeof candidate !== "object") return false
           const record = candidate as { label?: unknown; description?: unknown }
           return record.label === value && typeof record.description === "string"
         }) as { description?: string } | undefined
-        return option?.description ? `${value} ${option.description}` : value
+        return option?.description
+      }
+      const rendered = values.map((value) => {
+        const description = canonicalDescription(value)
+        return description ? `${value} ${description}` : value
       })
-      return [label ? `${label} ${expanded.join(", ")}` : expanded.join(", ")]
+      return [label ? `${label} ${rendered.join(", ")}` : rendered.join(", ")]
     })
   })
 }
@@ -585,6 +614,10 @@ export const WorkspacePrepareTool = Tool.define<
       parameters,
       execute: (params: WorkspacePrepareParams, ctx: Tool.Context) =>
         Effect.promise(async () => {
+          const intervalIssue = workspacePrepareIntervalIssue(params.interval)
+          if (intervalIssue) {
+            return { title: "Workspace prepare failed", output: intervalIssue, metadata: {} }
+          }
           const window = resolveWorkspacePrepareWindow(params)
           if (window.error) {
             return { title: "Workspace prepare failed", output: window.error, metadata: {} }
