@@ -84,6 +84,23 @@ function finiteNumber(...values: unknown[]): number | undefined {
   return undefined
 }
 
+/**
+ * Parse one LEAN summary statistic value. LEAN formats percentages as
+ * "-38.303%" and currency as "$220.00"; plain ratios and counts arrive as
+ * bare decimals/ints. Percent strings are normalized to fractions so callers
+ * never have to guess the unit. Missing/empty values return undefined.
+ */
+export function leanStatisticNumber(value: unknown): number | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined
+  const text = String(value).trim()
+  if (text === "") return undefined
+  const cleaned = text.replace(/[$,]/g, "").trim()
+  const parsed = Number.parseFloat(cleaned)
+  if (!Number.isFinite(parsed)) return undefined
+  return text.includes("%") ? parsed / 100 : parsed
+}
+
 function orderEventFee(event: Record<string, any>): number {
   return (
     finiteNumber(

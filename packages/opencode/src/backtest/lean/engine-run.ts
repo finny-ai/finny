@@ -14,7 +14,7 @@ import {
 } from "./contracts"
 import { materializeLeanDataBundle } from "./materialize"
 import { parseFinnyOhlcv, writeLeanMarketData } from "./data-writer"
-import { parseLeanResultJson } from "./lean-result-parse"
+import { leanStatisticNumber, parseLeanResultJson } from "./lean-result-parse"
 import { buildCanonicalMetrics, buildWalkForwardSummary } from "./metrics"
 import { LeanAdapter } from "./adapter"
 import { buildLeanLauncherConfig } from "./engine-config"
@@ -269,8 +269,8 @@ export async function runLeanEngineInRunner(input: {
     ohlcvRows: timestamps.length,
     engineVersion: `lean-${LEAN_PINNED_COMMIT.slice(0, 8)}`,
   })
-  const statsFees = Number(parsed.statistics?.["Total Fees"] ?? 0)
-  if (Number.isFinite(statsFees) && statsFees > 0) {
+  const statsFees = leanStatisticNumber(parsed.statistics?.["Total Fees"])
+  if (statsFees !== undefined && statsFees > 0) {
     v2.exposure.total_fees = statsFees
   }
   if (input.walkForwardFolds > 1 && timestamps.length > 0) {

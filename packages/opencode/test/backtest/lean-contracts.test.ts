@@ -18,6 +18,7 @@ import {
 import { materializeLeanDataBundle } from "../../src/backtest/lean/materialize"
 import { embedRuntimeConfig, runtimeFromConfig, validateLeanSourceManifest } from "../../src/backtest/lean/select"
 import { crucibleResultFromEngineV2 } from "../../src/backtest/lean/canonical"
+import { canonicalizeLeanArtifacts } from "../../src/backtest/lean/parse"
 import type { EngineV2 } from "../../src/backtest/results"
 
 const request: ExperimentPlanRequestV1 = {
@@ -313,6 +314,31 @@ describe("LEAN data bundle materialization", () => {
     expect(a.fillForward).toBe(false)
     expect(a.normalizationMode).toBe("raw")
   })
+
+  test("rejects negative warmup bars instead of silently ignoring them", async () => {
+    await expect(
+      materializeLeanDataBundle({
+        phase: "exploratory",
+        interval: "1h",
+        assetFamily: "equity",
+        schedules: [
+          {
+            symbol: "SPY",
+            assetClass: "equity" as const,
+            interval: "1h",
+            calendarId: "XNYS",
+            calendarVersion: "finny-calendars-2026.1",
+            timezone: "America/New_York",
+            scheduleHash: "s".repeat(64),
+            bars: [{ timestamp: "2026-01-02T14:30:00.000Z", sessionId: "2026-01-02" }],
+          },
+        ],
+        window: { start: "2026-01-02", end: "2026-01-02" },
+        warmupBars: -3,
+        outputDir: `/tmp/finny-lean-bundle-test-${Math.random().toString(36).slice(2)}`,
+      }),
+    ).rejects.toThrow(/warmupBars must be a non-negative integer/)
+  })
 })
 
 describe("runtime config embedding", () => {
@@ -398,5 +424,70 @@ describe("canonical result mapping", () => {
     expect(canonical.totalTrades).toBe(10)
     expect(canonical.fills).toHaveLength(1)
     expect(canonical.runKind).toBe("crucible_2_0")
+  })
+})
+
+describe("LEAN summary statistic parsing", () => {
+  function artifactsWithStatistics(statistics: Record<string, unknown>) {
+    return {
+      schema: "finny.lean_run_artifacts" as const,
+      version: 1 as const,
+      orders: [],
+      fills: [],
+      rejections: [],
+      equityCurve: [],
+      rawStatistics: statistics,
+      leanResultPath: "",
+      leanSummaryPath: "",
+    }
+  }
+
+  test("parses LEAN percent and currency statistic strings into Finny units", () => {
+    // StatisticsBuilder formats percentages as "-38.303%" and fees as
+    // "$220.00"; ratios/counts stay bare decimals.
+    const canonical = canonicalizeLeanArtifacts({
+      artifacts: artifactsWithStatistics({
+        "Net Profit": "-38.303%",
+        "Drawdown": "38.410%",
+        "Total Fees": "$220.00",
+        "End Equity": "6169.65",
+        "Start Equity": "10000.00",
+        "Total Orders": "6",
+        "Win Rate": "43%",
+        "Profit-Loss Ratio": "1.24",
+        "Sharpe Ratio": "0.512",
+        "Annual Standard Deviation": "0.184",
+      }),
+      startingEquity: 10000,
+      engineVersion: "lean-c6cc3b74",
+      runtimeProfileId: "lean_python",
+    })
+    expect(canonical.totalReturn).toBeCloseTo(-0.38303, 8)
+    expect(canonical.maxDrawdown).toBeCloseTo(0.3841, 8)
+    expect(canonical.fees).toBeCloseTo(220, 8)
+    expect(canonical.endingEquity).toBeCloseTo(6169.65, 8)
+    expect(canonical.totalTrades).toBe(6)
+    expect(canonical.winRate).toBeCloseTo(0.43, 8)
+    expect(canonical.profitFactor).toBeCloseTo(1.24, 8)
+    expect(canonical.sharpeRatio).toBeCloseTo(0.512, 8)
+    expect(canonical.annualizedVolatility).toBeCloseTo(0.184, 8)
+  })
+
+  test("keeps a zero final equity instead of falling back to starting equity", () => {
+    const canonical = canonicalizeLeanArtifacts({
+      artifacts: artifactsWithStatistics({
+        "Net Profit": "-100.00%",
+        "Drawdown": "100.00%",
+        "End Equity": "0.00",
+        "Total Orders": "4",
+        "Total Fees": "$20.00",
+      }),
+      startingEquity: 10000,
+      engineVersion: "lean-c6cc3b74",
+      runtimeProfileId: "lean_python",
+    })
+    expect(canonical.endingEquity).toBe(0)
+    expect(canonical.totalReturn).toBeCloseTo(-1, 8)
+    expect(canonical.maxDrawdown).toBeCloseTo(1, 8)
   })
 })
