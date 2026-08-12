@@ -13,7 +13,9 @@ import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import { Permission } from "@/permission"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
+import { Cause, Clock, Effect, Exit, Option, Schema, Scope } from "effect"
+import { eq, sql } from "drizzle-orm"
+import { PartTable } from "@opencode-ai/core/session/sql"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
@@ -76,34 +78,86 @@ export const EMPTY_SUBAGENT_RESULT_MARKER =
   "BLOCKED: subagent returned no usable output (final turn aborted or empty) — do not treat this as evidence."
 
 /**
- * Wall-clock cap for a single child task run. Evidence subagents (especially
- * sentiment/news) can stall on network calls, unbounded pagination, or slow
- * shells; without a deadline a stuck child keeps `task_batch_run` from ever
- * returning. On expiry the child session is cancelled and the task is
- * terminalized as BLOCKED with whatever partial artifacts it produced.
+ * Idle deadline for a single child task run. Evidence subagents can stall on
+ * network calls, unbounded pagination, or hung shells; without a deadline a
+ * stuck child keeps `task_batch_run` from ever returning. The deadline is
+ * activity-based: the child is only terminalized after this long without
+ * producing any new output. A slow but working extractor is never killed
+ * mid-flight, which a fixed total wall-clock cap did (every evidence run
+ * over 4 minutes was terminalized and retried forever).
  */
-export const CHILD_TASK_WALL_CLOCK_DEADLINE_MS = 240_000
+export const CHILD_TASK_IDLE_DEADLINE_MS = 240_000
 
-/** Final text of a child task that exceeded the wall-clock deadline. */
-export const CHILD_TASK_DEADLINE_TEXT =
-  "BLOCKED: task exceeded the 4-minute wall-clock deadline and was terminalized with partial artifacts — do not treat this as evidence."
+/** Final text of a child task that produced no output for the idle deadline. */
+export const CHILD_TASK_IDLE_DEADLINE_TEXT =
+  "BLOCKED: task produced no output for 4 minutes and was terminalized with partial artifacts — do not treat this as evidence."
+
+/** Absolute backstop so task_batch_run always returns even for a chatty but pathological child. */
+export const CHILD_TASK_HARD_DEADLINE_MS = 1_200_000
+
+/** Final text of a child task that exceeded the absolute wall-clock deadline. */
+export const CHILD_TASK_HARD_DEADLINE_TEXT =
+  "BLOCKED: task exceeded the 20-minute wall-clock deadline and was terminalized with partial artifacts — do not treat this as evidence."
+
+/** How often the child's latest output timestamp is polled. */
+export const CHILD_TASK_ACTIVITY_POLL_MS = 15_000
+
+/** Whether a child result text is one of the task-deadline terminalizations. */
+export function isChildTaskDeadlineText(text: string): boolean {
+  return text === CHILD_TASK_IDLE_DEADLINE_TEXT || text === CHILD_TASK_HARD_DEADLINE_TEXT
+}
 
 /**
- * Races the child run against the wall-clock deadline. When the child wins,
- * the deadline arm is discarded. When the deadline fires first, the child run
- * is interrupted, the child session is cancelled, and a BLOCKED result is
- * returned so the parent flow records a blocked task instead of hanging.
+ * Races the child run against the activity deadline. Every poll refreshes the
+ * idle window from the child's latest output timestamp, so only a child that
+ * stops producing output for the idle deadline (or one that outlives the
+ * absolute hard deadline) is terminalized. On expiry the child run is
+ * interrupted — the session runner cleans itself up — and a BLOCKED result is
+ * returned so the parent flow records a blocked task instead of hanging. The
+ * child session is deliberately NOT cancelled here: session cancellation also
+ * cancels the child's background job, which is the very fiber executing this
+ * deadline, and would surface a hard "Task cancelled" instead of BLOCKED.
  */
 export function withChildTaskDeadline(
   run: Effect.Effect<string, unknown>,
-  cancel: Effect.Effect<void>,
+  activity: Effect.Effect<number | undefined>,
 ): Effect.Effect<string, unknown> {
   return Effect.raceFirst(
     run,
-    Effect.sleep(CHILD_TASK_WALL_CLOCK_DEADLINE_MS).pipe(
-      Effect.flatMap(() => cancel.pipe(Effect.as(CHILD_TASK_DEADLINE_TEXT))),
-    ),
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis
+      let lastActivity = startedAt
+      while (true) {
+        yield* Effect.sleep(CHILD_TASK_ACTIVITY_POLL_MS)
+        const last = yield* activity
+        if (last !== undefined && last > lastActivity) lastActivity = last
+        const now = yield* Clock.currentTimeMillis
+        if (now - lastActivity > CHILD_TASK_IDLE_DEADLINE_MS) return CHILD_TASK_IDLE_DEADLINE_TEXT
+        if (now - startedAt > CHILD_TASK_HARD_DEADLINE_MS) return CHILD_TASK_HARD_DEADLINE_TEXT
+      }
+    }),
   )
+}
+
+/**
+ * Latest output timestamp of a child session, used to decide whether the
+ * child is still making progress. Any part (reasoning, text, tool call, tool
+ * result) counts as activity. Returns undefined when the child produced no
+ * parts at all.
+ */
+export function childSessionActivity(
+  sessionID: SessionID,
+  database: Database.Interface,
+): Effect.Effect<number | undefined> {
+  return Effect.gen(function* () {
+    const row = yield* database.db
+      .select({ last: sql<number>`max(${PartTable.time_created})` })
+      .from(PartTable)
+      .where(eq(PartTable.session_id, sessionID))
+      .get()
+      .pipe(Effect.catch(() => Effect.succeed(undefined)))
+    return typeof row?.last === "number" ? row.last : undefined
+  })
 }
 
 /** Final text of a subagent run; the BLOCKED marker when there is none. */
@@ -1834,7 +1888,9 @@ const taskExecutor = Effect.gen(function* () {
       if (scriptedHarness) return yield* runTask()
       const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id, database)))
       if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
-      const exit = yield* Effect.exit(withChildTaskDeadline(runTask(), ops.cancel(nextSession.id)))
+      const exit = yield* Effect.exit(
+        withChildTaskDeadline(runTask(), childSessionActivity(nextSession.id, database)),
+      )
       if (Exit.isSuccess(exit)) {
         const text = exit.value
         const status = taskResultStatus(text)
@@ -1979,6 +2035,13 @@ const taskExecutor = Effect.gen(function* () {
             const text = result.info.output ?? EMPTY_SUBAGENT_RESULT_MARKER
             return Effect.gen(function* () {
               if (!(yield* inject("completed", text))) return
+              if (isChildTaskDeadlineText(text)) {
+                // The deadline interrupted our await, not the child's own
+                // turn, which keeps running in its runner scope. Cancel the
+                // child session now that the job has settled so the cancel
+                // cannot cancel this very background job mid-flight.
+                yield* ops.cancel(nextSession.id).pipe(Effect.ignore)
+              }
               const exit = yield* Effect.exit(
                 Effect.promise(() =>
                   TaskState.finalizeActive(
@@ -2114,6 +2177,9 @@ const taskExecutor = Effect.gen(function* () {
             return yield* Effect.fail(new Error(error))
           }
           const text = result?.output ?? EMPTY_SUBAGENT_RESULT_MARKER
+          if (isChildTaskDeadlineText(text)) {
+            yield* ops.cancel(nextSession.id).pipe(Effect.ignore)
+          }
           yield* Effect.promise(() =>
             TaskState.finalizeActive(
               nextSession.id,

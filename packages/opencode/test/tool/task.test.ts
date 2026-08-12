@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer } from "effect"
 import * as Ref from "effect/Ref"
 import * as TestClock from "effect/testing/TestClock"
 import { Agent } from "../../src/agent/agent"
@@ -18,8 +18,11 @@ import { SessionStatus } from "@/session/status"
 
 import {
   completedIntradayWindow,
-  CHILD_TASK_DEADLINE_TEXT,
-  CHILD_TASK_WALL_CLOCK_DEADLINE_MS,
+  CHILD_TASK_ACTIVITY_POLL_MS,
+  CHILD_TASK_HARD_DEADLINE_MS,
+  CHILD_TASK_HARD_DEADLINE_TEXT,
+  CHILD_TASK_IDLE_DEADLINE_MS,
+  CHILD_TASK_IDLE_DEADLINE_TEXT,
   evidenceDelegationBlock,
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalSpecialistTaskText,
@@ -4511,38 +4514,58 @@ describe("tool.task", () => {
   )
 })
 
-describe("child task wall-clock deadline", () => {
+describe("child task activity deadline", () => {
   it.effect("returns the run result when the child finishes before the deadline", () =>
     Effect.gen(function* () {
-      const text = yield* withChildTaskDeadline(Effect.succeed("done"), Effect.void)
+      const text = yield* withChildTaskDeadline(Effect.succeed("done"), Effect.succeed(undefined))
       expect(text).toBe("done")
     }),
   )
 
-  it.effect("terminalizes a stuck child as BLOCKED after the deadline and cancels it", () =>
+  it.effect("terminalizes a silent child as BLOCKED after the idle deadline", () =>
     Effect.gen(function* () {
-      const canceled = yield* Ref.make(false)
-      const fiber = yield* withChildTaskDeadline(
-        Effect.never,
-        Ref.set(canceled, true).pipe(Effect.asVoid),
-      ).pipe(Effect.forkChild)
-      yield* TestClock.adjust(CHILD_TASK_WALL_CLOCK_DEADLINE_MS + 1_000)
+      const fiber = yield* withChildTaskDeadline(Effect.never, Effect.succeed(undefined)).pipe(Effect.forkChild)
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS + CHILD_TASK_ACTIVITY_POLL_MS + 1_000)
       const text = yield* Fiber.join(fiber)
-      expect(text).toBe(CHILD_TASK_DEADLINE_TEXT)
+      expect(text).toBe(CHILD_TASK_IDLE_DEADLINE_TEXT)
       expect(text).toMatch(/^BLOCKED:/)
-      expect(yield* Ref.get(canceled)).toBe(true)
     }),
   )
 
-  it.effect("does not cancel a child that finishes first", () =>
+  it.effect("does not kill a child that keeps producing output, then hard-deadlines it", () =>
     Effect.gen(function* () {
-      const canceled = yield* Ref.make(false)
-      const text = yield* withChildTaskDeadline(
-        Effect.succeed("fast result"),
-        Ref.set(canceled, true).pipe(Effect.asVoid),
+      const fiber = yield* withChildTaskDeadline(Effect.never, Clock.currentTimeMillis).pipe(Effect.forkChild)
+      // The child keeps producing output (activity tracks the clock), so the
+      // idle deadline never fires even far past it.
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS + 60_000)
+      const probe = yield* Effect.raceFirst(Fiber.join(fiber), Effect.sleep("1 millis").pipe(Effect.as("tick"))).pipe(
+        Effect.forkChild,
       )
-      expect(text).toBe("fast result")
-      expect(yield* Ref.get(canceled)).toBe(false)
+      yield* TestClock.adjust(1_000)
+      const tick = yield* Fiber.join(probe)
+      expect(tick).toBe("tick")
+      // Past the absolute hard deadline the child is finally terminalized.
+      yield* TestClock.adjust(CHILD_TASK_HARD_DEADLINE_MS + CHILD_TASK_ACTIVITY_POLL_MS + 1_000)
+      const text = yield* Fiber.join(fiber)
+      expect(text).toBe(CHILD_TASK_HARD_DEADLINE_TEXT)
+    }),
+  )
+
+  it.effect("resets the idle window when the child emits a late output", () =>
+    Effect.gen(function* () {
+      const emittedAt = yield* Ref.make<number | undefined>(undefined)
+      const fiber = yield* withChildTaskDeadline(Effect.never, Ref.get(emittedAt)).pipe(Effect.forkChild)
+      // Emit an output just before the idle deadline would fire, then verify
+      // the child survives another full idle window.
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS - 30_000)
+      yield* Ref.set(emittedAt, yield* Clock.currentTimeMillis)
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS - 30_000)
+      const probe = yield* Effect.raceFirst(Fiber.join(fiber), Effect.sleep("1 millis").pipe(Effect.as("tick"))).pipe(
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust(1_000)
+      const tick = yield* Fiber.join(probe)
+      expect(tick).toBe("tick")
     }),
   )
 })
