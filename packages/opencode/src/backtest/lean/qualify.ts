@@ -37,9 +37,9 @@ import { canonicalizeLeanArtifacts } from "./parse"
 import { runLeanPhase } from "./run"
 import type { LeanAdapterV1 } from "./runner"
 import type { LeanBarScheduleV1 } from "./types"
-import { runtimeForCandidate, type RuntimeConfigV1 } from "./select"
-import { leanSourceDir } from "./source-store"
-import { isLeanProfile } from "./contracts"
+import { runtimeForCandidate } from "./select"
+import { leanSourceDir, sourceFilesForAlgorithm } from "./source-store"
+import { isLeanProfile, runtimeProfileV1, strategySourceV1 } from "./contracts"
 
 const LEAN_ADAPTER_HASH = crypto
   .createHash("sha256")
@@ -128,6 +128,12 @@ function executionProfileFor(config: Record<string, any>, assetClass: "equity" |
 }
 
 function windowsFromBars(input: { timestamps: string[]; warmupBars: number }): ExperimentPlanV2["windows"] {
+  if (!Number.isSafeInteger(input.warmupBars) || input.warmupBars < 0) {
+    throw new ExperimentPlanV2CompileError(
+      "insufficient_bars",
+      `warmupBars must be a non-negative integer; received ${input.warmupBars}`,
+    )
+  }
   const total = input.timestamps.length
   const warmupCount = Math.min(input.warmupBars, total)
   const usable = Math.max(0, total - warmupCount)
@@ -183,9 +189,28 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
   dataset: VerifiedDatasetRef
   candidate: Algorithm.Info
   policy: QualificationPolicyV1
+  /**
+   * The local-leg LEAN profile for a qc_cloud candidate bound to a linked
+   * QuantConnect project. The QC Cloud leg and the local Crucible leg are
+   * separate evaluations; the local leg always runs the pinned LEAN engine
+   * in the project's language.
+   */
+  runtimeProfileOverride?: "lean_python" | "lean_csharp"
 }): Promise<ExperimentPlanV2> {
   const runtime = runtimeForCandidate(input.candidate)
-  if (!isLeanProfile(runtime.profile)) throw new Error("candidate is not a LEAN runtime")
+  const localProfileId: "lean_python" | "lean_csharp" | undefined =
+    input.runtimeProfileOverride ??
+    (isLeanProfile(runtime.profile) ? runtime.profile.profileId : undefined)
+  if (!localProfileId) {
+    throw new Error(
+      `candidate runtime ${runtime.profile.profileId} is not a local LEAN runtime; a qc_cloud local leg requires an explicit LEAN profile override`,
+    )
+  }
+  if (input.runtimeProfileOverride && isLeanProfile(runtime.profile) && input.runtimeProfileOverride !== runtime.profile.profileId) {
+    throw new Error(
+      `candidate runtime ${runtime.profile.profileId} conflicts with the requested local-leg profile ${input.runtimeProfileOverride}`,
+    )
+  }
   const config = configRecord(input.candidate)
   const assetClass = assetClassFor(config, input.dataset)
   const csvText = await fs.readFile(input.dataset.csvPath, "utf8")
@@ -207,6 +232,16 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
     actualEnd: input.dataset.identity.actualEnd,
   }
   const executionProfile = executionProfileFor(config, assetClass)
+  // The plan binds the exact strategy source tree the pinned engine will
+  // mount. Candidates without an embedded source manifest (legacy saves and
+  // qc_cloud links) get the real per-version tree instead of an empty hash.
+  const sourceManifest =
+    runtime.source && runtime.source.profileId === localProfileId
+      ? runtime.source
+      : strategySourceV1({
+          profileId: localProfileId,
+          files: await sourceFilesForAlgorithm(input.candidate),
+        })
   const warmupBars = Number.isInteger(config.required_history_bars) ? Number(config.required_history_bars) : 1
   const leanConfigHash = buildLeanLauncherConfig({
     profile: executionProfile,
@@ -215,8 +250,11 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
     endDate: binding.actualEnd,
     cash: Number(config.risk?.starting_equity_usd ?? 10000),
     algorithmTypeName: "Main",
-    algorithmLanguage: runtime.profile.profileId === "lean_csharp" ? "CSharp" : "Python",
-    algorithmLocation: runtime.profile.profileId === "lean_csharp" ? "Algorithm.dll" : "main.py",
+    // Must match the launcher config the adapter actually executes so the
+    // plan-bound hash is the hash of the executed config.
+    algorithmLanguage: localProfileId === "lean_csharp" ? "CSharp" : "Python",
+    algorithmLocation:
+      localProfileId === "lean_csharp" ? "/Lean/Algorithm/Algorithm.dll" : "/Lean/Algorithm/main.py",
     dataFolder: "/Lean/Data",
     resultsFolder: "/Results",
     seed: 0,
@@ -235,9 +273,9 @@ export async function compileLeanPlanV2FromActiveEvidence(input: {
       declaredSearchBudget: Number(config.declared_search_budget ?? config.optimization_budget ?? 1),
     },
     runtime: {
-      profileId: runtime.profile.profileId,
-      profileHash: runtime.profile.profileHash,
-      sourceTreeHash: runtime.source?.sourceTreeHash ?? sha256Text(""),
+      profileId: localProfileId,
+      profileHash: runtimeProfileV1(localProfileId).profileHash,
+      sourceTreeHash: sourceManifest.sourceTreeHash,
       adapterHash: LEAN_ADAPTER_HASH,
       executionProfileHash: executionProfile.executionProfileHash,
       imageDigest: LEAN_PINNED_IMAGE_DIGEST,
@@ -351,6 +389,42 @@ export async function executeLeanQualificationV2(input: {
   const phases: PlanExecutionPhase[] = ["exploratory", "validation", "confirmatory"]
   let finalResult: BacktestRunner.RunResult | undefined
 
+  // Fail closed on any invalid runtime declaration: an explicit invalid or
+  // qc_cloud profile must never be coerced back to the default engine or run
+  // under a mismatched identity. The local leg of a composite qc_cloud plan
+  // runs the pinned LEAN engine under the plan's LEAN profile.
+  const runtimeConfig = runtimeForCandidate(input.candidate)
+  if (runtimeConfig.issues.length > 0) {
+    const failed = blocker(
+      "invalid_policy",
+      "runtime",
+      `Invalid runtime declaration: ${runtimeConfig.issues.join("; ")}. Engine fallback is disabled.`,
+      "repair and resave the candidate with an explicit supported runtime profile",
+    )
+    await ledger.block({ ...identity, phase: "exploratory", blocker: failed })
+    return { ok: false, completedPhases, blocker: failed }
+  }
+  const effectiveProfile = isLeanProfile(runtimeConfig.profile)
+    ? runtimeConfig.profile
+    : runtimeProfileV1(input.plan.runtime.profileId)
+  if (!isLeanProfile(effectiveProfile)) {
+    const failed = blocker(
+      "invalid_policy",
+      "runtime",
+      `plan runtime ${input.plan.runtime.profileId} is not a local LEAN profile; the composite local leg runs the pinned LEAN engine`,
+      "recompile the plan with a LEAN local-leg profile",
+    )
+    await ledger.block({ ...identity, phase: "exploratory", blocker: failed })
+    return { ok: false, completedPhases, blocker: failed }
+  }
+  const sourceManifest =
+    runtimeConfig.source && runtimeConfig.source.profileId === effectiveProfile.profileId
+      ? runtimeConfig.source
+      : strategySourceV1({
+          profileId: effectiveProfile.profileId,
+          files: await sourceFilesForAlgorithm(input.candidate),
+        })
+
   for (const [index, phase] of phases.entries()) {
     const policy = phase === "confirmatory" ? input.policy : makeExploratoryQualificationPolicyV1({ requiredPhase: phase })
     const qualification: QualificationInputV1 = {
@@ -445,7 +519,6 @@ export async function executeLeanQualificationV2(input: {
         interval: input.plan.interval,
         dataDir: scratchDir,
       })
-      const runtimeConfig = runtimeForCandidate(input.candidate)
       outcome = await runLeanPhase({
         adapter: input.adapter,
         context: {
@@ -453,8 +526,8 @@ export async function executeLeanQualificationV2(input: {
           bundle: {
             schema: "finny.lean_runtime_bundle",
             version: 1,
-            profile: runtimeConfig.profile,
-            source: runtimeConfig.source ?? { schema: "finny.strategy_source", version: 1, profileId: input.plan.runtime.profileId, files: [], sourceTreeHash: input.plan.runtime.sourceTreeHash },
+            profile: effectiveProfile,
+            source: sourceManifest,
             executionProfile: executionProfileFor(configRecord(input.candidate), input.plan.datasets[0]?.assetClass ?? "equity"),
             image: {
               schema: "finny.lean_image_identity",
@@ -473,7 +546,10 @@ export async function executeLeanQualificationV2(input: {
           dataBundle,
           phase,
           window: { start: window.start, end: window.end },
-          seed: input.plan.planHash ? Number.parseInt(input.plan.planHash.slice(0, 8), 16) : 0,
+          // The plan binds the launcher config with seed 0; execution must
+          // use the same seed so the plan-bound leanConfigHash is the hash of
+          // the executed config. Retries of the same plan stay byte-identical.
+          seed: 0,
           capital: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
           sourceDir: await leanSourceDir(input.candidate),
           resultsDir: path.join(phaseRoot, "results"),
@@ -485,7 +561,7 @@ export async function executeLeanQualificationV2(input: {
             artifacts: result.artifacts,
             startingEquity: Number(configRecord(input.candidate).risk?.starting_equity_usd ?? 10000),
             engineVersion: `lean-${input.plan.runtime.leanCommit.slice(0, 8)}`,
-            runtimeProfileId: runtimeConfig.profile.profileId,
+            runtimeProfileId: effectiveProfile.profileId,
           }),
       })
     } catch (error) {

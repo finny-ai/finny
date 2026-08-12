@@ -48,6 +48,9 @@ export async function materializeLeanDataBundle(input: {
   if (!resolution) throw new Error(`unsupported LEAN interval ${input.interval}`)
   if (input.schedules.length === 0) throw new Error("no schedules provided")
   if (input.schedules.length > 20) throw new Error("LEAN v1 universes are fixed at up to 20 symbols")
+  if (!Number.isSafeInteger(input.warmupBars) || input.warmupBars < 0) {
+    throw new Error(`warmupBars must be a non-negative integer; received ${input.warmupBars}`)
+  }
   if (input.schedules.some((s) => s.assetClass !== input.assetFamily)) {
     throw new Error("mixed asset families are unsupported in a LEAN bundle")
   }
@@ -55,7 +58,9 @@ export async function materializeLeanDataBundle(input: {
     throw new Error("all LEAN bundle symbols must share one interval")
   }
 
-  // Phase-scoped bar selection: warmup plus the exact phase window. The
+  // Phase-scoped bar selection: the run covers exactly the phase window and
+  // strategy warmup is in-run (the harness-generated strategy skips its first
+  // required_history_bars bars), mirroring engine_v2 semantics. The
   // confirmatory phase may only be materialized by a caller that has already
   // recorded the holdout approval; enforcement lives in the adapter boundary.
   const phaseSchedules = input.schedules.map((schedule) => {
