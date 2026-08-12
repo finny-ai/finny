@@ -83,6 +83,9 @@ export async function setLeanEnabled(enabled: boolean): Promise<LeanConfigV1> {
 export function isLeanEnabledSync(): boolean {
   const env = process.env.FINNY_LEAN_ENABLED?.toLowerCase()
   if (env === "1" || env === "true") return true
+  // The override is symmetric: an explicit "0"/"false" must force-disable
+  // even when the persisted setting enabled LEAN.
+  if (env === "0" || env === "false") return false
   return cache.loaded ? cache.enabled : false
 }
 
@@ -105,13 +108,17 @@ export async function leanConfigStatus(): Promise<{
   source: "env" | "setting" | "default"
 }> {
   await loadLeanConfig()
-  const envEnabled = isLeanEnabledSync() && leanAdapterCertSync() !== null
   const enabled = isLeanEnabledSync()
   const cert = leanAdapterCertSync()
   return {
     enabled,
     effective: enabled && cert === LEAN_ADAPTER_CERT_VALUE,
     adapterCert: cert,
-    source: process.env.FINNY_LEAN_ENABLED ? "env" : cache.loaded && (await readConfig()) ? "setting" : "default",
+    source:
+      process.env.FINNY_LEAN_ENABLED !== undefined
+        ? "env"
+        : cache.loaded && (await readConfig())
+          ? "setting"
+          : "default",
   }
 }

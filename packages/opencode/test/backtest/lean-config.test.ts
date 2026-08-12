@@ -93,4 +93,15 @@ describe("native LEAN engine config", () => {
     expect(new LeanAdapter().probeReady().ready).toBe(false)
     expect(new LeanAdapter().probeReady().reasons.join(" ")).toContain("certificate")
   })
+
+  test("FINNY_LEAN_ENABLED=0 forces the engine off even when the setting enabled it", async () => {
+    isolatedHome()
+    await setLeanEnabled(true)
+    process.env.FINNY_LEAN_ENABLED = "0"
+    expect(isLeanEnabledSync()).toBe(false)
+    const status = await leanConfigStatus()
+    expect(status.enabled).toBe(false)
+    expect(status.source).toBe("env")
+    expect(new LeanAdapter().probeReady().ready).toBe(false)
+  })
 })
