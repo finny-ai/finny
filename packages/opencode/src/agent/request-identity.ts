@@ -648,8 +648,12 @@ function parseExplicitUniverse(prompt: string): { list: string[]; keyed: boolean
 
   // Unlabeled comma lists in prose are weak evidence: "for IBKR, RSI
   // mean-reversion" names a broker and an indicator, not a universe. Only
-  // tokens that survive the ambiguity filter count here.
-  const bare = /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(prompt)?.[1]
+  // tokens that survive the ambiguity filter count here. The list itself is
+  // case-sensitive: "AAPL, using the data extractor" must not pair the ticker
+  // with the lowercase word after the comma, which previously registered a
+  // single-symbol universe (AAPL) from a mixed BTC/USD + AAPL request and
+  // produced a workspace slug that contradicted the registered identity.
+  const bare = /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/.exec(prompt)?.[1]
   if (bare) {
     const list = parseTickerList(bare).filter((symbol) => !AMBIGUOUS_TICKER_TOKENS.has(symbol))
     if (list.length > 0) return { list, keyed: false }

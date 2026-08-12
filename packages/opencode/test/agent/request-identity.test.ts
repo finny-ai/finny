@@ -332,6 +332,26 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_interval).toBe("1d")
   })
 
+  test("does not pair a lowercase word after a comma with a ticker into a universe", () => {
+    // Regression: "research BTC/USD and AAPL, using the data extractor ..."
+    // was parsed as universe ["AAPL"] because "using" after the comma counted
+    // as a second ticker. That produced an aapl-algo workspace slug that
+    // contradicted the BTC/crypto identity registered from the clarification
+    // answers, so the data_extractor gate fail-closed on the slug.
+    const facts = parseRequestFacts(
+      "Verify this branch end to end: research BTC/USD and AAPL, using the data extractor and the news, sentiment, and SEC agents where applicable.",
+    )
+    expect(facts.requested_symbol).toBe("BTC")
+    expect(facts.requested_asset_class).toBe("crypto")
+    expect(facts.requested_symbols).toBeUndefined()
+  })
+
+  test("keeps an uppercase comma list as a multi-symbol universe", () => {
+    const facts = parseRequestFacts("trade AAPL, MSFT daily with 1h bars")
+    expect(facts.requested_symbols).toEqual(["AAPL", "MSFT"])
+    expect(facts.requested_interval).toBe("1h")
+  })
+
   test("does not overwrite explicit single tickers with lowercase asset prose", () => {
     const facts = parseRequestFacts(
       "Extract daily OHLCV data for RUM from 2026-01-01 to 2026-06-29. requested_symbol: RUM, requested_interval: 1d, requested_asset_class: equities.",
