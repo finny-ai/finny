@@ -5,6 +5,7 @@ import os from "node:os"
 import type { Algorithm } from "@/algorithm"
 import { runLeanEngineInRunner } from "@/backtest/lean/engine-run"
 import { isLeanProfile } from "@/backtest/lean/contracts"
+import { runtimeForCandidate } from "@/backtest/lean/select"
 import { leanSourceDir } from "@/backtest/lean/source-store"
 import { readAlpacaCredentials, listAlpacaAccounts } from "@/live/brokers/alpaca"
 import { readBinanceCredentials, listBinanceAccounts } from "@/live/brokers/binance"
@@ -117,6 +118,15 @@ function sanitizeQcName(value: string): string {
   return cleaned || "finny-algorithm"
 }
 
+/** Language for an unlinked QC push: the saved runtime profile wins, with
+ *  the legacy algorithm language as a fallback for pre-runtime saves. */
+export function qcPushLanguage(algorithm: Algorithm.Info): "python" | "csharp" {
+  const runtimeProfileId = runtimeForCandidate(algorithm).profile.profileId
+  return runtimeProfileId === "lean_csharp" || String(algorithm.language).toLowerCase() === "csharp"
+    ? "csharp"
+    : "python"
+}
+
 /**
  * Push the saved strategy into a QC project (fixture: deterministic local id).
  */
@@ -141,28 +151,33 @@ export async function pushStrategyToQc(input: {
   }
   const credentials = await readQcCredentials()
   if (!credentials) throw new Error("QuantConnect credentials are not connected")
-  // Language comes from the linked project contract (or the saved runtime
-  // profile) — never from a nonexistent algorithm.runtimeProfile field.
-  const language = String((input.algorithm as any).language).toLowerCase() === "csharp" ? "csharp" : "python"
+  // Language comes from the saved runtime profile (or the algorithm language
+  // for legacy saves) — a C# algorithm must never be pushed as a Python
+  // project with C# bytes in main.py.
+  const runtimeProfileId = runtimeForCandidate(input.algorithm).profile.profileId
+  const language =
+    runtimeProfileId === "lean_csharp" || String((input.algorithm as any).language).toLowerCase() === "csharp"
+      ? "csharp"
+      : "python"
   const { projectId } = await qcProjectCreate(credentials, {
     name: sanitizeQcName(`Finny ${input.algorithm.name} v${input.algorithm.version}`),
     language,
   })
   const files = link
     ? await linkedProjectSourceFiles({ algorithm: input.algorithm })
-    : [{ path: "main.py", content: input.algorithm.code }]
+    : [{ path: language === "csharp" ? "Main.cs" : "main.py", content: input.algorithm.code }]
   for (const file of files) {
     await qcFileCreate(credentials, { projectId, name: file.path, content: file.content })
   }
   return { mode: "cloud", projectId: String(projectId) }
 }
 
-async function readQcFileContent(algorithm: Algorithm.Info, relativePath: string): Promise<string> {
+async function readQcFileContent(algorithm: Algorithm.Info, relativePath: string): Promise<string | null> {
   const { readLeanSourceFile } = await import("@/backtest/lean/source-store")
   try {
     return await readLeanSourceFile({ algorithm, relativePath })
   } catch {
-    return ""
+    return null
   }
 }
 

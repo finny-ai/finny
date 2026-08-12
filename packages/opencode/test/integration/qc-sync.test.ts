@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs/promises"
 import {
   attachProject,
+  captureRemoteTree,
   getProjectLink,
   localSourceFilesForAlgorithm,
   refreshLinkSync,
@@ -183,6 +184,28 @@ describe("QC project linking (fixture mode)", () => {
 })
 
 describe("QC project linking (cloud mode)", () => {
+  test("captureRemoteTree fails closed on traversal-style QC file names", async () => {
+    isolatedHome()
+    // Remote names are QC-API-supplied; a path escaping the recovery tree
+    // must abort the snapshot instead of writing outside the sandbox.
+    await expect(
+      captureRemoteTree(
+        24058699,
+        [{ path: "../../escape.txt", sha256: "a".repeat(64), bytes: 3 }],
+        [{ path: "../../escape.txt", content: "x" }],
+      ),
+    ).rejects.toThrow(/unsafe QC remote path/)
+
+    // Nested but contained names still snapshot into the recovery tree.
+    const dir = await captureRemoteTree(
+      24058700,
+      [{ path: "sub/main.py", sha256: "b".repeat(64), bytes: 3 }],
+      [{ path: "sub/main.py", content: "abc" }],
+    )
+    const written = await fs.readFile(path.join(dir, "sub/main.py"), "utf8")
+    expect(written).toBe("abc")
+  })
+
   test("links a C# project without an explicit language and resolves it from QC", async () => {
     isolatedHome()
     mockCloudQc({

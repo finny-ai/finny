@@ -149,6 +149,11 @@ export async function captureRemoteTree(
   for (const file of files) {
     const content = sourceContents.find((item) => item.path === file.path)?.content
     if (content === undefined) continue
+    // Remote file names are QC-API-supplied and must never escape the
+    // recovery tree (fail closed on traversal/absolute/backslash paths).
+    if (file.path.startsWith("/") || file.path.includes("\\") || file.path.includes("..")) {
+      throw new Error(`unsafe QC remote path in recovery snapshot: ${file.path}`)
+    }
     const target = path.join(dir, file.path)
     await fs.mkdir(path.dirname(target), { recursive: true })
     await fs.writeFile(target, content, { mode: 0o600 })
