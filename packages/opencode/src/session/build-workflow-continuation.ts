@@ -164,16 +164,25 @@ function workflowShouldStopAutoIteration(input: ContinuationInput, workflow: Bui
 
 function iterationReminder(workflow: BuildWorkflowState) {
   const metricTrials = uniqueMetricTrials(workflow)
-  // Deadlock guard: if the candidate advanced past v1 but the experiment
-  // ledger accepted zero trials, iteration can never advance its own counter
-  // (the "Completed metric trials" mandate is unsatisfiable). Stop mandating
-  // save/backtest retries and hand control back to the user instead of
-  // re-issuing identical iteration orders forever.
-  if (workflow.candidate && workflow.candidate.version > 1 && metricTrials === 0) {
+  // Deadlock guard: a failed backtest that recorded no experiment attempt
+  // (phase strict_blocked with an empty ledger) is a deterministic ledger
+  // rejection. Retrying the same save/backtest is rejected again, so the
+  // "Completed metric trials" mandate is unsatisfiable and identical
+  // iteration orders would loop forever. Hand control back to the user.
+  // Engine/setup failures DO record attempts, so a non-empty ledger keeps the
+  // normal retry and v1 -> v2 iterate paths intact, and a fresh saved
+  // candidate (phase candidate_validated) still gets its mandated first
+  // backtest.
+  if (
+    workflow.candidate &&
+    workflow.phase === "strict_blocked" &&
+    workflow.backtest === undefined &&
+    workflow.experimentAttempts.length === 0
+  ) {
     return [
       "<system-reminder>",
-      `Durable Build workflow ${workflow.workflowId} reached candidate v${workflow.candidate.version} but the experiment ledger accepted zero trials.`,
-      "The auto-iteration loop cannot advance (no trial is recorded). Stop saving/backtesting, present the latest results honestly, and ask the user how to proceed.",
+      `Durable Build workflow ${workflow.workflowId} is at candidate v${workflow.candidate.version} but the experiment ledger accepted zero trials for the last backtest.`,
+      "The ledger rejection is authoritative: the same save/backtest cannot advance the loop. Stop saving/backtesting, present the latest results honestly, and ask the user how to proceed.",
       "</system-reminder>",
     ].join("\n")
   }

@@ -79,6 +79,45 @@ function withVerdict(
   }
 }
 
+/** A workflow whose last backtest was rejected by the experiment ledger. */
+function ledgerRejectedWorkflow(version = 1): BuildWorkflowState {
+  const workflow = failedWorkflow(0)
+  return {
+    ...workflow,
+    stage: "candidate_ready",
+    phase: "strict_blocked",
+    backtest: undefined,
+    candidate: workflow.candidate ? { ...workflow.candidate, version } : workflow.candidate,
+  }
+}
+
+/** A fresh saved candidate after a recorded engine failure (attempt exists). */
+function engineFailureWorkflow(version: number): BuildWorkflowState {
+  const workflow = failedWorkflow(0)
+  return {
+    ...workflow,
+    stage: "candidate_ready",
+    phase: "candidate_validated",
+    backtest: undefined,
+    candidate: workflow.candidate ? { ...workflow.candidate, version } : workflow.candidate,
+    experimentAttempts: [
+      {
+        id: "trial_engine",
+        experimentId: workflow.workflowId,
+        conceptId: "concept_engine",
+        replayKey: "replay_engine",
+        strategyHash: "strategy",
+        savedConfigHash: "config",
+        datasetHash: "dataset",
+        windowHash: "window",
+        gridTrials: 1,
+        outcome: "engine_failure",
+        createdAt: 1,
+      },
+    ],
+  }
+}
+
 describe("active Build workflow continuation", () => {
   test("only a newer real user continuation resumes an interrupted workflow", () => {
     const workflow = {
@@ -190,6 +229,46 @@ describe("active Build workflow continuation", () => {
     expect(reminder).toContain("Completed metric trials: 8")
     expect(reminder).toContain("fresh strategy concept family")
     expect(reminder).toContain("concept_exhausted is not an admissible outcome while the workflow remains active")
+  })
+
+  test("hands the v1 ledger-rejection deadlock back to the user", () => {
+    const reminder = buildWorkflowContinuationReminder({ workflow: ledgerRejectedWorkflow(1), pendingContextTasks: 0 })
+    expect(reminder).toContain("experiment ledger accepted zero trials for the last backtest")
+    expect(reminder).toContain("ask the user how to proceed")
+    expect(reminder).not.toContain("MUST call finny_backtest")
+    expect(reminder).not.toContain("MUST call finny_algorithm_save")
+  })
+
+  test("hands the v2 ledger-rejection deadlock back to the user", () => {
+    const reminder = buildWorkflowContinuationReminder({ workflow: ledgerRejectedWorkflow(2), pendingContextTasks: 0 })
+    expect(reminder).toContain("candidate v2")
+    expect(reminder).toContain("experiment ledger accepted zero trials for the last backtest")
+    expect(reminder).not.toContain("MUST call finny_backtest")
+  })
+
+  test("does not strand a fresh v2 save after a recorded engine failure", () => {
+    const reminder = buildWorkflowContinuationReminder({ workflow: engineFailureWorkflow(2), pendingContextTasks: 0 })
+    expect(reminder).toContain("MUST call finny_backtest now for saved candidate v2")
+    expect(reminder).not.toContain("experiment ledger accepted zero trials")
+  })
+
+  test("does not fire for a first-time v1 save that has never been backtested", () => {
+    const workflow: BuildWorkflowState = {
+      ...failedWorkflow(0),
+      backtest: undefined,
+      stage: "candidate_ready",
+      phase: "candidate_validated",
+    }
+    const reminder = buildWorkflowContinuationReminder({ workflow, pendingContextTasks: 0 })
+    expect(reminder).toContain("MUST call finny_backtest now for saved candidate v1")
+    expect(reminder).not.toContain("experiment ledger accepted zero trials")
+  })
+
+  test("a workflow without a candidate still gets a fresh save order", () => {
+    const workflow: BuildWorkflowState = { ...ledgerRejectedWorkflow(1), candidate: undefined }
+    const reminder = buildWorkflowContinuationReminder({ workflow, pendingContextTasks: 0 })
+    expect(reminder).toContain("MUST call finny_algorithm_save")
+    expect(reminder).toContain("v1")
   })
 
   test("allows the explicit three-save-attempt hard boundary", () => {
