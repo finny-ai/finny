@@ -1786,7 +1786,7 @@ describe("tool.task", () => {
           expect(result.output).toContain("BLOCKED: data request context mismatch")
           expect(result.output).toContain("SMH 1h equity")
           expect(result.output).toContain(`workspace_slug=${slug}`)
-          expect(result.output).toContain("do not reuse existing workspace artifacts")
+          expect(result.output).toContain("must state the exact registered symbol, interval, and asset class")
           expect(result.output).toContain("did not terminalize this Build run")
 
           let correctedPrompted = false
@@ -1860,7 +1860,7 @@ describe("tool.task", () => {
           expect(result.output).toContain("BLOCKED: data request context mismatch")
           expect(result.output).toContain("QQQ 1h equity")
           expect(result.output).toContain("workspace_symbol=SMH")
-          expect(result.output).toContain("do not reuse existing workspace artifacts")
+          expect(result.output).toContain("must state the exact registered symbol, interval, and asset class")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1915,6 +1915,63 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("workspace_interval=27d")
           expect(result.output).not.toContain("BLOCKED: data request context mismatch")
           expect(prompted).toBe(true)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("does not block data_extractor on the slug when the authoritative context matches", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          // Workflow-owned workspace whose slug was generated from a delegated
+          // algorithm name (`aapl-algo`) that no longer matches the confirmed
+          // request identity (BTC / 180d / crypto). The context is the
+          // authority; the slug must not trap extraction retries.
+          const slug = "aapl-algo.12.8.14.32.370367cd"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt:
+                "Authoritative request identity: requested_symbol=BTC, requested_interval=180d, requested_asset_class=crypto, requested_start=2026-02-14, requested_end=2026-08-11. Extract BTC/USD coverage.",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "BTC data extraction retry",
+              prompt:
+                "Authoritative registered request identity: requested_symbol=BTC, requested_interval=180d, requested_asset_class=crypto, requested_start=2026-02-14, requested_end=2026-08-11. Collect BTC/USD OHLCV coverage.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(true)
+          expect(result.output).not.toContain("BLOCKED: data request context mismatch")
+          expect(result.output).not.toContain(`workspace_slug=${slug}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev

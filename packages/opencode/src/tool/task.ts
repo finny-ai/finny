@@ -401,17 +401,25 @@ function dataRequestContextMismatchBlock(input: {
   const requestedSymbol = normalizeSymbol(facts.requested_symbol)
   const contextUniverse = input.context?.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
   const childInContextUniverse = Boolean(requestedSymbol && contextUniverse?.includes(requestedSymbol))
+  const contextIssues = contextMismatchIssues(input.context, facts)
+  // The authoritative request context, when present and matching the prompt,
+  // overrides slug-derived hints. A workflow-owned workspace can carry a slug
+  // generated from a delegated algorithm name (e.g. `aapl-algo`) that no
+  // longer matches the confirmed symbol, so the slug must not trap every
+  // extraction retry once the context agrees with the prompt.
+  const contextAuthoritativeMatch = Boolean(input.context && contextIssues.length === 0)
 
   const issues = [
-    ...(childInContextUniverse ? [] : workspaceMismatchIssues(input.workspace, facts)),
-    ...contextMismatchIssues(input.context, facts),
+    ...(childInContextUniverse || contextAuthoritativeMatch ? [] : workspaceMismatchIssues(input.workspace, facts)),
+    ...contextIssues,
   ]
 
   if (issues.length === 0) return undefined
 
   return [
     `BLOCKED: data request context mismatch — workspace is ${input.workspace ?? "MISSING"} but data_extractor task explicitly requested ${describeRequestFacts(facts)}.`,
-    "Start a new workspace or rebind the session before extracting; do not reuse existing workspace artifacts.",
+    "The registered request context is authoritative: the task prompt must state the exact registered symbol, interval, and asset class.",
+    "Do not rebind, create sibling workspaces, or rewrite the registered identity to match the prompt.",
     `Conflicts: ${issues.join(", ")}.`,
   ].join(" ")
 }
@@ -1187,7 +1195,7 @@ const taskExecutor = Effect.gen(function* () {
           "Evidence request rejected before launch.",
           preflightBlock,
           "The invalid task was not registered and did not terminalize this Build run.",
-          "Retry once after correcting the authoritative request identity above.",
+          "Retry once only if the task prompt wording itself can match the registered identity. If the registered identity or workspace state is contradictory, stop and ask the user — never conform the request to a conflicting identity.",
         ].join("\n"),
       }
     }
