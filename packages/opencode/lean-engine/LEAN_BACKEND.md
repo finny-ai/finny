@@ -11,7 +11,8 @@ review packets. LEAN never decides eligibility.
 
 - `finny_python` — existing `engine_v2` path. Default for every saved
   algorithm; nothing changes for existing records.
-- `lean_python` / `lean_csharp` — opt-in LEAN runtimes. Saved through
+- `lean_python` / `lean_csharp` — native LEAN runtimes (enabled by default,
+  no env activation; `lean disable` or Settings turns them off). Saved through
   `finny_algorithm_save` with `runtimeProfile` plus a `strategySource` file
   manifest (`path` + `sha256` + `bytes` for every project file). The manifest
   is bound into the config, the plan, and the run identity.

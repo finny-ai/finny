@@ -5,10 +5,11 @@ import { Global } from "@/global"
 /**
  * Native LEAN engine configuration.
  *
- * LEAN is a first-class Finny engine: the user enables it from Settings or
- * the CLI (`lean enable`), the choice is persisted, and the readiness probe
- * reads the setting instead of requiring hand-set environment variables.
- * Environment variables remain a test/harness override and always win.
+ * LEAN is a first-class Finny engine and is enabled by default with the
+ * certified adapter — no opt-in or environment activation is required. The
+ * user can disable it from Settings or the CLI (`lean disable`), and the
+ * choice is persisted. Environment variables remain a test/harness override
+ * and always win.
  *
  * The adapter certificate is a supply-chain pin: only the certified adapter
  * value may be recorded. Enabling LEAN always writes the pinned certificate.
@@ -50,16 +51,18 @@ async function writeConfig(config: LeanConfigV1): Promise<void> {
 /** In-process cache so sync consumers (capability manifest, probe) see the setting. */
 const cache: { loaded: boolean; enabled: boolean; adapterCert: string | null } = {
   loaded: false,
-  enabled: false,
-  adapterCert: null,
+  enabled: true,
+  adapterCert: LEAN_ADAPTER_CERT_VALUE,
 }
 
 /** Load the persisted setting into the process cache (daemon/server startup). */
 export async function loadLeanConfig(): Promise<void> {
   const config = await readConfig()
   cache.loaded = true
-  cache.enabled = config?.enabled === true
-  cache.adapterCert = config?.adapterCert ?? null
+  // Native default: a fresh install has LEAN enabled and certified. Only an
+  // explicit persisted decision (or env override) changes that.
+  cache.enabled = config === null ? true : config.enabled === true
+  cache.adapterCert = config === null ? LEAN_ADAPTER_CERT_VALUE : config.adapterCert ?? null
 }
 
 /** Persist and apply a LEAN enable/disable decision. */
@@ -79,14 +82,14 @@ export async function setLeanEnabled(enabled: boolean): Promise<LeanConfigV1> {
   return { ...previous, ...config }
 }
 
-/** Effective LEAN enablement: env override (tests/harness) > persisted setting. */
+/** Effective LEAN enablement: env override (tests/harness) > persisted setting > native default. */
 export function isLeanEnabledSync(): boolean {
   const env = process.env.FINNY_LEAN_ENABLED?.toLowerCase()
   if (env === "1" || env === "true") return true
   // The override is symmetric: an explicit "0"/"false" must force-disable
-  // even when the persisted setting enabled LEAN.
+  // even when the native default (or persisted setting) enabled LEAN.
   if (env === "0" || env === "false") return false
-  return cache.loaded ? cache.enabled : false
+  return cache.loaded ? cache.enabled : true
 }
 
 /** Effective adapter certificate: env override > persisted setting. */

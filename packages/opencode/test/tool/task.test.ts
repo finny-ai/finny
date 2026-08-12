@@ -21,6 +21,8 @@ import {
   finalSpecialistTaskText,
   finalTaskText,
   dataExtractorRepairInstruction,
+  inferBatchSubagentType,
+  resolveBatchSubagentType,
   shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
   TaskBatchRunTool,
@@ -677,6 +679,62 @@ describe("tool.task", () => {
       expect(launched).toBe(false)
     }),
   )
+
+  test("infers an omitted batch subagent_type from the entry description and prompt", () => {
+    expect(
+      resolveBatchSubagentType({
+        description: "OHLCV coverage + regime",
+        prompt: "You are the data_extractor for a Finny strategy-research workspace.",
+      }),
+    ).toBe("data_extractor")
+    expect(
+      resolveBatchSubagentType({
+        description: "News + catalysts brief",
+        prompt: "You are the news_agent. Gather cited news and market-context evidence.",
+      }),
+    ).toBe("news_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "SEC filings for equities",
+        prompt: "You are the sec_agent. Gather SEC EDGAR public-records evidence.",
+      }),
+    ).toBe("sec_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "Aggregate sentiment brief",
+        prompt: "You are the sentiment_agent. Gather aggregate crowd-positioning evidence.",
+      }),
+    ).toBe("sentiment_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "Independent researcher pass",
+        prompt: "Act as the researcher and summarize the evidence.",
+      }),
+    ).toBe("researcher")
+  })
+
+  test("fails with an actionable message when the batch subagent_type is ambiguous or missing", () => {
+    expect(() =>
+      resolveBatchSubagentType({ description: "Mixed brief", prompt: "Cover the news and sentiment together" }),
+    ).toThrow(/subagent_type/)
+    expect(() =>
+      resolveBatchSubagentType({ description: "Generic task", prompt: "Do the thing without naming a role" }),
+    ).toThrow(/subagent_type/)
+    expect(() =>
+      resolveBatchSubagentType({
+        description: "Generic task",
+        prompt: "Do the thing",
+        subagent_type: "coder",
+      }),
+    ).toThrow(/Unknown subagent_type/)
+  })
+
+  test("infers batch types only on an unambiguous single hint", () => {
+    expect(inferBatchSubagentType({ description: "News", prompt: "sentiment also" })).toBeUndefined()
+    expect(
+      inferBatchSubagentType({ description: "Coverage task", prompt: "gather filings and crowd sentiment" }),
+    ).toBeUndefined()
+  })
 
   it.live("injects complete authoritative runtime context for data_extractor", () =>
     provideTmpdirInstance((dir) =>

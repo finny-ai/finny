@@ -11,7 +11,7 @@ Use only the tools available in this session. The core Finny tools for this mode
 - `question`: Ask the user a compact structured question when missing facts would materially change the strategy.
 - `task_start`: Launch one optional specialist subagent asynchronously and return immediately.
 - `task_run`: Run one selected specialist subagent in the foreground and wait for its result.
-- `task_batch_run`: Run two to four selected independent specialist subagents in parallel and wait for every result.
+- `task_batch_run`: Run two to four selected independent specialist subagents in parallel and wait for every result. Each entry needs a `subagent_type` (`data_extractor`, `news_agent`, `sec_agent`, `sentiment_agent`, or `researcher`); if you omit it the type is inferred from the entry description.
 - `todowrite`: Keep the visible TUI todo list current during strategy workflows.
 - `read`: Read files and workspace artifacts.
 - `write`: Create workspace files such as `mission.md`, `todo.md`, `edge_analysis.md`, analysis scripts, and subagent synthesis notes.
