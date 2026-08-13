@@ -1,4 +1,5 @@
 import type { FixtureScriptMode } from "./types"
+import crypto from "node:crypto"
 
 type Json = Record<string, any>
 
@@ -51,6 +52,117 @@ class Strategy:
         self.previous_fast = fast_ma
         self.previous_slow = slow_ma
         self.prices.append(settled)
+`
+
+const LEAN_STRATEGY = `from AlgorithmImports import *
+
+class Main(QCAlgorithm):
+    """Deterministic SPY 5-minute SMA crossover LEAN harness candidate."""
+
+    def Initialize(self):
+        self.SetStartDate(2026, 1, 9)
+        self.SetEndDate(2026, 7, 8)
+        self.SetCash(10000)
+        self.SetWarmUp(120, Resolution.Minute)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        self.fast = SimpleMovingAverage(8)
+        self.slow = SimpleMovingAverage(24)
+        self.Consolidate(self.symbol, timedelta(minutes=5), self.OnConsolidated)
+        self.previous_fast = None
+        self.previous_slow = None
+        self.entry_price = None
+
+    def OnConsolidated(self, bar):
+        self.fast.Update(bar.EndTime, bar.Close)
+        self.slow.Update(bar.EndTime, bar.Close)
+        if self.IsWarmingUp or not self.fast.IsReady or not self.slow.IsReady:
+            return
+        fast_ma = self.fast.Current.Value
+        slow_ma = self.slow.Current.Value
+        holdings = self.Portfolio[self.symbol].Quantity
+        price = bar.Close
+        bullish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast <= self.previous_slow and fast_ma > slow_ma
+        bearish = self.previous_fast is not None and self.previous_slow is not None \\
+            and self.previous_fast >= self.previous_slow and fast_ma < slow_ma
+        if holdings == 0 and bearish and price > 0:
+            qty = int((self.Portfolio.TotalPortfolioValue * 0.95) / price)
+            if qty > 0:
+                self.MarketOrder(self.symbol, qty)
+                self.entry_price = price
+        elif holdings > 0 and (bullish or (self.entry_price is not None and price <= self.entry_price * 0.985)):
+            self.MarketOrder(self.symbol, -holdings)
+            self.entry_price = None
+        self.previous_fast = fast_ma
+        self.previous_slow = slow_ma
+
+    def OnData(self, slice):
+        pass
+`
+
+const LEAN_STRATEGY_CSHARP = `using System;
+using QuantConnect;
+using QuantConnect.Algorithm;
+using QuantConnect.Data;
+using QuantConnect.Data.Market;
+using QuantConnect.Indicators;
+
+public class Main : QCAlgorithm
+{
+    private Symbol _spy;
+    private SimpleMovingAverage _fast;
+    private SimpleMovingAverage _slow;
+    private decimal? _entryPrice;
+    private decimal? _previousFast;
+    private decimal? _previousSlow;
+
+    public override void Initialize()
+    {
+        SetStartDate(2026, 1, 9);
+        SetEndDate(2026, 7, 8);
+        SetCash(10000);
+        SetWarmUp(120, Resolution.Minute);
+        _spy = AddEquity("SPY", Resolution.Minute).Symbol;
+        _fast = new SimpleMovingAverage(8);
+        _slow = new SimpleMovingAverage(24);
+        Consolidate(_spy, TimeSpan.FromMinutes(5), OnConsolidated);
+    }
+
+    private void OnConsolidated(TradeBar bar)
+    {
+        _fast.Update(bar.EndTime, bar.Close);
+        _slow.Update(bar.EndTime, bar.Close);
+        if (IsWarmingUp || !_fast.IsReady || !_slow.IsReady) return;
+        var fastMa = _fast.Current.Value;
+        var slowMa = _slow.Current.Value;
+        var holdings = Portfolio[_spy].Quantity;
+        var price = bar.Close;
+        var bullish = _previousFast.HasValue && _previousSlow.HasValue &&
+                      _previousFast <= _previousSlow && fastMa > slowMa;
+        var bearish = _previousFast.HasValue && _previousSlow.HasValue &&
+                      _previousFast >= _previousSlow && fastMa < slowMa;
+        if (holdings == 0 && bearish && price > 0)
+        {
+            var qty = (int)((Portfolio.TotalPortfolioValue * 0.95m) / price);
+            if (qty > 0)
+            {
+                MarketOrder(_spy, qty);
+                _entryPrice = price;
+            }
+        }
+        else if (holdings > 0 && (bullish || (_entryPrice.HasValue && price <= _entryPrice.Value * 0.985m)))
+        {
+            MarketOrder(_spy, -holdings);
+            _entryPrice = null;
+        }
+        _previousFast = fastMa;
+        _previousSlow = slowMa;
+    }
+
+    public override void OnData(Slice slice)
+    {
+    }
+}
 `
 
 const CORE8 = [
@@ -124,6 +236,14 @@ const CONFIG = JSON.stringify({
     drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
     max_positions: 1,
   },
+})
+
+const LEAN_CONFIG = JSON.stringify({
+  symbol: "SPY",
+  asset_class: "equity",
+  interval: "5m",
+  required_history_bars: 24,
+  params: { fast: 8, slow: 24 },
 })
 
 const POSITIVE_STRATEGY = `from collections import deque
@@ -427,19 +547,43 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
   if (!calls.includes("finny_algorithm_save")) {
     const strategyType = mode === "strategy_drift" ? "roc-momentum" : "sma-crossover"
     const candidateName = mode === "strategy_drift" ? "spy-roc-momentum" : ALGORITHM_NAME
+    const isLeanCSharp = process.env.FINNY_HARNESS_LEAN_CSHARP === "1"
+    const isLean = process.env.FINNY_HARNESS_LEAN === "1" || isLeanCSharp
+    const leanProfile = isLeanCSharp ? "lean_csharp" : "lean_python"
+    const leanCode = isLeanCSharp ? LEAN_STRATEGY_CSHARP : LEAN_STRATEGY
+    const leanSourceFile = isLeanCSharp ? "Main.cs" : "main.py"
+    const leanSourceHash = crypto.createHash("sha256").update(leanCode).digest("hex")
     return {
       type: "tool",
       name: "finny_algorithm_save",
       arguments: {
         name: candidateName,
-        code: mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
+        code: isLean ? leanCode : mode === "positive_qualification" ? POSITIVE_STRATEGY : STRATEGY,
         saveMode: "new",
-        language: "python",
+        language: isLeanCSharp ? "csharp" : "python",
+        ...(isLean
+          ? {
+              runtimeProfile: leanProfile,
+              strategySource: {
+                schema: "finny.strategy_source",
+                version: 1,
+                profileId: leanProfile,
+                files: [
+                  {
+                    path: leanSourceFile,
+                    sha256: leanSourceHash,
+                    bytes: Buffer.byteLength(leanCode, "utf8"),
+                  },
+                ],
+                sourceTreeHash: leanSourceHash,
+              },
+            }
+          : {}),
         description:
           mode === "strategy_drift"
             ? "Deterministic SPY 5-minute ROC momentum contract drift candidate"
             : "Deterministic SPY 5-minute SMA crossover harness candidate",
-        config: mode === "positive_qualification" ? POSITIVE_CONFIG : CONFIG,
+        config: isLean ? LEAN_CONFIG : mode === "positive_qualification" ? POSITIVE_CONFIG : CONFIG,
         mission: mission(strategyType, candidateName),
         prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
         decisions: "2026-07-09: Use only settled closes for SMA decisions and next-open execution.",

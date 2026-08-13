@@ -164,6 +164,28 @@ function workflowShouldStopAutoIteration(input: ContinuationInput, workflow: Bui
 
 function iterationReminder(workflow: BuildWorkflowState) {
   const metricTrials = uniqueMetricTrials(workflow)
+  // Deadlock guard: a failed backtest that recorded no experiment attempt
+  // (phase strict_blocked with an empty ledger) is a deterministic ledger
+  // rejection. Retrying the same save/backtest is rejected again, so the
+  // "Completed metric trials" mandate is unsatisfiable and identical
+  // iteration orders would loop forever. Hand control back to the user.
+  // Engine/setup failures DO record attempts, so a non-empty ledger keeps the
+  // normal retry and v1 -> v2 iterate paths intact, and a fresh saved
+  // candidate (phase candidate_validated) still gets its mandated first
+  // backtest.
+  if (
+    workflow.candidate &&
+    workflow.phase === "strict_blocked" &&
+    workflow.backtest === undefined &&
+    workflow.experimentAttempts.length === 0
+  ) {
+    return [
+      "<system-reminder>",
+      `Durable Build workflow ${workflow.workflowId} is at candidate v${workflow.candidate.version} but the experiment ledger accepted zero trials for the last backtest.`,
+      "The ledger rejection is authoritative: the same save/backtest cannot advance the loop. Stop saving/backtesting, present the latest results honestly, and ask the user how to proceed.",
+      "</system-reminder>",
+    ].join("\n")
+  }
   const requiredAction = requiredIterationAction(workflow, metricTrials >= MIN_FAILED_METRIC_TRIALS)
   return [
     "<system-reminder>",

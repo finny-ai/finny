@@ -29,6 +29,22 @@ import { DEFAULT_QUALIFICATION_POLICY_V1, qualificationHash } from "../backtest/
 import { compileInputFromActiveEvidence } from "../backtest/qualification-runtime"
 import { beginTrial, completeTrial, type ExperimentInput } from "../backtest/experiment"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
+import { LeanAdapter } from "../backtest/lean/adapter"
+import { isLeanProfile } from "../backtest/lean/contracts"
+import { compileLeanPlanV2FromActiveEvidence, executeLeanQualificationV2 } from "../backtest/lean/qualify"
+import { runtimeForCandidate } from "../backtest/lean/select"
+import { getProjectLink } from "@/integration/qc-store"
+import {
+  runQcCompositeQualification,
+  writeQcCompositeEvidence,
+  type QcLocalRunOutcome,
+} from "@/integration/qc-composite"
+import { strictRunDir } from "@/backtest/run-integrity-core"
+import {
+  loadExperimentPlanV2,
+  recordHoldoutOpenEventForPlanV2,
+  saveExperimentPlanV2,
+} from "../backtest/experiment-plan-store"
 
 const parameters = z.object({
   candidateId: z.string().min(1).describe("Immutable saved candidate ID or exact saved algorithm name"),
@@ -120,6 +136,144 @@ function approved(answers: ReadonlyArray<Question.Answer>) {
   return answers.length === 1 && answers[0]?.length === 1 && answers[0][0] === "Approve"
 }
 
+/**
+ * LEAN qualification flow. Compiles a V2 plan on first call, then resumes
+ * durable phase attempts and requests exact holdout approval before the
+ * confirmatory window. Mirrors the V1 tool contract; every execution goes
+ * through the certified LeanAdapter and never falls back to engine_v2.
+ */
+async function runLeanQualificationFlow(input: {
+  params: z.infer<typeof parameters>
+  ctx: Tool.Context
+  bridge: EffectBridge.Shape
+  candidate: Awaited<ReturnType<typeof Algorithm.resolve>> & {}
+  evidence: Awaited<ReturnType<typeof requireVerifiedDataExtractorEvidenceForSession>>
+  question: Question.Interface
+  holdoutQuestion: typeof holdoutQuestion
+  approved: typeof approved
+}) {
+  const { params, ctx, bridge, candidate, evidence, question, holdoutQuestion, approved } = input
+  if (!evidence.ok) throw new Error("LEAN qualification requires verified evidence")
+  const adapter = new LeanAdapter()
+  const probe = adapter.probeReady()
+  if (!probe.ready) {
+    return blocked({
+      code: "lean_runtime_unavailable",
+      field: "runtime",
+      message: `LEAN runtime is not ready: ${probe.reasons.join("; ")}`,
+      next: "enable the LEAN engine (Settings or `lean enable`), the adapter certificate, and the pinned engine image",
+    })
+  }
+
+  if (!params.experimentPlanId) {
+    const request = await readRequestSpecForSession({ sessionID: ctx.sessionID })
+    if (!request) {
+      return blocked({
+        code: "request_spec_required",
+        field: "requestId",
+        message: "the active session has no immutable RequestSpec",
+        next: "bind an approved RequestSpec to this session and retry qualify_candidate",
+      })
+    }
+    const plan = await compileLeanPlanV2FromActiveEvidence({
+      request,
+      dataset: evidence.dataset,
+      candidate,
+      policy: DEFAULT_QUALIFICATION_POLICY_V1,
+    })
+    await saveExperimentPlanV2(plan, DEFAULT_QUALIFICATION_POLICY_V1)
+    const strict = Boolean((evidence.dataset as any).qualificationAttestation)
+    return blocked({
+      planId: plan.planId,
+      code: strict ? "sealed_holdout_required" : "dataset_not_strict_qualified",
+      field: strict ? "holdoutOpenEvents" : "datasetQualification",
+      message: strict
+        ? "the LEAN V2 plan is compiled and the sealed holdout awaits structured user approval"
+        : "the LEAN V2 plan is compiled, but the active evidence lacks an authoritative strict_qualified attestation",
+      next: strict
+        ? `retry qualify_candidate with experimentPlanId=${plan.planId} to request exact holdout approval`
+        : "obtain strict_qualified DatasetEvidence for this exact request and compile a new plan",
+    })
+  }
+
+  const plan = await loadExperimentPlanV2(params.experimentPlanId)
+  const policy = await loadExperimentPlanPolicyV1(plan.planId)
+  const executionIdentity = {
+    codeHash: qualificationHash(candidate.code),
+    configHash: qualificationHash(candidate.config ?? ""),
+  }
+  if (
+    plan.candidate.candidateId !== candidate.algorithmId ||
+    plan.candidate.codeHash !== executionIdentity.codeHash ||
+    plan.candidate.configHash !== executionIdentity.configHash
+  ) {
+    return blocked({
+      planId: plan.planId,
+      code: "plan_candidate_mismatch",
+      field: "candidateId",
+      message: "active candidate identity, code, or config does not match the immutable LEAN V2 plan",
+      next: "omit experimentPlanId to compile a new plan for this exact saved candidate version",
+    })
+  }
+  if (
+    evidence.dataset.csvSha256 !== plan.datasets[0]?.datasetHash ||
+    evidence.dataset.manifestSha256 !== plan.datasets[0]?.manifestHash
+  ) {
+    return blocked({
+      planId: plan.planId,
+      code: "plan_dataset_mismatch",
+      field: "experimentPlanId",
+      message: "active DatasetEvidence does not match the immutable LEAN V2 plan",
+      next: "omit experimentPlanId to compile a new plan from the active authoritative DatasetEvidence",
+    })
+  }
+
+  let approvalRequestId: string | undefined
+  const result = await executeLeanQualificationV2({
+    candidate,
+    dataset: evidence.dataset,
+    plan,
+    policy,
+    executionIdentity,
+    adapter,
+    readHoldoutOpenEvents: () => readHoldoutOpenEventsV1(plan.planId),
+    requestHoldoutApproval: async () => {
+      const response = await bridge.promise(
+        question.askWithId({
+          sessionID: ctx.sessionID,
+          questions: [holdoutQuestion(plan.planId, plan.planHash, policy.policyId)],
+          tool: ctx.callID ? { messageID: ctx.messageID, callID: ctx.callID } : undefined,
+        }),
+      )
+      approvalRequestId = String(response.requestID)
+      if (!approved(response.answers)) return false
+      await recordHoldoutOpenEventForPlanV2({
+        plan,
+        approvalHash: qualificationHash({
+          kind: "structured_holdout_approval",
+          questionRequestId: approvalRequestId,
+          planId: plan.planId,
+          planHash: plan.planHash,
+          policyId: policy.policyId,
+          policyHash: policy.policyHash,
+        }),
+      })
+      return true
+    },
+  })
+  return {
+    title: result.ok ? "Candidate qualified" : "Qualification blocked",
+    metadata: {
+      qualified: result.ok,
+      experimentPlanId: plan.planId,
+      completedPhases: result.completedPhases,
+      blockerCode: result.ok ? undefined : result.blocker?.code,
+      approvalRequestId,
+    } satisfies QualificationToolMetadata,
+    output: JSON.stringify(result, null, 2),
+  }
+}
+
 export const QualifyCandidateTool = Tool.define<
   typeof parameters,
   QualificationToolMetadata,
@@ -156,6 +310,116 @@ export const QualifyCandidateTool = Tool.define<
                 field: "datasetEvidenceId",
                 message: evidence.text,
                 next: "produce authoritative DatasetEvidence for the active request and retry qualify_candidate",
+              })
+            }
+            const leanRuntime = runtimeForCandidate(candidate)
+            if (leanRuntime.issues.length > 0) {
+              return blocked({
+                code: "candidate_invalid",
+                field: "runtime",
+                message: `runtime declaration is invalid: ${leanRuntime.issues.join("; ")}`,
+                next: "repair and resave the candidate with an explicit supported runtime profile",
+              })
+            }
+            if (leanRuntime.profile.profileId === "qc_cloud") {
+              const qcLink = await getProjectLink(candidate.algorithmId)
+              if (!qcLink) {
+                return blocked({
+                  code: "candidate_invalid",
+                  field: "runtime",
+                  message:
+                    "qc_cloud candidates must link a QuantConnect project (qc link) before composite qualification",
+                  next: "link the QC project and retry; no local engine fallback is permitted",
+                })
+              }
+              const localResult = await runLeanQualificationFlow({
+                params,
+                ctx,
+                bridge,
+                candidate,
+                evidence,
+                question,
+                holdoutQuestion,
+                approved,
+              })
+              if (localResult.metadata?.qualified !== true) return localResult
+              // Local strict leg passed — the linked QC project must now
+              // independently pass its native-cloud gates.
+              const workflow = await runWorkflow(activeWorkflowForSession(ctx.sessionID))
+              const runId = workflow?.backtest?.runId ?? ""
+              const identityHash = workflow?.backtest?.identityHash ?? ""
+              let qcConfig: Record<string, any> = {}
+              try {
+                qcConfig = JSON.parse(candidate.config ?? "{}")
+              } catch {}
+              const localRef: QcLocalRunOutcome = {
+                ok: true,
+                runId,
+                identityHash,
+                runtimeHash: "",
+                engine: qcLink.language === "csharp" ? "lean_csharp" : "lean_python",
+                verdict: "recommended_for_paper",
+                metrics: {},
+              }
+              const composite = await runQcCompositeQualification({
+                algorithm: candidate,
+                interval: typeof qcConfig.interval === "string" ? qcConfig.interval : "5m",
+                capital:
+                  typeof qcConfig.equity_usd === "number"
+                    ? qcConfig.equity_usd
+                    : typeof qcConfig.risk?.starting_equity_usd === "number"
+                      ? qcConfig.risk.starting_equity_usd
+                      : 10000,
+                startDate: qcConfig.backtest?.start_date ?? "",
+                endDate: qcConfig.backtest?.end_date ?? "",
+                local: localRef,
+              })
+              if (!composite.ok || !composite.identity) {
+                return blocked({
+                  code: "qc_cloud_gates_failed",
+                  field: "cloud",
+                  message:
+                    composite.error ??
+                    "the QC Cloud leg of the composite qualification did not pass its independent gates",
+                  next: "inspect the QC Cloud backtest results and retry after resolving the failure",
+                })
+              }
+              if (runId) {
+                await writeQcCompositeEvidence({
+                  runDir: strictRunDir(candidate, runId),
+                  identity: composite.identity,
+                  outcome: composite,
+                })
+              }
+              return {
+                ...localResult,
+                output: JSON.stringify(
+                  {
+                    ...(JSON.parse(localResult.output) as Record<string, unknown>),
+                    composite: {
+                      projectId: composite.projectId,
+                      backtestId: composite.backtestId,
+                      backtestUrl: composite.backtestUrl,
+                      canonical: composite.canonical,
+                      cloudGates: composite.cloudGates,
+                      compositeVerdict: composite.compositeVerdict,
+                    },
+                  },
+                  null,
+                  2,
+                ),
+              }
+            }
+            if (isLeanProfile(leanRuntime.profile)) {
+              return runLeanQualificationFlow({
+                params,
+                ctx,
+                bridge,
+                candidate,
+                evidence,
+                question,
+                holdoutQuestion,
+                approved,
               })
             }
             const request = await readRequestSpecForSession({ sessionID: ctx.sessionID })

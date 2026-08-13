@@ -3,6 +3,7 @@ import {
   ensureWorkspaceTodo,
   promptFromParams,
   resolveWorkspacePrepareWindow,
+  workspacePrepareIntervalIssue,
   workspacePrepareClarificationBlock,
   workspacePrepareConfirmedIdentityLock,
   workspacePrepareIdentityConflict,
@@ -17,6 +18,24 @@ import os from "node:os"
 import path from "node:path"
 
 describe("workspace prepare request context", () => {
+  test("rejects duration-shaped values as bar intervals", () => {
+    expect(workspacePrepareIntervalIssue("180d")).toContain("Unsupported bar interval")
+    expect(workspacePrepareIntervalIssue("180d")).toContain("Valid bar intervals")
+    expect(workspacePrepareIntervalIssue("6m")).toContain("Unsupported bar interval")
+    expect(workspacePrepareIntervalIssue("1y")).toContain("Unsupported bar interval")
+    expect(workspacePrepareIntervalIssue(undefined)).toBeUndefined()
+  })
+
+  test("accepts every supported canonical bar interval", () => {
+    for (const interval of ["1m", "5m", "15m", "30m", "1h", "4h", "1d"]) {
+      expect(workspacePrepareIntervalIssue(interval), interval).toBeUndefined()
+    }
+    // Display forms normalize to canonical values.
+    expect(workspacePrepareIntervalIssue("15min")).toBeUndefined()
+    expect(workspacePrepareIntervalIssue("daily")).toBeUndefined()
+    expect(workspacePrepareIntervalIssue("hourly")).toBeUndefined()
+  })
+
   test("creates the advertised todo.md scaffold", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-todo-"))
     try {
@@ -432,6 +451,94 @@ describe("workspace prepare request context", () => {
     expect(
       workspacePrepareIdentityConflict({ symbol: "BTC.USD", assetClass: "crypto", interval: "1d" }, context),
     ).toBeUndefined()
+  })
+
+  test("excludes model-authored option descriptions from request identity", () => {
+    // Regression: the parent model asked its own clarification round and its
+    // option descriptions contained retention-limit prose ("180d lookback on
+    // the research path", "capped at ~180d of history"). Those descriptions
+    // were concatenated into the trusted question-answer context and parsed as
+    // the user's requested bar interval, rejecting the user-approved 1h.
+    const user = {
+      info: { role: "user" },
+      parts: [{ type: "text", text: "Verify this branch end to end: research BTC/USD and AAPL" }],
+    }
+    const assistant = {
+      info: { role: "assistant" },
+      parts: [
+        {
+          type: "tool",
+          tool: "question",
+          state: {
+            status: "completed",
+            input: {
+              questions: [
+                {
+                  header: "Bar interval",
+                  question: "What bar interval should each strategy use?",
+                  options: [
+                    {
+                      label: "BTC 1h / AAPL 1d (Recommended)",
+                      description:
+                        "1h is the finest natively-supported crypto interval (180d lookback on the research path) and suits a mean-reversion/momentum hybrid on BTC.",
+                    },
+                    {
+                      label: "1d for both",
+                      description: "Simplest and most robust to costs; fewer trades, slower iteration.",
+                    },
+                  ],
+                },
+                {
+                  header: "Backtest window",
+                  question: "What research/backtest window should we use (same window for both assets)?",
+                  options: [
+                    {
+                      label: "6 months (Recommended)",
+                      description:
+                        "Engine default; enough bars for walk-forward folds. Note: the 1h crypto research path is capped at ~180d of history.",
+                    },
+                  ],
+                },
+              ],
+            },
+            output: "User answered",
+            title: "Asked 2 questions",
+            metadata: {
+              questions: [
+                {
+                  header: "Bar interval",
+                  question: "What bar interval should each strategy use?",
+                  options: [
+                    { label: "BTC 1h / AAPL 1d (Recommended)", description: "1h is the finest natively-supported crypto interval (180d lookback on the research path)." },
+                    { label: "1d for both", description: "Simplest and most robust to costs." },
+                  ],
+                },
+                {
+                  header: "Backtest window",
+                  question: "What research/backtest window should we use (same window for both assets)?",
+                  options: [
+                    { label: "6 months (Recommended)", description: "Engine default. Note: the 1h crypto research path is capped at ~180d of history." },
+                  ],
+                },
+              ],
+              answers: [["BTC 1h / AAPL 1d (Recommended)"], ["6 months (Recommended)"]],
+            },
+            time: { start: 1, end: 2 },
+          },
+        },
+      ],
+    }
+    const context = workspacePrepareUserContext([user, assistant] as SessionV1.WithParts[])
+    // The user's chosen labels are present...
+    expect(context).toContain("BTC 1h / AAPL 1d (Recommended)")
+    expect(context).toContain("6 months (Recommended)")
+    // ...but the model-authored description prose must not become request identity.
+    expect(context).not.toContain("180d lookback")
+    expect(context).not.toContain("capped at ~180d")
+    const facts = parseRequestFacts(context)
+    expect(facts.requested_interval).toBe("1h")
+    // A legitimately approved 1h prepare must not be rejected as "conflicts with the user's 180d".
+    expect(workspacePrepareIdentityConflict({ symbol: "BTC/USD", assetClass: "crypto", interval: "1h" }, context)).toBeUndefined()
   })
 })
 

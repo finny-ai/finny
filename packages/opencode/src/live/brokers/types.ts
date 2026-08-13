@@ -1,4 +1,14 @@
-export const BROKER_KINDS = ["alpaca", "binance", "ibkr", "zerodha", "saxo", "questrade", "futu", "robinhood"] as const
+export const BROKER_KINDS = [
+  "alpaca",
+  "binance",
+  "ibkr",
+  "zerodha",
+  "saxo",
+  "questrade",
+  "futu",
+  "robinhood",
+  "qc",
+] as const
 export type BrokerKind = (typeof BROKER_KINDS)[number]
 export type AssetClass = "equity" | "crypto" | "option" | "future"
 export type BrokerMode = "paper" | "testnet" | "live"

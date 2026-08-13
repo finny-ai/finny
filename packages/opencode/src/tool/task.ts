@@ -13,7 +13,9 @@ import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import { Permission } from "@/permission"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
-import { Cause, Effect, Exit, Option, Schema, Scope } from "effect"
+import { Cause, Clock, Effect, Exit, Option, Schema, Scope } from "effect"
+import { eq, sql } from "drizzle-orm"
+import { PartTable } from "@opencode-ai/core/session/sql"
 import { EffectBridge } from "@/effect/bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { algoDir, bindSessionWorkspace, getSessionWorkspace, humanNameOf } from "@finny-ai/core/algo"
@@ -74,6 +76,89 @@ import type { BuildWorkflowState } from "@/algorithm/build-workflow/types"
  */
 export const EMPTY_SUBAGENT_RESULT_MARKER =
   "BLOCKED: subagent returned no usable output (final turn aborted or empty) — do not treat this as evidence."
+
+/**
+ * Idle deadline for a single child task run. Evidence subagents can stall on
+ * network calls, unbounded pagination, or hung shells; without a deadline a
+ * stuck child keeps `task_batch_run` from ever returning. The deadline is
+ * activity-based: the child is only terminalized after this long without
+ * producing any new output. A slow but working extractor is never killed
+ * mid-flight, which a fixed total wall-clock cap did (every evidence run
+ * over 4 minutes was terminalized and retried forever).
+ */
+export const CHILD_TASK_IDLE_DEADLINE_MS = 240_000
+
+/** Final text of a child task that produced no output for the idle deadline. */
+export const CHILD_TASK_IDLE_DEADLINE_TEXT =
+  "BLOCKED: task produced no output for 4 minutes and was terminalized with partial artifacts — do not treat this as evidence."
+
+/** Absolute backstop so task_batch_run always returns even for a chatty but pathological child. */
+export const CHILD_TASK_HARD_DEADLINE_MS = 1_200_000
+
+/** Final text of a child task that exceeded the absolute wall-clock deadline. */
+export const CHILD_TASK_HARD_DEADLINE_TEXT =
+  "BLOCKED: task exceeded the 20-minute wall-clock deadline and was terminalized with partial artifacts — do not treat this as evidence."
+
+/** How often the child's latest output timestamp is polled. */
+export const CHILD_TASK_ACTIVITY_POLL_MS = 15_000
+
+/** Whether a child result text is one of the task-deadline terminalizations. */
+export function isChildTaskDeadlineText(text: string): boolean {
+  return text === CHILD_TASK_IDLE_DEADLINE_TEXT || text === CHILD_TASK_HARD_DEADLINE_TEXT
+}
+
+/**
+ * Races the child run against the activity deadline. Every poll refreshes the
+ * idle window from the child's latest output timestamp, so only a child that
+ * stops producing output for the idle deadline (or one that outlives the
+ * absolute hard deadline) is terminalized. On expiry the child run is
+ * interrupted — the session runner cleans itself up — and a BLOCKED result is
+ * returned so the parent flow records a blocked task instead of hanging. The
+ * child session is deliberately NOT cancelled here: session cancellation also
+ * cancels the child's background job, which is the very fiber executing this
+ * deadline, and would surface a hard "Task cancelled" instead of BLOCKED.
+ */
+export function withChildTaskDeadline(
+  run: Effect.Effect<string, unknown>,
+  activity: Effect.Effect<number | undefined>,
+): Effect.Effect<string, unknown> {
+  return Effect.raceFirst(
+    run,
+    Effect.gen(function* () {
+      const startedAt = yield* Clock.currentTimeMillis
+      let lastActivity = startedAt
+      while (true) {
+        yield* Effect.sleep(CHILD_TASK_ACTIVITY_POLL_MS)
+        const last = yield* activity
+        if (last !== undefined && last > lastActivity) lastActivity = last
+        const now = yield* Clock.currentTimeMillis
+        if (now - lastActivity > CHILD_TASK_IDLE_DEADLINE_MS) return CHILD_TASK_IDLE_DEADLINE_TEXT
+        if (now - startedAt > CHILD_TASK_HARD_DEADLINE_MS) return CHILD_TASK_HARD_DEADLINE_TEXT
+      }
+    }),
+  )
+}
+
+/**
+ * Latest output timestamp of a child session, used to decide whether the
+ * child is still making progress. Any part (reasoning, text, tool call, tool
+ * result) counts as activity. Returns undefined when the child produced no
+ * parts at all.
+ */
+export function childSessionActivity(
+  sessionID: SessionID,
+  database: Database.Interface,
+): Effect.Effect<number | undefined> {
+  return Effect.gen(function* () {
+    const row = yield* database.db
+      .select({ last: sql<number>`max(${PartTable.time_created})` })
+      .from(PartTable)
+      .where(eq(PartTable.session_id, sessionID))
+      .get()
+      .pipe(Effect.catch(() => Effect.succeed(undefined)))
+    return typeof row?.last === "number" ? row.last : undefined
+  })
+}
 
 /** Final text of a subagent run; the BLOCKED marker when there is none. */
 export function finalTaskText(parts: ReadonlyArray<{ type: string; text?: string }>): string {
@@ -401,17 +486,25 @@ function dataRequestContextMismatchBlock(input: {
   const requestedSymbol = normalizeSymbol(facts.requested_symbol)
   const contextUniverse = input.context?.requested_symbols?.map((symbol) => normalizeSymbol(symbol)).filter(Boolean)
   const childInContextUniverse = Boolean(requestedSymbol && contextUniverse?.includes(requestedSymbol))
+  const contextIssues = contextMismatchIssues(input.context, facts)
+  // The authoritative request context, when present and matching the prompt,
+  // overrides slug-derived hints. A workflow-owned workspace can carry a slug
+  // generated from a delegated algorithm name (e.g. `aapl-algo`) that no
+  // longer matches the confirmed symbol, so the slug must not trap every
+  // extraction retry once the context agrees with the prompt.
+  const contextAuthoritativeMatch = Boolean(input.context && contextIssues.length === 0)
 
   const issues = [
-    ...(childInContextUniverse ? [] : workspaceMismatchIssues(input.workspace, facts)),
-    ...contextMismatchIssues(input.context, facts),
+    ...(childInContextUniverse || contextAuthoritativeMatch ? [] : workspaceMismatchIssues(input.workspace, facts)),
+    ...contextIssues,
   ]
 
   if (issues.length === 0) return undefined
 
   return [
     `BLOCKED: data request context mismatch — workspace is ${input.workspace ?? "MISSING"} but data_extractor task explicitly requested ${describeRequestFacts(facts)}.`,
-    "Start a new workspace or rebind the session before extracting; do not reuse existing workspace artifacts.",
+    "The registered request context is authoritative: the task prompt must state the exact registered symbol, interval, and asset class.",
+    "Do not rebind, create sibling workspaces, or rewrite the registered identity to match the prompt.",
     `Conflicts: ${issues.join(", ")}.`,
   ].join(" ")
 }
@@ -692,13 +785,18 @@ export const TaskRunParameters = Schema.Struct({ ...BaseParameterFields })
 const BatchTaskParameters = Schema.Struct({
   description: BaseParameterFields.description,
   prompt: BaseParameterFields.prompt,
-  subagent_type: BaseParameterFields.subagent_type,
+  subagent_type: Schema.optional(BaseParameterFields.subagent_type).annotate({
+    description:
+      "Optional when unambiguous: inferred from the description and prompt (data_extractor, news_agent, sec_agent, sentiment_agent, or researcher). Always include it for deterministic role routing.",
+  }),
 })
 
 export const TaskBatchRunParameters = Schema.Struct({
   tasks: Schema.Array(BatchTaskParameters).check(Schema.isLengthBetween(2, 4)).annotate({
     description:
-      "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results.",
+      "Two to four independent foreground subagents to launch together. All results are returned, including BLOCKED results. " +
+      "Each entry names a distinct subagent_type (data_extractor, news_agent, sec_agent, sentiment_agent, or researcher); " +
+      "if omitted, the type is inferred from the entry description and prompt.",
   }),
 })
 
@@ -706,6 +804,50 @@ type TaskStartParameters = Schema.Schema.Type<typeof TaskStartParameters>
 type TaskRunParameters = Schema.Schema.Type<typeof TaskRunParameters>
 type SingleTaskParameters = TaskStartParameters | TaskRunParameters
 type TaskBatchRunParameters = Schema.Schema.Type<typeof TaskBatchRunParameters>
+
+/**
+ * Infer a batch task's subagent type when the model omitted `subagent_type`.
+ * Only a single, unambiguous hint counts; otherwise the batch fails with an
+ * actionable message instead of a bare schema-validation error.
+ */
+const BATCH_SUBAGENT_TYPE_HINTS: ReadonlyArray<{ type: string; re: RegExp }> = [
+  { type: "data_extractor", re: /\bdata[\s_-]*extractor\b/i },
+  { type: "sec_agent", re: /\bsec[\s_-]*agent\b|\bedgar\b|\bfiling[s]?\b|\b(?:10-?[kq]|8-?k|form\s*4)\b/i },
+  { type: "sentiment_agent", re: /\bsentiment\b/i },
+  { type: "news_agent", re: /\bnews\b/i },
+  { type: "researcher", re: /\bresearcher\b/i },
+]
+
+export function inferBatchSubagentType(task: { description: string; prompt: string }): string | undefined {
+  const text = `${task.description}\n${task.prompt}`
+  const matches = BATCH_SUBAGENT_TYPE_HINTS.filter((hint) => hint.re.test(text)).map((hint) => hint.type)
+  const unique = [...new Set(matches)]
+  return unique.length === 1 ? unique[0]! : undefined
+}
+
+const VALID_BATCH_SUBAGENT_TYPES = ["data_extractor", "news_agent", "sec_agent", "sentiment_agent", "researcher"] as const
+
+export function resolveBatchSubagentType(task: {
+  description: string
+  prompt: string
+  subagent_type?: string
+}): string {
+  const explicit = task.subagent_type?.trim()
+  if (explicit) {
+    if (!finnySubagentType(explicit)) {
+      throw new Error(
+        `Unknown subagent_type "${explicit}" for task_batch_run. Valid types: ${VALID_BATCH_SUBAGENT_TYPES.join(", ")}.`,
+      )
+    }
+    return explicit
+  }
+  const inferred = inferBatchSubagentType(task)
+  if (inferred) return inferred
+  throw new Error(
+    `task_batch_run requires a subagent_type per task (${VALID_BATCH_SUBAGENT_TYPES.join(", ")}). ` +
+      "Add subagent_type to each entry, or make the description/prompt unambiguous (e.g. \"data extractor\", \"news brief\", \"SEC filings\", \"sentiment aggregate\").",
+  )
+}
 
 function closedJsonSchema(schema: Schema.Top, nestedArrayProperty?: string): JSONSchema7 {
   const json = ToolJsonSchema.fromSchema(schema)
@@ -1138,7 +1280,7 @@ const taskExecutor = Effect.gen(function* () {
           "Evidence request rejected before launch.",
           preflightBlock,
           "The invalid task was not registered and did not terminalize this Build run.",
-          "Retry once after correcting the authoritative request identity above.",
+          "Retry once only if the task prompt wording itself can match the registered identity. If the registered identity or workspace state is contradictory, stop and ask the user — never conform the request to a conflicting identity.",
         ].join("\n"),
       }
     }
@@ -1746,7 +1888,9 @@ const taskExecutor = Effect.gen(function* () {
       if (scriptedHarness) return yield* runTask()
       const markRunningExit = yield* Effect.exit(Effect.promise(() => TaskState.markRunning(nextSession.id, database)))
       if (Exit.isFailure(markRunningExit)) return taskRegistryErrorText(Cause.squash(markRunningExit.cause))
-      const exit = yield* Effect.exit(runTask())
+      const exit = yield* Effect.exit(
+        withChildTaskDeadline(runTask(), childSessionActivity(nextSession.id, database)),
+      )
       if (Exit.isSuccess(exit)) {
         const text = exit.value
         const status = taskResultStatus(text)
@@ -1891,6 +2035,13 @@ const taskExecutor = Effect.gen(function* () {
             const text = result.info.output ?? EMPTY_SUBAGENT_RESULT_MARKER
             return Effect.gen(function* () {
               if (!(yield* inject("completed", text))) return
+              if (isChildTaskDeadlineText(text)) {
+                // The deadline interrupted our await, not the child's own
+                // turn, which keeps running in its runner scope. Cancel the
+                // child session now that the job has settled so the cancel
+                // cannot cancel this very background job mid-flight.
+                yield* ops.cancel(nextSession.id).pipe(Effect.ignore)
+              }
               const exit = yield* Effect.exit(
                 Effect.promise(() =>
                   TaskState.finalizeActive(
@@ -2026,6 +2177,9 @@ const taskExecutor = Effect.gen(function* () {
             return yield* Effect.fail(new Error(error))
           }
           const text = result?.output ?? EMPTY_SUBAGENT_RESULT_MARKER
+          if (isChildTaskDeadlineText(text)) {
+            yield* ops.cancel(nextSession.id).pipe(Effect.ignore)
+          }
           yield* Effect.promise(() =>
             TaskState.finalizeActive(
               nextSession.id,
@@ -2062,7 +2216,18 @@ const taskExecutor = Effect.gen(function* () {
   })
 
   const runBatch = Effect.fn("TaskTool.executeBatch")(function* (params: TaskBatchRunParameters, ctx: Tool.Context) {
-    const subagentTypes = params.tasks.map((task) => task.subagent_type)
+    // Resolve each entry's role before any validation or launch: an omitted
+    // subagent_type is inferred, and an unknown or ambiguous one fails with an
+    // actionable message instead of a bare schema-validation error.
+    const resolvedTasks = yield* Effect.all(
+      params.tasks.map((task) =>
+        Effect.try({
+          try: () => ({ ...task, subagent_type: resolveBatchSubagentType(task) }),
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        }),
+      ),
+    )
+    const subagentTypes = resolvedTasks.map((task) => task.subagent_type)
     if (new Set(subagentTypes).size !== subagentTypes.length) {
       return yield* Effect.fail(new Error("Task batch mode requires distinct subagent types"))
     }
@@ -2094,7 +2259,7 @@ const taskExecutor = Effect.gen(function* () {
       )
     ) {
       const bootstrapped = yield* Effect.promise(() =>
-        bootstrapWorkspace(ctx.sessionID, params.tasks.map((task) => task.prompt).join("\n\n")).catch(() => undefined),
+        bootstrapWorkspace(ctx.sessionID, resolvedTasks.map((task) => task.prompt).join("\n\n")).catch(() => undefined),
       )
       if (bootstrapped?.slug) {
         yield* Effect.promise(() => bindSessionWorkspace(ctx.sessionID, bootstrapped.slug).catch(() => {}))
@@ -2107,7 +2272,7 @@ const taskExecutor = Effect.gen(function* () {
     // belong to different symbols.
     const workspace = yield* Effect.promise(() => getSessionWorkspace(ctx.sessionID).catch(() => null))
     const parentFacts = yield* Effect.promise(() => readRuntimeRequestFacts(ctx.sessionID))
-    const canonicalTask = params.tasks.find((task) => task.subagent_type === "data_extractor") ?? params.tasks[0]
+    const canonicalTask = resolvedTasks.find((task) => task.subagent_type === "data_extractor") ?? resolvedTasks[0]
     if (workspace && canonicalTask && !requestHasIdentity(parentFacts)) {
       yield* Effect.promise(() =>
         syncWorkspaceRequestContext({
@@ -2125,12 +2290,12 @@ const taskExecutor = Effect.gen(function* () {
       ({
         parentSessionId: ctx.sessionID,
         batch: true,
-        taskCount: params.tasks.length,
+        taskCount: resolvedTasks.length,
         subagentTypes,
         subagents,
       }) as TaskMetadata
     const updateRunningBatch =
-      (task: TaskBatchRunParameters["tasks"][number]) => (val: { title?: string; metadata?: TaskMetadata }) =>
+      (task: (typeof resolvedTasks)[number]) => (val: { title?: string; metadata?: TaskMetadata }) =>
         Effect.gen(function* () {
           const sessionId = val.metadata?.sessionId
           if (!sessionId) return
@@ -2147,7 +2312,7 @@ const taskExecutor = Effect.gen(function* () {
         })
 
     const exits = yield* Effect.all(
-      params.tasks.map((task) =>
+      resolvedTasks.map((task) =>
         Effect.exit(
           runSingle(
             task,
@@ -2166,7 +2331,7 @@ const taskExecutor = Effect.gen(function* () {
       },
     )
     const results = exits.map((exit, index) => {
-      const task = params.tasks[index]
+      const task = resolvedTasks[index]!
       if (Exit.isSuccess(exit)) {
         const state = exit.value.metadata.background === true ? ("running" as const) : ("completed" as const)
         return {

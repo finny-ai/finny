@@ -372,12 +372,14 @@ export function fundTraceSha256(trace: FundHeadlessTraceV1): string {
   return hash(FundHeadlessTraceV1.parse(trace))
 }
 
-export async function loadFundScenario(file: string): Promise<FundHeadlessScenarioV1> {
-  return FundHeadlessScenarioV1.parse(JSON.parse(await fs.readFile(file, "utf8")))
+export async function loadFundScenario(fileOrScenario: string | unknown): Promise<FundHeadlessScenarioV1> {
+  const raw = typeof fileOrScenario === "string" ? JSON.parse(await fs.readFile(fileOrScenario, "utf8")) : fileOrScenario
+  return FundHeadlessScenarioV1.parse(raw)
 }
 
-export async function loadFundTrace(file: string): Promise<FundHeadlessTraceV1> {
-  return FundHeadlessTraceV1.parse(JSON.parse(await fs.readFile(file, "utf8")))
+export async function loadFundTrace(fileOrTrace: string | unknown): Promise<FundHeadlessTraceV1> {
+  const raw = typeof fileOrTrace === "string" ? JSON.parse(await fs.readFile(fileOrTrace, "utf8")) : fileOrTrace
+  return FundHeadlessTraceV1.parse(raw)
 }
 
 function one<T extends FundHeadlessTraceV1["events"][number]>(

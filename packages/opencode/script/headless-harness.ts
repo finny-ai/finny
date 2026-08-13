@@ -2,6 +2,7 @@
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { runHeadlessHarnessPromise } from "./headless/orchestrator"
+import { CROSSOVER_SCENARIO } from "./headless/fixtures"
 
 export { runHeadlessHarness, runHeadlessHarnessPromise } from "./headless/orchestrator"
 export * from "./headless/types"
@@ -23,9 +24,9 @@ if (import.meta.main) {
     strict: true,
   })
   const repo = path.resolve(import.meta.dir, "../../..")
-  const scenario = path.resolve(
-    parsed.values.scenario ?? path.join(import.meta.dir, "../harness/scenarios/spy-5m-sma-crossover.v1.json"),
-  )
+  const scenario = parsed.values.scenario
+    ? path.resolve(parsed.values.scenario)
+    : CROSSOVER_SCENARIO
   const output = path.resolve(parsed.values.output ?? path.join(repo, ".artifacts/headless"))
   const timeoutMs = parsed.values.timeout ? Number(parsed.values.timeout) : undefined
   if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {

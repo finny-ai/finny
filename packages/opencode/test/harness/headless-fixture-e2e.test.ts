@@ -5,14 +5,12 @@ import path from "node:path"
 import { sha256Bytes } from "../../script/headless/artifacts"
 import { runHeadlessHarnessPromise } from "../../script/headless/orchestrator"
 import type { FixtureScriptMode } from "../../script/headless/types"
+import { CROSSOVER_SCENARIO, POSITIVE_QUALIFICATION_SCENARIO } from "../../script/headless/fixtures"
 
 const enabled = process.env.FINNY_HARNESS_E2E === "1"
 const root = path.resolve(import.meta.dir, "../../../..")
-const negativeScenario = path.join(root, "packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json")
-const positiveScenario = path.join(
-  root,
-  "packages/opencode/harness/scenarios/spy-5m-sma-positive-qualification.v1.json",
-)
+const negativeScenario = CROSSOVER_SCENARIO
+const positiveScenario = POSITIVE_QUALIFICATION_SCENARIO
 const collectorEndpoint = process.env.FINNY_HARNESS_COLLECTOR_ENDPOINT?.trim()
 const configuredOutputRoot = process.env.FINNY_HARNESS_E2E_OUTPUT?.trim()
 const requestedGroup = process.env.FINNY_HARNESS_E2E_GROUP?.trim() || "all"

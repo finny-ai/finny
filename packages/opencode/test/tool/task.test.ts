@@ -1,7 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
-import { Cause, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer } from "effect"
+import * as Ref from "effect/Ref"
+import * as TestClock from "effect/testing/TestClock"
 import { Agent } from "../../src/agent/agent"
 import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -16,22 +18,31 @@ import { SessionStatus } from "@/session/status"
 
 import {
   completedIntradayWindow,
+  CHILD_TASK_ACTIVITY_POLL_MS,
+  CHILD_TASK_HARD_DEADLINE_MS,
+  CHILD_TASK_HARD_DEADLINE_TEXT,
+  CHILD_TASK_IDLE_DEADLINE_MS,
+  CHILD_TASK_IDLE_DEADLINE_TEXT,
   evidenceDelegationBlock,
   EMPTY_SUBAGENT_RESULT_MARKER,
   finalSpecialistTaskText,
   finalTaskText,
   dataExtractorRepairInstruction,
+  inferBatchSubagentType,
+  resolveBatchSubagentType,
   shouldBackgroundRecommendedEvidence,
   taskRegistryErrorText,
   TaskBatchRunTool,
   TaskRunTool,
   TaskStartTool,
   TaskTool,
+  withChildTaskDeadline,
   type TaskPromptOps,
 } from "../../src/tool/task"
 import { resolveWorkspacePrepareWindow, WorkspacePrepareTool } from "../../src/tool/workspace-prepare"
 import { Truncate } from "@/tool/truncate"
 import { ToolRegistry } from "@/tool/registry"
+import { InvalidArgumentsError } from "../../src/tool/tool"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { TaskState } from "@/task/state"
 import { StrategyContext } from "@/task/strategy-context"
@@ -677,6 +688,105 @@ describe("tool.task", () => {
       expect(launched).toBe(false)
     }),
   )
+
+  it.instance("lists the allowed keys when a hallucinated task key is rejected", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const batch = yield* TaskBatchRunTool
+      const batchDef = yield* batch.init()
+      const context = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps() },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      const exit = yield* Effect.exit(
+        batchDef.execute(
+          {
+            tasks: [
+              {
+                description: "Inspect data",
+                prompt: "Inspect the data",
+                subagent_type: "data_extractor",
+                description_suffix: "",
+              },
+            ],
+          } as never,
+          context,
+        ),
+      )
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (!Exit.isFailure(exit)) return
+
+      const die = exit.cause.reasons.find(Cause.isDieReason)
+      const error = die?.defect
+      expect(error).toBeInstanceOf(InvalidArgumentsError)
+      const message = (error as InvalidArgumentsError).message
+      expect(message).toContain("description_suffix")
+      expect(message).toContain("Allowed keys: description, prompt, subagent_type")
+    }),
+  )
+
+  test("infers an omitted batch subagent_type from the entry description and prompt", () => {
+    expect(
+      resolveBatchSubagentType({
+        description: "OHLCV coverage + regime",
+        prompt: "You are the data_extractor for a Finny strategy-research workspace.",
+      }),
+    ).toBe("data_extractor")
+    expect(
+      resolveBatchSubagentType({
+        description: "News + catalysts brief",
+        prompt: "You are the news_agent. Gather cited news and market-context evidence.",
+      }),
+    ).toBe("news_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "SEC filings for equities",
+        prompt: "You are the sec_agent. Gather SEC EDGAR public-records evidence.",
+      }),
+    ).toBe("sec_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "Aggregate sentiment brief",
+        prompt: "You are the sentiment_agent. Gather aggregate crowd-positioning evidence.",
+      }),
+    ).toBe("sentiment_agent")
+    expect(
+      resolveBatchSubagentType({
+        description: "Independent researcher pass",
+        prompt: "Act as the researcher and summarize the evidence.",
+      }),
+    ).toBe("researcher")
+  })
+
+  test("fails with an actionable message when the batch subagent_type is ambiguous or missing", () => {
+    expect(() =>
+      resolveBatchSubagentType({ description: "Mixed brief", prompt: "Cover the news and sentiment together" }),
+    ).toThrow(/subagent_type/)
+    expect(() =>
+      resolveBatchSubagentType({ description: "Generic task", prompt: "Do the thing without naming a role" }),
+    ).toThrow(/subagent_type/)
+    expect(() =>
+      resolveBatchSubagentType({
+        description: "Generic task",
+        prompt: "Do the thing",
+        subagent_type: "coder",
+      }),
+    ).toThrow(/Unknown subagent_type/)
+  })
+
+  test("infers batch types only on an unambiguous single hint", () => {
+    expect(inferBatchSubagentType({ description: "News", prompt: "sentiment also" })).toBeUndefined()
+    expect(
+      inferBatchSubagentType({ description: "Coverage task", prompt: "gather filings and crowd sentiment" }),
+    ).toBeUndefined()
+  })
 
   it.live("injects complete authoritative runtime context for data_extractor", () =>
     provideTmpdirInstance((dir) =>
@@ -1728,7 +1838,7 @@ describe("tool.task", () => {
           expect(result.output).toContain("BLOCKED: data request context mismatch")
           expect(result.output).toContain("SMH 1h equity")
           expect(result.output).toContain(`workspace_slug=${slug}`)
-          expect(result.output).toContain("do not reuse existing workspace artifacts")
+          expect(result.output).toContain("must state the exact registered symbol, interval, and asset class")
           expect(result.output).toContain("did not terminalize this Build run")
 
           let correctedPrompted = false
@@ -1802,7 +1912,7 @@ describe("tool.task", () => {
           expect(result.output).toContain("BLOCKED: data request context mismatch")
           expect(result.output).toContain("QQQ 1h equity")
           expect(result.output).toContain("workspace_symbol=SMH")
-          expect(result.output).toContain("do not reuse existing workspace artifacts")
+          expect(result.output).toContain("must state the exact registered symbol, interval, and asset class")
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -1857,6 +1967,63 @@ describe("tool.task", () => {
           expect(result.output).not.toContain("workspace_interval=27d")
           expect(result.output).not.toContain("BLOCKED: data request context mismatch")
           expect(prompted).toBe(true)
+        } finally {
+          if (prev === undefined) delete process.env.XDG_DATA_HOME
+          else process.env.XDG_DATA_HOME = prev
+        }
+      }),
+    ),
+  )
+
+  it.live("does not block data_extractor on the slug when the authoritative context matches", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        const prev = process.env.XDG_DATA_HOME
+        process.env.XDG_DATA_HOME = dir
+        try {
+          const { chat, assistant } = yield* seed()
+          // Workflow-owned workspace whose slug was generated from a delegated
+          // algorithm name (`aapl-algo`) that no longer matches the confirmed
+          // request identity (BTC / 180d / crypto). The context is the
+          // authority; the slug must not trap extraction retries.
+          const slug = "aapl-algo.12.8.14.32.370367cd"
+          yield* Effect.promise(() => bindSessionWorkspace(chat.id, slug))
+          yield* Effect.promise(() =>
+            syncWorkspaceRequestContext({
+              sessionID: chat.id,
+              slug,
+              prompt:
+                "Authoritative request identity: requested_symbol=BTC, requested_interval=180d, requested_asset_class=crypto, requested_start=2026-02-14, requested_end=2026-08-11. Extract BTC/USD coverage.",
+            }),
+          )
+
+          const tool = yield* TaskRunTool
+          const def = yield* tool.init()
+          let prompted = false
+          const promptOps = stubOps({ onPrompt: () => (prompted = true) })
+
+          const result = yield* def.execute(
+            {
+              description: "BTC data extraction retry",
+              prompt:
+                "Authoritative registered request identity: requested_symbol=BTC, requested_interval=180d, requested_asset_class=crypto, requested_start=2026-02-14, requested_end=2026-08-11. Collect BTC/USD OHLCV coverage.",
+              subagent_type: "data_extractor",
+            },
+            {
+              sessionID: chat.id,
+              messageID: assistant.id,
+              agent: "build",
+              abort: new AbortController().signal,
+              extra: { promptOps },
+              messages: [],
+              metadata: () => Effect.void,
+              ask: () => Effect.void,
+            },
+          )
+
+          expect(prompted).toBe(true)
+          expect(result.output).not.toContain("BLOCKED: data request context mismatch")
+          expect(result.output).not.toContain(`workspace_slug=${slug}`)
         } finally {
           if (prev === undefined) delete process.env.XDG_DATA_HOME
           else process.env.XDG_DATA_HOME = prev
@@ -4343,6 +4510,62 @@ describe("tool.task", () => {
 
       expect((yield* jobs.get(child.id))?.status).toBe("cancelled")
       expect((yield* jobs.get(grandchild.id))?.status).toBe("cancelled")
+    }),
+  )
+})
+
+describe("child task activity deadline", () => {
+  it.effect("returns the run result when the child finishes before the deadline", () =>
+    Effect.gen(function* () {
+      const text = yield* withChildTaskDeadline(Effect.succeed("done"), Effect.succeed(undefined))
+      expect(text).toBe("done")
+    }),
+  )
+
+  it.effect("terminalizes a silent child as BLOCKED after the idle deadline", () =>
+    Effect.gen(function* () {
+      const fiber = yield* withChildTaskDeadline(Effect.never, Effect.succeed(undefined)).pipe(Effect.forkChild)
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS + CHILD_TASK_ACTIVITY_POLL_MS + 1_000)
+      const text = yield* Fiber.join(fiber)
+      expect(text).toBe(CHILD_TASK_IDLE_DEADLINE_TEXT)
+      expect(text).toMatch(/^BLOCKED:/)
+    }),
+  )
+
+  it.effect("does not kill a child that keeps producing output, then hard-deadlines it", () =>
+    Effect.gen(function* () {
+      const fiber = yield* withChildTaskDeadline(Effect.never, Clock.currentTimeMillis).pipe(Effect.forkChild)
+      // The child keeps producing output (activity tracks the clock), so the
+      // idle deadline never fires even far past it.
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS + 60_000)
+      const probe = yield* Effect.raceFirst(Fiber.join(fiber), Effect.sleep("1 millis").pipe(Effect.as("tick"))).pipe(
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust(1_000)
+      const tick = yield* Fiber.join(probe)
+      expect(tick).toBe("tick")
+      // Past the absolute hard deadline the child is finally terminalized.
+      yield* TestClock.adjust(CHILD_TASK_HARD_DEADLINE_MS + CHILD_TASK_ACTIVITY_POLL_MS + 1_000)
+      const text = yield* Fiber.join(fiber)
+      expect(text).toBe(CHILD_TASK_HARD_DEADLINE_TEXT)
+    }),
+  )
+
+  it.effect("resets the idle window when the child emits a late output", () =>
+    Effect.gen(function* () {
+      const emittedAt = yield* Ref.make<number | undefined>(undefined)
+      const fiber = yield* withChildTaskDeadline(Effect.never, Ref.get(emittedAt)).pipe(Effect.forkChild)
+      // Emit an output just before the idle deadline would fire, then verify
+      // the child survives another full idle window.
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS - 30_000)
+      yield* Ref.set(emittedAt, yield* Clock.currentTimeMillis)
+      yield* TestClock.adjust(CHILD_TASK_IDLE_DEADLINE_MS - 30_000)
+      const probe = yield* Effect.raceFirst(Fiber.join(fiber), Effect.sleep("1 millis").pipe(Effect.as("tick"))).pipe(
+        Effect.forkChild,
+      )
+      yield* TestClock.adjust(1_000)
+      const tick = yield* Fiber.join(probe)
+      expect(tick).toBe("tick")
     }),
   )
 })

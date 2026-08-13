@@ -3,6 +3,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { parseArgs } from "node:util"
 import { loadScenario } from "./headless/scenario"
+import { CROSSOVER_SCENARIO } from "./headless/fixtures"
 import { RunManifestV1, type HeadlessScenarioV1, type RunManifestV1 as RunManifest } from "./headless/types"
 
 const SUPPORTED_MODEL_PROVIDERS = {
@@ -282,8 +283,10 @@ async function main(): Promise<void> {
     strict: true,
   })
   if (command === "preflight") {
-    if (!parsed.values.scenario || !parsed.values.output) throw new Error("preflight requires --scenario and --output")
-    const scenario = await loadScenario(path.resolve(parsed.values.scenario))
+    if (!parsed.values.output) throw new Error("preflight requires --output")
+    const scenario = parsed.values.scenario
+      ? await loadScenario(path.resolve(parsed.values.scenario))
+      : CROSSOVER_SCENARIO
     const result = inspectLivePreflight({
       eventName: process.env.GITHUB_EVENT_NAME ?? "local",
       enabled: process.env.FINNY_LIVE_HARNESS_ENABLED ?? "",
@@ -301,11 +304,12 @@ async function main(): Promise<void> {
     return
   }
   if (command === "summarize") {
-    if (!parsed.values.bundle || !parsed.values.output || !parsed.values.scenario)
-      throw new Error("summarize requires --bundle, --scenario, and --output")
+    if (!parsed.values.bundle || !parsed.values.output) throw new Error("summarize requires --bundle and --output")
     const found = await findManifest(parsed.values.bundle)
     const manifest = RunManifestV1.parse(JSON.parse(await fs.readFile(found.file, "utf8")))
-    const scenario = await loadScenario(path.resolve(parsed.values.scenario))
+    const scenario = parsed.values.scenario
+      ? await loadScenario(path.resolve(parsed.values.scenario))
+      : CROSSOVER_SCENARIO
     const events = (await fs.readFile(path.join(found.directory, "raw", "events.jsonl"), "utf8"))
       .split(/\r?\n/)
       .flatMap((line) => {

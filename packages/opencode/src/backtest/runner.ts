@@ -15,6 +15,10 @@ import { EngineV2 } from "./results"
 import { emit } from "@/analytics/emit"
 import { resolveAssetSpec } from "./asset-spec"
 import { BrokerRegistry } from "@/live/brokers"
+import { runLeanEngineInRunner } from "./lean/engine-run"
+import { isLeanProfile } from "./lean/contracts"
+import { runtimeForCandidate } from "./lean/select"
+import { getProjectLink } from "@/integration/qc-store"
 import { evaluateBacktestQuality } from "./evaluation"
 import type { ExperimentReference } from "./experiment"
 import { finnyArtifactPath } from "@finny-ai/core/prefs"
@@ -25,10 +29,10 @@ import {
   normalizeSymbol as normalizeRequestSymbol,
 } from "@/agent/request-identity"
 import * as RunIntegrity from "./run-integrity"
+import type { RunIdentityV1 } from "./run-integrity-core"
 import { qualifyCandidateV1 } from "./qualification"
 import { qualificationInputForResearch, type QualificationInputV1 } from "./qualification-policy"
 import { CentralSync } from "@/algorithm/central-sync"
-import { stripModelChildSecrets } from "@/security/worker-shell"
 
 declare const OPENCODE_ENGINE_V2_FILES: Record<string, string> | undefined
 
@@ -244,7 +248,19 @@ export namespace BacktestRunner {
     | "unsafe_custom_runner"
     | "invalid_input"
     | "engine_invariant"
+    | "engine_crash"
     | "results_unparseable"
+    | "docker_unavailable"
+    | "image_unavailable"
+    | "image_digest_mismatch"
+    | "data_bundle_invalid"
+    | "schedule_divergence"
+    | "model_policy_violation"
+    | "unsupported_order"
+    | "source_missing"
+    | "resource_breach"
+    | "timeout"
+    | "canceled"
     | "internal"
 
   export type RunResult =
@@ -2527,6 +2543,7 @@ if __name__ == "__main__":
     dataQualityMode: "strict" | "repair_outliers"
     qualification?: QualificationInputV1
     datasetSnapshotId?: string
+    runtimeIdentity?: RunIdentityV1["runtimeIdentity"]
   }): Promise<string> {
     const version = Number((input.algorithm as any).version ?? 0) || 0
     const base = path.join(
@@ -2583,12 +2600,16 @@ if __name__ == "__main__":
     const current = await RunIntegrity.currentAlgorithmHashes(input.algorithm)
     const processedDataPath = path.join(input.tmpDir, PROCESSED_OHLCV_CSV)
     const executionProfile = input.results.v2?.execution_config ?? input.config.execution ?? {}
-    const engineTree = await RunIntegrity.directoryTreeManifest(path.join(input.tmpDir, "engine_v2"))
+    const engineTreeRoot = input.runtimeIdentity
+      ? path.join(input.tmpDir, "lean-engine")
+      : path.join(input.tmpDir, "engine_v2")
+    const engineTree = await RunIntegrity.directoryTreeManifest(engineTreeRoot)
     await RunIntegrity.publishStrictRun({
       finalDir: base,
       runId: input.runId,
       productLabel: input.results.productLabel ?? "Crucible 2.0",
       identity: {
+        ...(input.runtimeIdentity ? { runtimeIdentity: input.runtimeIdentity } : {}),
         algorithmId: input.algorithm.algorithmId,
         algorithmVersion: version,
         strategyHash: current.strategyHash,
@@ -2824,7 +2845,35 @@ if __name__ == "__main__":
       if (issue) return { ok: false, error: issue, kind: "data_evidence" }
     }
 
-    const validation = await Validate.run(algorithm.code, { config: effectiveConfig })
+    const leanRuntime = runtimeForCandidate(algorithm)
+    if (leanRuntime.issues.length > 0) {
+      return {
+        ok: false,
+        error: `Invalid runtime declaration: ${leanRuntime.issues.join("; ")}. Engine fallback is disabled.`,
+        kind: "config_invalid",
+      }
+    }
+    const linkedQc =
+      leanRuntime.profile.profileId === "qc_cloud" ? await getProjectLink(algorithm.algorithmId) : undefined
+    if (leanRuntime.profile.profileId === "qc_cloud" && !linkedQc) {
+      return {
+        ok: false,
+        error:
+          "qc_cloud candidates must link a QuantConnect project first (qc link) and use the composite QC workflow; local engine fallback is disabled.",
+        kind: "config_invalid",
+      }
+    }
+    const isLeanRun = isLeanProfile(leanRuntime.profile) || Boolean(linkedQc)
+    const leanProfileId: "lean_python" | "lean_csharp" = linkedQc
+      ? linkedQc.language === "csharp"
+        ? "lean_csharp"
+        : "lean_python"
+      : leanRuntime.profile.profileId === "lean_csharp"
+        ? "lean_csharp"
+        : "lean_python"
+    const validation = isLeanRun
+      ? ({ valid: true, errors: [], warnings: [] } as unknown as Awaited<ReturnType<typeof Validate.run>>)
+      : await Validate.run(algorithm.code, { config: effectiveConfig })
     if (!validation.valid) {
       return {
         ok: false,
@@ -2860,7 +2909,7 @@ if __name__ == "__main__":
       } catch {
         engineV2Ready = await materializeBundledEngineV2(path.join(tmpDir, "engine_v2"))
       }
-      if (engineMode === "strict_v2" && !engineV2Ready) {
+      if (engineMode === "strict_v2" && !engineV2Ready && !isLeanRun) {
         return {
           ok: false,
           error: `engine_v2 source not found at ${ENGINE_V2_SRC}; strict backtests cannot run.`,
@@ -3045,11 +3094,41 @@ if __name__ == "__main__":
         await fs.writeFile(path.join(tmpDir, "config.json"), JSON.stringify(config, null, 2))
       }
 
-      const childEnv = {
-        ...stripModelChildSecrets(process.env),
-        FINNY_SEED: String(effectiveSeed),
-      }
-      if (engineMode === "strict_v2") {
+      const childEnv = { FINNY_SEED: String(effectiveSeed) }
+      let results: Results | undefined
+      let leanRuntimeIdentity: RunIdentityV1["runtimeIdentity"] | undefined
+      if (isLeanRun) {
+        const leanOutcome = await runLeanEngineInRunner({
+          tmpDir,
+          algorithm,
+          config,
+          csvPath,
+          interval,
+          capital: parsedCapital,
+          seed: effectiveSeed,
+          startDate: start,
+          endDate: end,
+          walkForwardFolds: robustness.walkForwardFolds ?? 0,
+          runtimeProfileId: leanProfileId,
+        })
+        if (!leanOutcome.ok) {
+          emit({
+            eventType: "backtest.failed",
+            algorithmId: algorithm.algorithmId,
+            payload: {
+              error: leanOutcome.error,
+              kind: leanOutcome.kind,
+              duration,
+              interval,
+              capital,
+              engine: "lean",
+            },
+          })
+          return { ok: false, error: `LEAN engine failed: ${leanOutcome.error}`, kind: leanOutcome.kind }
+        }
+        results = leanOutcome.results
+        leanRuntimeIdentity = leanOutcome.runtimeIdentity
+      } else if (engineMode === "strict_v2") {
         const engineArgs = [
           pythonCmd,
           "-m",
@@ -3097,7 +3176,6 @@ if __name__ == "__main__":
           nothrow: true,
           timeout: 300_000,
           env: childEnv,
-          inheritEnv: false,
         })
 
         const OUTPUT_CAP = 10 * 1024 * 1024
@@ -3124,8 +3202,8 @@ if __name__ == "__main__":
           return { ok: false, error: `Strict engine failed: ${stderr || "unknown error"}`, kind: "engine_invariant" }
         }
 
-        const results = await parseResults(engineResult.stdout.toString(), tmpDir!, false)
-        if (!results || !results.v2) {
+        const parsed = await parseResults(engineResult.stdout.toString(), tmpDir!, false)
+        if (!parsed || !parsed.v2) {
           emit({
             eventType: "backtest.failed",
             algorithmId: algorithm.algorithmId,
@@ -3143,6 +3221,9 @@ if __name__ == "__main__":
             kind: "results_unparseable",
           }
         }
+        results = parsed
+      }
+      if (results) {
         if (preparedData.provenance.mode === "provider_fetch") {
           const processedBytes = await fs.readFile(path.join(tmpDir, PROCESSED_OHLCV_CSV))
           preparedData.provenance.processed_sha256 = sha256Bytes(processedBytes)
@@ -3201,11 +3282,7 @@ if __name__ == "__main__":
           })
           await fs.writeFile(path.join(tmpDir, "results.json"), JSON.stringify(results.v2, null, 2))
         }
-        if (
-          (promotableVerified || publishableProviderRun) &&
-          hasProductRiskContract(config) &&
-          dataQualityMode === "strict"
-        ) {
+        if ((promotableVerified || publishableProviderRun) && hasProductRiskContract(config) && dataQualityMode === "strict") {
           await persistStrictRunArtifacts({
             tmpDir,
             runId,
@@ -3222,7 +3299,10 @@ if __name__ == "__main__":
             dataQualityMode,
             qualification,
             datasetSnapshotId:
-              preparedData.provenance.mode === "provider_fetch" ? preparedData.provenance.snapshot_id : undefined,
+              preparedData.provenance.mode === "provider_fetch"
+                ? preparedData.provenance.snapshot_id
+                : undefined,
+            runtimeIdentity: leanRuntimeIdentity,
           })
         } else {
           // Qualification evidence and the schema-v4 risk contract remain
@@ -3285,7 +3365,7 @@ if __name__ == "__main__":
             diagnostics: {
               barsProcessed: results.diagnostics?.barsProcessed,
               liquidationCount: results.liquidationCount,
-              dataQuality: results.v2.data_quality,
+              dataQuality: results.v2!.data_quality,
             },
           },
         })
@@ -3308,7 +3388,7 @@ if __name__ == "__main__":
           capital,
           "--scan-only",
         ],
-        { cwd: tmpDir, nothrow: true, timeout: 60_000, env: childEnv, inheritEnv: false },
+        { cwd: tmpDir, nothrow: true, timeout: 60_000, env: childEnv },
       )
       if (scanResult.code === 0) {
         const scanOut = scanResult.stdout.toString()
@@ -3395,7 +3475,6 @@ if __name__ == "__main__":
           nothrow: true,
           timeout: 300_000,
           env: childEnv,
-          inheritEnv: false,
         },
       )
 
@@ -3427,8 +3506,8 @@ if __name__ == "__main__":
       }
 
       const stdout = backtestResult.stdout.toString()
-      const results = await parseResults(stdout, tmpDir!)
-      if (!results) {
+      const legacyResults = await parseResults(stdout, tmpDir!)
+      if (!legacyResults) {
         emit({
           eventType: "backtest.failed",
           algorithmId: algorithm.algorithmId,
@@ -3436,13 +3515,13 @@ if __name__ == "__main__":
         })
         return { ok: false, error: "Failed to parse backtest results from output.", kind: "results_unparseable" }
       }
-      results.runId = runId
+      legacyResults.runId = runId
       await persistBacktestEvidenceOrReport({
         tmpDir,
         runId,
         algorithm,
         config,
-        results,
+        results: legacyResults,
         duration,
         interval,
         capital,
@@ -3459,19 +3538,19 @@ if __name__ == "__main__":
           duration,
           interval,
           capital,
-          engineVersion: results.engineVersion,
-          schemaVersion: results.schemaVersion,
-          totalReturn: results.totalReturn,
-          maxDrawdown: results.maxDrawdown,
-          sharpeRatio: results.sharpeRatio,
-          totalTrades: results.totalTrades,
-          benchmarkReturn: results.benchmarkReturn,
-          alpha: results.alpha,
-          evidenceDir: results.evidenceDir,
-          evidenceError: results.evidenceError,
+            engineVersion: legacyResults.engineVersion,
+            schemaVersion: legacyResults.schemaVersion,
+            totalReturn: legacyResults.totalReturn,
+            maxDrawdown: legacyResults.maxDrawdown,
+            sharpeRatio: legacyResults.sharpeRatio,
+            totalTrades: legacyResults.totalTrades,
+            benchmarkReturn: legacyResults.benchmarkReturn,
+            alpha: legacyResults.alpha,
+            evidenceDir: legacyResults.evidenceDir,
+            evidenceError: legacyResults.evidenceError,
         },
       })
-      return { ok: true, results }
+      return { ok: true, results: legacyResults }
     } catch (e: any) {
       emit({
         eventType: "backtest.failed",

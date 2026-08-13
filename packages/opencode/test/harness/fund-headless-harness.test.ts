@@ -1,23 +1,30 @@
 import { describe, expect, test } from "bun:test"
-import fs from "node:fs/promises"
-import path from "node:path"
 import {
   FundHeadlessScenarioV1,
   FundHeadlessTraceV1,
   evaluateFundRuntimeScenario,
   evaluateFundScenario,
   fundScenarioSha256,
-  loadFundScenario,
-  loadFundTrace,
 } from "../../script/headless/fund-scenario"
+import {
+  CROSSOVER_SCENARIO,
+  FILL_MISMATCH_SCENARIO,
+  FILL_MISMATCH_TRACE,
+  REGIME_CHANGE_SCENARIO,
+  REGIME_CHANGE_TRACE,
+} from "../../script/headless/fixtures"
 import { HeadlessScenarioV1 } from "../../script/headless/types"
 
-const fixtureRoot = path.resolve(import.meta.dir, "../../harness/fund-scenarios")
+const FUND_FIXTURES: Record<
+  string,
+  { scenario: FundHeadlessScenarioV1; trace: FundHeadlessTraceV1 }
+> = {
+  "regime-change-open-position": { scenario: REGIME_CHANGE_SCENARIO, trace: REGIME_CHANGE_TRACE },
+  "fill-mismatch-logic-review": { scenario: FILL_MISMATCH_SCENARIO, trace: FILL_MISMATCH_TRACE },
+}
 
 async function fixture(name: string) {
-  const scenario = await loadFundScenario(path.join(fixtureRoot, `${name}.scenario.v1.json`))
-  const trace = await loadFundTrace(path.join(fixtureRoot, `${name}.trace.v1.json`))
-  return { scenario, trace }
+  return FUND_FIXTURES[name]!
 }
 
 describe("deterministic fund headless harness", () => {
@@ -181,11 +188,8 @@ describe("deterministic fund headless harness", () => {
     const { scenario } = await fixture("regime-change-open-position")
     expect(HeadlessScenarioV1.safeParse(scenario).success).toBe(false)
 
-    const strategyScenario = JSON.parse(
-      await fs.readFile(path.resolve(import.meta.dir, "../../harness/scenarios/spy-5m-sma-crossover.v1.json"), "utf8"),
-    )
-    expect(HeadlessScenarioV1.safeParse(strategyScenario).success).toBe(true)
-    expect(FundHeadlessScenarioV1.safeParse(strategyScenario).success).toBe(false)
+    expect(HeadlessScenarioV1.safeParse(CROSSOVER_SCENARIO).success).toBe(true)
+    expect(FundHeadlessScenarioV1.safeParse(CROSSOVER_SCENARIO).success).toBe(false)
   })
 
   test("scenario hash binds every policy field", async () => {

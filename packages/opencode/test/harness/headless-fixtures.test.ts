@@ -17,6 +17,7 @@ import {
 } from "../../script/headless/run-artifacts"
 import type { VerifiedHarnessRun } from "../../script/headless/run-artifacts"
 import { loadScenario } from "../../script/headless/scenario"
+import { CROSSOVER_SCENARIO } from "../../script/headless/fixtures"
 import { classifyOutcome, observeRun } from "../../script/headless/semantic-verdict"
 
 const cleanup: Array<() => Promise<void>> = []
@@ -25,7 +26,7 @@ afterEach(async () => {
 })
 
 const repo = path.resolve(import.meta.dir, "../../../..")
-const scenario = path.join(repo, "packages/opencode/harness/scenarios/spy-5m-sma-crossover.v1.json")
+const scenario = CROSSOVER_SCENARIO
 
 async function allText(root: string): Promise<string> {
   const parts: string[] = []

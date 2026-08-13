@@ -21,7 +21,7 @@ export function scenarioSha256(scenario: Scenario): string {
   return crypto.createHash("sha256").update(canonicalScenarioJson(scenario)).digest("hex")
 }
 
-export async function loadScenario(file: string): Promise<HeadlessScenarioV1> {
-  const raw = JSON.parse(await fs.readFile(file, "utf8"))
+export async function loadScenario(fileOrScenario: string | unknown): Promise<HeadlessScenarioV1> {
+  const raw = typeof fileOrScenario === "string" ? JSON.parse(await fs.readFile(fileOrScenario, "utf8")) : fileOrScenario
   return HeadlessScenarioV1.parse(raw)
 }

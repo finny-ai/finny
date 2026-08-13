@@ -29,6 +29,8 @@ import { SessionCommand } from "./cli/cmd/session"
 import { InboxCommand } from "./cli/cmd/inbox"
 import { AlgoCommand } from "./cli/cmd/algo"
 import { BacktestCommand } from "./cli/cmd/backtest"
+import { QcCommand } from "./cli/cmd/qc"
+import { LeanCommand } from "./cli/cmd/lean"
 import { CommandsCommand } from "./cli/cmd/commands"
 import { DbCommand } from "./cli/cmd/db"
 import { TaskCommand } from "./cli/cmd/task"
@@ -112,6 +114,8 @@ const cli = yargs(args)
   .command(InboxCommand)
   .command(AlgoCommand)
   .command(BacktestCommand)
+  .command(QcCommand)
+  .command(LeanCommand)
   .command(CommandsCommand)
   .command(TaskCommand)
   .command(PluginCommand)

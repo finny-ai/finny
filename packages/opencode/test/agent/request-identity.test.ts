@@ -63,6 +63,35 @@ describe("request identity proposals", () => {
     }
   })
 
+  test("does not parse engine and product names as stock identity", () => {
+    // Regression: "run the real LEAN backtest ... the real Crucible backtest"
+    // was previously locked as symbol=LEAN, forcing the whole workflow to
+    // research a nonexistent ticker. LEAN/CRUCIBLE/FINNY/QC are product
+    // names, not tradable instruments.
+    const prompts = [
+      "Run the real LEAN backtest and the real Crucible backtest path for this branch.",
+      "Verify this Finny branch by running a complete real workflow with LEAN and Crucible backtests.",
+      "Use the QC control plane and the LEAN engine on this branch.",
+    ]
+    for (const prompt of prompts) {
+      const proposal = parseRequestIdentityProposal(prompt)
+      expect(proposal.status).toBe("proposed")
+      expect(proposal.facts.requested_symbol).toBeUndefined()
+      expect(proposal.facts.requested_symbols).toBeUndefined()
+      expect(proposal.facts.requested_asset_class).toBeUndefined()
+    }
+  })
+
+  test("delegated asset-choice wording never invents a ticker", () => {
+    const proposal = parseRequestIdentityProposal(
+      "Research a liquid US equity and a liquid crypto asset, then produce one decision-time-safe strategy.",
+    )
+    expect(proposal.status).toBe("proposed")
+    expect(proposal.confidence).toBe(0)
+    expect(proposal.facts.requested_symbol).toBeUndefined()
+    expect(proposal.facts.requested_symbols).toBeUndefined()
+  })
+
   test("confirms an exact explicit SPY token", () => {
     expect(parseRequestIdentityProposal("Build and backtest SPY equity on 1d bars.")).toMatchObject({
       status: "confirmed",
@@ -301,6 +330,26 @@ describe("parseRequestFacts", () => {
     expect(facts.requested_symbol).toBe("DJT")
     expect(facts.requested_symbols).toBeUndefined()
     expect(facts.requested_interval).toBe("1d")
+  })
+
+  test("does not pair a lowercase word after a comma with a ticker into a universe", () => {
+    // Regression: "research BTC/USD and AAPL, using the data extractor ..."
+    // was parsed as universe ["AAPL"] because "using" after the comma counted
+    // as a second ticker. That produced an aapl-algo workspace slug that
+    // contradicted the BTC/crypto identity registered from the clarification
+    // answers, so the data_extractor gate fail-closed on the slug.
+    const facts = parseRequestFacts(
+      "Verify this branch end to end: research BTC/USD and AAPL, using the data extractor and the news, sentiment, and SEC agents where applicable.",
+    )
+    expect(facts.requested_symbol).toBe("BTC")
+    expect(facts.requested_asset_class).toBe("crypto")
+    expect(facts.requested_symbols).toBeUndefined()
+  })
+
+  test("keeps an uppercase comma list as a multi-symbol universe", () => {
+    const facts = parseRequestFacts("trade AAPL, MSFT daily with 1h bars")
+    expect(facts.requested_symbols).toEqual(["AAPL", "MSFT"])
+    expect(facts.requested_interval).toBe("1h")
   })
 
   test("does not overwrite explicit single tickers with lowercase asset prose", () => {

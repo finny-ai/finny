@@ -18,6 +18,10 @@ import {
   unsupportedNewSaveConfigReasons,
 } from "../algorithm/strategy-params"
 import { requireVerifiedDataExtractorEvidenceForSession } from "../data/data-extractor-evidence"
+import { strategySourceV1 } from "../backtest/lean/contracts"
+import { embedRuntimeConfig, runtimeForCandidate, validateLeanSourceManifest } from "../backtest/lean/select"
+import { setLeanEnabled } from "../backtest/lean/lean-config"
+import { writeLeanSourceFile } from "../backtest/lean/source-store"
 import { Database } from "@opencode-ai/core/database/database"
 import {
   activeWorkflowForSession,
@@ -398,6 +402,29 @@ const parameters = z.object({
       'REQUIRED when saveMode is "version". "inherit" snapshots the prior mission/preferences/risk unchanged; "replace" uses the supplied documents. decisions is always append-only.',
     ),
   language: z.string().optional().describe("Programming language, defaults to python"),
+  runtimeProfile: z
+    .enum(["finny_python", "lean_python", "lean_csharp", "qc_cloud"])
+    .optional()
+    .describe(
+      "Execution runtime for this version. Defaults to finny_python (existing engine_v2 path). " +
+        "lean_python/lean_csharp are native LEAN runtimes (enabled by default, no env activation) that " +
+        "additionally require strategySource and stay non-promotable until the LEAN adapter certificate is active.",
+    ),
+  strategySource: z
+    .object({
+      files: z
+        .array(
+          z.object({
+            path: z.string().describe("Relative project path, e.g. main.py or Algorithm/Main.cs"),
+            sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+            bytes: z.number().int().nonnegative(),
+          }),
+        )
+        .min(1)
+        .max(64),
+    })
+    .optional()
+    .describe("Exact LEAN project file manifest (path + sha256 + bytes). Required for lean_python/lean_csharp."),
   description: z.string().optional().describe("Brief human-readable summary of the strategy"),
   config: z.string().optional().describe("The config.json content as a string"),
   reasoning: z
@@ -488,6 +515,44 @@ export const AlgorithmSaveTool = Tool.define(
               ? Mission.validateForNewSave(documents.mission)
               : []
           const configIssues: string[] = []
+          if (params.runtimeProfile === "lean_python" || params.runtimeProfile === "lean_csharp") {
+            // An explicit LEAN save is consent: persist the native LEAN
+            // setting (with the certified adapter pin) so "use lean for
+            // backtesting" works without pre-configuration.
+            yield* Effect.promise(() => setLeanEnabled(true).catch(() => undefined))
+            const previousRuntime = previousAlgorithm ? runtimeForCandidate(previousAlgorithm).profile.profileId : undefined
+            if (params.saveMode === "version" && previousRuntime && previousRuntime !== params.runtimeProfile) {
+              configIssues.push(
+                `runtime change ${previousRuntime} -> ${params.runtimeProfile} requires a new algorithm (saveMode "new"); ` +
+                  `changing runtimes must create a new candidate version and plan`,
+              )
+            }
+            const derivedFiles =
+              params.runtimeProfile === "lean_python" && !params.strategySource
+                ? [
+                    {
+                      path: "main.py",
+                      sha256: createHash("sha256").update(params.code).digest("hex"),
+                      bytes: Buffer.byteLength(params.code, "utf8"),
+                    },
+                  ]
+                : params.strategySource?.files
+            let source: ReturnType<typeof strategySourceV1> | undefined
+            try {
+              source = derivedFiles
+                ? strategySourceV1({
+                    profileId: params.runtimeProfile,
+                    files: derivedFiles,
+                  })
+                : undefined
+            } catch (error) {
+              configIssues.push(`strategy source manifest is invalid: ${error instanceof Error ? error.message : String(error)}`)
+            }
+            const sourceIssues = validateLeanSourceManifest(source, params.runtimeProfile)
+            if (sourceIssues.length > 0) {
+              configIssues.push(...sourceIssues)
+            }
+          }
           if (missionRiskContract && documents.riskContract) {
             try {
               if (canonicalJson(JSON.parse(documents.riskContract)) !== canonicalJson(missionRiskContract)) {
@@ -628,7 +693,8 @@ export const AlgorithmSaveTool = Tool.define(
               // Environment hard-stop #1: Python isn't installed at all. Probe
               // before validation so we don't let a clean ENOENT slip through
               // `Validate.checkSyntax`'s silent-skip branch and reach save.
-              if (!(await isPythonAvailable())) {
+              const isLeanSave = params.runtimeProfile === "lean_python" || params.runtimeProfile === "lean_csharp"
+              if (!isLeanSave && !(await isPythonAvailable())) {
                 RetryOrchestrator.reset(ctx.sessionID, params.name)
                 return {
                   result: {
@@ -646,16 +712,18 @@ export const AlgorithmSaveTool = Tool.define(
 
               // Run validation through the retry orchestrator so the attempt counter,
               // transient flagging, and max-retry handling all live in one place.
-              const validation = await RetryOrchestrator.attempt({
-                sessionID: ctx.sessionID,
-                algorithmName: params.name,
-                code: params.code,
-                // Validate the same mission-bound risk contract that will be
-                // persisted. Using the raw incoming config let a save pass
-                // without protective-stop checks, only for finny_backtest to
-                // reject the identical saved version moments later.
-                config: normalizedConfig,
-              })
+              const validation = isLeanSave
+                ? ({ kind: "passed", attempts: 1, warnings: [] } satisfies RetryOrchestrator.PassedSignal)
+                : await RetryOrchestrator.attempt({
+                    sessionID: ctx.sessionID,
+                    algorithmName: params.name,
+                    code: params.code,
+                    // Validate the same mission-bound risk contract that will be
+                    // persisted. Using the raw incoming config let a save pass
+                    // without protective-stop checks, only for finny_backtest to
+                    // reject the identical saved version moments later.
+                    config: normalizedConfig,
+                  })
 
               // Environment hard-stop: if the validator failed because Python
               // isn't on PATH, no amount of retrying will help — the code was
@@ -745,12 +813,29 @@ export const AlgorithmSaveTool = Tool.define(
 
               let algo
               try {
+                const leanSourceFiles =
+                  params.runtimeProfile === "lean_python" && !params.strategySource
+                    ? [
+                        {
+                          path: "main.py",
+                          sha256: createHash("sha256").update(params.code).digest("hex"),
+                          bytes: Buffer.byteLength(params.code, "utf8"),
+                        },
+                      ]
+                    : params.strategySource?.files
+                const saveConfig = params.runtimeProfile
+                  ? embedRuntimeConfig({
+                      config: normalizedConfig,
+                      profileId: params.runtimeProfile,
+                      sourceFiles: leanSourceFiles,
+                    })
+                  : normalizedConfig
                 algo = await Algorithm.save({
                   name: params.name,
                   code: params.code,
                   language: params.language,
                   description: params.description,
-                  config: normalizedConfig,
+                  config: saveConfig,
                   reasoning: params.reasoning,
                   mission: documents.mission,
                   prefs: documents.prefs,
@@ -761,6 +846,19 @@ export const AlgorithmSaveTool = Tool.define(
                   targetBrokerage: params.targetBrokerage,
                   saveMode: params.saveMode,
                 })
+                if (params.runtimeProfile === "lean_python" || params.runtimeProfile === "lean_csharp") {
+                  const files = leanSourceFiles ?? []
+                  if (files.length !== 1) {
+                    throw new Error(
+                      `${params.runtimeProfile} v1 requires exactly one source file; multi-file content delivery is not supported yet`,
+                    )
+                  }
+                  await writeLeanSourceFile({
+                    algorithm: { algorithmId: algo.algorithmId, version: algo.version },
+                    relativePath: files[0]!.path,
+                    content: params.code,
+                  })
+                }
               } catch (err) {
                 if (err instanceof Algorithm.SaveModeConflictError) {
                   const lines = [err.message]
