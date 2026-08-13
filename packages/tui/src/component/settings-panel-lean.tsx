@@ -12,6 +12,26 @@ type LeanStatus = {
   certified: boolean
   source: "env" | "setting" | "default"
   readiness: { ready: boolean; reasons: string[] }
+  engineImage: {
+    pinnedCommit: string
+    pinnedDigest: string
+    daemonUp: boolean
+    imagePresent: boolean
+    imageRef: string
+  }
+}
+
+type EngineActionResult = {
+  ok: boolean
+  message: string
+  pinnedCommit: string
+  pinnedDigest: string
+  daemonUp: boolean
+  imagePresent: boolean
+  imageRef: string
+  localDigest?: string
+  requiresRestart?: boolean
+  newCommit?: string
 }
 
 /**
@@ -30,8 +50,17 @@ export function SettingsPanelLean() {
     certified: false,
     source: "default",
     readiness: { ready: false, reasons: [] },
+    engineImage: {
+      pinnedCommit: "",
+      pinnedDigest: "",
+      daemonUp: false,
+      imagePresent: false,
+      imageRef: "",
+    },
   })
   const [busy, setBusy] = createSignal(false)
+  const [engineBusy, setEngineBusy] = createSignal(false)
+  const [engineDetail, setEngineDetail] = createSignal<string | null>(null)
 
   const request = async (path: string, init?: RequestInit) => {
     const url = new URL(path, sdk.url)
@@ -72,6 +101,28 @@ export function SettingsPanelLean() {
       toast.show({ message: `Could not switch LEAN engine: ${e?.message ?? "unknown error"}`, variant: "error", duration: 5000 })
     } finally {
       setBusy(false)
+    }
+  }
+
+  const engineAction = async (path: string, label: string) => {
+    if (engineBusy()) return
+    setEngineBusy(true)
+    setEngineDetail(null)
+    try {
+      const response = await request(path, { method: "POST", body: JSON.stringify({}) })
+      if (!response.ok) throw new Error(`status ${response.status}`)
+      const result = (await response.json()) as EngineActionResult
+      setEngineDetail(result.message)
+      setStatus((await (await request("/lean/status")).json()) as LeanStatus)
+      toast.show({
+        message: result.ok ? `${label}: ${result.message}` : `${label} failed: ${result.message}`,
+        variant: result.ok ? "success" : "error",
+        duration: 8000,
+      })
+    } catch (e: any) {
+      toast.show({ message: `${label} error: ${e?.message ?? "unknown error"}`, variant: "error", duration: 5000 })
+    } finally {
+      setEngineBusy(false)
     }
   }
 
@@ -140,6 +191,40 @@ export function SettingsPanelLean() {
           <box flexDirection="row" gap={2}>
             <Action label="Re-check readiness" onClick={() => void refresh()} />
           </box>
+        </box>
+
+        <box flexDirection="column" gap={1} flexShrink={0} paddingTop={1}>
+          <text fg={theme.text} attributes={TextAttributes.BOLD}>
+            Engine image
+          </text>
+          <Show when={status().engineImage.pinnedCommit}>
+            <text fg={theme.textMuted}>
+              Pinned: {status().engineImage.pinnedCommit.slice(0, 12)} · {status().engineImage.imageRef}
+            </text>
+            <text fg={theme.textMuted}>Digest: {status().engineImage.pinnedDigest.slice(0, 19)}…</text>
+            <text fg={status().engineImage.daemonUp ? theme.text : theme.warning}>
+              Docker daemon: {status().engineImage.daemonUp ? "running" : "not running"}
+            </text>
+            <text fg={status().engineImage.imagePresent ? theme.success : theme.warning}>
+              Pinned image: {status().engineImage.imagePresent ? "present locally" : "not present — pull it"}
+            </text>
+          </Show>
+          <Show when={!status().engineImage.daemonUp}>
+            <text fg={theme.warning}>Start Colima or Docker Desktop before pulling or building the engine image.</text>
+          </Show>
+          <box flexDirection="row" gap={2}>
+            <Action label={engineBusy() ? "Working…" : "Pull engine image"} onClick={() => void engineAction("/lean/engine/pull", "Pull")} />
+            <Action label={engineBusy() ? "Working…" : "Build from template"} onClick={() => void engineAction("/lean/engine/build", "Build")} />
+            <Action label={engineBusy() ? "Working…" : "Update to latest"} onClick={() => void engineAction("/lean/engine/update", "Update")} />
+          </box>
+          <Show when={engineDetail()}>
+            <text fg={theme.textMuted}>{engineDetail()}</text>
+          </Show>
+          <Show when={engineBusy()}>
+            <text fg={theme.warning}>
+              Pull/build can take several minutes for a 20GB image; the panel stays responsive, do not close the app.
+            </text>
+          </Show>
         </box>
       </box>
     </Card>
