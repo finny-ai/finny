@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { nextPinnedConstants } from "../../src/backtest/lean/engine-image"
+import { nextPinnedConstants, pinnedImagePullRefs } from "../../src/backtest/lean/engine-image"
 
 const SAMPLE_CONTRACTS = `export const LEAN_PINNED_COMMIT = "c6cc3b743ed7b65d5e0b9fa2bfc18b7d3ac2aea0"
 export const LEAN_PINNED_IMAGE_DIGEST = "sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652"`
@@ -36,5 +36,28 @@ describe("nextPinnedConstants", () => {
       "sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652",
     )
     expect(patched).toBeNull()
+  })
+})
+
+describe("pinnedImagePullRefs", () => {
+  const refs = pinnedImagePullRefs(
+    "c6cc3b743ed7b65d5e0b9fa2bfc18b7d3ac2aea0",
+    "sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652",
+  )
+
+  test("tries the pinned digest first so no tag is required", () => {
+    expect(refs[0]!.ref).toBe(
+      "ghcr.io/finny-ai/lean-engine@sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652",
+    )
+    expect(refs[0]!.label).toContain("pinned digest")
+  })
+
+  test("includes latest, commit, and dev tags as verified fallbacks", () => {
+    expect(refs.map((entry) => entry.ref)).toEqual([
+      "ghcr.io/finny-ai/lean-engine@sha256:095d848eca682f53fad53bf14f6dafb8006f63249ab86cd350f184262422d652",
+      "ghcr.io/finny-ai/lean-engine:latest",
+      "ghcr.io/finny-ai/lean-engine:c6cc3b743ed7b65d5e0b9fa2bfc18b7d3ac2aea0",
+      "ghcr.io/finny-ai/lean-engine:dev",
+    ])
   })
 })

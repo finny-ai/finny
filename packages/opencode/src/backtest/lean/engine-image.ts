@@ -69,33 +69,53 @@ export async function leanEngineImageStatus(): Promise<LeanEngineImageStatus> {
 }
 
 /**
- * Pull the certified engine image for the pinned commit from the registry and
- * verify the digest matches the pinned one. This is the one-click equivalent
- * of the documented "lean-engine pull step".
+ * Ordered pull refs for the pinned engine image. The digest comes first so a
+ * pull never depends on a tag existing; tag fallbacks are only used when the
+ * digest is not directly reachable. Every attempt is verified against the
+ * pinned digest before it is accepted.
+ */
+export function pinnedImagePullRefs(commit: string, digest: string): Array<{ label: string; ref: string }> {
+  const refs: Array<{ label: string; ref: string }> = [
+    { label: `pinned digest ${digest.slice(7, 19)}`, ref: `${ENGINE_IMAGE}@${digest}` },
+    { label: "latest tag", ref: `${ENGINE_IMAGE}:latest` },
+    { label: `commit tag ${commit.slice(0, 12)}`, ref: `${ENGINE_IMAGE}:${commit}` },
+    { label: "dev tag", ref: `${ENGINE_IMAGE}:dev` },
+  ]
+  return refs.filter((entry, index) => refs.findIndex((other) => other.ref === entry.ref) === index)
+}
+
+/**
+ * Pull the certified engine image and verify it matches the pinned digest.
+ * Pulls by digest first (no tag required); falls back to latest/commit/dev
+ * tags, each verified against the pin before being accepted.
  */
 export async function pullPinnedLeanImage(): Promise<LeanEngineActionResult> {
   const base = await leanEngineImageStatus()
   if (!base.daemonUp) {
     return { ...base, ok: false, message: "Docker daemon is not running (start Colima or Docker Desktop first)." }
   }
-  const pull = await dockerRun(["pull", `${ENGINE_IMAGE}:${LEAN_PINNED_COMMIT}`], 30 * 60_000)
-  if (pull.code !== 0) {
-    return {
-      ...base,
-      ok: false,
-      message: `Image pull failed: ${pull.stderr.slice(0, 500) || pull.stdout.slice(0, 500)}`,
-    }
+  if (base.imagePresent) {
+    return { ...base, ok: true, message: "Pinned engine image is already present locally." }
   }
-  const verified = await pinnedImagePresent()
-  if (!verified) {
-    return {
-      ...base,
-      ok: false,
-      message:
-        "Image pulled but its digest does not match the pinned digest. The registry tag may have moved; use the release pipeline to publish the certified image.",
+  let lastError = "no registry reference resolved to the pinned digest"
+  for (const { label, ref } of pinnedImagePullRefs(LEAN_PINNED_COMMIT, LEAN_PINNED_IMAGE_DIGEST)) {
+    const pull = await dockerRun(["pull", ref], 30 * 60_000)
+    if (pull.code === 0 && (await pinnedImagePresent())) {
+      // Retag to the commit tag for tidiness; digest-based runs do not need it.
+      await dockerRun(["tag", ref, `${ENGINE_IMAGE}:${LEAN_PINNED_COMMIT}`], 15_000)
+      return {
+        ...base,
+        ok: true,
+        message: `Pinned engine image is ready (pulled via ${label}; digest verified).`,
+      }
     }
+    lastError = pull.stderr.slice(0, 300) || pull.stdout.slice(0, 300) || lastError
   }
-  return { ...base, ok: true, message: `Pinned engine image is ready (${LEAN_PINNED_COMMIT.slice(0, 12)}).` }
+  return {
+    ...base,
+    ok: false,
+    message: `Could not pull the pinned engine image: ${lastError}. If the registry is private, log in with docker login ghcr.io first.`,
+  }
 }
 
 /**
