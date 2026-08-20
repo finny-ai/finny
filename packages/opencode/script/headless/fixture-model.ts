@@ -217,7 +217,7 @@ class Strategy:
             return
         values = list(self.settled)
         mean = sum(values) / len(values)
-        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / (len(values) - 1)
         stdev = variance ** 0.5
         if stdev <= 0:
             self.settled.append(price)
@@ -587,11 +587,17 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
     }
   }
   if (mode === "pivot_sequential") {
-    const saves = callNames(body).filter((name) => name === "finny_algorithm_save").length
+    // Count successful saves, not raw save attempts: a blocked save returns a
+    // validation failure rather than an algorithmId.
+    const savedAlgorithms = new Set(
+      [...serializedConversation(body).matchAll(/"algorithmId"\s*:\s*"([^"]+)"/g)].map(
+        (match) => match[1],
+      ),
+    ).size
     const backtests = callNames(body).filter(
       (name) => name === "finny_backtest" || name === "finny_backtest_run",
     ).length
-    if (saves === 1 && backtests >= 1) {
+    if (savedAlgorithms === 1 && backtests >= 1) {
       // Diagnosed strategy_loss: pivot to the first allowed successor family.
       return {
         type: "tool",
@@ -618,7 +624,7 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
         },
       }
     }
-    if (saves === 2 && backtests === 1) {
+    if (savedAlgorithms === 2 && backtests === 1) {
       return {
         type: "tool",
         name: "finny_backtest",
