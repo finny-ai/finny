@@ -580,6 +580,107 @@ describe("headless semantic verdict", () => {
     }
   })
 
+  test("a successor saved before a later diagnosed strategy_loss is rejected as an untimed pivot", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      // The successor is saved before any diagnosis exists...
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      // ...even though a backtest later carries a strategy_loss diagnosis.
+      tool(
+        "finny_backtest",
+        { algorithmName: "spy-sma" },
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested\nfailure_diagnosis: strategy_loss",
+        { failure_diagnosis: { classification: "strategy_loss", engineRan: true } },
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).toContain("strategy_pivot_without_diagnosed_loss")
+    expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({
+      status: "contract_failed",
+      exitCode: 2,
+    })
+  })
+
+  test("a blocked backtest carrying strategy_loss metadata does not authorize a pivot", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      {
+        type: "tool_use",
+        sessionID: "ses_main",
+        part: {
+          tool: "finny_backtest",
+          state: {
+            status: "completed",
+            input: { algorithmName: "spy-sma" },
+            output: "Total return: -10%\nVerdict: failed\nEligibility: blocked\nfailure_diagnosis: strategy_loss",
+            metadata: { blocked: true, failure_diagnosis: { classification: "strategy_loss", engineRan: true } },
+          },
+        },
+      },
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).toContain("strategy_pivot_without_diagnosed_loss")
+  })
+
+  test("an incomplete backtest carrying strategy_loss metadata does not authorize a pivot", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      {
+        type: "tool_use",
+        sessionID: "ses_main",
+        part: {
+          tool: "finny_backtest",
+          state: {
+            status: "running",
+            input: { algorithmName: "spy-sma" },
+            output: "Total return: -10%\nVerdict: failed\nEligibility: backtested",
+            metadata: { failure_diagnosis: { classification: "strategy_loss", engineRan: true } },
+          },
+        },
+      },
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).toContain("strategy_pivot_without_diagnosed_loss")
+  })
+
   test("scenario without allowedSuccessorFamilies still hard-fails any family drift", () => {
     const events = [
       tool("finny_workspace_prepare", requestInput(), "Prepared"),

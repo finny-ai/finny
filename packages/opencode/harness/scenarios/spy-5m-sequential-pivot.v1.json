@@ -1,7 +1,7 @@
 {
   "schemaVersion": "1.0.0",
   "id": "spy-5m-sequential-pivot.v1",
-  "prompt": "Build SPY 5-minute strategies on the closed synthetic fixture window 2026-01-09 through 2026-07-08. Bind the requested SMA crossover family first, collect the configured deterministic evidence, and save and validate one SMA crossover candidate. If a completed backtest of that candidate is classified strategy_loss with a recorded causal diagnosis, you may pivot to a different strategy family from the allowed successors, save and validate that successor, and backtest it. Do not pivot on zero_trades, sizing_failure, strategy_exception, or data/provider blockers. Report the pivot decision, return, Sharpe, max drawdown, eligibility, blockers, and one next step.",
+  "prompt": "Build SPY 5-minute strategies on the closed synthetic fixture window 2026-01-09 through 2026-07-08. Bind the requested SMA crossover family first, collect the configured deterministic evidence, and save and validate one SMA crossover candidate. If a completed backtest of that candidate is classified strategy_loss with a recorded causal diagnosis, you may pivot to a different strategy family inside the allowed successors only: mean-reversion or momentum. Save and validate that successor and backtest it. Never pivot to any family outside the allowed successors, and do not pivot on zero_trades, sizing_failure, strategy_exception, or data/provider blockers. Report the pivot decision, return, Sharpe, max drawdown, eligibility, blockers, and one next step.",
   "asOfDate": "2026-07-09",
   "limits": {
     "wallTimeMs": 1200000,

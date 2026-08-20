@@ -64,7 +64,11 @@ const CORE8 = [
   "backtest_window_success_metric",
 ]
 
-function mission(strategyType: string, algorithmName = ALGORITHM_NAME): string {
+function mission(
+  strategyType: string,
+  algorithmName = ALGORITHM_NAME,
+  signals: { entry?: string; exit?: string } = {},
+): string {
   return `---
 schema_version: 4
 name: ${algorithmName}
@@ -81,7 +85,7 @@ strategy:
   type: "${strategyType}"
   direction: long
   entry_signal: |
-    Enter on a settled-close moving-average crossover and execute at the next open.
+    ${signals.entry ?? "Enter on a settled-close moving-average crossover and execute at the next open."}
   risk_profile: "Risk one percent of equity with whole-share cash caps."
   max_drawdown_pct: "10"
   backtest_window: "2026-01-09 through 2026-07-08"
@@ -96,7 +100,7 @@ risk_contract:
     limit_pct: 10
   max_positions: 1
 exit_conditions: |
-  Exit on the opposite crossover or a strategy-managed next-open protective threshold.
+  ${signals.exit ?? "Exit on the opposite crossover or a strategy-managed next-open protective threshold."}
 questionnaire:
 ${CORE8.map((id) => `  - id: ${id}\n    question: "Harness fixture question for ${id}?"\n    answer: "Deterministic fixture answer for ${id}."\n    status: answered`).join("\n")}
 ---
@@ -181,6 +185,73 @@ const POSITIVE_CONFIG = JSON.stringify({
   interval: "5m",
   required_history_bars: 2,
   params: { fast: 1, slow: 2, risk_pct: 0.01, stop_pct: 0.015 },
+  risk_contract: {
+    sizing_stop_distance_pct: 1.5,
+    protective_stop: { mode: "strategy_next_open" },
+    drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+    max_positions: 1,
+  },
+})
+
+const MEAN_REVERSION_STRATEGY = `from collections import deque
+
+class Strategy:
+    def __init__(self, broker, params=None):
+        self.broker = broker
+        p = params or {}
+        self.lookback = int(p.get("lookback", 20))
+        self.entry_z = float(p.get("entry_z", 1.5))
+        self.exit_z = float(p.get("exit_z", 0.5))
+        self.risk_pct = float(p.get("risk_pct", 0.01))
+        self.stop_pct = float(p.get("stop_pct", 0.015))
+        self.settled = deque(maxlen=self.lookback)
+        self.entry_price = None
+
+    def on_bar(self, symbol, bar):
+        open_px = bar["open"]
+        price = bar["prev_close"]
+        if price is None or price <= 0 or open_px <= 0:
+            return
+        if len(self.settled) < self.lookback:
+            self.settled.append(price)
+            return
+        values = list(self.settled)
+        mean = sum(values) / len(values)
+        variance = sum((value - mean) ** 2 for value in values) / len(values)
+        stdev = variance ** 0.5
+        if stdev <= 0:
+            self.settled.append(price)
+            return
+        z = (price - mean) / stdev
+        position = self.broker.position(symbol)
+        if position == 0 and z <= -self.entry_z:
+            # Fade the stretch: price sits below its recent mean by the entry
+            # band, so buy the dip and expect reversion toward the mean.
+            equity = self.broker.equity()
+            cash = self.broker.cash()
+            stop_distance = open_px * self.stop_pct
+            by_risk = (equity * self.risk_pct) / stop_distance if stop_distance > 0 else 0
+            by_cash = (cash * 0.95) / open_px if cash > 0 else 0
+            qty = int(min(by_risk, by_cash))
+            if qty > 0:
+                self.broker.buy(symbol, qty=qty)
+                self.entry_price = open_px
+        elif position > 0 and (
+            z >= -self.exit_z
+            or (self.entry_price is not None and open_px <= self.entry_price * (1 - self.stop_pct))
+        ):
+            # Mean reverted back toward the center, or the fade was stopped out.
+            self.broker.sell(symbol, qty=position)
+            self.entry_price = None
+        self.settled.append(price)
+`
+
+const MEAN_REVERSION_CONFIG = JSON.stringify({
+  symbol: "SPY",
+  asset_class: "equity",
+  interval: "5m",
+  required_history_bars: 20,
+  params: { lookback: 20, entry_z: 1.5, exit_z: 0.5, risk_pct: 0.01, stop_pct: 0.015 },
   risk_contract: {
     sizing_stop_distance_pct: 1.5,
     protective_stop: { mode: "strategy_next_open" },
@@ -527,28 +598,23 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
         name: "finny_algorithm_save",
         arguments: {
           name: "spy-mean-reversion",
-          code: STRATEGY,
+          code: MEAN_REVERSION_STRATEGY,
           saveMode: "new",
           language: "python",
-          description: "Deterministic SPY 5-minute mean-reversion sequential-pivot successor candidate",
-          config: JSON.stringify({
-            symbol: "SPY",
-            asset_class: "equity",
-            interval: "5m",
-            required_history_bars: 24,
-            params: { fast: 8, slow: 24, risk_pct: 0.01, stop_pct: 0.015 },
-            risk_contract: {
-              sizing_stop_distance_pct: 1.5,
-              protective_stop: { mode: "strategy_next_open" },
-              drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
-              max_positions: 1,
-            },
+          description:
+            "Deterministic SPY 5-minute z-score mean-reversion sequential-pivot successor candidate",
+          config: MEAN_REVERSION_CONFIG,
+          mission: mission("mean-reversion", "spy-mean-reversion", {
+            entry:
+              "Fade a settled-close z-score stretch below the recent mean band and buy at the next open.",
+            exit:
+              "Exit when the settled-close z-score mean-reverts back through the exit band toward the center, or a strategy-managed next-open protective threshold.",
           }),
-          mission: mission("mean-reversion", "spy-mean-reversion"),
           prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
-          decisions: "2026-07-09: Pivot from SMA crossover after diagnosed strategy_loss to mean reversion.",
+          decisions:
+            "2026-07-09: Pivot from SMA crossover after diagnosed strategy_loss to a z-score mean-reversion fade.",
           reasoning:
-            "The SMA crossover candidate lost money under honest assumptions, so the diagnosis retired it; the table allows a mean-reversion successor.",
+            "The SMA crossover candidate lost money under honest assumptions, so the diagnosis retired it; the table allows a mean-reversion successor that fades stretched settled closes toward the recent mean.",
         },
       }
     }
