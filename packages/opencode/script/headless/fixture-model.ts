@@ -515,6 +515,63 @@ function scriptedReply(body: Json, mode: FixtureScriptMode, state: ScriptState):
       text: "Return: synthetic positive fixture result. Sharpe: positive. Max drawdown: within policy. Eligibility: recommended_for_paper fixture verdict only. Blockers: none. Next step: human review; this synthetic proof grants no paper or live permission.",
     }
   }
+  if (mode === "pivot_sequential") {
+    const saves = callNames(body).filter((name) => name === "finny_algorithm_save").length
+    const backtests = callNames(body).filter(
+      (name) => name === "finny_backtest" || name === "finny_backtest_run",
+    ).length
+    if (saves === 1 && backtests >= 1) {
+      // Diagnosed strategy_loss: pivot to the first allowed successor family.
+      return {
+        type: "tool",
+        name: "finny_algorithm_save",
+        arguments: {
+          name: "spy-mean-reversion",
+          code: STRATEGY,
+          saveMode: "new",
+          language: "python",
+          description: "Deterministic SPY 5-minute mean-reversion sequential-pivot successor candidate",
+          config: JSON.stringify({
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "5m",
+            required_history_bars: 24,
+            params: { fast: 8, slow: 24, risk_pct: 0.01, stop_pct: 0.015 },
+            risk_contract: {
+              sizing_stop_distance_pct: 1.5,
+              protective_stop: { mode: "strategy_next_open" },
+              drawdown: { mode: "halt_and_flatten_next_open", limit_pct: 10 },
+              max_positions: 1,
+            },
+          }),
+          mission: mission("mean-reversion", "spy-mean-reversion"),
+          prefs: "Capital: $10,000\nRisk per trade: 1%\nData: exact verified harness fixture.",
+          decisions: "2026-07-09: Pivot from SMA crossover after diagnosed strategy_loss to mean reversion.",
+          reasoning:
+            "The SMA crossover candidate lost money under honest assumptions, so the diagnosis retired it; the table allows a mean-reversion successor.",
+        },
+      }
+    }
+    if (saves === 2 && backtests === 1) {
+      return {
+        type: "tool",
+        name: "finny_backtest",
+        arguments: {
+          algorithmName: "spy-mean-reversion",
+          duration: "6m",
+          interval: "5min",
+          capital: "10000",
+          startDate: "2026-01-09",
+          endDate: "2026-07-08",
+          dataQualityMode: "strict",
+        },
+      }
+    }
+    return {
+      type: "text",
+      text: "Return: sequential pivot fixture result. Sharpe: measured. Max drawdown: measured. Eligibility: backtested only. Blockers: no promotion evidence. Next step: review the two saved families and the recorded strategy_loss diagnosis. Would you like me to try another approach?",
+    }
+  }
   return {
     type: "text",
     // End with a user-facing question so Build workflow auto-iteration (when
