@@ -390,6 +390,12 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
   const scenarioSha256 = hashScenario(scenario)
   await writeBundleText(writer, "inputs/scenario.json", `${scenarioJson}\n`)
   const isolation = await createIsolation(id)
+  // Scripted fixtures keep the deterministic offline catalog snapshot. Real
+  // (non-fixture) runs need the live model catalog so opencode/* models such
+  // as big-pickle or the deepseek-v4-flash-free default can resolve.
+  if (!options.fixtureMode) {
+    isolation.env.OPENCODE_DISABLE_MODELS_FETCH = "0"
+  }
   const attempts: RunManifestV1["attempts"] = []
   const errors: RunManifestV1["errors"] = []
   let sourceAdded = false
