@@ -378,6 +378,30 @@ export function runHeadlessHarness(options: HeadlessHarnessOptions): Effect.Effe
   })
 }
 
+/**
+ * Free stealth models occasionally close the first turn of a large agent
+ * request with a zero-token ``unknown`` finish before emitting text, tool
+ * calls, or an error. The CLI treats that as a normal process exit, so retry
+ * once at the harness boundary for real runs. Fixture runs are deterministic
+ * and must never be retried.
+ */
+function isTransientEmptyModelRun(
+  execution: Awaited<ReturnType<typeof runCommand>>,
+  events: ReturnType<typeof parseJsonEvents>,
+): boolean {
+  if (execution.exitCode !== 0 || execution.timedOut) return false
+  const meaningfulEvents = events.filter((event) => ["text", "tool_use", "error"].includes(event.type))
+  if (meaningfulEvents.length > 0) return false
+  return events.some(
+    (event) =>
+      event.type === "step_finish" &&
+      !!event.part &&
+      typeof event.part === "object" &&
+      !Array.isArray(event.part) &&
+      (event.part as Record<string, any>).tokens?.output === 0,
+  )
+}
+
 /** Promise adapter for the Bun CLI and black-box tests. */
 // @codescene(disable-all) The orchestrator is an explicit lifecycle boundary for isolated harness runs.
 export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions): Promise<HeadlessHarnessResult> {
@@ -390,6 +414,12 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
   const scenarioSha256 = hashScenario(scenario)
   await writeBundleText(writer, "inputs/scenario.json", `${scenarioJson}\n`)
   const isolation = await createIsolation(id)
+  // Scripted fixtures keep the deterministic offline catalog snapshot. Real
+  // (non-fixture) runs need the live model catalog so opencode/* models such
+  // as big-pickle or the deepseek-v4-flash-free default can resolve.
+  if (!options.fixtureMode) {
+    isolation.env.OPENCODE_DISABLE_MODELS_FETCH = "0"
+  }
   const attempts: RunManifestV1["attempts"] = []
   const errors: RunManifestV1["errors"] = []
   let sourceAdded = false
@@ -480,51 +510,63 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
     }
 
     if (!preflightFailed) {
-      const executionStarted = new Date()
-      executionStartedAt = executionStarted
       const opencode = path.join(isolation.source, "packages", "opencode")
-      const execution = await runCommand({
-        command: "bun",
-        args: [
-          "run",
-          "--conditions=browser",
-          "src/index.ts",
-          "run",
-          "--format",
-          "json",
-          // Headless fixtures have no human to click Allow; without this flag
-          // run.ts auto-rejects permission prompts and tools that still ask
-          // (or re-ask) can stall the scripted session until wall-clock timeout.
-          "--dangerously-skip-permissions",
-          "--agent",
-          options.agent,
-          "--model",
-          effectiveModel,
-          "--dir",
-          isolation.source,
-          "--port",
-          String(isolation.ports.http),
-          scenario.prompt,
-        ],
-        cwd: opencode,
-        env: isolation.env,
-        inheritEnv: false,
-        timeoutMs: options.timeoutMs ?? scenario.limits.wallTimeMs,
-      })
+      let execution: Awaited<ReturnType<typeof runCommand>>
+      const maxExecutionAttempts = options.fixtureMode ? 1 : 2
+      for (let executionAttempt = 1; ; executionAttempt++) {
+        const executionStarted = new Date()
+        executionStartedAt = executionStarted
+        execution = await runCommand({
+          command: "bun",
+          args: [
+            "run",
+            "--conditions=browser",
+            "src/index.ts",
+            "run",
+            "--format",
+            "json",
+            // Headless fixtures have no human to click Allow; without this flag
+            // run.ts auto-rejects permission prompts and tools that still ask
+            // (or re-ask) can stall the scripted session until wall-clock timeout.
+            "--dangerously-skip-permissions",
+            "--agent",
+            options.agent,
+            "--model",
+            effectiveModel,
+            "--dir",
+            isolation.source,
+            "--port",
+            String(isolation.ports.http),
+            scenario.prompt,
+          ],
+          cwd: opencode,
+          env: isolation.env,
+          inheritEnv: false,
+          timeoutMs: options.timeoutMs ?? scenario.limits.wallTimeMs,
+        })
+        executionFinishedAt = new Date()
+        stdout = execution.stdout
+        stderr = execution.stderr
+        attempts.push({
+          index: attempts.length + 1,
+          phase: "execution",
+          status: execution.timedOut ? "timed_out" : execution.exitCode === 0 ? "completed" : "failed",
+          startedAt: executionStarted.toISOString(),
+          finishedAt: executionFinishedAt.toISOString(),
+          exitCode: execution.exitCode,
+          ...(execution.exitCode !== 0 ? { error: execution.stderr.trim().slice(0, 2_000) } : {}),
+        })
+        const transientEmptyRun =
+          executionAttempt < maxExecutionAttempts &&
+          isTransientEmptyModelRun(execution, parseJsonEvents(stdout))
+        if (!transientEmptyRun) break
+        errors.push({
+          kind: "transient_model_retry",
+          message: `execution attempt ${executionAttempt} returned a zero-token model completion; retrying once`,
+        })
+      }
       executionExit = execution.exitCode
       timedOut = execution.timedOut
-      executionFinishedAt = new Date()
-      stdout = execution.stdout
-      stderr = execution.stderr
-      attempts.push({
-        index: attempts.length + 1,
-        phase: "execution",
-        status: timedOut ? "timed_out" : execution.exitCode === 0 ? "completed" : "failed",
-        startedAt: executionStarted.toISOString(),
-        finishedAt: executionFinishedAt.toISOString(),
-        exitCode: execution.exitCode,
-        ...(execution.exitCode !== 0 ? { error: execution.stderr.trim().slice(0, 2_000) } : {}),
-      })
     }
 
     const verifiedRuntime = await verifyPythonRuntime({ runtime: pythonRuntime, isolation })

@@ -227,6 +227,20 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
   let modelTurns = 0
   let backtests = 0
   let completedBacktests = 0
+  // Pivot discipline: a candidate may move to an allowed successor family
+  // only after a completed backtest classified strategy_loss has been observed.
+  const requestedFamilies = new Set(scenario.request.strategyFamilies.map(normalize))
+  const successorFamilies = new Set((scenario.allowedSuccessorFamilies ?? []).map(normalize))
+  const admissibleFamilies = new Set([...requestedFamilies, ...successorFamilies])
+  let diagnosedLossSeen = false
+  // Pivot authorization is snapshotted at each save event. A successor saved
+  // before a completed, unblocked strategy_loss backtest has no authorization,
+  // even if a later backtest carries that diagnosis.
+  const savedSuccessorState: Array<{
+    algorithmName: string
+    families: string[]
+    pivotAuthorizedAtSave: boolean
+  }> = []
 
   for (const event of events) {
     if (event.type === "step_finish") modelTurns++
@@ -315,21 +329,22 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           ...(Number.isInteger(metadata.version) ? { version: Number(metadata.version) } : {}),
         })
 
+        const saveFamilies = new Set<string>()
         const config = parseSavedConfig(input.config)
         if (!config) {
           addViolation(violations, "candidate_config_invalid", "Saved candidate config is not structured JSON.")
         } else {
           const configStrategy = asRecord(config.strategy)
-          addValues(candidateIdentity.symbols, config.symbols ?? config.symbol, canonicalSymbol)
+          addValues(saveFamilies, config.strategyFamily ?? config.strategy_family ?? configStrategy.type, normalize)
+          addValues(
+            candidateIdentity.symbols,
+            config.symbols ?? config.symbol,
+            canonicalSymbol,
+          )
           addValues(candidateIdentity.assetClasses, config.assetClass ?? config.asset_class, canonicalAssetClass)
           addValues(candidateIdentity.intervals, config.interval ?? config.bar_interval, canonicalInterval)
           addValues(candidateIdentity.startDates, config.startDate ?? config.start_date, canonicalDate)
           addValues(candidateIdentity.endDates, config.endDate ?? config.end_date, canonicalDate)
-          addValues(
-            candidateIdentity.strategyFamilies,
-            config.strategyFamily ?? config.strategy_family ?? configStrategy.type,
-            normalize,
-          )
           addWindow(candidateIdentity, config.backtestWindow ?? config.backtest_window)
         }
 
@@ -346,8 +361,16 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addValues(candidateIdentity.symbols, scope.universe, canonicalSymbol)
           addValues(candidateIdentity.assetClasses, scope.asset_class ?? scope.assetClass, canonicalAssetClass)
           addValues(candidateIdentity.intervals, strategy.bar_interval ?? strategy.interval, canonicalInterval)
-          addValues(candidateIdentity.strategyFamilies, strategy.type, normalize)
+          addValues(saveFamilies, strategy.type, normalize)
           addWindow(candidateIdentity, strategy.backtest_window ?? strategy.backtestWindow)
+        }
+        for (const family of saveFamilies) candidateIdentity.strategyFamilies.add(family)
+        if (scenario.allowedSuccessorFamilies !== undefined) {
+          savedSuccessorState.push({
+            algorithmName: name || "unnamed",
+            families: [...saveFamilies],
+            pivotAuthorizedAtSave: diagnosedLossSeen,
+          })
         }
       } else if (failed(part)) {
         failedStages.add("candidate_saved")
@@ -359,6 +382,13 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
     }
     if (part.tool === "finny_backtest" || part.tool === "finny_backtest_run") {
       backtests++
+      const backtestMeta = metadataOf(part)
+      const classification = String(backtestMeta.failure_diagnosis?.classification ?? "").trim()
+      const runCompletedUnblocked =
+        completed(part) && !metadata.blocked && /Verdict:|Total return:|Eligibility:/i.test(output)
+      if (classification === "strategy_loss" && runCompletedUnblocked) {
+        diagnosedLossSeen = true
+      }
       addValues(backtestIdentity.symbols, input.symbols ?? input.symbol, canonicalSymbol)
       addValues(backtestIdentity.assetClasses, input.assetClass ?? input.asset_class, canonicalAssetClass)
       addValues(backtestIdentity.intervals, input.interval, canonicalInterval)
@@ -366,7 +396,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
       addValues(backtestIdentity.endDates, input.endDate ?? input.end_date, canonicalDate)
       const name = String(input.algorithmName ?? metadata.algorithmName ?? "").trim()
       if (name) algorithms.add(name)
-      if (completed(part) && !metadata.blocked && /Verdict:|Total return:|Eligibility:/i.test(output)) {
+      if (runCompletedUnblocked) {
         completedBacktests++
         const resultMetadata = asRecord(metadata.results)
         backtestRuns.push({
@@ -534,15 +564,15 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
 
   const allowedFamilies = new Set(scenario.request.strategyFamilies.map(normalize))
   if (completedStages.has("request_bound")) {
-    const requestedFamilies = [...preparedIdentity.strategyFamilies]
-    if (requestedFamilies.length === 0 || requestedFamilies.some((family) => !allowedFamilies.has(family))) {
+    const boundRequestedFamilies = [...preparedIdentity.strategyFamilies]
+    if (boundRequestedFamilies.length === 0 || boundRequestedFamilies.some((family) => !allowedFamilies.has(family))) {
       addViolation(
         violations,
         "request_strategy_family_mismatch",
         "Bound request does not declare an allowed strategy family.",
         {
           allowed: [...allowedFamilies],
-          observed: requestedFamilies,
+          observed: boundRequestedFamilies,
         },
       )
     }
@@ -555,16 +585,38 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         "strategy_family_missing",
         "Saved candidate has no structured strategy family declaration.",
       )
-    } else if (candidateFamilies.some((family) => !allowedFamilies.has(family))) {
+    } else if (candidateFamilies.some((family) => !admissibleFamilies.has(family))) {
       addViolation(
         violations,
         "strategy_family_drift",
-        "Saved candidate declares a strategy family outside the scenario.",
+        "Saved candidate declares a strategy family outside the scenario's requested and allowed successor families.",
         {
-          allowed: [...allowedFamilies],
+          allowed: [...admissibleFamilies],
           observed: candidateFamilies,
         },
       )
+    }
+    // Pivot discipline is evaluated per save event against the authorization
+    // observed at that save, so a successor saved before a later diagnosed
+    // strategy_loss backtest still violates the contract.
+    if (scenario.allowedSuccessorFamilies !== undefined) {
+      for (const save of savedSuccessorState) {
+        if (
+          !save.pivotAuthorizedAtSave &&
+          save.families.some((family) => successorFamilies.has(family) && !requestedFamilies.has(family))
+        ) {
+          addViolation(
+            violations,
+            "strategy_pivot_without_diagnosed_loss",
+            "Saved candidate pivoted to a successor strategy family without a prior completed, unblocked backtest classified strategy_loss.",
+            {
+              successorFamilies: [...successorFamilies],
+              algorithmName: save.algorithmName,
+              observed: save.families,
+            },
+          )
+        }
+      }
     }
   }
 

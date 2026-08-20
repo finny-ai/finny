@@ -33,6 +33,17 @@ export const HeadlessScenarioV1 = z.object({
     startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   }),
+  /**
+   * Optional: strategy families a saved candidate may legitimately pivot to
+   * beyond `request.strategyFamilies` after a diagnosed `strategy_loss`.
+   *
+   * Absent (the default) preserves the strict rule exactly: any saved
+   * candidate family outside `request.strategyFamilies` is
+   * `strategy_family_drift`. When present, a candidate outside the requested
+   * family is admissible only if it is in this declared successor set and the
+   * pivot follows a completed backtest with persisted metrics.
+   */
+  allowedSuccessorFamilies: z.array(z.string().min(1)).optional(),
   artifactPolicy: z.object({
     maxAlgorithms: z.number().int().positive(),
     maxVersionsPerAlgorithm: z.number().int().positive(),
@@ -59,7 +70,13 @@ export const HarnessStatus = z.enum([
 ])
 export type HarnessStatus = z.infer<typeof HarnessStatus>
 
-export const FixtureScriptMode = z.enum(["negative", "strategy_drift", "midstream_failure", "positive_qualification"])
+export const FixtureScriptMode = z.enum([
+  "negative",
+  "strategy_drift",
+  "midstream_failure",
+  "positive_qualification",
+  "pivot_sequential",
+])
 export type FixtureScriptMode = z.infer<typeof FixtureScriptMode>
 
 export const ContractViolation = z.object({

@@ -13,11 +13,15 @@ const positiveScenario = path.join(
   root,
   "packages/opencode/harness/scenarios/spy-5m-sma-positive-qualification.v1.json",
 )
+const pivotScenario = path.join(
+  root,
+  "packages/opencode/harness/scenarios/spy-5m-sequential-pivot.v1.json",
+)
 const collectorEndpoint = process.env.FINNY_HARNESS_COLLECTOR_ENDPOINT?.trim()
 const configuredOutputRoot = process.env.FINNY_HARNESS_E2E_OUTPUT?.trim()
 const requestedGroup = process.env.FINNY_HARNESS_E2E_GROUP?.trim() || "all"
-if (enabled && !["all", "negative", "positive", "failures"].includes(requestedGroup)) {
-  throw new Error("FINNY_HARNESS_E2E_GROUP must be all, negative, positive, or failures")
+if (enabled && !["all", "negative", "positive", "failures", "pivot"].includes(requestedGroup)) {
+  throw new Error("FINNY_HARNESS_E2E_GROUP must be all, negative, positive, failures, or pivot")
 }
 const outputs: string[] = []
 
@@ -40,7 +44,12 @@ async function run(mode: FixtureScriptMode, source: "test_current_checkout" | "d
   outputs.push(output)
   return await runHeadlessHarnessPromise({
     ref: "HEAD",
-    scenarioPath: mode === "positive_qualification" ? positiveScenario : negativeScenario,
+    scenarioPath:
+      mode === "positive_qualification"
+        ? positiveScenario
+        : mode === "pivot_sequential"
+          ? pivotScenario
+          : negativeScenario,
     model: "harness/scripted",
     agent: "finny",
     outputDir: output,
@@ -126,6 +135,23 @@ describe.skipIf(!enabled)("real CLI scripted fixture contract", () => {
       expect(reviewArtifacts.filter((item) => item.endsWith("/manifest.json"))).toHaveLength(1)
     },
     960_000,
+  )
+
+  test.skipIf(!["all", "pivot"].includes(requestedGroup))(
+    "sequential pivot fixture saves two families after a diagnosed strategy_loss with zero violations",
+    async () => {
+      const result = await run("pivot_sequential")
+      expect(result.exitCode).toBe(0)
+      expect(result.manifest.status).toBe("completed")
+      expect(result.manifest.requestAdherence.violations).toEqual([])
+      const sources = await artifactSources(result.bundlePath)
+      expect(sources.filter((item) => /strategy\.py$/i.test(item)).length).toBeGreaterThanOrEqual(2)
+      const text = await bundleText(result.bundlePath)
+      expect(text).toContain("strategy_loss")
+      expect(text).toContain("mean-reversion")
+      expect(result.manifest.strategyResults.some((item) => item.unifiedVerdict === "failed")).toBe(true)
+    },
+    720_000,
   )
 
   test.skipIf(["failures", "positive"].includes(requestedGroup))(
