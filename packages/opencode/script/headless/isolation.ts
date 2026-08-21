@@ -111,6 +111,11 @@ export async function createIsolation(runId: string): Promise<HarnessIsolation> 
     OPENCODE_TELEMETRY: "0",
   }
   if (process.env.FINNY_HARNESS_CONFIG_CONTENT) env.OPENCODE_CONFIG_CONTENT = process.env.FINNY_HARNESS_CONFIG_CONTENT
+  // The isolated HOME has no models.dev cache, and model fetching is disabled
+  // for offline determinism. A live-model run therefore needs an explicit
+  // pre-captured catalog, otherwise the provider catalog is empty and every
+  // real model id resolves as "Model not found".
+  if (process.env.FINNY_HARNESS_MODELS_PATH) env.OPENCODE_MODELS_PATH = process.env.FINNY_HARNESS_MODELS_PATH
   const credentialPresence: Array<{ name: string; present: true }> = []
   for (const name of SECRET_ENV_ALLOWLIST) {
     const value = process.env[name]

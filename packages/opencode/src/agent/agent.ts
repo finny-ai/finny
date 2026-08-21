@@ -63,6 +63,60 @@ const PROMPT_FINNY_CHAT = renderPromptWithSymbols(PROMPT_FINNY_CHAT_RAW)
 const PROMPT_FINNY_PORTFOLIO_BUILDER = renderPromptWithSymbols(PROMPT_FINNY_PORTFOLIO_BUILDER_RAW)
 const PROMPT_FINNY_FUND_MANAGER = renderPromptWithSymbols(PROMPT_FINNY_FUND_MANAGER_RAW)
 const PROMPT_FINNY_FUND_SPECIALIST = renderPromptWithSymbols(PROMPT_FINNY_FUND_SPECIALIST_RAW)
+
+/**
+ * In headless harness runs the only lawful market-data source is the isolated
+ * deterministic fixture server; the scenario window is synthetic and no real
+ * provider can serve it. The scripted evaluator knows to call the materialize
+ * endpoint, but a live model does not, so it must be told explicitly. Outside
+ * harness mode this returns the production prompt unchanged.
+ */
+function dataExtractorPrompt(): string {
+  if (process.env.FINNY_HARNESS_FIXTURE_MARKET_DATA !== "1") return PROMPT_FINNY_DATA_EXTRACTOR
+  return [
+    PROMPT_FINNY_DATA_EXTRACTOR,
+    "",
+    "## Harness fixture mode (active)",
+    "",
+    "This run is isolated and offline. The requested window is a synthetic fixture window,",
+    "so no external provider can serve it and network fetches will fail. The ONLY valid",
+    "source is the deterministic fixture server.",
+    "",
+    "Materialize the dataset with exactly one bash call:",
+    "",
+    '  curl -fsS "$FINNY_HARNESS_MARKET_DATA_URL/v1/materialize?output_dir=$ALLOWED_DATA_DIR"',
+    "",
+    "It writes both the CSV and its sibling `.manifest.json` under `stock/` and returns their",
+    "paths as JSON. Report those exact paths in `artifact_paths`. Do not try yfinance or any",
+    "other provider, and do not report the synthetic window as a coverage limitation.",
+    "",
+    "Then end your reply with this exact block, filling identity values from the",
+    "`finny-subagent-context` you were given and the JSON the endpoint returned:",
+    "",
+    "<data-extractor-manifest>",
+    "requested_algorithm_name: <from context>",
+    "workspace_slug: <from context>",
+    "request_id: <from context>",
+    "request_version: <from context>",
+    "request_content_hash: <from context>",
+    "requested_symbol: SPY",
+    "actual_symbol: SPY",
+    "requested_interval: 5m",
+    "actual_interval: 5m",
+    "requested_asset_class: equity",
+    "actual_asset_class: equity",
+    "requested_start: 2026-01-09",
+    "requested_end: 2026-07-08",
+    "actual_start: <manifest.actual_start>",
+    "actual_end: <manifest.actual_end>",
+    "artifact_paths: <csv path>, <manifest path>",
+    "run_id: <manifest.run_id>",
+    "source: finny-harness-fixture",
+    "coverage: complete",
+    "usable_for_parent: yes",
+    "</data-extractor-manifest>",
+  ].join("\n")
+}
 type PermissionConfig = Parameters<typeof Permission.fromConfig>[0]
 
 const BUILTIN_AGENT_ALIASES: Record<string, string> = {
@@ -750,7 +804,7 @@ export const layer = Layer.effect(
               "It does not create strategies or run backtests.",
             color: "#06b6d4",
             options: {},
-            prompt: PROMPT_FINNY_DATA_EXTRACTOR,
+            prompt: dataExtractorPrompt(),
             permission: Permission.merge(
               defaults,
               finnyFileSystemSandbox,

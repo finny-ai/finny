@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import {
+  ensureWorkspaceEdgeAnalysis,
   ensureWorkspaceTodo,
   promptFromParams,
   resolveWorkspacePrepareWindow,
@@ -17,6 +18,29 @@ import os from "node:os"
 import path from "node:path"
 
 describe("workspace prepare request context", () => {
+  test("creates the advertised edge analysis scaffold", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-edge-"))
+    try {
+      await ensureWorkspaceEdgeAnalysis(workspace)
+      expect(await fs.readFile(path.join(workspace, "edge_analysis.md"), "utf8")).toBe("# Edge Analysis\n\n")
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true })
+    }
+  })
+
+  test("does not overwrite an existing edge analysis", async () => {
+    const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-edge-"))
+    const edgePath = path.join(workspace, "edge_analysis.md")
+    const userEdge = "# Edge Analysis\n\nPreserve this finding.\n"
+    try {
+      await fs.writeFile(edgePath, userEdge)
+      await ensureWorkspaceEdgeAnalysis(workspace)
+      expect(await fs.readFile(edgePath, "utf8")).toBe(userEdge)
+    } finally {
+      await fs.rm(workspace, { recursive: true, force: true })
+    }
+  })
+
   test("creates the advertised todo.md scaffold", async () => {
     const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "finny-workspace-todo-"))
     try {

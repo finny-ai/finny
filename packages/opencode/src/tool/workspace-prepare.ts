@@ -76,10 +76,23 @@ type WorkspacePrepareWindow = {
 }
 
 const TODO_SCAFFOLD = "# Todo\n\n"
+const EDGE_ANALYSIS_SCAFFOLD = "# Edge Analysis\n\n"
 
 export async function ensureWorkspaceTodo(workspacePath: string): Promise<void> {
   try {
     await fs.writeFile(path.join(workspacePath, "todo.md"), TODO_SCAFFOLD, { encoding: "utf8", flag: "wx" })
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return
+    throw error
+  }
+}
+
+export async function ensureWorkspaceEdgeAnalysis(workspacePath: string): Promise<void> {
+  try {
+    await fs.writeFile(path.join(workspacePath, "edge_analysis.md"), EDGE_ANALYSIS_SCAFFOLD, {
+      encoding: "utf8",
+      flag: "wx",
+    })
   } catch (error) {
     if (typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") return
     throw error
@@ -701,6 +714,7 @@ export const WorkspacePrepareTool = Tool.define<
 
           const workspacePath = prepared.dir || algoDir(prepared.slug)
           await ensureWorkspaceTodo(workspacePath)
+          await ensureWorkspaceEdgeAnalysis(workspacePath)
           if (!workflow && hasStructuredIdentity) {
             const symbols = effectiveParams.symbols?.length
               ? effectiveParams.symbols

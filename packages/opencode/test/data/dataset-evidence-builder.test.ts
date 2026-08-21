@@ -377,6 +377,54 @@ describe("DatasetEvidenceV2 builder", () => {
     ).toEqual([])
   })
 
+  test("treats date-only daily equity timestamps as their XNYS sessions", () => {
+    const equityRequest = {
+      ...request,
+      request_id: "request-spy-date-only",
+      requested_algorithm_name: "spy-daily",
+      requested_symbol: "SPY",
+      requested_asset_class: "equity" as const,
+      requested_interval: "1d",
+      requested_start: "2026-07-13",
+      requested_end: "2026-07-15",
+    }
+    const csvText = [
+      "timestamp,open,high,low,close,volume",
+      "2026-07-13,100,105,99,104,1000",
+      "2026-07-14,104,108,103,107,1200",
+      "2026-07-15,107,110,106,109,900",
+    ].join("\n")
+    const csvBytes = Buffer.from(csvText)
+    const built = buildDatasetEvidenceV2({
+      csvBytes,
+      csvText,
+      request: equityRequest,
+      workspaceSlug: "spy-daily.1.1.00.00",
+      outputPath: "stock/SPY_1d_2026-07-13_2026-07-15.csv",
+      provider: { id: "yfinance", feed: "yahoo-chart", venue: "CONSOLIDATED", providerSymbol: "SPY" },
+      priceBasis,
+      now: new Date("2026-07-16T12:00:00Z"),
+    })
+
+    expect(built.manifest.timestamps).toMatchObject({
+      expected_count: 3,
+      actual_count: 3,
+      missing_count: 0,
+      extra_count: 0,
+    })
+    expect(built.manifest.qualification).toEqual({ status: "strict_qualified", reason_codes: [] })
+    expect(built.manifest.coverage).toBe("full")
+    expect(built.manifest.usable_for_parent).toBe("yes")
+    expect(
+      validateDatasetEvidenceV2({
+        manifest: built.manifest,
+        csvBytes,
+        csvText,
+        csvFacts: built.csvFacts,
+      }),
+    ).toEqual([])
+  })
+
   test("rejects malformed rows instead of blessing a broken manifest", () => {
     const csvText = ["timestamp,open,high,low,close,volume", "2026-07-13T00:00:00Z,100,99,101,104,1000"].join("\n")
     expect(() =>
