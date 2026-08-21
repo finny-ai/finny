@@ -9,10 +9,18 @@ export type DataProviderOutcome =
 
 export type DataProviderID = "alpaca" | "polygon" | "yfinance" | "binance" | "zerodha" | "saxo" | "questrade" | "futu"
 
+/**
+ * Asset classes a request may target. `option` and `future` are expressible
+ * even though no bundled provider serves them yet: a request must be able to
+ * name them so discovery can report a credential gap instead of silently
+ * finding nothing.
+ */
+export type DataAssetClass = "equity" | "crypto" | "option" | "future"
+
 export interface DataProviderCapability {
   id: DataProviderID
   skillID: string
-  assetClasses: readonly ("equity" | "crypto")[]
+  assetClasses: readonly DataAssetClass[]
   intervals: readonly string[]
   credentialEnv: readonly string[]
   pagination: string
@@ -20,6 +28,24 @@ export interface DataProviderCapability {
   evidenceContract: "DatasetEvidenceV2"
   calendarPolicy: "XNYS" | "24/7" | "REGIONAL_PROVIDER_OBSERVED"
   requiredMarketSemantics: readonly string[]
+}
+
+/**
+ * A provider that matches the request on asset class, interval, window, and
+ * symbol but cannot run because its credentials are absent. Surfacing these
+ * is what lets an agent say "add POLYGON_API_KEY" instead of "no data".
+ */
+export interface BlockedDataProvider {
+  id: DataProviderID
+  skillID: string
+  availability: "blocked_missing_credentials"
+  assetClasses: readonly DataAssetClass[]
+  missingCredentialEnv: readonly string[]
+}
+
+export interface DataProviderDiscovery {
+  available: DataProviderCapability[]
+  blocked: BlockedDataProvider[]
 }
 
 interface ProviderDefinition extends Omit<DataProviderCapability, "availability"> {
@@ -182,10 +208,12 @@ export function providerLookbackFloor(input: {
   return floor.toISOString().slice(0, 10)
 }
 
-function normalizedAssetClass(value?: string): "equity" | "crypto" | undefined {
+function normalizedAssetClass(value?: string): DataAssetClass | undefined {
   const normalized = value?.trim().toLowerCase()
   if (["equity", "equities", "stock", "stocks", "etf"].includes(normalized ?? "")) return "equity"
   if (["crypto", "cryptocurrency"].includes(normalized ?? "")) return "crypto"
+  if (["option", "options"].includes(normalized ?? "")) return "option"
+  if (["future", "futures"].includes(normalized ?? "")) return "future"
   return undefined
 }
 
@@ -193,19 +221,38 @@ function hasCredentials(definition: ProviderDefinition, env: NodeJS.ProcessEnv) 
   return definition.credentialEnv.every((name) => Boolean(env[name]))
 }
 
-/** Return only capabilities that the worker can resolve and use for this request. */
-export function discoverDataProviderCapabilities(
-  input: DiscoverDataProviderCapabilitiesInput,
-): DataProviderCapability[] {
+function missingCredentials(definition: ProviderDefinition, env: NodeJS.ProcessEnv): string[] {
+  return definition.credentialEnv.filter((name) => !env[name])
+}
+
+/**
+ * Resolve providers for a request, separating those that can run now from
+ * those that are only blocked on credentials. A provider is reported as
+ * blocked only when it otherwise matches the request completely, so the
+ * caller can name the exact env vars worth adding.
+ */
+export function discoverDataProviders(input: DiscoverDataProviderCapabilitiesInput): DataProviderDiscovery {
   const assetClass = normalizedAssetClass(input.request.assetClass)
   const interval = normalizeInterval(input.request.interval)
   const env = input.credentialEnv ?? process.env
-  return DEFINITIONS.filter((definition) => input.availableSkillIDs.has(definition.skillID))
+  const matching = DEFINITIONS.filter((definition) => input.availableSkillIDs.has(definition.skillID))
     .filter((definition) => !assetClass || definition.assetClasses.includes(assetClass))
     .filter((definition) => !interval || definition.intervals.includes(interval))
-    .filter((definition) => hasCredentials(definition, env))
     .filter((definition) => definition.supportsWindow?.(input.request) ?? true)
     .filter((definition) => definition.supportsSymbol?.(input.request) ?? true)
+
+  const blocked: BlockedDataProvider[] = matching
+    .filter((definition) => !hasCredentials(definition, env))
+    .map((definition) => ({
+      id: definition.id,
+      skillID: definition.skillID,
+      availability: "blocked_missing_credentials" as const,
+      assetClasses: definition.assetClasses,
+      missingCredentialEnv: missingCredentials(definition, env),
+    }))
+
+  const available = matching
+    .filter((definition) => hasCredentials(definition, env))
     .map(({ supportsWindow: _, supportsSymbol: __, ...definition }) => {
       const regionalFallback = definition.id === "yfinance" && regionalMarketForTicker(input.request.symbol ?? "")
       return {
@@ -225,6 +272,15 @@ export function discoverDataProviderCapabilities(
         availability: "available" as const,
       }
     })
+
+  return { available, blocked }
+}
+
+/** Return only capabilities that the worker can resolve and use for this request. */
+export function discoverDataProviderCapabilities(
+  input: DiscoverDataProviderCapabilitiesInput,
+): DataProviderCapability[] {
+  return discoverDataProviders(input).available
 }
 
 /** Stable, compact context consumed by the Data Agent without filesystem probing. */
@@ -235,6 +291,21 @@ export function renderDataProviderCapabilities(capabilities: readonly DataProvid
     ...capabilities.map(
       (capability) =>
         `- provider=${capability.id}; skill_id=${capability.skillID}; asset_classes=${capability.assetClasses.join(",")}; intervals=${capability.intervals.join(",")}; pagination=${capability.pagination}; evidence_contract=${capability.evidenceContract}; calendar=${capability.calendarPolicy}; required_semantics=${capability.requiredMarketSemantics.join(",")}`,
+    ),
+  ]
+}
+
+/**
+ * Render providers that would serve this request if credentials existed.
+ * Env var names are rendered; values are never read or echoed.
+ */
+export function renderBlockedDataProviders(blocked: readonly BlockedDataProvider[]): string[] {
+  if (blocked.length === 0) return []
+  return [
+    "Providers blocked only by missing credentials (report these to the user; never invent values):",
+    ...blocked.map(
+      (provider) =>
+        `- provider=${provider.id}; availability=blocked_missing_credentials; asset_classes=${provider.assetClasses.join(",")}; missing_env=${provider.missingCredentialEnv.join(",")}`,
     ),
   ]
 }

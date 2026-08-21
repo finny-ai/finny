@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
 import {
   discoverDataProviderCapabilities,
+  discoverDataProviders,
+  renderBlockedDataProviders,
   renderDataProviderCapabilities,
 } from "../../src/data/data-provider-capabilities"
 
@@ -77,5 +79,50 @@ describe("Data Agent provider capabilities", () => {
     })
     expect(capabilities.map((capability) => capability.id)).toEqual(["questrade", "yfinance"])
     expect(capabilities[0]?.calendarPolicy).toBe("REGIONAL_PROVIDER_OBSERVED")
+  })
+
+  test("reports a request-compatible provider as blocked on its missing credentials", () => {
+    const discovery = discoverDataProviders({
+      request: { assetClass: "equity", interval: "1d", start: "2018-01-02", end: "2025-12-31" },
+      availableSkillIDs: new Set(["finny-provider-polygon", "finny-provider-alpaca"]),
+      credentialEnv: { ALPACA_API_KEY_ID: "configured", ALPACA_API_SECRET_KEY: "configured" },
+    })
+
+    expect(discovery.available.map((capability) => capability.id)).toEqual(["alpaca"])
+    expect(discovery.blocked).toEqual([
+      {
+        id: "polygon",
+        skillID: "finny-provider-polygon",
+        availability: "blocked_missing_credentials",
+        assetClasses: ["equity"],
+        missingCredentialEnv: ["POLYGON_API_KEY"],
+      },
+    ])
+    expect(renderBlockedDataProviders(discovery.blocked).join("\n")).toContain("missing_env=POLYGON_API_KEY")
+  })
+
+  test("does not report providers that are incompatible for reasons other than credentials", () => {
+    const discovery = discoverDataProviders({
+      request: { assetClass: "crypto", interval: "1d", start: "2026-01-01", end: "2026-02-01" },
+      availableSkillIDs: new Set(["finny-provider-polygon", "finny-provider-binance"]),
+      credentialEnv: {},
+    })
+
+    expect(discovery.blocked).toEqual([])
+    expect(discovery.available.map((capability) => capability.id)).toEqual(["binance"])
+  })
+
+  test("expresses option and future requests instead of silently matching nothing", () => {
+    const discovery = discoverDataProviders({
+      request: { assetClass: "options", interval: "1d", start: "2024-01-01", end: "2024-06-01" },
+      availableSkillIDs: new Set(["finny-provider-alpaca", "finny-provider-polygon"]),
+      credentialEnv: { ALPACA_API_KEY_ID: "configured", ALPACA_API_SECRET_KEY: "configured" },
+    })
+
+    expect(discovery.available).toEqual([])
+    expect(discovery.blocked).toEqual([])
+    expect(renderDataProviderCapabilities(discovery.available)).toEqual([
+      "- provider_capabilities: NONE (return a typed provider blocker)",
+    ])
   })
 })

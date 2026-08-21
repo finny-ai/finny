@@ -115,6 +115,10 @@ After any call to `finny_algorithm_save`, `finny_algorithm_validate`, or `finny_
   research/data suggests another style may fit better. Build and test the
   requested concept first, then report the mismatch as a result/diagnosis. This
   is separate from asset/venue drift, which still needs approval.
+<!-- (inactive) Sequential family pivot: ask to pivot only after a completed
+  backtest of the current family is classified strategy_loss with a diagnosis
+  in reasoning.md; max three families per request, then stop and ask.
+  Enable by uncommenting. -->
 - When the user delegates the strategy family ("your pick"), evidence gathering
   is highly recommended for a new research-driven strategy but is not a universal
   hard gate. When evidence is selected, defer the choice until those agents return,

@@ -452,7 +452,12 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
     errors.push(...preflight.errors)
 
     let effectiveModel = options.model
-    if (!preflightFailed && options.fixtureMode) {
+    // Deterministic market data and the scripted model are separable concerns.
+    // A live-model run still needs the synthetic fixture window, otherwise the
+    // data_extractor tries to fetch a future-dated window from a real provider
+    // and returns no manifest at all.
+    const useFixtureMarketData = Boolean(options.fixtureMode) || options.fixtureMarketDataOnly === true
+    if (!preflightFailed && useFixtureMarketData) {
       for (const credential of isolation.credentialPresence) delete isolation.env[credential.name]
       isolation.credentialPresence.splice(0)
       fixtureMarketData = await startFixtureMarketDataProvider({
@@ -462,16 +467,18 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
         harnessMode: true,
         profile: options.fixtureMode === "positive_qualification" ? "positive_qualification" : "negative",
       })
+      isolation.env.FINNY_HARNESS_MARKET_DATA_URL = fixtureMarketData.url
+      isolation.env.FINNY_HARNESS_MARKET_DATA_CSV = fixtureMarketData.csvPath
+      isolation.env.FINNY_HARNESS_MARKET_DATA_SHA256 = fixtureMarketData.csvSha256
+      isolation.env.FINNY_HARNESS_FIXTURE_MARKET_DATA = "1"
+    }
+    if (!preflightFailed && options.fixtureMode) {
       scriptedModel = await startScriptedModelServer({
         port: isolation.ports.scriptedModel,
         mode: options.fixtureMode,
         harnessMode: true,
       })
       isolation.env.OPENCODE_CONFIG_CONTENT = scriptedModel.configContent
-      isolation.env.FINNY_HARNESS_MARKET_DATA_URL = fixtureMarketData.url
-      isolation.env.FINNY_HARNESS_MARKET_DATA_CSV = fixtureMarketData.csvPath
-      isolation.env.FINNY_HARNESS_MARKET_DATA_SHA256 = fixtureMarketData.csvSha256
-      isolation.env.FINNY_HARNESS_FIXTURE_MARKET_DATA = "1"
       isolation.env.FINNY_HARNESS_SCRIPTED_MODEL = "1"
       if (options.fixtureMode === "positive_qualification" && scenario.approvals?.sealedHoldout === true) {
         isolation.env.FINNY_HARNESS_APPROVE_SEALED_HOLDOUT = "1"

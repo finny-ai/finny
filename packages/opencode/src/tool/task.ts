@@ -113,6 +113,7 @@ const TASK_START_DESCRIPTION = [
   DESCRIPTION,
   "Launch exactly one optional subagent asynchronously and return immediately.",
   "You will be notified automatically when it finishes.",
+  "Pass only these arguments: description, prompt, subagent_type, and optional task_id. Do not pass filePath or any other file argument; read the template before composing the prompt if needed.",
 ].join("\n\n")
 const TASK_RUN_DESCRIPTION = [
   DESCRIPTION,

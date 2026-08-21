@@ -35,6 +35,28 @@ const scenario: HeadlessScenarioV1 = {
   observabilityRequired: false,
 }
 
+const pivotScenario: HeadlessScenarioV1 = {
+  schemaVersion: "1.0.0",
+  id: "fixture-pivot",
+  prompt: "build",
+  asOfDate: "2026-07-09",
+  limits: { wallTimeMs: 30_000, modelTurns: 20, toolCalls: 20, subagents: 1 },
+  request: {
+    symbols: ["SPY"],
+    assetClass: "equity",
+    interval: "5m",
+    strategyFamilies: ["sma-crossover"],
+    startDate: "2026-01-09",
+    endDate: "2026-07-08",
+  },
+  allowedSuccessorFamilies: ["mean-reversion", "momentum"],
+  artifactPolicy: { maxAlgorithms: 3, maxVersionsPerAlgorithm: 2, maxBacktests: 4 },
+  requiredStages: ["candidate_saved", "validated", "backtested", "reviewable"],
+  requiredFinalFields: ["return", "sharpe", "max drawdown", "eligibility", "next step"],
+  allowedRecoveries: [],
+  observabilityRequired: false,
+}
+
 function tool(tool: string, input: Record<string, unknown>, output: string, metadata: Record<string, unknown> = {}) {
   return {
     type: "tool_use",
@@ -58,6 +80,37 @@ function requestInput(overrides: Record<string, unknown> = {}) {
 
 function savedConfig(overrides: Record<string, unknown> = {}) {
   return JSON.stringify({ symbol: "SPY", asset_class: "equity", interval: "5min", ...overrides })
+}
+
+function structuredDocsInput(family: string) {
+  return {
+    mission: {
+      hypothesis: "fixture",
+      scope: { asset_class: "equities", universe: ["SPY"], horizon: "intraday" },
+      strategy: {
+        bar_interval: "5min",
+        type: family,
+        direction: "long",
+        entry_signal: "crossover",
+        risk_profile: "bounded",
+        max_drawdown_pct: "10%",
+        backtest_window: "2026-01-09 through 2026-07-08",
+        success_metric: "return",
+      },
+      risk_contract: {},
+      exit_conditions: "exit",
+      questionnaire: {
+        market_universe: "SPY",
+        timeframe_bar_interval: "5m",
+        strategy_family: family,
+        directional_thesis_regime: "trend",
+        entry_signal_idea: "crossover",
+        exit_invalidation_rules: "cross back",
+        risk_tolerance_max_drawdown: "10%",
+        backtest_window_success_metric: "window; return",
+      },
+    },
+  }
 }
 
 function mission(
@@ -344,6 +397,115 @@ describe("headless semantic verdict", () => {
     expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({ status: "completed", exitCode: 0 })
   })
 
+  test("barrier-delivered manifests and structured docsInput satisfy the saved-candidate contract", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "task_start",
+        { description: "Collect evidence", prompt: "Collect fixture data", subagent_type: "data_extractor" },
+        "The task is working in the background.",
+      ),
+      tool(
+        "finny_strategy_context_wait",
+        {},
+        "<context_task><data-extractor-manifest>\nusable_for_parent: yes\n</data-extractor-manifest></context_task>",
+      ),
+      tool(
+        "finny_algorithm_save",
+        {
+          name: "spy-sma",
+          config: JSON.stringify({
+            symbols: ["SPY"],
+            asset_class: "equity",
+            interval: "5min",
+            backtest: { start_date: "2026-01-09", end_date: "2026-07-08" },
+          }),
+          docsInput: {
+            mission: {
+              hypothesis: "SMA crossover follows the synthetic trend.",
+              scope: { asset_class: "equities", universe: ["SPY"], horizon: "intraday" },
+              strategy: {
+                bar_interval: "5min",
+                type: "sma-crossover",
+                direction: "long",
+                entry_signal: "fast SMA crosses above slow SMA",
+                risk_profile: "bounded intraday risk",
+                max_drawdown_pct: "10%",
+                backtest_window: "2026-01-09 through 2026-07-08",
+                success_metric: "positive risk-adjusted return",
+              },
+              risk_contract: {},
+              exit_conditions: "Death cross or protective stop.",
+              questionnaire: {
+                market_universe: "SPY equities",
+                timeframe_bar_interval: "5 minute bars",
+                strategy_family: "sma-crossover",
+                directional_thesis_regime: "trending regime",
+                entry_signal_idea: "SMA crossover",
+                exit_invalidation_rules: "death cross or stop",
+                risk_tolerance_max_drawdown: "10%",
+                backtest_window_success_metric: "2026-01-09 through 2026-07-08; Sharpe",
+              },
+            },
+          },
+        },
+        "Saved and validated",
+        { name: "spy-sma", version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        backtestInput({ algorithmName: "spy-sma" }),
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested",
+      ),
+      {
+        type: "text",
+        sessionID: "ses_main",
+        part: { text: "Return -10%; Sharpe -1; max drawdown 12%; eligibility failed; next step: stop." },
+      },
+    ]
+    const observed = observeRun(events, {
+      ...scenario,
+      limits: { ...scenario.limits, toolCalls: 6 },
+      requiredStages: ["evidence_ready", ...scenario.requiredStages],
+    })
+    expect(observed.violations).toEqual([])
+    expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({
+      status: "completed",
+      exitCode: 0,
+    })
+  })
+
+  test("qualified SMA crossover family labels remain within the requested family", () => {
+    const family = "SMA crossover trend-following (long-only)"
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        {
+          name: "spy-sma",
+          config: JSON.stringify({
+            symbols: ["SPY"],
+            asset_class: "equity",
+            interval: "5min",
+            backtest: { start_date: "2026-01-09", end_date: "2026-07-08" },
+          }),
+          docsInput: structuredDocsInput(family),
+        },
+        "Saved and validated",
+        { name: "spy-sma", version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        backtestInput({ algorithmName: "spy-sma" }),
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested",
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, scenario)
+    expect(observed.requestIdentity.strategyFamilies).toEqual(["sma-crossover"])
+    expect(observed.violations).toEqual([])
+  })
+
   test("strategy drift and a second algorithm fail the contract", () => {
     const events = [
       tool("finny_workspace_prepare", requestInput(), "Prepared"),
@@ -449,6 +611,188 @@ describe("headless semantic verdict", () => {
       status: "contract_failed",
       exitCode: 2,
     })
+  })
+
+  test("qualified SMA crossover mission wording canonicalizes to the requested family", () => {
+    const family = "SMA crossover trend-following (long-only)"
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        {
+          name: "spy-sma-crossover",
+          config: JSON.stringify({
+            symbol: "SPY",
+            asset_class: "equity",
+            interval: "5min",
+            backtest: { start_date: "2026-01-09", end_date: "2026-07-08" },
+          }),
+          docsInput: structuredDocsInput(family),
+        },
+        "Saved and validated",
+        { name: "spy-sma-crossover", version: 1 },
+      ),
+      tool("finny_backtest", backtestInput(), "Verdict: inconclusive\nTotal return: 0%\nEligibility: backtested"),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, scenario)
+    expect(observed.requestIdentity.strategyFamilies).toEqual(["sma-crossover"])
+    expect(observed.violations.map((item) => item.code)).not.toContain("strategy_family_drift")
+    expect(observed.violations).toEqual([])
+  })
+
+  test("pivot to an allowed successor family after a diagnosed strategy_loss is admissible", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        { algorithmName: "spy-sma" },
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested\nfailure_diagnosis: strategy_loss",
+        { failure_diagnosis: { classification: "strategy_loss", engineRan: true } },
+      ),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        backtestInput({ algorithmName: "spy-mean" }),
+        "Total return: -5%\nVerdict: failed\nEligibility: backtested",
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).not.toContain("strategy_family_drift")
+    expect(observed.violations.map((item) => item.code)).not.toContain("strategy_pivot_without_diagnosed_loss")
+    expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({
+      status: "completed",
+      exitCode: 0,
+    })
+  })
+
+  test("pivot to a successor family without a diagnosed strategy_loss fails the contract", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        { algorithmName: "spy-sma" },
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested\nfailure_diagnosis: zero_trades",
+        { failure_diagnosis: { classification: "zero_trades", engineRan: true } },
+      ),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        { algorithmName: "spy-mean" },
+        "Total return: -5%\nVerdict: failed\nEligibility: backtested",
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).toContain("strategy_pivot_without_diagnosed_loss")
+    expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({
+      status: "contract_failed",
+      exitCode: 2,
+    })
+  })
+
+  test("pivot to a successor family is rejected for sizing_failure, strategy_exception, and data blockers", () => {
+    for (const classification of ["sizing_failure", "strategy_exception", "data_blocked"]) {
+      const events = [
+        tool("finny_workspace_prepare", requestInput(), "Prepared"),
+        tool(
+          "finny_algorithm_save",
+          { name: "spy-sma", mission: mission(), config: savedConfig() },
+          "Saved and validated",
+          { version: 1 },
+        ),
+        tool(
+          "finny_backtest",
+          { algorithmName: "spy-sma" },
+          `Verdict: failed\nTotal return: -10%\nEligibility: backtested\nfailure_diagnosis: ${classification}`,
+          { failure_diagnosis: { classification, engineRan: classification !== "data_blocked" } },
+        ),
+        tool(
+          "finny_algorithm_save",
+          { name: "spy-curl", mission: mission({ family: "momentum" }), config: savedConfig() },
+          "Saved and validated",
+          { version: 1 },
+        ),
+        { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+      ]
+      const observed = observeRun(events, {
+        ...pivotScenario,
+        artifactPolicy: { maxAlgorithms: 2, maxVersionsPerAlgorithm: 2, maxBacktests: 4 },
+      })
+      expect(observed.violations.map((item) => item.code)).toContain(
+        "strategy_pivot_without_diagnosed_loss",
+      )
+    }
+  })
+
+  test("scenario without allowedSuccessorFamilies still hard-fails any family drift", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-sma", mission: mission(), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      tool(
+        "finny_backtest",
+        { algorithmName: "spy-sma" },
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested\nfailure_diagnosis: strategy_loss",
+        { failure_diagnosis: { classification: "strategy_loss", engineRan: true } },
+      ),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-mean", mission: mission({ family: "mean-reversion" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    // Regression guard: the strict scenario (no field) keeps rejecting drift.
+    const strictScenario = { ...pivotScenario, allowedSuccessorFamilies: undefined }
+    const strictObserved = observeRun(events, strictScenario)
+    expect(strictObserved.violations.map((item) => item.code)).toContain("strategy_family_drift")
+    // The same candidate sequence with the field set and a diagnosed loss is clean.
+    expect(observed.violations.map((item) => item.code)).not.toContain("strategy_family_drift")
+  })
+
+  test("a candidate outside the declared successor set is still drift even with the field set", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      tool(
+        "finny_algorithm_save",
+        { name: "spy-bt", mission: mission({ family: "breakout" }), config: savedConfig() },
+        "Saved and validated",
+        { version: 1 },
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const observed = observeRun(events, pivotScenario)
+    expect(observed.violations.map((item) => item.code)).toContain("strategy_family_drift")
   })
 
   test("batched task children expand into deduplicated subagents and enforce the limit", () => {

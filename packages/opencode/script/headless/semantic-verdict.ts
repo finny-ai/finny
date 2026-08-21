@@ -79,6 +79,17 @@ function normalize(value: unknown): string {
     .replace(/[^a-z0-9-]/g, "")
 }
 
+// Structured missions may describe an allowed family with qualifiers such as
+// direction or style. Canonicalize only unambiguous spellings of the same
+// family; distinct signals such as EMA or ROC remain distinct.
+function canonicalFamily(value: unknown): string {
+  const normalized = normalize(value)
+  if (!normalized) return ""
+  if (normalized.includes("sma-crossover")) return "sma-crossover"
+  if (normalized.includes("moving-average-crossover") && normalized.includes("sma")) return "sma-crossover"
+  return normalized
+}
+
 function canonicalSymbol(value: unknown): string {
   return String(value ?? "")
     .trim()
@@ -127,6 +138,11 @@ function parseMission(value: unknown): Record<string, any> | undefined {
   } catch {
     return
   }
+}
+
+function structuredMission(value: unknown): Record<string, any> | undefined {
+  const docs = asRecord(value)
+  return asRecord(docs.mission)
 }
 
 function addWindow(target: IdentitySets, value: unknown): void {
@@ -227,6 +243,12 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
   let modelTurns = 0
   let backtests = 0
   let completedBacktests = 0
+  // Pivot discipline: a candidate may move to an allowed successor family
+  // only after a completed backtest classified strategy_loss has been observed.
+  const requestedFamilies = new Set(scenario.request.strategyFamilies.map(normalize))
+  const successorFamilies = new Set((scenario.allowedSuccessorFamilies ?? []).map(normalize))
+  const admissibleFamilies = new Set([...requestedFamilies, ...successorFamilies])
+  let diagnosedLossSeen = false
 
   for (const event of events) {
     if (event.type === "step_finish") modelTurns++
@@ -263,7 +285,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
       addValues(
         preparedIdentity.strategyFamilies,
         input.strategyFamily ?? input.strategy_family ?? input.strategyIntent ?? input.strategy_intent,
-        normalize,
+        canonicalFamily,
       )
     }
     if (
@@ -299,6 +321,14 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         completedStages.add("evidence_ready")
       }
     }
+    if (part.tool === "finny_strategy_context_wait" && completed(part)) {
+      // The barrier is the authoritative delivery path for background context
+      // tasks. Its output embeds the child manifest after the raw task_start
+      // acknowledgement has already been emitted.
+      if (/data-extractor-manifest|usable_for_parent:\s*yes/i.test(output)) {
+        completedStages.add("evidence_ready")
+      }
+    }
     if (part.tool === "finny_algorithm_save") {
       const name = String(input.name ?? metadata.name ?? metadata.algorithmName ?? "").trim()
       if (name) {
@@ -325,20 +355,21 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addValues(candidateIdentity.intervals, config.interval ?? config.bar_interval, canonicalInterval)
           addValues(candidateIdentity.startDates, config.startDate ?? config.start_date, canonicalDate)
           addValues(candidateIdentity.endDates, config.endDate ?? config.end_date, canonicalDate)
+          addWindow(candidateIdentity, config.backtestWindow ?? config.backtest_window)
+          addWindow(candidateIdentity, config.backtest)
           addValues(
             candidateIdentity.strategyFamilies,
             config.strategyFamily ?? config.strategy_family ?? configStrategy.type,
-            normalize,
+            canonicalFamily,
           )
-          addWindow(candidateIdentity, config.backtestWindow ?? config.backtest_window)
         }
 
-        const mission = parseMission(input.mission)
+        const mission = parseMission(input.mission) ?? structuredMission(input.docsInput)
         if (!mission) {
           addViolation(
             violations,
             "candidate_mission_invalid",
-            "Saved candidate mission is missing parseable YAML frontmatter.",
+            "Saved candidate mission is neither parseable YAML frontmatter nor structured docsInput.mission.",
           )
         } else {
           const scope = asRecord(mission.scope)
@@ -346,7 +377,12 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addValues(candidateIdentity.symbols, scope.universe, canonicalSymbol)
           addValues(candidateIdentity.assetClasses, scope.asset_class ?? scope.assetClass, canonicalAssetClass)
           addValues(candidateIdentity.intervals, strategy.bar_interval ?? strategy.interval, canonicalInterval)
-          addValues(candidateIdentity.strategyFamilies, strategy.type, normalize)
+          addValues(candidateIdentity.strategyFamilies, strategy.type, canonicalFamily)
+          addValues(
+            candidateIdentity.strategyFamilies,
+            mission.questionnaire?.strategy_family,
+            canonicalFamily,
+          )
           addWindow(candidateIdentity, strategy.backtest_window ?? strategy.backtestWindow)
         }
       } else if (failed(part)) {
@@ -359,6 +395,11 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
     }
     if (part.tool === "finny_backtest" || part.tool === "finny_backtest_run") {
       backtests++
+      const backtestMeta = metadataOf(part)
+      const classification = String(backtestMeta.failure_diagnosis?.classification ?? "").trim()
+      if (classification === "strategy_loss") {
+        diagnosedLossSeen = true
+      }
       addValues(backtestIdentity.symbols, input.symbols ?? input.symbol, canonicalSymbol)
       addValues(backtestIdentity.assetClasses, input.assetClass ?? input.asset_class, canonicalAssetClass)
       addValues(backtestIdentity.intervals, input.interval, canonicalInterval)
@@ -534,15 +575,15 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
 
   const allowedFamilies = new Set(scenario.request.strategyFamilies.map(normalize))
   if (completedStages.has("request_bound")) {
-    const requestedFamilies = [...preparedIdentity.strategyFamilies]
-    if (requestedFamilies.length === 0 || requestedFamilies.some((family) => !allowedFamilies.has(family))) {
+    const boundRequestedFamilies = [...preparedIdentity.strategyFamilies]
+    if (boundRequestedFamilies.length === 0 || boundRequestedFamilies.some((family) => !allowedFamilies.has(family))) {
       addViolation(
         violations,
         "request_strategy_family_mismatch",
         "Bound request does not declare an allowed strategy family.",
         {
           allowed: [...allowedFamilies],
-          observed: requestedFamilies,
+          observed: boundRequestedFamilies,
         },
       )
     }
@@ -555,13 +596,27 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         "strategy_family_missing",
         "Saved candidate has no structured strategy family declaration.",
       )
-    } else if (candidateFamilies.some((family) => !allowedFamilies.has(family))) {
+    } else if (candidateFamilies.some((family) => !admissibleFamilies.has(family))) {
       addViolation(
         violations,
         "strategy_family_drift",
-        "Saved candidate declares a strategy family outside the scenario.",
+        "Saved candidate declares a strategy family outside the scenario's requested and allowed successor families.",
         {
-          allowed: [...allowedFamilies],
+          allowed: [...admissibleFamilies],
+          observed: candidateFamilies,
+        },
+      )
+    } else if (
+      scenario.allowedSuccessorFamilies !== undefined &&
+      candidateFamilies.some((family) => successorFamilies.has(family) && !requestedFamilies.has(family)) &&
+      !diagnosedLossSeen
+    ) {
+      addViolation(
+        violations,
+        "strategy_pivot_without_diagnosed_loss",
+        "Saved candidate pivoted to a successor strategy family without a prior completed backtest classified strategy_loss.",
+        {
+          successorFamilies: [...successorFamilies],
           observed: candidateFamilies,
         },
       )

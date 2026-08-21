@@ -291,6 +291,11 @@ export function expectedEvidenceTimestamps(request: EvidenceCalendarRequest): nu
  * (04:00Z or 05:00Z depending on DST), while Finny represents the same trading
  * session as 00:00Z on its calendar date. They are the same session, not a
  * missing bar plus an extra bar.
+ *
+ * A bar already stamped at exact UTC midnight is date-only (`YYYY-MM-DD`) or
+ * explicitly UTC, which is the calendar's own convention, so it is returned
+ * unchanged. Re-projecting it through New York would move every session back
+ * one calendar day and report the whole window as missing plus extra.
  */
 export function canonicalEvidenceTimestamp(input: {
   calendarId: string
@@ -299,5 +304,6 @@ export function canonicalEvidenceTimestamp(input: {
 }): number {
   const step = intervalMilliseconds({ interval: input.interval })
   if (input.calendarId !== "XNYS" || step === undefined || step < DAY) return input.timestamp
+  if (Number.isFinite(input.timestamp) && ((input.timestamp % DAY) + DAY) % DAY === 0) return input.timestamp
   return dayEpoch({ day: newYorkDay({ epoch: input.timestamp }) })
 }
