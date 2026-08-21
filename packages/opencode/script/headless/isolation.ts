@@ -1,4 +1,5 @@
 import fs from "node:fs/promises"
+import { Global } from "@opencode-ai/core/global"
 import net from "node:net"
 import os from "node:os"
 import path from "node:path"
@@ -58,6 +59,63 @@ export type HarnessIsolation = {
   ports: Record<string, number>
   env: Record<string, string>
   credentialPresence: Array<{ name: string; present: true }>
+}
+
+/**
+ * Real runs may use provider-specific models (notably ``opencode/*``) that are
+ * present in the host's model catalog but absent from the compiled snapshot.
+ * Seed an isolated catalog path outside the app cache from the host catalog
+ * instead of enabling background
+ * catalog refresh: the refresher outlives request handling and can race CLI
+ * shutdown, disposing the shared Effect runtime underneath it.
+ */
+export async function seedModelCatalog(isolation: HarnessIsolation): Promise<{
+  seeded: boolean
+  source: string
+}> {
+  const source = process.env.OPENCODE_MODELS_PATH ?? path.join(Global.Path.cache, "models.json")
+  try {
+    const contents = await fs.readFile(source, "utf8")
+    JSON.parse(contents)
+  } catch {
+    return { seeded: false, source }
+  }
+  // The child performs a versioned cleanup of its entire XDG cache before the
+  // first request. Keep the explicit catalog outside that managed directory so
+  // startup cannot delete the seed.
+  const target = path.join(isolation.root, "catalog", "models.json")
+  await fs.mkdir(path.dirname(target), { recursive: true })
+  await fs.copyFile(source, target)
+  isolation.env.OPENCODE_MODELS_PATH = target
+  return { seeded: true, source }
+}
+
+/**
+ * Real runs need the requested provider's stored credential even though every
+ * other isolated-run credential remains empty. Seed only that provider into the
+ * auth-content override so fixture runs stay fully synthetic and unrelated
+ * host credentials never enter the child.
+ */
+export async function seedProviderAuth(
+  isolation: HarnessIsolation,
+  model: string,
+): Promise<{ seeded: boolean; source: string; provider?: string }> {
+  const provider = model.includes("/") ? model.slice(0, model.indexOf("/")) : model
+  const source = path.join(Global.Path.data, "auth.json")
+  let credentials: unknown
+  try {
+    credentials = JSON.parse(await fs.readFile(source, "utf8"))
+  } catch {
+    return { seeded: false, source }
+  }
+  if (!credentials || typeof credentials !== "object" || Array.isArray(credentials)) {
+    return { seeded: false, source }
+  }
+  const record = credentials as Record<string, unknown>
+  const entry = record[provider]
+  if (entry === undefined || entry === null) return { seeded: false, source, provider }
+  isolation.env.OPENCODE_AUTH_CONTENT = JSON.stringify({ [provider]: entry })
+  return { seeded: true, source, provider }
 }
 
 export async function createIsolation(runId: string): Promise<HarnessIsolation> {

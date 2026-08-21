@@ -123,7 +123,10 @@ async function seedSourceAlgorithm(home: string): Promise<{ latest: AlgorithmRow
 }
 
 async function zipEntryNames(zipPath: string): Promise<string[]> {
-  const reader = new ZipReader(new BlobReader(new Blob([await fs.readFile(zipPath)])), ZIP_OPTIONS)
+  const reader = new ZipReader(
+    new BlobReader(new Blob([new Uint8Array(await fs.readFile(zipPath))])),
+    ZIP_OPTIONS,
+  )
   try {
     const entries = await reader.getEntries()
     return entries.map((entry) => entry.filename).sort()
@@ -133,7 +136,10 @@ async function zipEntryNames(zipPath: string): Promise<string[]> {
 }
 
 async function bundleManifest(zipPath: string): Promise<any> {
-  const reader = new ZipReader(new BlobReader(new Blob([await fs.readFile(zipPath)])), ZIP_OPTIONS)
+  const reader = new ZipReader(
+    new BlobReader(new Blob([new Uint8Array(await fs.readFile(zipPath))])),
+    ZIP_OPTIONS,
+  )
   try {
     const entries = await reader.getEntries()
     const entry = entries.find((candidate) => candidate.filename === ALGORITHM_BUNDLE_MANIFEST)

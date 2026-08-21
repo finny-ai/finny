@@ -303,7 +303,7 @@ async function writeZip(input: WriteZipInput) {
 
 async function readZipEntries<T>(input: ReadZipEntriesInput<T>): Promise<T> {
   const { zipPath, onEntries } = input
-  const bytes = await fs.readFile(zipPath)
+  const bytes = new Uint8Array(await fs.readFile(zipPath))
   const reader = new ZipReader(new BlobReader(new Blob([bytes])), ZIP_OPTIONS)
   try {
     const entries = (await reader.getEntries()) as ZipEntryLike[]

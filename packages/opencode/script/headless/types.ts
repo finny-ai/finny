@@ -121,6 +121,14 @@ export const RunManifestV1 = z.object({
   model: z.object({
     id: z.string(),
     agent: z.string(),
+    catalogSeed: z.object({
+      seeded: z.boolean(),
+      source: z.string().optional(),
+    }),
+    authSeed: z.object({
+      seeded: z.boolean(),
+      source: z.string().optional(),
+    }),
     fixtureMode: FixtureScriptMode.optional(),
     requestCount: z.number().int().nonnegative().optional(),
     configSha256: z.string().length(64).optional(),

@@ -728,6 +728,83 @@ describe("headless semantic verdict", () => {
     expect(observed.violations.map((item) => item.code)).toContain("strategy_family_drift")
   })
 
+  test("persisted mission and config restore structured identity when replay omits tool input", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      {
+        type: "tool_use",
+        sessionID: "ses_main",
+        part: {
+          tool: "finny_algorithm_save",
+          state: {
+            status: "completed",
+            input: { name: "spy-sma" },
+            output: "Saved and validated",
+            metadata: { algorithmId: "algo-1", version: 1 },
+          },
+        },
+      },
+      tool(
+        "finny_backtest",
+        backtestInput({ algorithmName: "spy-sma" }),
+        "Total return: -10%\nVerdict: failed\nEligibility: backtested",
+      ),
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const persisted = [
+      {
+        name: "spy-sma",
+        algorithmId: "algo-1",
+        version: 1,
+        persistedMission: mission(),
+        persistedConfig: savedConfig(),
+      },
+    ]
+    const observed = observeRun(events, scenario, persisted)
+    expect(observed.violations).toEqual([])
+    expect(observed.requestIdentity.sources.candidate_saved).toMatchObject({
+      symbols: ["SPY"],
+      assetClasses: ["equity"],
+      intervals: ["5m"],
+      startDates: ["2026-01-09"],
+      endDates: ["2026-07-08"],
+      strategyFamilies: ["sma-crossover"],
+    })
+  })
+
+  test("persisted fallback is bound to the saved algorithmId/version and cannot repair a mismatch", () => {
+    const events = [
+      tool("finny_workspace_prepare", requestInput(), "Prepared"),
+      {
+        type: "tool_use",
+        sessionID: "ses_main",
+        part: {
+          tool: "finny_algorithm_save",
+          state: {
+            status: "completed",
+            input: { name: "spy-sma" },
+            output: "Saved and validated",
+            metadata: { algorithmId: "saved-algo", version: 2 },
+          },
+        },
+      },
+      { type: "text", sessionID: "ses_main", part: { text: "return sharpe max drawdown eligibility next step" } },
+    ]
+    const persisted = [
+      {
+        name: "spy-sma",
+        algorithmId: "different-algo",
+        version: 1,
+        persistedMission: mission({ family: "roc-momentum" }),
+        persistedConfig: savedConfig(),
+      },
+    ]
+    const observed = observeRun(events, scenario, persisted)
+    const codes = observed.violations.map((item) => item.code)
+    expect(codes).toContain("candidate_mission_invalid")
+    expect(codes).toContain("strategy_family_missing")
+  })
+
   test("batched task children expand into deduplicated subagents and enforce the limit", () => {
     const events = [
       tool("task", { tasks: [{ description: "one" }, { description: "two" }, { description: "three" }] }, "", {
@@ -872,7 +949,12 @@ describe("atomic bundle publication", () => {
         scenarioSha256: scenarioSha256(scenario),
       },
       runtime: { os: "test", arch: "test", bunVersion: "test" },
-      model: { id: "test/model", agent: "finny" },
+      model: {
+        id: "test/model",
+        agent: "finny",
+        catalogSeed: { seeded: false },
+        authSeed: { seeded: false },
+      },
       isolation: {
         namespace: "run-1",
         reusedState: false,

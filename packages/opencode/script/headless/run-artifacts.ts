@@ -338,6 +338,10 @@ export type ObservedSavedCandidate = {
   name?: string
   algorithmId?: string
   version?: number
+  /** Persisted schema-v4 mission, used only when transient tool input omits it. */
+  persistedMission?: string
+  /** Persisted config JSON, used only when transient tool input omits it. */
+  persistedConfig?: string
 }
 
 export type ObservedBacktestRun = {

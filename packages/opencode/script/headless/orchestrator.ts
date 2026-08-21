@@ -7,7 +7,13 @@ import { Effect } from "effect"
 import { createBundleWriter, hashTree, publishBundle, sha256Bytes, sha256File, writeBundleText } from "./artifacts"
 import { startFixtureMarketDataProvider, type FixtureMarketDataProvider } from "./fixture-market-data"
 import { startScriptedModelServer, type ScriptedModelServer } from "./fixture-model"
-import { configureCollector, configureTelemetryIdentity, createIsolation } from "./isolation"
+import {
+  configureCollector,
+  configureTelemetryIdentity,
+  createIsolation,
+  seedModelCatalog,
+  seedProviderAuth,
+} from "./isolation"
 import { runCommand } from "./process"
 import { inspectLockedPythonRuntime, prepareLockedPythonRuntime, type LockedPythonRuntime } from "./python-runtime"
 import { fetchSpans, gradeSessions, parseArgs as parsePhoenixArgs, validateGrade } from "../phoenix-trace-grader"
@@ -16,6 +22,7 @@ import {
   collectFinnyArtifacts,
   inspectStrategyResults,
   type HarnessIntegrityIssue,
+  type ObservedSavedCandidate,
 } from "./run-artifacts"
 import { canonicalScenarioJson, loadScenario, scenarioSha256 as hashScenario } from "./scenario"
 import { semanticHash } from "./semantic-hash"
@@ -81,6 +88,60 @@ type HarnessPreflight = {
   attempt: HarnessAttempt
   errors: RunManifestV1["errors"]
   pythonRuntime?: LockedPythonRuntime
+}
+
+type PersistedAlgorithmManifest = {
+  algorithms?: Array<{
+    name?: unknown
+    algorithmId?: unknown
+    latest_version?: unknown
+  }>
+}
+
+/**
+ * Completed saves are durable product artifacts. Some model providers omit the
+ * large mission/config strings from replayed tool state even though the same
+ * immutable version was persisted and hash-bound by the backtest. Read those
+ * authoritative files after collection so semantic evaluation can still verify
+ * structured request identity without weakening transient-input checks.
+ */
+async function loadPersistedCandidates(finnyHome: string): Promise<ObservedSavedCandidate[]> {
+  const candidates: ObservedSavedCandidate[] = []
+  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  try {
+    entries = await fs.readdir(path.join(finnyHome, "algos"), { withFileTypes: true })
+  } catch {
+    return candidates
+  }
+  for (const entry of entries.filter((item) => item.isDirectory() && !item.name.startsWith("_"))) {
+    const manifestPath = path.join(finnyHome, "algos", entry.name, "manifest.json")
+    let manifest: PersistedAlgorithmManifest
+    try {
+      manifest = JSON.parse(await fs.readFile(manifestPath, "utf8"))
+    } catch {
+      continue
+    }
+    if (!manifest || typeof manifest !== "object" || !Array.isArray(manifest.algorithms)) continue
+    for (const algorithm of manifest.algorithms) {
+      const algorithmId = typeof algorithm.algorithmId === "string" ? algorithm.algorithmId : ""
+      const version = Number(algorithm.latest_version)
+      if (!algorithmId || !Number.isSafeInteger(version) || version <= 0) continue
+      const versionDir = path.join(finnyHome, "algorithms", algorithmId, `v${String(version).padStart(2, "0")}`)
+      const [mission, config] = await Promise.all([
+        fs.readFile(path.join(versionDir, "mission.md"), "utf8").catch(() => undefined),
+        fs.readFile(path.join(versionDir, "config.json"), "utf8").catch(() => undefined),
+      ])
+      if (!mission || !config) continue
+      candidates.push({
+        ...(typeof algorithm.name === "string" && algorithm.name ? { name: algorithm.name } : {}),
+        algorithmId,
+        version,
+        persistedMission: mission,
+        persistedConfig: config,
+      })
+    }
+  }
+  return candidates
 }
 
 function telemetryFlush(events: Array<Record<string, any>>): HarnessObservability["flush"] {
@@ -414,12 +475,16 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
   const scenarioSha256 = hashScenario(scenario)
   await writeBundleText(writer, "inputs/scenario.json", `${scenarioJson}\n`)
   const isolation = await createIsolation(id)
-  // Scripted fixtures keep the deterministic offline catalog snapshot. Real
-  // (non-fixture) runs need the live model catalog so opencode/* models such
-  // as big-pickle or the deepseek-v4-flash-free default can resolve.
-  if (!options.fixtureMode) {
-    isolation.env.OPENCODE_DISABLE_MODELS_FETCH = "0"
-  }
+  // Scripted fixtures and real runs both stay offline for catalog refresh.
+  // Real runs receive a read-only seed of the host catalog below; this keeps
+  // provider-specific models resolvable without spawning the background
+  // refresher, whose lifetime can race CLI shutdown.
+  const modelCatalogSeed = options.fixtureMode
+    ? { seeded: false, source: "" }
+    : await seedModelCatalog(isolation)
+  const providerAuthSeed = options.fixtureMode
+    ? { seeded: false, source: "" }
+    : await seedProviderAuth(isolation, options.model)
   const attempts: RunManifestV1["attempts"] = []
   const errors: RunManifestV1["errors"] = []
   let sourceAdded = false
@@ -607,7 +672,7 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
     ]
 
     const events = parseJsonEvents(stdout)
-    const observation = observeRun(events, scenario)
+    const observation = observeRun(events, scenario, await loadPersistedCandidates(isolation.finnyHome))
     integrityIssues.push(
       ...bindObservedStrictRuns({
         finnyHome: isolation.finnyHome,
@@ -684,6 +749,14 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
       model: {
         id: effectiveModel,
         agent: options.agent,
+          catalogSeed: {
+            seeded: modelCatalogSeed.seeded,
+            ...(options.fixtureMode ? {} : { source: modelCatalogSeed.source }),
+          },
+          authSeed: {
+            seeded: providerAuthSeed.seeded,
+            ...(options.fixtureMode ? {} : { source: providerAuthSeed.source }),
+          },
         ...(options.fixtureMode
           ? {
               fixtureMode: options.fixtureMode,
@@ -797,6 +870,8 @@ export async function runHeadlessHarnessPromise(options: HeadlessHarnessOptions)
       model: {
         id: options.fixtureMode ? "harness/scripted" : options.model,
         agent: options.agent,
+        catalogSeed: { seeded: modelCatalogSeed.seeded },
+        authSeed: { seeded: providerAuthSeed.seeded },
         ...(options.fixtureMode
           ? {
               fixtureMode: options.fixtureMode,

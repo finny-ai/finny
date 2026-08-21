@@ -129,6 +129,13 @@ function parseMission(value: unknown): Record<string, any> | undefined {
   }
 }
 
+function firstNonEmpty(...values: Array<unknown>): string | undefined {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length > 0) return value
+  }
+  return undefined
+}
+
 function addWindow(target: IdentitySets, value: unknown): void {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     const window = asRecord(value)
@@ -208,7 +215,11 @@ export function parseJsonEvents(stdout: string): JsonEvent[] {
 }
 
 // @codescene(disable-all) Observation is the single semantic reduction boundary for the harness contract.
-export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): HarnessObservation {
+export function observeRun(
+  events: JsonEvent[],
+  scenario: HeadlessScenarioV1,
+  savedCandidateArtifacts: ObservedSavedCandidate[] = [],
+): HarnessObservation {
   const algorithms = new Set<string>()
   const versionsByAlgorithm: Record<string, number> = {}
   const subagents = new Map<string, { id: string; type?: string }>()
@@ -330,7 +341,15 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
         })
 
         const saveFamilies = new Set<string>()
-        const config = parseSavedConfig(input.config)
+        const candidateKey = `${metadata.algorithmId ?? ""}:${Number.isInteger(metadata.version) ? metadata.version : ""}`
+        const persistedCandidate =
+          input.config === undefined || input.mission === undefined
+            ? savedCandidateArtifacts.find((candidate) => {
+                const key = `${candidate.algorithmId ?? ""}:${Number.isInteger(candidate.version) ? candidate.version : ""}`
+                return Boolean(candidate.algorithmId) && Number.isInteger(candidate.version) && key === candidateKey
+              })
+            : undefined
+        const config = parseSavedConfig(firstNonEmpty(input.config, persistedCandidate?.persistedConfig))
         if (!config) {
           addViolation(violations, "candidate_config_invalid", "Saved candidate config is not structured JSON.")
         } else {
@@ -348,7 +367,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addWindow(candidateIdentity, config.backtestWindow ?? config.backtest_window)
         }
 
-        const mission = parseMission(input.mission)
+        const mission = parseMission(firstNonEmpty(input.mission, persistedCandidate?.persistedMission))
         if (!mission) {
           addViolation(
             violations,
