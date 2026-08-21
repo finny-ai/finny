@@ -446,21 +446,29 @@ export function runHeadlessHarness(options: HeadlessHarnessOptions): Effect.Effe
  * once at the harness boundary for real runs. Fixture runs are deterministic
  * and must never be retried.
  */
-function isTransientEmptyModelRun(
+export function isTransientEmptyModelRun(
   execution: Awaited<ReturnType<typeof runCommand>>,
   events: ReturnType<typeof parseJsonEvents>,
 ): boolean {
   if (execution.exitCode !== 0 || execution.timedOut) return false
-  const meaningfulEvents = events.filter((event) => ["text", "tool_use", "error"].includes(event.type))
-  if (meaningfulEvents.length > 0) return false
-  return events.some(
+  const meaningfulEventTypes = new Set(["text", "tool_use", "error"])
+  const zeroTokenFinish = events.findLast(
     (event) =>
       event.type === "step_finish" &&
       !!event.part &&
       typeof event.part === "object" &&
       !Array.isArray(event.part) &&
+      (event.part as Record<string, any>).reason === "unknown" &&
       (event.part as Record<string, any>).tokens?.output === 0,
   )
+  if (!zeroTokenFinish) return false
+  // A normal stop emits its report or a closing tool call before the final
+  // step boundary. A provider dropout emits nothing after the empty boundary;
+  // retrying only this shape preserves legitimate completed-but-negative runs.
+  const zeroTokenIndex = events.indexOf(zeroTokenFinish)
+  return !events
+    .slice(zeroTokenIndex + 1)
+    .some((event) => meaningfulEventTypes.has(event.type))
 }
 
 /** Promise adapter for the Bun CLI and black-box tests. */

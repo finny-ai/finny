@@ -4,7 +4,12 @@ import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { createBundleWriter, publishBundle, writeBundleText } from "../../script/headless/artifacts"
-import { runHeadlessHarness, semanticEventHash, semanticHash } from "../../script/headless/orchestrator"
+import {
+  isTransientEmptyModelRun,
+  runHeadlessHarness,
+  semanticEventHash,
+  semanticHash,
+} from "../../script/headless/orchestrator"
 import { canonicalScenarioJson, scenarioSha256 } from "../../script/headless/scenario"
 import { classifyOutcome, observeRun } from "../../script/headless/semantic-verdict"
 import type { HeadlessScenarioV1, RunManifestV1 } from "../../script/headless/types"
@@ -122,6 +127,31 @@ function backtestInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe("headless semantic verdict", () => {
+  test("a meaningful real run is retried when its terminal model turn is empty", () => {
+    const execution = { exitCode: 0, timedOut: false } as any
+    const events = [
+      { type: "text", part: { text: "Working" } },
+      {
+        type: "step_finish",
+        part: { reason: "unknown", tokens: { input: 100, output: 0 } },
+      },
+    ]
+    expect(isTransientEmptyModelRun(execution, events)).toBe(true)
+  })
+
+  test("a meaningful report after an empty intermediate turn is not retried", () => {
+    const execution = { exitCode: 0, timedOut: false } as any
+    const events = [
+      {
+        type: "step_finish",
+        part: { reason: "unknown", tokens: { input: 100, output: 0 } },
+      },
+      { type: "text", part: { text: "return sharpe eligibility blockers next step" } },
+      { type: "step_finish", part: { reason: "stop", tokens: { output: 10 } } },
+    ]
+    expect(isTransientEmptyModelRun(execution, events)).toBe(false)
+  })
+
   test("same scenario id cannot hide prompt, limit, or required-field mutations", () => {
     const baseline = scenarioSha256(scenario)
     const mutations: HeadlessScenarioV1[] = [
