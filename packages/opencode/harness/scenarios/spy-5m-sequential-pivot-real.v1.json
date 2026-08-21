@@ -1,10 +1,10 @@
 {
   "schemaVersion": "1.0.0",
   "id": "spy-5m-sequential-pivot-real.v1",
-  "prompt": "Build SPY 5-minute strategies for the window 2026-06-22 through 2026-07-21. Bind the requested SMA crossover family first, collect the configured deterministic evidence, and save and validate one SMA crossover candidate. If a completed backtest of that candidate is classified strategy_loss with a recorded causal diagnosis, you may pivot to a different strategy family inside the allowed successors only: mean-reversion or momentum. Save and validate that successor and backtest it. Never pivot to any family outside the allowed successors, and do not pivot on zero_trades, sizing_failure, strategy_exception, or data/provider blockers. Report the pivot decision, return, Sharpe, max drawdown, eligibility, blockers, and one next step.",
-  "asOfDate": "2026-07-22",
+  "prompt": "Build SPY 5-minute strategies for the window 2026-07-24 through 2026-08-21. Bind the requested SMA crossover family first, collect the configured deterministic evidence, and save and validate one SMA crossover candidate. If a completed backtest of that candidate is classified strategy_loss with a recorded causal diagnosis, you may pivot to a different strategy family inside the allowed successors only: mean-reversion or momentum. Save and validate that successor and backtest it. Never pivot to any family outside the allowed successors, and do not pivot on zero_trades, sizing_failure, strategy_exception, or data/provider blockers. Report the pivot decision, return, Sharpe, max drawdown, eligibility, blockers, and one next step.",
+  "asOfDate": "2026-08-22",
   "limits": {
-    "wallTimeMs": 1500000,
+    "wallTimeMs": 1800000,
     "modelTurns": 80,
     "toolCalls": 120,
     "subagents": 4
@@ -14,8 +14,8 @@
     "assetClass": "equity",
     "interval": "5m",
     "strategyFamilies": ["sma-crossover"],
-    "startDate": "2026-06-22",
-    "endDate": "2026-07-21"
+    "startDate": "2026-07-24",
+    "endDate": "2026-08-21"
   },
   "allowedSuccessorFamilies": ["mean-reversion", "momentum"],
   "artifactPolicy": {
