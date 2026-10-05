@@ -198,6 +198,26 @@ describe("workspace prepare request context", () => {
     expect(result).toContain("Do not substitute a proxy ticker")
   })
 
+  test("binds a crypto request containing numbered indicators and still rejects another asset", () => {
+    const prompt = "Verify BTCUSDT 1-hour SMA crossover. Use SMA20 crossing above SMA50."
+    const params = { symbol: "BTCUSDT", assetClass: "crypto", interval: "1h" } as const
+    expect(workspacePrepareClarificationBlock(params, prompt)).toBeUndefined()
+    expect(workspacePrepareIdentityConflict(params, prompt)).toBeUndefined()
+    expect(workspacePrepareIdentityConflict({ ...params, symbol: "ETHUSDT" }, prompt)).toContain(
+      "symbol ETH conflicts with the user's BTC",
+    )
+  })
+
+  test("rejects narrowing a requested crypto universe to one pair", () => {
+    const prompt = "symbols: BTCUSDT, ETHUSDT on 1h crypto"
+    expect(workspacePrepareIdentityConflict({ symbol: "BTCUSDT", interval: "1h" }, prompt)).toContain(
+      "symbols BTC conflict with the user's BTC,ETH",
+    )
+    expect(
+      workspacePrepareIdentityConflict({ symbols: ["BTC/USD", "ETH/USD"], interval: "1h" }, prompt),
+    ).toBeUndefined()
+  })
+
   test("accepts normalized spelling of the user's exact identity", () => {
     expect(
       workspacePrepareIdentityConflict(

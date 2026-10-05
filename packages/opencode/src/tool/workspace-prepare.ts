@@ -363,9 +363,11 @@ export function workspacePrepareIdentityConflict(
   if (userSymbol && toolSymbol && userSymbol !== toolSymbol) {
     conflicts.push(`symbol ${toolSymbol} conflicts with the user's ${userSymbol}`)
   }
-  if (userSymbols?.length && toolSymbols?.length) {
-    const left = [...new Set(userSymbols)].sort().join(",")
-    const right = [...new Set(toolSymbols)].sort().join(",")
+  const leftSymbols = userSymbols ?? (userSymbol ? [userSymbol] : [])
+  const rightSymbols = toolSymbols ?? (toolSymbol ? [toolSymbol] : [])
+  if (leftSymbols.length && rightSymbols.length && (userSymbols?.length || toolSymbols?.length)) {
+    const left = [...new Set(leftSymbols)].sort().join(",")
+    const right = [...new Set(rightSymbols)].sort().join(",")
     if (left !== right) conflicts.push(`symbols ${right} conflict with the user's ${left}`)
   }
   if (userInterval && toolInterval && userInterval !== toolInterval) {
