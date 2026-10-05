@@ -150,6 +150,8 @@ print(json.dumps({
     expect(result.expected.at(-1)).toContain("19:30:00")
     expect(result.partial_coverage).toBeGreaterThan(0.95)
     expect(result.partial_missing).toBe(1)
-    expect(result.partial_blocking).toEqual([])
+    // Exact calendar reconciliation rejects missing bars even above the
+    // aggregate coverage threshold.
+    expect(result.partial_blocking).toEqual(["1 expected timestamp(s) missing"])
   })
 })

@@ -47,20 +47,29 @@ code, then re-apply the Finny invariant listed here onto the new structure.
 
 ### Finny-only surfaces (no upstream counterpart — keep ours wholesale)
 
-- `packages/finny-core/`, `packages/finny-integrations/`, `packages/finny-registry/`
+- `packages/finny-core/` strategy workspace and preferences implementation
 - `packages/opencode/src/agent/prompt/finny-*.txt`
 - `packages/opencode/src/agent/finny-workspace-context.ts`, `src/agent/request-identity.ts`
 - `packages/opencode/src/tool/finny-workspace-guard.ts`
 - `packages/opencode/src/tool/algorithm-*.ts`, `backtest-*.ts`, `portfolio-backtest.ts`,
   `price-history.ts`, `quote.ts`, `brokerage-switch.ts`, `discord.ts`
 - `packages/opencode/src/algorithm/`, `src/backtest/`, Python pieces
-  (`backtest.py`, `strategy.py`, `algorithm/*.py`, `fetch_binance_klines.py`)
-- `convex/`, `packages/opencode/src/storage/convex/`
+  (`strategy.py`, `src/algorithm/*.py`, `engine_v2/`, `python/`)
+- `convex/`, `packages/opencode/src/storage/convex/subscriptions.ts`,
+  `packages/opencode/src/storage/convex/convex-client.ts`
 - `algos/_template/`, `data-agent/instructions.md`
 - `packages/opencode/test/agent/finny-*.test.ts`, `test/tool/shell-data-agent.test.ts`,
   `test/plugin/finny-workspace.test.ts`
 
 ### Upstream files carrying Finny modifications (conflict hotspots)
+
+The harness-only cleanup intentionally removes upstream console, stats,
+marketing/docs site, enterprise, Cloudflare/SST deployment, Electron desktop,
+Slack, Storybook, and Nix packaging. Keep those deletions during upstream
+merges; do not restore their workspace manifests, catalog entries, disabled
+workflows, or release hooks. The embedded `packages/app` client, shared `ui`,
+CLI/TUI, HTTP API, SDK, and Finny engine remain supported here. Research
+experiments and generated developer logs belong outside the tracked product.
 
 | File | Finny invariant to preserve after every sync |
 | --- | --- |

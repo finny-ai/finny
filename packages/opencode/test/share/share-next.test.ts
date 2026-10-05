@@ -50,7 +50,10 @@ function integrationLayer(client: HttpClient.HttpClient) {
       Database.node,
     ]),
     {
-      replacements: [LayerNode.replace(httpClient, Layer.succeed(HttpClient.HttpClient, client))],
+      replacements: [
+        LayerNode.replace(httpClient, Layer.succeed(HttpClient.HttpClient, client)),
+        LayerNode.replace(Database.node, Database.defaultLayer),
+      ],
     },
   )
 }

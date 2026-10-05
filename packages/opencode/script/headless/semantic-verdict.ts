@@ -1,4 +1,5 @@
 import matter from "gray-matter"
+import { canonicalAssetClass, canonicalInterval, canonicalStrategyFamily, canonicalSymbol } from "./identity"
 import type { ObservedBacktestRun, ObservedSavedCandidate } from "./run-artifacts"
 import type { ContractViolation, HarnessStageName, HarnessStatus, HeadlessScenarioV1 } from "./types"
 
@@ -70,38 +71,6 @@ function toolPart(event: JsonEvent): Record<string, any> | undefined {
   if (event.type !== "tool_use") return
   const part = event.part
   return part && typeof part === "object" ? part : undefined
-}
-
-function normalize(value: unknown): string {
-  return String(value ?? "")
-    .toLowerCase()
-    .replace(/[_\s]+/g, "-")
-    .replace(/[^a-z0-9-]/g, "")
-}
-
-function canonicalSymbol(value: unknown): string {
-  return String(value ?? "")
-    .trim()
-    .toUpperCase()
-}
-
-function canonicalAssetClass(value: unknown): string {
-  const normalized = normalize(value)
-  return normalized === "equities" ? "equity" : normalized
-}
-
-function canonicalInterval(value: unknown): string {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "")
-  const aliases: Record<string, string> = {
-    "5min": "5m",
-    "5mins": "5m",
-    "5minute": "5m",
-    "5minutes": "5m",
-  }
-  return aliases[normalized] ?? normalized
 }
 
 function canonicalDate(value: unknown): string {
@@ -263,7 +232,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
       addValues(
         preparedIdentity.strategyFamilies,
         input.strategyFamily ?? input.strategy_family ?? input.strategyIntent ?? input.strategy_intent,
-        normalize,
+        canonicalStrategyFamily,
       )
     }
     if (
@@ -328,17 +297,25 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addValues(
             candidateIdentity.strategyFamilies,
             config.strategyFamily ?? config.strategy_family ?? configStrategy.type,
-            normalize,
+            canonicalStrategyFamily,
           )
           addWindow(candidateIdentity, config.backtestWindow ?? config.backtest_window)
+          addWindow(candidateIdentity, config.backtest)
         }
 
-        const mission = parseMission(input.mission)
+        // Structured documents are authoritative in the save tool. Raw YAML
+        // remains a compatibility path only when docsInput is absent.
+        const structuredMission = asRecord(asRecord(input.docsInput).mission)
+        const mission = input.docsInput
+          ? Object.keys(structuredMission).length
+            ? structuredMission
+            : undefined
+          : parseMission(input.mission)
         if (!mission) {
           addViolation(
             violations,
             "candidate_mission_invalid",
-            "Saved candidate mission is missing parseable YAML frontmatter.",
+            "Saved candidate mission is missing structured docsInput or parseable YAML frontmatter.",
           )
         } else {
           const scope = asRecord(mission.scope)
@@ -346,7 +323,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
           addValues(candidateIdentity.symbols, scope.universe, canonicalSymbol)
           addValues(candidateIdentity.assetClasses, scope.asset_class ?? scope.assetClass, canonicalAssetClass)
           addValues(candidateIdentity.intervals, strategy.bar_interval ?? strategy.interval, canonicalInterval)
-          addValues(candidateIdentity.strategyFamilies, strategy.type, normalize)
+          addValues(candidateIdentity.strategyFamilies, strategy.type, canonicalStrategyFamily)
           addWindow(candidateIdentity, strategy.backtest_window ?? strategy.backtestWindow)
         }
       } else if (failed(part)) {
@@ -532,7 +509,7 @@ export function observeRun(events: JsonEvent[], scenario: HeadlessScenarioV1): H
     }
   }
 
-  const allowedFamilies = new Set(scenario.request.strategyFamilies.map(normalize))
+  const allowedFamilies = new Set(scenario.request.strategyFamilies.map(canonicalStrategyFamily))
   if (completedStages.has("request_bound")) {
     const requestedFamilies = [...preparedIdentity.strategyFamilies]
     if (requestedFamilies.length === 0 || requestedFamilies.some((family) => !allowedFamilies.has(family))) {

@@ -15,9 +15,6 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@finny-ai/integrations": "workspace:*",
-    "@finny-ai/registry": "workspace:*",
-    "@opencode-ai/plugin": "workspace:*",
     "yaml": "2.6.1",
     "zod": "catalog:"
   },

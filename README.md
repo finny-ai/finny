@@ -208,14 +208,14 @@ Everything in this repository, one line each.
 | --- | --- |
 | **`opencode`** | **The Finny CLI.** Agents, tools, Crucible, the Python engine, data providers, qualification. This is the product. |
 | `tui` | Terminal UI (Solid.js + OpenTUI) |
+| `app`, `ui` | Embedded web client and shared components used by `finny web` and `finny serve` |
+| `cli` | Upstream CLI entrypoint used by development/release tooling |
 | `core` | Session, storage, config, database |
 | `llm` | Provider and model adapters |
 | `server` | HTTP API |
 | `sdk` | Generated TypeScript client — also the public plugin type surface |
 | `plugin` | Plugin host interfaces |
-| `finny-core` | Prefs, algo policy, tool guards |
-| `finny-integrations` | Broker and data integrations |
-| `finny-registry` | Strategy and capability registry |
+| `finny-core` | Strategy workspace storage, documents, and preferences |
 | `http-recorder` | HTTP record/replay for tests |
 | `effect-drizzle-sqlite`, `effect-sqlite-node` | SQLite layers for Effect |
 | `script` | Shared build helpers |
@@ -252,12 +252,17 @@ execution, metrics.
 ## Development
 
 ```bash
-git clone https://github.com/Jaiminp007/finny-v2.git
-cd finny-v2
+git clone https://github.com/finny-ai/finny.git
+cd finny
 
 bun i
 bun run dev   # launch the TUI
 ```
+
+This workspace contains the harness and its clients. Upstream OpenCode hosted
+products and deployment stacks are excluded. See
+[the cleanup scope](docs/harness-cleanup.md) for retained boundaries and
+verification commands.
 
 ---
 

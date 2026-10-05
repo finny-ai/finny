@@ -3,6 +3,7 @@ name: test
 on:
   push:
     branches:
+      - dev
       - staging-dev
     paths:
       - ".github/workflows/test.yml"
@@ -10,10 +11,9 @@ on:
       - "package.json"
       - "packages/opencode/**"
       - "packages/finny-core/**"
-      - "packages/finny-integrations/**"
-      - "packages/finny-registry/**"
   pull_request:
     branches:
+      - dev
       - staging-dev
     paths:
       - ".github/workflows/test.yml"
@@ -21,8 +21,6 @@ on:
       - "package.json"
       - "packages/opencode/**"
       - "packages/finny-core/**"
-      - "packages/finny-integrations/**"
-      - "packages/finny-registry/**"
   workflow_dispatch:
 
 concurrency:
@@ -96,77 +94,3 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
           path: packages/*/.artifacts/unit/junit.xml
-
-  # TODO(web): Re-enable when the web app is part of active Finny CI again.
-  # This job installs Playwright/Chromium and runs packages/app e2e tests,
-  # so keep it disabled while this repo's active product surface is CLI-only.
-  #
-  # e2e:
-  #   name: e2e (${{ matrix.settings.name }})
-  #   strategy:
-  #     fail-fast: false
-  #     matrix:
-  #       settings:
-  #         - name: linux
-  #           host: blacksmith-2vcpu-ubuntu-2404
-  #   runs-on: ${{ matrix.settings.host }}
-  #   env:
-  #     PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.playwright-browsers
-  #   defaults:
-  #     run:
-  #       shell: bash
-  #   steps:
-  #     - name: Checkout repository
-  #       uses: actions/checkout@v4
-  #       with:
-  #         token: ${{ secrets.GITHUB_TOKEN }}
-  #
-  #     - name: Setup Node
-  #       uses: actions/setup-node@v4
-  #       with:
-  #         node-version: "24"
-  #
-  #     - name: Setup Bun
-  #       uses: ./.github/actions/setup-bun
-  #
-  #     - name: Read Playwright version
-  #       id: playwright-version
-  #       run: |
-  #         version=$(node -e 'console.log(require("./packages/app/package.json").devDependencies["@playwright/test"])')
-  #         echo "version=$version" >> "$GITHUB_OUTPUT"
-  #
-  #     - name: Cache Playwright browsers
-  #       id: playwright-cache
-  #       uses: actions/cache@v4
-  #       with:
-  #         path: ${{ github.workspace }}/.playwright-browsers
-  #         key: ${{ runner.os }}-${{ runner.arch }}-playwright-${{ steps.playwright-version.outputs.version }}-chromium
-  #
-  #     - name: Install Playwright system dependencies
-  #       if: runner.os == 'Linux'
-  #       working-directory: packages/app
-  #       run: bunx playwright install-deps chromium
-  #
-  #     - name: Install Playwright browsers
-  #       if: steps.playwright-cache.outputs.cache-hit != 'true'
-  #       working-directory: packages/app
-  #       run: bunx playwright install chromium
-  #
-  #     - name: Run app e2e tests
-  #       run: bun --cwd packages/app test:e2e:local
-  #       env:
-  #         CI: true
-  #         PLAYWRIGHT_JUNIT_OUTPUT: e2e/junit-${{ matrix.settings.name }}.xml
-  #       timeout-minutes: 30
-  #
-  #     - name: Upload Playwright artifacts
-  #       if: always()
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: playwright-${{ matrix.settings.name }}-${{ github.run_attempt }}
-  #         if-no-files-found: ignore
-  #         retention-days: 7
-  #         path: |
-  #           packages/app/e2e/junit-*.xml
-  #           packages/app/e2e/test-results
-  #           packages/app/e2e/playwright-report

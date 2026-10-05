@@ -9,6 +9,8 @@ The current strategy-validation research subagent has been converted into `news_
 - `build`, `research`, and `chat` now delegate current context work with `task(subagent_type="news_agent")`.
 - `researcher` remains as a hidden compatibility alias so old sessions/configs do not break.
 - `news_agent` uses the new `finny-news-agent.txt` prompt and `.opencode/agent/news_agent.md` override.
+- The unused `finny-researcher.txt` prompt was retired; the compatibility
+  alias uses the same current news prompt.
 - The workspace context injector and read/write/edit guards accept both `news_agent` and the old `researcher` alias.
 
 ## Runtime Flow
@@ -90,7 +92,9 @@ Repo-local files:
 
 - `algos/_template/data/news/body/.gitkeep`
 - `algos/_template/data/news/headlines/.gitkeep`
-- `packages/opencode/data/news/btc-q1-2024-macro-context.md`
+- The request-specific BTC Q1 2024 note formerly under
+  `packages/opencode/data/news/` was removed during the harness-only cleanup.
+  New evidence belongs in its session-bound workspace.
 
 Local Finny store scan under `~/.local/share/finny/algos`:
 

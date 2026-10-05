@@ -40,6 +40,36 @@ describe("request identity normalization", () => {
 })
 
 describe("request identity proposals", () => {
+  test("confirms complete uppercase crypto pair spellings without confirming a prefix", () => {
+    for (const symbol of ["BTCUSDT", "BTC/USD", "BTC-USD", "BTC.USD"]) {
+      expect(parseRequestIdentityProposal(`Build ${symbol} on 1h bars using SMA20 and SMA50`)).toMatchObject({
+        status: "confirmed",
+        facts: { requested_symbol: "BTC", requested_interval: "1h", requested_asset_class: "crypto" },
+      })
+    }
+    expect(parseRequestIdentityProposal("Build btcusdt on 1h bars").status).toBe("proposed")
+    expect(parseRequestIdentityProposal("symbol: BTCUSDUMMY on 1h bars").status).toBe("proposed")
+    expect(parseRequestIdentityProposal("Build SPY-1h-momentum").status).toBe("confirmed")
+    expect(parseRequestIdentityProposal("Build SMH-1h-momentum").status).toBe("confirmed")
+    for (const slug of ["BTC-USDT-1h-momentum", "BTC.USD.1h-momentum", "SPY-5min-momentum", "SPY.15m.momentum"]) {
+      expect(parseRequestIdentityProposal(`Build ${slug}`).status).toBe("confirmed")
+    }
+    expect(parseRequestIdentityProposal("Build BTCUSDTXYZ-1h-momentum").status).toBe("proposed")
+    expect(parseRequestIdentityProposal("Build BTCUSDTXYZ on 1h bars").status).toBe("proposed")
+    for (const symbol of ["AVAXUSDT", "PEPEUSDT"]) {
+      for (const prompt of [`requested_symbol: ${symbol} on 1h crypto`, `${symbol} 1h crypto`]) {
+        expect(parseRequestIdentityProposal(prompt)).toMatchObject({
+          status: "confirmed",
+          facts: { requested_symbol: symbol.replace(/USDT$/, ""), requested_asset_class: "crypto" },
+        })
+      }
+    }
+    expect(parseRequestIdentityProposal("symbols: BTCUSDT, ETHUSDT on 1h")).toMatchObject({
+      status: "confirmed",
+      facts: { requested_symbols: ["BTCUSDT", "ETHUSDT"], requested_asset_class: "crypto" },
+    })
+  })
+
   test("does not bind market or region prose as a ticker", () => {
     const prompts = [
       "Research a liquid US-market opportunity and choose the instrument.",
@@ -73,6 +103,18 @@ describe("request identity proposals", () => {
 })
 
 describe("parseRequestFacts", () => {
+  test("ignores numbered indicators in unlabeled prose and preserves explicit ticker intent", () => {
+    expect(parseRequestFacts("Verify exactly one BTCUSDT 1-hour crossover. Use SMA20 crossing SMA50.")).toMatchObject({
+      requested_symbol: "BTC",
+      requested_interval: "1h",
+      requested_asset_class: "crypto",
+    })
+    expect(parseRequestFacts("Use EMA20, RSI14 for entries on AAPL 1h bars").requested_symbol).toBe("AAPL")
+    expect(parseRequestFacts("Build SMA20 on 1h bars").requested_symbol).toBeUndefined()
+    expect(parseRequestFacts("ticker: SMA20 on 1h bars").requested_symbol).toBe("SMA20")
+    expect(parseRequestFacts("symbols: SMA20,EMA50 on 1h bars").requested_symbols).toEqual(["SMA20", "EMA50"])
+  })
+
   test("preserves the exact TD and META headless acceptance identities", () => {
     const suffix =
       "strategy, use social sentiment, news, sec and data subagents, gather all the context and choose the best option, i wanna trade it every 1hr for 1 year, I will give 1k usd, in us markets"

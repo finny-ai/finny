@@ -834,15 +834,6 @@ export const AlgorithmSaveTool = Tool.define(
                 )
               }
 
-              if (validation.warnings.length > 0) {
-                parts.push(
-                  "",
-                  "These warnings are advisory: this saved version is valid and ready for backtesting. Do not create another version solely to clear them; continue with the requested backtest workflow.",
-                  "",
-                  Validate.format({ valid: true, errors: [], warnings: validation.warnings }),
-                )
-              }
-
               // Soft-warn when the strategy targets a different brokerage than the active one
               const target = params.targetBrokerage
               const brokerageMismatch = target && activeBrokerKind && target !== activeBrokerKind

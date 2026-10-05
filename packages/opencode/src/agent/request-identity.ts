@@ -1,8 +1,7 @@
 /**
  * Request identity contract.
  *
- * Build mode launches mandatory subagents (data_extractor, news_agent) that can
- * write and read artifacts under `algos/_template/data/`. Those artifacts are
+ * Build may use evidence subagents that write workspace artifacts. These are
  * NOT globally reusable: a note written for one algorithm/symbol must never be
  * reused as evidence for a different request. This module parses the immutable
  * facts of a build request and verifies that any subagent result or artifact
@@ -168,7 +167,7 @@ function kindToAssetClass(kind: string): AssetClass {
   return kind === "crypto" ? "crypto" : "equity"
 }
 
-const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
+const PAIR_RE = /^([A-Z0-9]{2,6})[-/.]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
 const REGIONAL_TICKER_RE = /^[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)$/
 const TICKERISH_RE =
   /^(?:[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?|[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))$/
@@ -237,7 +236,7 @@ function recognizeExplicitSymbol(
   if (opts.requireUppercaseForUnknown && cleaned !== cleaned.toUpperCase()) return undefined
   const upper = cleaned.toUpperCase()
   if (!TICKERISH_RE.test(upper) || NON_TRADEABLE_ACRONYMS.has(upper)) return undefined
-  if (opts.rejectAmbiguousUnknown && (AMBIGUOUS_TICKER_TOKENS.has(upper) || TICKER_STOPWORDS.has(upper))) {
+  if (opts.rejectAmbiguousUnknown && (isAmbiguousTickerToken(upper) || TICKER_STOPWORDS.has(upper))) {
     return undefined
   }
 
@@ -329,31 +328,31 @@ const EXPLICIT_SYMBOL_RES: Array<{
     requireUppercaseForUnknown: true,
   },
   {
-    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    re: /\b(?:requested_symbol|requested\s+symbol|symbol|ticker)\s*[:=]\s*[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)/gi,
     score: 120,
     allowUnknown: true,
   },
   {
-    re: /\buse\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?\s+as\s+(?:the\s+)?(?:traded\s+)?(?:symbol|ticker|vehicle|market|instrument)\b/gi,
+    re: /\buse\s+[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)[`"']?\s+as\s+(?:the\s+)?(?:traded\s+)?(?:symbol|ticker|vehicle|market|instrument)\b/gi,
     score: 115,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
   },
   {
-    re: /\b(?:(?:instead\s+of|rather\s+than|avoid|not)\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?|do\s+not\s+use\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?)[^.?!;]{0,80}?\buse\s+[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)[`"']?\b/gi,
+    re: /\b(?:(?:instead\s+of|rather\s+than|avoid|not)\s+[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)[`"']?|do\s+not\s+use\s+[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)[`"']?)[^.?!;]{0,80}?\buse\s+[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)[`"']?\b/gi,
     score: 180,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
     capture: 3,
   },
   {
-    re: /\b(?:traded\s+symbol|target\s+(?:symbol|ticker|vehicle)|market|instrument)\s*(?:is|as|=|:)?\s*[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)/gi,
+    re: /\b(?:traded\s+symbol|target\s+(?:symbol|ticker|vehicle)|market|instrument)\s*(?:is|as|=|:)?\s*[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)/gi,
     score: 110,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
   },
   {
-    re: /\b(?:trade|backtest|test|build|run|extract|fetch|load|download|retrieve)\s+(?:historical\s+)?(?:data\s+for\s+|on\s+|for\s+|against\s+)?[`"']?([A-Za-z0-9]{1,6}(?:[\/\-][A-Za-z0-9]{1,6})?)\b/gi,
+    re: /\b(?:trade|backtest|test|build|run|extract|fetch|load|download|retrieve)\s+(?:historical\s+)?(?:data\s+for\s+|on\s+|for\s+|against\s+)?[`"']?([A-Za-z0-9]{1,30}(?:[\/\-][A-Za-z0-9]{1,30})?)\b/gi,
     score: 90,
     allowUnknown: true,
     requireUppercaseForUnknown: true,
@@ -422,7 +421,7 @@ function explicitSymbolFromPrompt(prompt: string): { sym: string; asset: AssetCl
 }
 
 function looseSymbolFromPrompt(prompt: string): { sym: string; asset: AssetClass } | undefined {
-  const tokens = prompt.match(/[A-Za-z0-9]{2,6}(?:[\/\-][A-Za-z0-9]{2,6})?/g) ?? []
+  const tokens = prompt.match(/[A-Za-z0-9]+(?:[\/\-][A-Za-z0-9]+)?/g) ?? []
   for (const tok of tokens) {
     const index = prompt.indexOf(tok)
     if (index >= 0 && isRejectedComparisonContext(prompt, index)) continue
@@ -547,7 +546,6 @@ function intervalFromPrompt(prompt: string): string | undefined {
   return candidates[0]?.interval ?? bareIntervalFromPrompt(prompt)
 }
 
-const EXPLICIT_TICKER_RE = /^[A-Z][A-Z0-9.]{0,5}$/
 /**
  * Acronyms that are far more likely to be indicators, brokers, or order jargon
  * than traded tickers when they appear in unlabeled prose ("for IBKR, RSI
@@ -581,6 +579,13 @@ const AMBIGUOUS_TICKER_TOKENS = new Set([
   "VWAP",
   "WMA",
 ])
+
+function isAmbiguousTickerToken(token: string): boolean {
+  // Indicator lookbacks such as SMA20 are still indicator prose. Explicit
+  // ticker/universe labels continue to accept these names intentionally.
+  return AMBIGUOUS_TICKER_TOKENS.has(token.replace(/\d+$/, ""))
+}
+
 const TICKER_STOPWORDS = new Set([
   "API",
   "APAC",
@@ -617,7 +622,7 @@ function cleanTickerToken(token: string): string | undefined {
   const stripped = token.trim().replace(/^["'`\[]+|["'`\].:;!?]+$/g, "")
   if (/[a-z]/.test(stripped)) return undefined
   const cleaned = stripped.toUpperCase()
-  if (!EXPLICIT_TICKER_RE.test(cleaned)) return undefined
+  if (!recognizeExplicitSymbol(cleaned, { allowUnknown: true, requireUppercaseForUnknown: true })) return undefined
   if (TICKER_STOPWORDS.has(cleaned)) return undefined
   return cleaned
 }
@@ -634,7 +639,7 @@ function parseTickerList(raw: string): string[] {
 
 function parseExplicitUniverse(prompt: string): { list: string[]; keyed: boolean } | undefined {
   const keyed =
-    /\b(?:symbols?|tickers?|universe|basket|portfolio|stocks?)\b\s*(?:is|are|=|:|of|for|including|include|linked)?\s*(\[[^\]\n]+\]|\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(
+    /\b(?:symbols?|tickers?|universe|basket|portfolio|stocks?)\b\s*(?:is|are|=|:|of|for|including|include|linked)?\s*(\[[^\]\n]+\]|\b[A-Z][A-Z0-9.&/\-]{0,29}\b(?:\s*,\s*\b[A-Z][A-Z0-9.&/\-]{0,29}\b){1,})/i.exec(
       prompt,
     )
   if (keyed?.[1]) {
@@ -645,19 +650,19 @@ function parseExplicitUniverse(prompt: string): { list: string[]; keyed: boolean
   // Unlabeled comma lists in prose are weak evidence: "for IBKR, RSI
   // mean-reversion" names a broker and an indicator, not a universe. Only
   // tokens that survive the ambiguity filter count here.
-  const bare = /(\b[A-Z][A-Z0-9.]{0,5}\b(?:\s*,\s*\b[A-Z][A-Z0-9.]{0,5}\b){1,})/i.exec(prompt)?.[1]
+  const bare = /(\b[A-Z][A-Z0-9.&/\-]{0,29}\b(?:\s*,\s*\b[A-Z][A-Z0-9.&/\-]{0,29}\b){1,})/i.exec(prompt)?.[1]
   if (bare) {
-    const list = parseTickerList(bare).filter((symbol) => !AMBIGUOUS_TICKER_TOKENS.has(symbol))
+    const list = parseTickerList(bare).filter((symbol) => !isAmbiguousTickerToken(symbol))
     if (list.length > 0) return { list, keyed: false }
   }
 
   const single =
-    /\b(?:symbol|ticker|stock)\b\s*(?:is|=|:)?\s*([A-Z][A-Z0-9.]{0,5})\b/.exec(prompt)?.[1] ??
+    /\b(?:symbol|ticker|stock)\b\s*(?:is|=|:)?\s*([A-Z][A-Z0-9.&/\-]{0,29})\b/.exec(prompt)?.[1] ??
     (/(\bbuild\b|\bstrategy\b|\bbacktest\b|\bportfolio\b|\bstock\b|\bequity\b|\b\d+\s*(?:m(?:in(?:ute)?s?)?|h(?:ours?|rs?)?|d(?:ays?)?|w(?:eeks?)?)\b)/i.test(
       prompt,
     )
-      ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,5})\b/g), (match) => cleanTickerToken(match[1]!)).find(
-          (token) => Boolean(token) && !AMBIGUOUS_TICKER_TOKENS.has(token!),
+      ? Array.from(prompt.matchAll(/\b([A-Z][A-Z0-9.]{1,29})\b/g), (match) => cleanTickerToken(match[1]!)).find(
+          (token) => Boolean(token) && !isAmbiguousTickerToken(token!),
         )
       : undefined)
   const cleaned = single ? cleanTickerToken(single) : undefined
@@ -716,7 +721,10 @@ export function parseRequestFacts(prompt: string): RequestFacts {
   if (!facts.requested_asset_class && facts.requested_symbol) {
     facts.requested_asset_class = assetClassForSymbol(facts.requested_symbol)
   }
-  if (!facts.requested_asset_class && facts.requested_symbols?.length) facts.requested_asset_class = "equity"
+  if (!facts.requested_asset_class && facts.requested_symbols?.length) {
+    const assets = new Set(facts.requested_symbols.map(assetClassForSymbol).filter(Boolean))
+    if (assets.size === 1) facts.requested_asset_class = [...assets][0]
+  }
 
   return facts
 }
@@ -736,9 +744,18 @@ export function parseRequestIdentityProposal(prompt: string): RequestIdentityPro
   if (symbols.length === 0) {
     return { facts, status: "proposed", confidence: 0, parser: "request_identity_v2" }
   }
+  const tokens = prompt.match(/[A-Za-z0-9][A-Za-z0-9.&/\-]*/g) ?? []
   const exact = symbols.every((symbol) => {
-    const escaped = symbol.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
-    return new RegExp(`(^|[^A-Za-z0-9])${escaped}([^A-Za-z0-9]|$)`).test(prompt)
+    const normalized = normalizeSymbol(symbol)
+    return tokens.some((token) => {
+      const cleaned = cleanSymbolToken(token)
+      if (cleaned === cleaned.toUpperCase() && normalizeSymbol(cleaned) === normalized) return true
+      const slug =
+        /^([A-Z0-9.&/\-]+?)[.-](\d+(?:minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w))(?:[.-]|$)/.exec(cleaned)
+      const slugSymbol =
+        slug && recognizeExplicitSymbol(slug[1], { allowUnknown: true, requireUppercaseForUnknown: true })
+      return Boolean(slugSymbol && slugSymbol.sym === normalized)
+    })
   })
   return {
     facts,
