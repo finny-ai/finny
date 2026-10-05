@@ -167,7 +167,7 @@ function kindToAssetClass(kind: string): AssetClass {
   return kind === "crypto" ? "crypto" : "equity"
 }
 
-const PAIR_RE = /^([A-Z0-9]{2,6})[-/]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
+const PAIR_RE = /^([A-Z0-9]{2,6})[-/.]?(USDT|USDC|USD|BUSD|DAI|PERP)$/
 const REGIONAL_TICKER_RE = /^[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK)$/
 const TICKERISH_RE =
   /^(?:[A-Z0-9]{1,6}(?:[\/\-][A-Z0-9]{1,6})?|[A-Z0-9][A-Z0-9.&-]{0,29}\.(?:NS|BO|TO|V|AS|BR|DE|L|MC|MI|PA|SW|SS|SZ|HK))$/
@@ -750,8 +750,11 @@ export function parseRequestIdentityProposal(prompt: string): RequestIdentityPro
     return tokens.some((token) => {
       const cleaned = cleanSymbolToken(token)
       if (cleaned === cleaned.toUpperCase() && normalizeSymbol(cleaned) === normalized) return true
-      const slug = /^([A-Z0-9.]+)-(\d+[mhdw])(?:-|$)/.exec(cleaned)
-      return Boolean(slug && normalizeSymbol(slug[1]) === normalized)
+      const slug =
+        /^([A-Z0-9.&/\-]+?)[.-](\d+(?:minutes?|mins?|m|hours?|hrs?|h|days?|d|weeks?|w))(?:[.-]|$)/.exec(cleaned)
+      const slugSymbol =
+        slug && recognizeExplicitSymbol(slug[1], { allowUnknown: true, requireUppercaseForUnknown: true })
+      return Boolean(slugSymbol && slugSymbol.sym === normalized)
     })
   })
   return {

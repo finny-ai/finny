@@ -213,6 +213,9 @@ describe("workspace prepare request context", () => {
     expect(workspacePrepareIdentityConflict({ symbol: "BTCUSDT", interval: "1h" }, prompt)).toContain(
       "symbols BTC conflict with the user's BTC,ETH",
     )
+    expect(workspacePrepareIdentityConflict({ symbol: "BTCUSDT", symbols: [], interval: "1h" }, prompt)).toContain(
+      "symbols BTC conflict with the user's BTC,ETH",
+    )
     expect(
       workspacePrepareIdentityConflict({ symbols: ["BTC/USD", "ETH/USD"], interval: "1h" }, prompt),
     ).toBeUndefined()

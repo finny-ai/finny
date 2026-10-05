@@ -51,6 +51,10 @@ describe("request identity proposals", () => {
     expect(parseRequestIdentityProposal("symbol: BTCUSDUMMY on 1h bars").status).toBe("proposed")
     expect(parseRequestIdentityProposal("Build SPY-1h-momentum").status).toBe("confirmed")
     expect(parseRequestIdentityProposal("Build SMH-1h-momentum").status).toBe("confirmed")
+    for (const slug of ["BTC-USDT-1h-momentum", "BTC.USD.1h-momentum", "SPY-5min-momentum", "SPY.15m.momentum"]) {
+      expect(parseRequestIdentityProposal(`Build ${slug}`).status).toBe("confirmed")
+    }
+    expect(parseRequestIdentityProposal("Build BTCUSDTXYZ-1h-momentum").status).toBe("proposed")
     expect(parseRequestIdentityProposal("Build BTCUSDTXYZ on 1h bars").status).toBe("proposed")
     for (const symbol of ["AVAXUSDT", "PEPEUSDT"]) {
       for (const prompt of [`requested_symbol: ${symbol} on 1h crypto`, `${symbol} 1h crypto`]) {
