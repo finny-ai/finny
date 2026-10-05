@@ -23,7 +23,7 @@ import pkg from "../package.json"
 const finnyVersion = process.env.OPENCODE_VERSION?.trim() || pkg.version
 
 // Published npm identity, decoupled from the internal workspace package name
-// (`finny-internal-prop`, referenced by packages/web as a workspace dep). The
+// (`finny-internal-prop`). The
 // wrapper publishes as PUBLISH_NAME and platform packages as
 // `${PUBLISH_NAME}-<os>-<arch>[-baseline][-musl]`.
 // Default is the public unscoped package `finny` (what curl install pulls).

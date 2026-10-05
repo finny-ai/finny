@@ -341,7 +341,9 @@ describe("main agent prompts reference researcher", () => {
   test("Build prompt owns strategy implementation and backtests", async () => {
     const content = await fs.readFile(path.join(PROMPT_DIR, "finny-build.txt"), "utf8")
     expect(content).toContain("You are Finny Build: the implementation agent for trading strategies.")
-    expect(content).toContain("Mandatory Pre-Build Subagents")
+    expect(content).toContain("Recommended Pre-Build Evidence")
+    expect(content).toContain("highly recommended but not universally mandatory")
+    expect(content).toContain("Do not launch agents solely to satisfy a fixed agent count")
     expect(content).toContain("Save with `finny_algorithm_save`")
     expect(content).toContain("Run `finny_backtest`")
   })

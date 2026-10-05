@@ -2,14 +2,14 @@ name: cli-smoke
 
 on:
   push:
-    branches: [staging-dev]
+    branches: [dev, staging-dev]
     paths:
       - ".github/workflows/typecheck.yml"
       - "bun.lock"
       - "package.json"
       - "packages/opencode/**"
   pull_request:
-    branches: [staging-dev]
+    branches: [dev, staging-dev]
     paths:
       - ".github/workflows/typecheck.yml"
       - "bun.lock"
