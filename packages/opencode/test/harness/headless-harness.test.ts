@@ -344,6 +344,53 @@ describe("headless semantic verdict", () => {
     expect(classifyOutcome({ childExitCode: 0, observation: observed })).toEqual({ status: "completed", exitCode: 0 })
   })
 
+  test("structured save documents and runtime crypto aliases retain exact request identity", () => {
+    const cryptoScenario = { ...scenario, request: { ...scenario.request, symbols: ["BTCUSDT"], assetClass: "crypto" } }
+    const input = {
+      name: "btc-sma",
+      config: savedConfig({
+        symbol: "BTC/USD",
+        asset_class: "crypto_spot",
+        backtest: { start_date: "2026-01-09", end_date: "2026-07-08" },
+      }),
+      mission: "stale raw document must not override docsInput",
+      docsInput: {
+        mission: {
+          scope: { universe: ["BTCUSDT"], asset_class: "crypto" },
+          strategy: { type: "sma-crossover", bar_interval: "5m", backtest_window: "2026-01-09 through 2026-07-08" },
+        },
+      },
+    }
+    const events = (save: typeof input) => [
+      tool(
+        "finny_workspace_prepare",
+        requestInput({ symbol: "BTCUSDT", assetClass: "crypto", strategyIntent: "golden-cross" }),
+        "Prepared",
+      ),
+      tool("finny_algorithm_save", save, "Saved and validated", { version: 1 }),
+      tool(
+        "finny_backtest",
+        backtestInput({ algorithmName: "btc-sma" }),
+        "Total return: -1%\nVerdict: failed\nEligibility: backtested",
+      ),
+      { type: "text", part: { text: "Return -1%; Sharpe -1; max drawdown 2%; eligibility failed; next step: stop." } },
+    ]
+    expect(observeRun(events(input), cryptoScenario).violations).toEqual([])
+    for (const [field, value, code] of [
+      ["symbol", "ETH/USD", "request_symbol_mismatch"],
+      ["asset_class", "crypto_perp", "request_asset_class_mismatch"],
+      ["strategy_family", "roc-momentum", "strategy_family_drift"],
+      ["backtest", { start_date: "2026-01-10", end_date: "2026-07-08" }, "request_start_date_mismatch"],
+    ] as const) {
+      const changed = { ...input, config: JSON.stringify({ ...JSON.parse(input.config), [field]: value }) }
+      expect(observeRun(events(changed), cryptoScenario).violations.some((v) => v.code === code)).toBe(true)
+    }
+    const missing = { ...input, docsInput: { mission: {} } } as typeof input
+    expect(
+      observeRun(events(missing), cryptoScenario).violations.some((v) => v.code === "candidate_mission_invalid"),
+    ).toBe(true)
+  })
+
   test("strategy drift and a second algorithm fail the contract", () => {
     const events = [
       tool("finny_workspace_prepare", requestInput(), "Prepared"),

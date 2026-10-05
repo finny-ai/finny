@@ -6,6 +6,7 @@ import {
   type StrictRunV1,
 } from "../../src/backtest/run-integrity"
 import { addContentAddressedArtifact, type BundleWriter } from "./artifacts"
+import { canonicalAssetClass, canonicalInterval, canonicalSymbol } from "./identity"
 
 export type HarnessIntegrityIssue = {
   kind: "secret_integrity" | "artifact_integrity"
@@ -354,21 +355,6 @@ type ScenarioIdentity = {
   endDate: string
 }
 
-function canonicalAssetClass(value: unknown): string {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase()
-  return normalized === "equities" ? "equity" : normalized
-}
-
-function canonicalInterval(value: unknown): string {
-  const normalized = String(value ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, "")
-  return ["5min", "5mins", "5minute", "5minutes"].includes(normalized) ? "5m" : normalized
-}
-
 function canonicalDate(value: unknown): string {
   const normalized = String(value ?? "").trim()
   return normalized.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? normalized
@@ -387,10 +373,8 @@ function scenarioRunIssues(run: VerifiedHarnessRun, scenario: ScenarioIdentity):
     add(`strict run ${run.run.runId} date window does not match scenario`)
   }
 
-  const expectedSymbols = [...new Set(scenario.symbols.map((symbol) => symbol.trim().toUpperCase()))].sort()
-  const assetSymbol = String(run.assetSpec.symbol ?? "")
-    .trim()
-    .toUpperCase()
+  const expectedSymbols = [...new Set(scenario.symbols.map(canonicalSymbol))].sort()
+  const assetSymbol = canonicalSymbol(run.assetSpec.symbol)
   if (!assetSymbol || expectedSymbols.length !== 1 || assetSymbol !== expectedSymbols[0]) {
     add(`strict run ${run.run.runId} asset symbol does not match scenario`)
   }
@@ -402,24 +386,16 @@ function scenarioRunIssues(run: VerifiedHarnessRun, scenario: ScenarioIdentity):
   }
 
   const dataSymbols = Array.isArray(run.dataManifest.symbols)
-    ? run.dataManifest.symbols.map((symbol) => String(symbol).trim().toUpperCase()).sort()
-    : [
-        String(run.dataManifest.requested_symbol ?? "")
-          .trim()
-          .toUpperCase(),
-      ].filter(Boolean)
+    ? run.dataManifest.symbols.map(canonicalSymbol).sort()
+    : [canonicalSymbol(run.dataManifest.requested_symbol)].filter(Boolean)
   if (
     dataSymbols.length !== expectedSymbols.length ||
     dataSymbols.some((symbol, index) => symbol !== expectedSymbols[index])
   ) {
     add(`strict run ${run.run.runId} data manifest symbols do not match scenario`)
   }
-  const requestedSymbol = String(run.dataManifest.requested_symbol ?? "")
-    .trim()
-    .toUpperCase()
-  const actualSymbol = String(run.dataManifest.actual_symbol ?? requestedSymbol)
-    .trim()
-    .toUpperCase()
+  const requestedSymbol = canonicalSymbol(run.dataManifest.requested_symbol)
+  const actualSymbol = canonicalSymbol(run.dataManifest.actual_symbol ?? requestedSymbol)
   if (!expectedSymbols.includes(requestedSymbol) || !expectedSymbols.includes(actualSymbol)) {
     add(`strict run ${run.run.runId} data manifest symbol binding does not match scenario`)
   }

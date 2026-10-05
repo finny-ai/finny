@@ -440,7 +440,7 @@ describe("headless-only fixture boundaries", () => {
     }
   })
 
-  test("timestamped data-manifest windows normalize to scenario dates", () => {
+  test("timestamped windows and crypto spot aliases bind without accepting asset or window drift", () => {
     const hash = "a".repeat(64)
     const verified = {
       dir: "/tmp/finny-home/algorithms/algo/v01/runs/run-1",
@@ -487,5 +487,46 @@ describe("headless-only fixture boundaries", () => {
       },
     })
     expect(issues).toEqual([])
+
+    const crypto = {
+      ...verified,
+      assetSpec: { symbol: "BTC/USD", assetClass: "crypto_spot" },
+      dataManifest: {
+        ...verified.dataManifest,
+        symbols: ["BTC/USD"],
+        requested_symbol: "BTCUSDT",
+        actual_symbol: "BTC/USD",
+        requested_asset_class: "crypto",
+        actual_asset_class: "crypto_spot",
+      },
+    }
+    const bound = (run: typeof crypto) =>
+      bindObservedStrictRuns({
+        finnyHome: "/tmp/finny-home",
+        savedCandidates: [{ name: "btc-sma", algorithmId: "algo", version: 1 }],
+        backtests: [{ algorithmName: "btc-sma", runId: "run-1", artifactDir: verified.dir }],
+        runs: [run],
+        scenario: {
+          symbols: ["BTCUSDT"],
+          assetClass: "crypto",
+          interval: "5m",
+          startDate: "2026-01-09",
+          endDate: "2026-07-08",
+        },
+      })
+    expect(bound(crypto)).toEqual([])
+    expect(bound({ ...crypto, assetSpec: { ...crypto.assetSpec, symbol: "ETH/USD" } }).map((v) => v.message)).toContain(
+      "strict run run-1 asset symbol does not match scenario",
+    )
+    expect(
+      bound({ ...crypto, assetSpec: { ...crypto.assetSpec, assetClass: "crypto_perp" } }).map((v) => v.message),
+    ).toContain("strict run run-1 asset class does not match scenario")
+    for (const patch of [
+      { actual_symbol: "ETH/USD" },
+      { actual_start: "2026-01-10" },
+      { actual_asset_class: "crypto_perp" },
+    ]) {
+      expect(bound({ ...crypto, dataManifest: { ...crypto.dataManifest, ...patch } }).length).toBeGreaterThan(0)
+    }
   })
 })
